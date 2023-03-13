@@ -2,6 +2,9 @@ use crate::parser::registry::Registry;
 use reqwest;
 use structopt::StructOpt;
 
+mod constants;
+use constants::REGISTRY_PATH;
+
 #[derive(Debug, StructOpt)]
 pub enum Command {
     #[structopt(name = "add", about = "add libraries")]
@@ -22,11 +25,7 @@ pub enum Command {
 pub async fn add(libs: Vec<String>, dev: bool) -> Result<(), reqwest::Error> {
     for lib in libs {
         let (library_name, version) = parse_library_name(lib);
-        let response = reqwest::get(format!(
-            "https://registry.npmjs.org/{}/{}",
-            library_name, version
-        ));
-
+        let response = reqwest::get(format!("{}/{}/{}", REGISTRY_PATH, library_name, version));
         let registry: Result<Registry, reqwest::Error> = response.await?.json::<Registry>().await;
 
         match registry {
@@ -34,10 +33,8 @@ pub async fn add(libs: Vec<String>, dev: bool) -> Result<(), reqwest::Error> {
                 let tarball = registry.download_tarball().await;
             }
             Err(e) => {
-                let response = reqwest::get(format!(
-                    "https://registry.npmjs.org/{}/{}",
-                    library_name, version
-                ));
+                let response =
+                    reqwest::get(format!("{}/{}/{}", REGISTRY_PATH, library_name, version));
                 let text = response.await?.text().await;
                 println!("error: {}", e);
                 println!("text: {}", text.unwrap()[790..900].to_string());
