@@ -1,0 +1,24 @@
+[package]
+name = "rpm"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name="rpm"
+path="src/lib/mod.rs"
+
+
+
+[dependencies]
+chrono = "0.4.24"
+flate2 = "1.0.25"
+regex = "1.7.1"
+reqwest = { version = "0.11.14", features = ["json"] }
+serde = {version= "1.0.155", features = ["derive"] }
+sha2 = "0.10.6"
+structopt = "0.3.26"
+tar = "0.4.38"
+thiserror = "1.0.39"
+tokio = { version = "1.26.0", features = ["full"] }
+
