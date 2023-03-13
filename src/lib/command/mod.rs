@@ -1,4 +1,5 @@
 use crate::parser::registry::Registry;
+use regex::Regex;
 use reqwest;
 use structopt::StructOpt;
 
@@ -33,11 +34,7 @@ pub async fn add(libs: Vec<String>, dev: bool) -> Result<(), reqwest::Error> {
                 let tarball = registry.download_tarball().await;
             }
             Err(e) => {
-                let response =
-                    reqwest::get(format!("{}/{}/{}", REGISTRY_PATH, library_name, version));
-                let text = response.await?.text().await;
-                println!("error: {}", e);
-                println!("text: {}", text.unwrap()[790..900].to_string());
+                panic!("error: {}", e);
             }
         }
     }
