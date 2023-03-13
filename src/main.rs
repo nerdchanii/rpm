@@ -6,6 +6,13 @@ use structopt::StructOpt;
 async fn run(opt: Opt) {
     match opt.cmd {
         Command::Add { libs, dev } => {
+            let result = command::add(libs, dev).await;
+            match result {
+                Ok(_) => {}
+                Err(e) => {
+                    panic!("{}", e);
+                }
+            };
         }
 
         _ => {

@@ -1,4 +1,7 @@
+use crate::parser::registry::Registry;
+use reqwest;
 use structopt::StructOpt;
+
 #[derive(Debug, StructOpt)]
 pub enum Command {
     #[structopt(name = "add", about = "add libraries")]
@@ -14,4 +17,41 @@ pub enum Command {
     List,
     #[structopt(about = "display version of rpm")]
     Version,
+}
+
+pub async fn add(libs: Vec<String>, dev: bool) -> Result<(), reqwest::Error> {
+    for lib in libs {
+        let (library_name, version) = parse_library_name(lib);
+        let response = reqwest::get(format!(
+            "https://registry.npmjs.org/{}/{}",
+            library_name, version
+        ));
+
+        let registry: Result<Registry, reqwest::Error> = response.await?.json::<Registry>().await;
+
+        match registry {
+            Ok(registry) => {
+                let tarball = registry.download_tarball().await;
+            }
+            Err(e) => {
+                let response = reqwest::get(format!(
+                    "https://registry.npmjs.org/{}/{}",
+                    library_name, version
+                ));
+                let text = response.await?.text().await;
+                println!("error: {}", e);
+                println!("text: {}", text.unwrap()[790..900].to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_library_name(lib: String) -> (String, String) {
+    if lib.contains("@v") {
+        let lib_split: Vec<&str> = lib.split("@v").collect();
+        (lib_split[0].to_string(), lib_split[1].to_string())
+    } else {
+        (lib, "".to_string())
+    }
 }
