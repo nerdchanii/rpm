@@ -54,3 +54,24 @@ fn parse_library_name(lib: String) -> (String, String) {
         panic!("error: invalid library name");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_lib_version() {
+        let lib = "socket-store@0.0.1";
+        let (lib_name, version) = parse_library_name(lib.to_owned());
+        assert_eq!(lib_name, "socket-store");
+        assert_eq!(version, "0.0.1");
+        assert_ne!(version, "0.0.2");
+    }
+    #[test]
+    fn parse_lib_without_version() {
+        let lib = "socket-store";
+        let (lib_name, version) = parse_library_name(lib.to_owned());
+        assert_eq!(lib_name, "socket-store");
+        assert_eq!(version, "");
+    }
+}
