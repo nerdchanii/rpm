@@ -45,10 +45,12 @@ pub async fn add(libs: Vec<String>, dev: bool) -> Result<(), reqwest::Error> {
 }
 
 fn parse_library_name(lib: String) -> (String, String) {
-    if lib.contains("@v") {
-        let lib_split: Vec<&str> = lib.split("@v").collect();
-        (lib_split[0].to_string(), lib_split[1].to_string())
+    let re = Regex::new(r"^([^@]+)(?:@(\d+\.\d+\.\d+))?$").unwrap();
+    if let Some(captures) = re.captures(&lib) {
+        let pkg_name = captures.get(1).unwrap().as_str();
+        let version = captures.get(2).map_or("", |m| m.as_str());
+        (pkg_name.to_owned(), version.to_owned())
     } else {
-        (lib, "".to_string())
+        panic!("error: invalid library name");
     }
 }
