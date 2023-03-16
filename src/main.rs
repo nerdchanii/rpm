@@ -8,13 +8,13 @@ async fn run(opt: Opt) {
             let time = std::time::Instant::now();
             let result = working_process::install().await;
             result.expect("install failed\n");
-            println!("time: {:.2}s", time.elapsed().as_secs());
+            println!("time: {:.2}s", time.elapsed().as_secs_f32());
         }
         Command::Add { libs, dev } => {
             let time = std::time::Instant::now();
             let result = working_process::add(libs, dev).await;
             result.expect("add failed\n");
-            println!("time: {:.2}s", time.elapsed().as_secs());
+            println!("time: {:.2}s", time.elapsed().as_secs_f32());
         }
 
         _ => {
