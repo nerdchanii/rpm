@@ -47,7 +47,7 @@ pub impl LockFile {
             .create(true)
             .open(LOCK_FILE_PATH)?;
         file.read_to_string(&mut buffer)?;
-        let lock = buffer.parse::<Self>()
+        let lock = buffer.parse::<Self>();
         let lockfile: Self::new()?;
     }
 }
