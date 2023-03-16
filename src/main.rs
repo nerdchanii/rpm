@@ -4,6 +4,15 @@ use structopt::StructOpt;
 
 async fn run(opt: Opt) {
     match opt.cmd {
+        Command::Install => {
+            let result = working_process::install().await;
+            match result {
+                Ok(_) => {}
+                Err(e) => {
+                    panic!("{}", e);
+                }
+            };
+        }
         Command::Add { libs, dev } => {
             let result = working_process::add(libs, dev).await;
             match result {
