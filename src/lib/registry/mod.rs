@@ -280,13 +280,10 @@ impl Registry {
     pub async fn download_tarball(&self) -> Result<(), reqwest::Error> {
         let url = &self.get_tarball_url().unwrap();
         let tarball_name = &self.get_tarball_name().unwrap();
-        println!("install {:?}", &tarball_name);
-        let start = Instant::now();
         let response = api::get_tarball(url).await;
         response
             .ok()
-            .map(|mut bytes_file| save_tarball(tarball_name, &mut bytes_file))
-            .map(|_| println!("downloaded in {:?}", start.elapsed()));
+            .map(|mut bytes_file| save_tarball(tarball_name, &mut bytes_file));
 
         Ok(())
     }

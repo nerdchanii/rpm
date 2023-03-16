@@ -5,12 +5,16 @@ use structopt::StructOpt;
 async fn run(opt: Opt) {
     match opt.cmd {
         Command::Install => {
+            let time = std::time::Instant::now();
             let result = working_process::install().await;
             result.expect("install failed\n");
+            println!("time: {:.2}s", time.elapsed().as_secs());
         }
         Command::Add { libs, dev } => {
+            let time = std::time::Instant::now();
             let result = working_process::add(libs, dev).await;
             result.expect("add failed\n");
+            println!("time: {:.2}s", time.elapsed().as_secs());
         }
 
         _ => {
