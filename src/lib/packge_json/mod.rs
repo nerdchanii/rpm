@@ -8,7 +8,7 @@ use std::{
 };
 
 #[derive(Debug, Deserialize, Serialize)]
-struct VersionString(String);
+pub struct VersionString(String);
 
 impl VersionString {
     fn new(version: String) -> VersionString {
@@ -41,17 +41,17 @@ impl VersionString {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Package {
-    name: String,
-    version: VersionString,
+    pub name: String,
+    pub version: VersionString,
     // main type will be changed PathString
-    main: String,
-    author: String,
+    pub main: String,
+    pub author: String,
     // will be changed License Enum
-    license: String,
+    pub license: String,
     #[serde(default = "HashMap::new")]
-    dependencies: HashMap<String, VersionString>,
+    pub dependencies: HashMap<String, VersionString>,
     #[serde(rename = "devDependencies", skip_serializing_if = "Option::is_none")]
-    dev_dependecies: Option<HashMap<String, VersionString>>,
+    pub dev_dependecies: Option<HashMap<String, VersionString>>,
     // other fields implement soon.
 }
 
@@ -62,9 +62,9 @@ impl Package {
         package
     }
 
-    fn read_file() -> Package {
+    pub fn read_file() -> Self {
         let text = fs::read_to_string("./package.json").unwrap_or("".to_owned());
-        let package: Package = serde_json::from_str(&text).unwrap();
+        let package: Self = serde_json::from_str(&text).unwrap();
         package
     }
 
@@ -95,7 +95,7 @@ impl Package {
         self.dependencies.insert(pkg_name, version);
     }
 
-    fn get_dependencies(&self) -> Vec<(String, String)> {
+    pub fn get_dependencies(&self) -> Vec<(String, String)> {
         let mut deps = Vec::new();
         for (key, version) in &self.dependencies {
             deps.push((key.to_owned(), version.to_specific_version()))
@@ -103,7 +103,7 @@ impl Package {
         deps
     }
 
-    fn get_dev_dependencies(&self) -> Vec<(String, String)> {
+    pub fn get_dev_dependencies(&self) -> Vec<(String, String)> {
         let mut deps = Vec::new();
         if let Some(dev_deps) = &self.dev_dependecies {
             for (key, version) in dev_deps {
