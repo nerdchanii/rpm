@@ -1,0 +1,13 @@
+{
+  "author": "nerdchanii <nerdchanii@gmail.com>",
+  "dependencies": {
+    "@tanstack/react-query": "^4.26.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "socket-store": "^0.0.1"
+  },
+  "license": "MIT",
+  "main": "index.js",
+  "name": "test",
+  "version": "1.0.0"
+}
