@@ -1,0 +1,5 @@
+# rpm.lock file exist for package.lock and linking dependencies.
+# This file auto generate, when "rpm install" script is running in your project. 
+# It has .toml format 
+
+# Now, It is skeletone
