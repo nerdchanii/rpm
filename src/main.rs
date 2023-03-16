@@ -1,12 +1,11 @@
-use rpm::command;
-use rpm::command::Command;
+use rpm::command::{working_process, Command};
 use rpm::opt::Opt;
 use structopt::StructOpt;
 
 async fn run(opt: Opt) {
     match opt.cmd {
         Command::Add { libs, dev } => {
-            let result = command::add(libs, dev).await;
+            let result = working_process::add(libs, dev).await;
             match result {
                 Ok(_) => {}
                 Err(e) => {

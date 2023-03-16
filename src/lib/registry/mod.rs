@@ -7,6 +7,8 @@ use std::{
     time::Instant,
 };
 
+use crate::api;
+
 #[derive(Debug, Serialize, Deserialize)]
 struct DistTags {
     #[serde(flatten)]
@@ -23,12 +25,18 @@ impl DistTags {
         self.inner.get("latest")
     }
 }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RepositoryObject {
+    #[serde(rename = "type")]
+    _type: String,
+    url: String,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Repository {
-    #[serde(rename = "type")]
-    type_: String,
-    url: String,
+#[serde(untagged)]
+pub enum Repository {
+    String(String),
+    Object(RepositoryObject),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -41,7 +49,7 @@ pub struct Signature {
 pub struct Dist {
     pub shasum: String,
     pub tarball: String,
-    pub integrity: String,
+    pub integrity: Option<String>,
     pub signature: Option<Signature>,
 }
 
@@ -95,6 +103,18 @@ pub struct Version {
 impl Version {
     fn get_tarball(&self) -> String {
         self.dist.get_tarball()
+    }
+
+    fn get_dependencies(&self) -> Vec<String> {
+        self.dependencies
+            .as_ref()
+            .map(|dependencies| {
+                dependencies
+                    .iter()
+                    .map(|(key, version)| format!("{}@{}", key, version))
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or(vec![])
     }
 }
 
@@ -153,8 +173,8 @@ impl Serialize for Time {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Maintainer {
-    name: String,
-    email: String,
+    name: Option<String>,
+    email: Option<String>,
     url: Option<String>,
 }
 
@@ -176,12 +196,20 @@ impl Url {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Author {
-    name: String,
-    email: String,
+    name: Option<String>,
+    email: Option<String>,
     url: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AuthorType {
+    String(String),
+    Object(Author),
+}
+
 impl Author {
-    fn new(name: String, email: String, url: Option<String>) -> Self {
+    fn new(name: Option<String>, email: Option<String>, url: Option<String>) -> Self {
         Self { name, email, url }
     }
 }
@@ -191,7 +219,6 @@ pub struct Bugs {
     url: Url,
 }
 
-/// Registry struct
 /// When Request to registry, return this struct json data
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Registry {
@@ -206,100 +233,102 @@ pub struct Registry {
     pub time: Option<Time>,
     pub maintainers: Vec<Maintainer>,
     pub description: String,
-    pub homepage: Url,
-    pub keywords: Vec<String>,
-    pub repository: Repository,
-    pub author: Option<Author>,
-    pub bugs: Bugs,
+    pub homepage: Option<Url>,
+    pub keywords: Option<Vec<String>>,
+    pub repository: Option<Repository>,
+    pub author: Option<AuthorType>,
+    pub bugs: Option<Bugs>,
     pub license: String,
     pub readme: Option<String>,
     #[serde(rename = "readmeFilename")]
     pub readme_file_name: Option<String>,
     pub dist: Option<Dist>,
     sequence: Option<i32>,
+    pub dependencies: Option<HashMap<String, String>>,
+    #[serde(rename = "devDependencies")]
+    dev_dependencies: Option<HashMap<String, String>>,
+    #[serde(rename = "peerDependencies")]
+    peer_dependencies: Option<HashMap<String, String>>,
+    #[serde(rename = "optionalDependencies")]
+    optional_dependencies: Option<HashMap<String, String>>,
+    #[serde(rename = "bundledDependencies")]
+    bundled_dependencies: Option<HashMap<String, String>>,
 }
 
 impl Registry {
-    pub fn get_tarball(&self) -> Option<String> {
-        if self.versions.is_some() && self.rev.is_some() {
-            let version = &self.versions.as_ref().unwrap();
-            let lastest = &self.rev.as_ref().unwrap();
-            let tarball = version.get(lastest.to_owned()).unwrap().get_tarball();
-            Some(tarball)
-        } else {
-            None
-        }
+    pub fn get_tarball_name(&self) -> Option<String> {
+        self.get_tarball_url().map(|url| {
+            let url = url.split('/').collect::<Vec<&str>>();
+            url.last().unwrap().to_string()
+        })
     }
 
-    pub async fn download_tarball(&self) -> Result<Option<String>, reqwest::Error> {
+    pub fn get_tarball_url(&self) -> Option<String> {
         if self.versions.is_some() && self.dist_tags.is_some() {
             let version = &self.versions.as_ref().unwrap();
-            let lastest = &self.dist_tags.as_ref().unwrap().get_latest();
-            // println!("{:?}", lastest);
-            // println!("{:?}", version);
-
-            let tarball = version
-                .get(&lastest.unwrap().to_owned())
-                .unwrap()
-                .get_tarball();
-            let start = Instant::now();
-            println!("install from {:?}", tarball);
-            let response = reqwest::get(&tarball).await?.bytes().await;
-            let tarball_name = tarball.split("/").last().unwrap();
-            // let tarball_name = format!("{}.tgz", self.name);
-            match response {
-                Ok(response) => {
-                    // println!("downloaded: {:?}", tarball_name);
-                    let save_result = save_tarball(tarball_name.to_owned(), &mut response.to_vec());
-                    match save_result {
-                        Ok(_) => {
-                            println!(
-                                "added: {:?} {}ms",
-                                tarball_name,
-                                start.elapsed().as_millis()
-                            );
-                            Ok(Some(tarball_name.to_owned()))
-                        }
-                        Err(_) => Ok(None),
-                    }
-                }
-                Err(_) => Ok(None),
-            }
+            let lastest = &self.dist_tags.as_ref().unwrap().get_latest().unwrap();
+            let url = version.get(lastest.to_owned()).unwrap().get_tarball();
+            Some(url)
         } else {
-            if self.dist.as_ref().unwrap().get_tarball().is_empty() {
-                Ok(None)
-            } else {
-                let tarball = self.dist.as_ref().unwrap().get_tarball();
-                println!("{:?}", tarball);
-                let response = reqwest::get(&tarball).await?.bytes().await;
-
-                match response {
-                    Ok(response) => {
-                        // regex for get tarball name from url;
-                        let tarball_name = tarball.split("/").last().unwrap();
-                        println!("{:?}", tarball_name);
-                        let save_result =
-                            save_tarball(tarball_name.to_owned(), &mut response.to_vec());
-                        match save_result {
-                            Ok(_) => Ok(Some(tarball_name.to_owned())),
-                            Err(_) => Ok(None),
-                        }
-                    }
-                    Err(_) => Ok(None),
-                }
-            }
+            let tarball = &self.dist.as_ref().unwrap().get_tarball();
+            Some(tarball.to_owned())
         }
     }
+
+    /// download tarball from registry and return tarball bytes
+
+    pub async fn download_tarball(&self) -> Result<(), reqwest::Error> {
+        let url = &self.get_tarball_url().unwrap();
+        let tarball_name = &self.get_tarball_name().unwrap();
+        println!("install {:?}", &tarball_name);
+        let start = Instant::now();
+        let response = api::get_tarball(url).await;
+        response
+            .ok()
+            .map(|mut bytes_file| save_tarball(tarball_name, &mut bytes_file))
+            .map(|_| println!("downloaded in {:?}", start.elapsed()));
+
+        Ok(())
+    }
+    /// get dependencies from registry
+    /// return dependencies vector
+    /// example: ["socket-store@0.0.1", "socket.io-client@1.22.3"]
+    pub fn get_dependencies(&self) -> Vec<String> {
+        // if versions is "" then version to latest
+        if self.versions.is_some() && self.dist_tags.is_some() {
+            let lastests = &self.dist_tags.as_ref().unwrap().get_latest().unwrap();
+            let version = self
+                .versions
+                .as_ref()
+                .unwrap()
+                .get(lastests.to_owned())
+                .unwrap();
+            let dependencies = version.get_dependencies();
+
+            dependencies
+        } else {
+            self.dependencies
+                .as_ref()
+                .iter()
+                .flat_map(|x| x.iter())
+                .map(|(k, v)| format!("{}@{}", k, v))
+                .collect()
+        }
+    }
+
+    // pub fn save_lockfile(&self, dev: bool){
+    //     let mut lockfile = Lockfile::new()
+    // }
 }
 
-fn save_tarball(tarball_name: String, tarball: &mut [u8]) -> Result<(), Error> {
+fn save_tarball(tarball_name: &str, bytes_file: &mut [u8]) -> Result<(), Error> {
     let base_path = "rpm/.cache";
     let file_path = format!("{}/{}", base_path, tarball_name);
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
         .open(file_path)?;
-    file.write_all(tarball)?;
+    file.write_all(bytes_file)?;
     file.flush()?;
     Ok(())
 }
