@@ -4,7 +4,6 @@ use std::{
     collections::HashMap,
     fs::OpenOptions,
     io::{Error, Write},
-    time::Instant,
 };
 
 use crate::api;
