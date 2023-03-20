@@ -29,6 +29,15 @@ impl VersionString {
 
     fn to_specific_version(&self) -> String {
         let mut version = self.0.to_owned();
+        if version.contains("||") {
+            version = version
+                .split("||")
+                .collect::<Vec<&str>>()
+                .last_mut()
+                .unwrap()
+                .trim()
+                .to_owned();
+        }
         if version.starts_with("^") {
             version = version.replace("^", "");
         }
