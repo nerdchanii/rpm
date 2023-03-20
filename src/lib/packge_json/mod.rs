@@ -57,6 +57,7 @@ pub struct Package {
     pub author: String,
     // will be changed License Enum
     pub license: String,
+    pub scripts: Option<HashMap<String, String>>,
     #[serde(default = "HashMap::new")]
     pub dependencies: HashMap<String, VersionString>,
     #[serde(rename = "devDependencies", skip_serializing_if = "Option::is_none")]
@@ -120,6 +121,10 @@ impl Package {
             }
         }
         deps
+    }
+
+    pub fn get_scripts(&self) -> HashMap<String, String> {
+        self.scripts.clone().unwrap_or(HashMap::new())
     }
 }
 
