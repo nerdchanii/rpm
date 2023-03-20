@@ -15,6 +15,13 @@ pub enum Command {
         about = "install libraries using rpm.lock file(when it not founded using package.json file)"
     )]
     Install,
+    #[structopt(name = "run", about = "run scripts")]
+    Run {
+        #[structopt(help = "run scripts")]
+        script_key: String,
+    },
+
+    // not implemented
     #[structopt(name = "remove", about = "remove libraries")]
     Remove { libs: Vec<String> },
     #[structopt(name = "list", about = "list installed libraries")]

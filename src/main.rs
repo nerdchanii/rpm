@@ -16,7 +16,12 @@ async fn run(opt: Opt) {
             result.expect("add failed\n");
             println!("time: {:.2}s", time.elapsed().as_secs_f32());
         }
-
+        Command::Run { script_key } => {
+            let time = std::time::Instant::now();
+            let result = working_process::run(script_key).await;
+            result.expect("run failed\n");
+            println!("time: {:.2}s", time.elapsed().as_secs_f32());
+        }
         _ => {
             panic!("not implemented");
         }
