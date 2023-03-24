@@ -13,9 +13,7 @@ use crate::{
 };
 use flate2::read::GzDecoder;
 use regex::Regex;
-use serde::de::Error;
 use tar::Archive;
-use tokio::runtime;
 
 pub struct NodeModules {
     pub path: PathBuf,

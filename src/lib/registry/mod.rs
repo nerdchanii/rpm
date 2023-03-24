@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use regex::Regex;
 use serde::{ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     collections::HashMap,
@@ -206,6 +205,7 @@ pub struct Author {
 #[serde(untagged)]
 pub enum AuthorType {
     String(String),
+    #[serde(rename = "object")]
     Object(Author),
 }
 

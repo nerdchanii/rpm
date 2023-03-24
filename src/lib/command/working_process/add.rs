@@ -2,7 +2,6 @@ use std::io::Write;
 
 use crate::{api, packge_json::Package, rpm_lock::lockfile::LockFile, util::parse_library_name};
 use async_recursion::async_recursion;
-use chrono::Duration;
 use tokio::time::sleep;
 
 #[async_recursion]

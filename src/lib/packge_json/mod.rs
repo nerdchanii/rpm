@@ -66,8 +66,10 @@ pub enum AuthorType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Package {
-    pub name: String,
-    pub version: VersionString,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<VersionString>,
     // main type will be changed PathString
     #[serde(skip_serializing_if = "Option::is_none")]
     pub main: Option<String>,
@@ -166,11 +168,10 @@ impl Package {
 
 #[cfg(test)]
 mod package_json_test {
-    use crate::packge_json::VersionString;
 
     use super::Package;
-    use serde_json::{self, Value};
-    use std::fs::{self, File};
+    use serde_json;
+    use std::fs;
 
     #[test]
     fn read_file() {

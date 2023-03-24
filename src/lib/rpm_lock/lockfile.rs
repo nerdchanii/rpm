@@ -176,7 +176,6 @@ impl LockFile {
 
 #[cfg(test)]
 mod lock_file_test {
-    use sha2::digest::typenum::IsEqual;
 
     use super::*;
 
