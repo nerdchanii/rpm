@@ -49,19 +49,39 @@ impl VersionString {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+
+pub struct Author {
+    name: String,
+    email: String,
+    url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+
+pub enum AuthorType {
+    String(String),
+    Object(Author),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Package {
     pub name: String,
     pub version: VersionString,
     // main type will be changed PathString
-    pub main: String,
-    pub author: String,
-    // will be changed License Enum
-    pub license: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub main: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
     pub scripts: Option<HashMap<String, String>>,
     #[serde(default = "HashMap::new")]
     pub dependencies: HashMap<String, VersionString>,
     #[serde(rename = "devDependencies", skip_serializing_if = "Option::is_none")]
     pub dev_dependecies: Option<HashMap<String, VersionString>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bin: Option<HashMap<String, String>>,
     // other fields implement soon.
 }
 
@@ -72,13 +92,17 @@ impl Package {
         package
     }
 
-    pub fn read_file() -> Self {
-        let text = fs::read_to_string("./package.json").unwrap_or("".to_owned());
+    pub fn read_file(file: &str) -> Self {
+        let text = fs::read_to_string(file).unwrap_or("".to_owned());
         let package: Self = serde_json::from_str(&text).unwrap();
         package
     }
 
-    fn save(&self) -> core::result::Result<(), ()> {
+    pub fn get_bin(&self) -> Option<HashMap<String, String>> {
+        self.bin.as_ref().map(|bin| bin.to_owned())
+    }
+
+    pub fn save(&self) -> core::result::Result<(), ()> {
         let package_json_file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -89,7 +113,7 @@ impl Package {
         // save serialized $self to package.json
         if let Ok(ser) = serde_json::to_value(self) {
             let writer = &mut BufWriter::new(package_json_file);
-            println!("{}", &ser);
+
             let result = to_writer_pretty(writer, &ser);
             if result.is_ok() {
                 Ok(())
@@ -101,8 +125,20 @@ impl Package {
         }
     }
 
-    fn add_dependecy(&mut self, pkg_name: String, version: VersionString) {
-        self.dependencies.insert(pkg_name, version);
+    pub fn add_dependency(&mut self, pkg_name: String, version: String) {
+        print!("add dependency: {} {}", pkg_name, version);
+        print!("\r\x1B[K");
+        self.dependencies.insert(pkg_name, VersionString(version));
+    }
+
+    pub fn add_dev_dependency(&mut self, pkg_name: String, version: String) {
+        if let Some(dev_deps) = &mut self.dev_dependecies {
+            dev_deps.insert(pkg_name, VersionString(version));
+        } else {
+            let mut dev_deps = HashMap::new();
+            dev_deps.insert(pkg_name, VersionString(version));
+            self.dev_dependecies = Some(dev_deps);
+        }
     }
 
     pub fn get_dependencies(&self) -> Vec<(String, String)> {
@@ -142,12 +178,8 @@ mod package_json_test {
         let text = fs::read_to_string("./package.json").unwrap();
         let mut package: Package = serde_json::from_str(&text).unwrap();
         println!("{:?}\n\n\n", package);
-        package.add_dependecy(
-            "socket-store".to_owned(),
-            VersionString::new("^0.1.0".to_owned()),
-        );
+        package.add_dependency("socket-store".to_owned(), "^0.1.0".to_owned());
 
         package.save();
-        println!("{:?}", package);
     }
 }

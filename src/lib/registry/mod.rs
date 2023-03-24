@@ -1,9 +1,11 @@
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     collections::HashMap,
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::{Error, Write},
+    path::Path,
 };
 
 use crate::api;
@@ -213,10 +215,10 @@ impl Author {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Bugs {
-    url: Url,
-}
+// #[derive(Debug, Deserialize)]
+// pub struct Bugs {
+//     url: Url,
+// }
 
 /// When Request to registry, return this struct json data
 #[derive(Debug, Serialize, Deserialize)]
@@ -236,8 +238,8 @@ pub struct Registry {
     pub keywords: Option<Vec<String>>,
     pub repository: Option<Repository>,
     pub author: Option<AuthorType>,
-    pub bugs: Option<Bugs>,
-    pub license: String,
+    // pub bugs: Option<Bugs>,
+    pub license: Option<String>,
     pub readme: Option<String>,
     #[serde(rename = "readmeFilename")]
     pub readme_file_name: Option<String>,
@@ -252,13 +254,24 @@ pub struct Registry {
     optional_dependencies: Option<HashMap<String, String>>,
     #[serde(rename = "bundledDependencies")]
     bundled_dependencies: Option<HashMap<String, String>>,
+    version: Option<String>,
 }
 
 impl Registry {
     pub fn get_tarball_name(&self) -> Option<String> {
         self.get_tarball_url().map(|url| {
-            let url = url.split('/').collect::<Vec<&str>>();
-            url.last().unwrap().to_string()
+            //ex https://registry.npmjs.org/axios/-/axios-0.21.1.tgz
+            let url = url.replace("https://registry.npmjs.org/", "");
+            let url: Vec<&str> = url.split("/-/").collect::<Vec<&str>>();
+            // left name, right version
+            // if socket-store sotcket-store-0.1.0.tgz
+            // to socket-store@0.1.0.tgz
+            // if @babel/core core-2.3.1.tgz
+            // to @babel/core@2.3.1.tgz
+
+            let tarball_name = format!("{}-{}.tgz", url[0], url[1]);
+
+            tarball_name
         })
     }
 
@@ -276,13 +289,18 @@ impl Registry {
 
     /// download tarball from registry and return tarball bytes
 
-    pub async fn download_tarball(&self) -> Result<(), reqwest::Error> {
+    pub async fn download_tarball(&self, key: &str, version: &str) -> Result<(), reqwest::Error> {
         let url = &self.get_tarball_url().unwrap();
-        let tarball_name = &self.get_tarball_name().unwrap();
         let response = api::get_tarball(url).await;
+        let key = if key.contains("*") {
+            key.replace("*", version)
+        } else {
+            key.to_owned()
+        };
+
         response
             .ok()
-            .map(|mut bytes_file| save_tarball(tarball_name, &mut bytes_file));
+            .map(|mut bytes_file| save_tarball(&key, &mut bytes_file));
 
         Ok(())
     }
@@ -312,18 +330,30 @@ impl Registry {
         }
     }
 
-    // pub fn save_lockfile(&self, dev: bool){
-    //     let mut lockfile = Lockfile::new()
-    // }
+    pub fn get_latest_version(&self) -> Option<&String> {
+        if self.version.is_some() {
+            self.version.as_ref()
+        } else {
+            self.dist_tags.as_ref().unwrap().get_latest()
+        }
+    }
 }
 
 fn save_tarball(tarball_name: &str, bytes_file: &mut [u8]) -> Result<(), Error> {
     let base_path = "rpm/.cache";
-    let file_path = format!("{}/{}", base_path, tarball_name);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(file_path)?;
+    let file_name = tarball_name.replace("/", "-");
+
+    let dir = Path::new(base_path);
+
+    if !dir.exists() {
+        fs::create_dir_all(dir)?;
+    }
+
+    let mut file = OpenOptions::new().write(true).create(true).open(format!(
+        "{}/{}.tgz",
+        dir.to_str().unwrap(),
+        file_name
+    ))?;
     file.write_all(bytes_file)?;
     file.flush()?;
     Ok(())

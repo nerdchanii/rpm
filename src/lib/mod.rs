@@ -1,5 +1,7 @@
 pub mod api;
 pub mod command;
+pub mod common;
+pub mod node_linker;
 pub mod opt;
 pub mod packge_json;
 pub mod parser;

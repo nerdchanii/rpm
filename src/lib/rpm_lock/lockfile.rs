@@ -1,8 +1,9 @@
 use super::constraint::LOCK_FILE_PATH;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
-    fs::{File, OpenOptions},
+    collections::{HashMap, HashSet},
+    fs::OpenOptions,
     io::{Read, Result, Write},
 };
 use toml::Value;
@@ -10,7 +11,33 @@ use toml::Value;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dependency {
     version: String,
-    dependencies: Option<Vec<String>>,
+    dependencies: Option<HashSet<String>>,
+}
+
+impl Dependency {
+    pub fn new(version: String, dependencies: Option<HashSet<String>>) -> Self {
+        Self {
+            version,
+            dependencies,
+        }
+    }
+
+    pub fn get_version(&self) -> String {
+        self.version.clone()
+    }
+
+    pub fn get_dependencies_name(&self) -> HashSet<String> {
+        let regex = Regex::new(r"^(?P<package_name>@?[^@]*)(@\^?(?P<version>.*))?$").unwrap();
+        let mut dependencies = HashSet::new();
+        if let Some(deps) = &self.dependencies {
+            for dep in deps.iter() {
+                let pkg_name = regex.captures(&dep).unwrap();
+                let name = pkg_name.name("package_name").map(|m| m.as_str()).unwrap();
+                dependencies.insert(name.to_string());
+            }
+        }
+        dependencies
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,14 +63,14 @@ impl<'de> Deserialize<'de> for LockFile {
             } else if key == "version" {
                 version = value.as_str().unwrap().to_string();
             } else {
-                let mut dependencies = Vec::new();
+                let mut dependencies = HashSet::new();
                 let mut dep_version = String::new();
                 for (key, value) in value.as_table().unwrap() {
                     if key == "version" {
                         dep_version = value.as_str().unwrap().to_string();
                     } else if key == "dependencies" {
                         for dep in value.as_array().unwrap() {
-                            dependencies.push(dep.as_str().unwrap().to_string());
+                            dependencies.insert(dep.as_str().unwrap().to_string());
                         }
                     }
                 }
@@ -74,15 +101,15 @@ impl LockFile {
         }
     }
 
-    fn save(&self) -> Result<()> {
-        let lockfile = serde_json::to_string(&self)?;
-        let mut file = File::create("rpm-lock.toml")?;
+    // fn save(&self) -> Result<()> {
+    //     let lockfile = serde_json::to_string(&self)?;
+    //     let mut file = File::create("rpm-lock.toml")?;
 
-        file.write_all(lockfile.as_bytes())?;
-        Ok(())
-    }
+    //     file.write_all(lockfile.as_bytes())?;
+    //     Ok(())
+    // }
 
-    fn load() -> Result<Self> {
+    pub fn load() -> Result<Self> {
         let mut buffer = String::new();
         let mut file = OpenOptions::new()
             .read(true)
@@ -93,6 +120,57 @@ impl LockFile {
         let lock: Self = toml::from_str(&buffer).unwrap();
 
         Ok(lock)
+    }
+
+    pub fn get_packages(&self) -> Vec<(&String, &Dependency)> {
+        self.dependencies.iter().collect::<Vec<_>>()
+    }
+
+    pub fn add_dependency(
+        &mut self,
+        name: &String,
+        version: String,
+        dependencies: &mut Vec<String>,
+    ) {
+        if let Some(dep) = self.dependencies.get_mut(name) {
+            dep.version = version;
+            dependencies.iter().for_each(|value| {
+                dep.dependencies.as_mut().unwrap().insert(value.clone());
+            });
+        } else {
+            self.dependencies.insert(
+                name.clone(),
+                Dependency {
+                    version,
+                    dependencies: Some(HashSet::from_iter(dependencies.iter().cloned())),
+                },
+            );
+        }
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let lockfile = toml::to_string(&self).unwrap();
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(LOCK_FILE_PATH)?;
+
+        // file initial
+        file.set_len(0)?;
+
+        // file write
+        match file.write_all(lockfile.as_bytes()) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                println!("error: {:?}", e);
+                return Err(e);
+            }
+        }
+    }
+
+    pub fn get_dependency(&self, name: &str) -> Option<&Dependency> {
+        self.dependencies.get(name)
     }
 }
 

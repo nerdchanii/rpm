@@ -1,17 +1,26 @@
 use regex::Regex;
 
 pub fn parse_library_name(lib: String) -> (String, String) {
-    println!("lib: {}", lib);
-    let regex =
-        Regex::new(r"^(?P<package_name>@?[^@]*)(@\^?(?P<version>\d+\.\d+\.\d+))?$").unwrap();
+    let regex = Regex::new(r"^(?P<package_name>@?[^@]*)(@(?P<version>.+))?$").unwrap();
+
     if let Some(captures) = regex.captures(&lib) {
         let package_name = captures.name("package_name").unwrap().as_str().to_owned();
         let version = captures
             .name("version")
-            .map_or("", |m| m.as_str())
+            .map(|m| m.as_str())
+            .unwrap_or_else(|| "")
             .to_owned();
+        // version ex) >=1.0.1 < 3
+        let version_regex = Regex::new(r"^(?P<version>[^<>=]+)").unwrap();
+        let version = version_regex
+            .captures(&version)
+            .map(|m| m.name("version").unwrap().as_str().to_owned())
+            .unwrap_or_else(|| "".to_owned());
+
         return (package_name, version);
     }
+
+    println!("lib error with {}", lib);
     panic!("error: parse library name error");
 }
 
@@ -55,5 +64,12 @@ mod tests {
         let (lib_name, version) = parse_library_name(lib.to_owned());
         assert_eq!(lib_name, "@abcd/socket-store");
         assert_eq!(version, "1.0.0");
+    }
+    #[test]
+    fn parse_test() {
+        let lib = "ipaddr.js@1.9.1";
+        let (lib_name, version) = parse_library_name(lib.to_owned());
+        assert_eq!(lib_name, "ipaddr.js");
+        assert_eq!(version, "1.9.1");
     }
 }
