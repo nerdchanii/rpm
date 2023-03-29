@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 
-use crate::api;
+use crate::{api, common::constraint::CACHE_DIR};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DistTags {
@@ -340,7 +340,7 @@ impl Registry {
 }
 
 fn save_tarball(tarball_name: &str, bytes_file: &mut [u8]) -> Result<(), Error> {
-    let base_path = "rpm/.cache";
+    let base_path = CACHE_DIR;
     let file_name = tarball_name.replace("/", "-");
 
     let dir = Path::new(base_path);
