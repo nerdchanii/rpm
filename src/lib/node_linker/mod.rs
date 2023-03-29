@@ -76,7 +76,7 @@ impl NodeModules {
                 }
 
                 if !destination.exists() {
-                    symlink(link_path, destination);
+                    symlink(link_path, destination).expect("[Error]: Linking error");
                 }
             }
         }
@@ -133,7 +133,7 @@ impl NodeResolver {
         let destination = node_module.get_destination(name.to_string());
 
         if !destination.exists() {
-            let unpack_result = archive.unpack(&destination);
+            archive.unpack(&destination).expect("[Error] unpack error");
         };
         let pkg_path = destination.join("package");
 

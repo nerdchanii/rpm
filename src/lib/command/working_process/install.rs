@@ -17,6 +17,7 @@ pub async fn install() -> Result<(), reqwest::Error> {
         .collect::<Vec<String>>();
     working_process::add(&mut pkg_json, &mut lockfile, dev_libs, true, false).await?;
 
-    lockfile.save().is_ok() && pkg_json.save().is_ok();
+    lockfile.save().expect("[Error] save Error");
+    pkg_json.save().expect("[Error] save Error");
     Ok(())
 }
