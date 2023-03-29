@@ -76,7 +76,7 @@ impl NodeModules {
                 }
 
                 if !destination.exists() {
-                    symlink(link_path, destination).expect("[Error]: Linking error");
+                    symlink(link_path, destination);
                 }
             }
         }

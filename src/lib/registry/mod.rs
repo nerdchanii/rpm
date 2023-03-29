@@ -15,12 +15,6 @@ struct DistTags {
     inner: HashMap<String, String>,
 }
 impl DistTags {
-    fn new() -> Self {
-        Self {
-            inner: HashMap::new(),
-        }
-    }
-
     fn get_latest(&self) -> Option<&String> {
         self.inner.get("latest")
     }
@@ -56,14 +50,6 @@ pub struct Dist {
 impl Dist {
     fn get_tarball(&self) -> String {
         self.tarball.clone()
-    }
-
-    fn get_shasum(&self) -> String {
-        self.shasum.clone()
-    }
-
-    fn verify(&self) -> bool {
-        true
     }
 }
 
@@ -133,13 +119,6 @@ impl Time {
             versions: HashMap::new(),
         }
     }
-
-    fn set(&mut self, version: String, time: String) {
-        let time = DateTime::parse_from_str(&time, "%YYYY-%MM-%DDT%HH:%MM:%SS.%fZ")
-            .unwrap()
-            .into();
-        self.versions.insert(version, time);
-    }
 }
 
 impl<'de> Deserialize<'de> for Time {
@@ -180,19 +159,6 @@ pub struct Maintainer {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Url(String);
-impl Url {
-    fn new(url: String) -> Self {
-        Self(url)
-    }
-
-    fn get(&self) -> String {
-        self.0.clone()
-    }
-
-    fn set(&mut self, url: String) {
-        self.0 = url;
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Author {
@@ -207,12 +173,6 @@ pub enum AuthorType {
     String(String),
     #[serde(rename = "object")]
     Object(Author),
-}
-
-impl Author {
-    fn new(name: Option<String>, email: Option<String>, url: Option<String>) -> Self {
-        Self { name, email, url }
-    }
 }
 
 // #[derive(Debug, Deserialize)]

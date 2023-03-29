@@ -93,13 +93,13 @@ impl<'de> Deserialize<'de> for LockFile {
 }
 
 impl LockFile {
-    fn new(name: String, version: String, dependencies: HashMap<String, Dependency>) -> Self {
-        Self {
-            name,
-            version,
-            dependencies,
-        }
-    }
+    // fn new(name: String, version: String, dependencies: HashMap<String, Dependency>) -> Self {
+    //     Self {
+    //         name,
+    //         version,
+    //         dependencies,
+    //     }
+    // }
 
     // fn save(&self) -> Result<()> {
     //     let lockfile = serde_json::to_string(&self)?;
@@ -184,14 +184,5 @@ mod lock_file_test {
         let lock = LockFile::load().unwrap();
         println!("{:?\n}", lock.name);
         println!("{:?\n}", lock.version);
-        lock.dependencies
-            .iter()
-            .map(|(k, v)| {
-                println!("key: {:?}", k);
-                println!("version: {:?}", v.version);
-                println!("deps: {:?}\n\n", v.dependencies.as_ref().unwrap());
-                ()
-            })
-            .collect::<()>();
     }
 }

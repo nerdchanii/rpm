@@ -11,22 +11,6 @@ use std::{
 pub struct VersionString(String);
 
 impl VersionString {
-    fn new(version: String) -> VersionString {
-        VersionString(version)
-    }
-
-    fn to_string(&self) -> String {
-        self.0.to_owned()
-    }
-
-    fn to_owned(&self) -> VersionString {
-        VersionString(self.0.to_owned())
-    }
-
-    fn to_str(&self) -> &str {
-        &self.0
-    }
-
     fn to_specific_version(&self) -> String {
         let mut version = self.0.to_owned();
         if version.contains("||") {
@@ -77,6 +61,7 @@ pub struct Package {
     pub author: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scripts: Option<HashMap<String, String>>,
     #[serde(default = "HashMap::new")]
     pub dependencies: HashMap<String, VersionString>,
@@ -88,14 +73,12 @@ pub struct Package {
 }
 
 impl Package {
-    fn new() -> Package {
-        let text = fs::read_to_string("./package.json").unwrap_or("".to_owned());
-        let package: Package = serde_json::from_str(&text).unwrap();
-        package
-    }
-
     pub fn read_file(file: &str) -> Self {
-        let text = fs::read_to_string(file).unwrap_or("".to_owned());
+        let text = match fs::read_to_string(file) {
+            Ok(text) => text,
+            Err(_) => "{}".to_string(),
+        };
+
         let package: Self = serde_json::from_str(&text).unwrap();
         package
     }
@@ -181,6 +164,6 @@ mod package_json_test {
         println!("{:?}\n\n\n", package);
         package.add_dependency("socket-store".to_owned(), "^0.1.0".to_owned());
 
-        package.save();
+        package.save().expect("[Error] save failed package.json");
     }
 }
