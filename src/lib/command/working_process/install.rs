@@ -1,4 +1,4 @@
-use crate::{command::working_process, packge_json::Package, rpm_lock::lockfile::LockFile};
+use crate::{command::working_process, packge_json::Package, rapm_lock::lockfile::LockFile};
 
 pub async fn install() -> Result<(), reqwest::Error> {
     let mut pkg_json = Package::read_file("./package.json");

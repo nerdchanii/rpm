@@ -1,1 +1,1 @@
-pub static CACHE_DIR: &str = "./.rpm/.cache";
+pub static CACHE_DIR: &str = "./.rapm/.cache";

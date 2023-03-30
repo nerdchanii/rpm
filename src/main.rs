@@ -1,7 +1,7 @@
-use rpm::command::{working_process, Command};
-use rpm::opt::Opt;
-use rpm::packge_json::Package;
-use rpm::rpm_lock::lockfile::LockFile;
+use rapm::command::{working_process, Command};
+use rapm::opt::Opt;
+use rapm::packge_json::Package;
+use rapm::rapm_lock::lockfile::LockFile;
 use structopt::StructOpt;
 
 async fn run(opt: Opt) {

@@ -5,6 +5,6 @@ pub mod node_linker;
 pub mod opt;
 pub mod packge_json;
 pub mod parser;
+pub mod rapm_lock;
 pub mod registry;
-pub mod rpm_lock;
 pub mod util;

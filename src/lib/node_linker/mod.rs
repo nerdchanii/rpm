@@ -9,7 +9,7 @@ use std::{
 use crate::{
     common::constraint::CACHE_DIR,
     packge_json::Package,
-    rpm_lock::lockfile::{Dependency, LockFile},
+    rapm_lock::lockfile::{Dependency, LockFile},
 };
 use flate2::read::GzDecoder;
 use regex::Regex;

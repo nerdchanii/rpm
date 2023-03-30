@@ -12,7 +12,7 @@ pub enum Command {
     },
     #[structopt(
         name = "install",
-        about = "install libraries using rpm.lock file(when it not founded using package.json file)"
+        about = "install libraries using rapm.lock file(when it not founded using package.json file)"
     )]
     Install,
     #[structopt(name = "run", about = "run scripts")]
@@ -26,6 +26,6 @@ pub enum Command {
     Remove { libs: Vec<String> },
     #[structopt(name = "list", about = "list installed libraries")]
     List,
-    #[structopt(about = "display version of rpm")]
+    #[structopt(about = "display version of rapm")]
     Version,
 }
