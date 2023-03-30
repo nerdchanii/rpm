@@ -63,7 +63,7 @@ mod tests {
         let lib = "@abcd/socket-store@^1.0.0"; // include a version number
         let (lib_name, version) = parse_library_name(lib.to_owned());
         assert_eq!(lib_name, "@abcd/socket-store");
-        assert_eq!(version, "1.0.0");
+        assert_eq!(version, "^1.0.0");
     }
     #[test]
     fn parse_test() {
