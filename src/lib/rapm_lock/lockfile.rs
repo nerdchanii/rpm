@@ -103,7 +103,7 @@ impl LockFile {
 
     // fn save(&self) -> Result<()> {
     //     let lockfile = serde_json::to_string(&self)?;
-    //     let mut file = File::create("rapm-lock.toml")?;
+    //     let mut file = File::create("rpm-lock.toml")?;
 
     //     file.write_all(lockfile.as_bytes())?;
     //     Ok(())
