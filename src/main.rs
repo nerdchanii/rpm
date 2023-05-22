@@ -40,4 +40,5 @@ async fn run(opt: Opt) {
 async fn main() {
     let opt = Opt::from_args();
     run(opt).await;
+    print!("codeball test");
 }
