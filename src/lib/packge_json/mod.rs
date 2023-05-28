@@ -69,6 +69,26 @@ pub struct Package {
     pub dev_dependecies: Option<HashMap<String, VersionString>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bin: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keywords: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hompage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bugs: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contributors: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engines: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private: Option<String>,
     // other fields implement soon.
 }
 
