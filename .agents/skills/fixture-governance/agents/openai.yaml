@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fixture Governance"
+  short_description: "Create and maintain safe, deterministic fixtures."
+  default_prompt: "Use the fixture governance workflow to design or review fixtures that keep tests deterministic, small, and non-mutating."

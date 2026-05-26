@@ -1,0 +1,4 @@
+interface:
+  display_name: "SPEC Governance"
+  short_description: "Keep SPEC.md authoritative when code changes contracts."
+  default_prompt: "Use the SPEC governance workflow to compare code changes against SPEC.md, identify contract drift, and decide whether to block code or update the spec."
