@@ -27,8 +27,7 @@ pub fn parse_library_name(lib: String) -> (String, String) {
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::{
-        fs,
-        io,
+        fs, io,
         path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };

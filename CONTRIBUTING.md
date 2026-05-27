@@ -27,6 +27,16 @@ Before marking a PR ready:
 
 ## Local Checks
 
+Run the narrowest relevant check first. Before marking a PR ready, make sure the
+same baseline Cargo checks that run in CI pass locally:
+
+```sh
+cargo fmt --check
+cargo check
+cargo clippy --all-targets --all-features
+cargo test
+```
+
 Use local scripts when they match the change you are making. CI remains the shared verification point for pull requests.
 
 ## Commits

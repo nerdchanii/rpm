@@ -210,8 +210,8 @@ mod lock_file_test {
 
     #[test]
     fn load_rejects_empty_lockfile() {
-        let error = LockFile::load_from_path(fixture_path(&["lockfile", "empty.rpm.lock"]))
-            .unwrap_err();
+        let error =
+            LockFile::load_from_path(fixture_path(&["lockfile", "empty.rpm.lock"])).unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::InvalidData);
         assert_eq!(error.to_string(), "lockfile is empty");
@@ -219,8 +219,8 @@ mod lock_file_test {
 
     #[test]
     fn load_rejects_invalid_lockfile() {
-        let error = LockFile::load_from_path(fixture_path(&["lockfile", "invalid.rpm.lock"]))
-            .unwrap_err();
+        let error =
+            LockFile::load_from_path(fixture_path(&["lockfile", "invalid.rpm.lock"])).unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::InvalidData);
         assert!(error.to_string().contains("failed to parse lockfile"));
