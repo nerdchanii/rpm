@@ -5,7 +5,7 @@ pub async fn run(script_key: String) -> Result<(), std::io::Error> {
     let package = PackageManifest::read_file("./package.json");
     let scripts = package.get_scripts();
     let script = scripts.get(&script_key);
-    NodeModules::init();
+    NodeModules::init()?;
 
     if let Some(script) = script {
         println!("Running script: {}", script);
@@ -15,10 +15,10 @@ pub async fn run(script_key: String) -> Result<(), std::io::Error> {
         let cmd = args.next().unwrap();
         let args: Vec<&str> = args.collect();
         if cmd == "node" {
-            Command::new("node").args(&args).exec();
+            return Err(Command::new("node").args(&args).exec());
         } else {
             let path = getbin(cmd);
-            Command::new(path).args(&args).exec();
+            return Err(Command::new(path).args(&args).exec());
         }
     } else {
         println!("script not found");
