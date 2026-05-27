@@ -12,25 +12,22 @@ Use the closest issue template and include:
 - done criteria
 - related work, if any
 
-Issue text explains intent, but it does not override `AGENTS.md` or an owning SPEC.
+Issue text explains intent, but it does not override an owning SPEC.
 
 ## Pull Requests
 
-Open PRs with a clear contract and checklist. Keep implementation and cleanup separate.
+Open PRs with a clear summary, validation notes, and a focused checklist. Keep implementation and cleanup separate.
 
 Before marking a PR ready:
 
 - run the narrowest relevant validation
 - update the PR checklist
 - push the branch
-- confirm the worktree is clean
 - list follow-up work instead of expanding scope
 
-## Automation Boundaries
+## Local Checks
 
-Use `scripts/` for deterministic checks that agents, hooks, or CI can call.
-
-Current workflow checks are local scripts. Hook and CI integration should be added in focused follow-up work, not bundled with documentation-only workflow changes.
+Use local scripts when they match the change you are making. CI remains the shared verification point for pull requests.
 
 ## Commits
 
