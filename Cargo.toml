@@ -26,4 +26,3 @@ thiserror = "1.0.39"
 tokio = { version = "1.26.0", features = ["full"] }
 toml = "0.7.3"
 urlencoding = "2.1.2"
-

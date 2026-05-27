@@ -3,7 +3,7 @@ use serde_json::to_writer_pretty;
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::BufWriter,
+    io::{BufWriter, Error},
     path::Path,
 };
 
@@ -108,26 +108,19 @@ impl PackageManifest {
     }
 
     pub fn save(&self) -> core::result::Result<(), ()> {
+        self.save_to_path("./package.json").map_err(|_| ())
+    }
+
+    pub fn save_to_path<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
         let package_json_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(Path::new("./package.json"))
-            .unwrap();
+            .truncate(true)
+            .open(path.as_ref())?;
 
-        // save serialized $self to package.json
-        if let Ok(ser) = serde_json::to_value(self) {
-            let writer = &mut BufWriter::new(package_json_file);
-
-            let result = to_writer_pretty(writer, &ser);
-            if result.is_ok() {
-                Ok(())
-            } else {
-                Ok(())
-            }
-        } else {
-            panic!("error");
-        }
+        let writer = &mut BufWriter::new(package_json_file);
+        to_writer_pretty(writer, self).map_err(Error::other)
     }
 
     pub fn add_dependency(&mut self, pkg_name: String, version: String) {
@@ -173,17 +166,73 @@ impl PackageManifest {
 mod package_json_test {
 
     use super::PackageManifest;
-    use serde_json;
-    use std::fs;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn fixture_path(file: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("package_manifest")
+            .join(file)
+    }
+
+    fn temp_manifest_path() -> PathBuf {
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("rpm-package-manifest-{unique_id}"));
+        fs::create_dir_all(&temp_dir).unwrap();
+        temp_dir.join("package.json")
+    }
 
     #[test]
-    fn read_file() {
-        // let p = OpenOptions::new().read(true).open("./package.json");
-        let text = fs::read_to_string("./package.json").unwrap();
-        let mut package: PackageManifest = serde_json::from_str(&text).unwrap();
-        println!("{:?}\n\n\n", package);
-        package.add_dependency("socket-store".to_owned(), "^0.1.0".to_owned());
+    fn read_file_uses_fixture_data() {
+        let package =
+            PackageManifest::read_file(fixture_path("manifest-with-fields.json").to_str().unwrap());
 
-        package.save().expect("[Error] save failed package.json");
+        let dependencies = package.get_dependencies();
+        let dev_dependencies = package.get_dev_dependencies();
+        let scripts = package.get_scripts();
+
+        assert_eq!(package.name.as_deref(), Some("fixture-app"));
+        assert!(dependencies.contains(&("react".to_owned(), "18.2.0".to_owned())));
+        assert!(dependencies.contains(&("vite".to_owned(), "5.2.0".to_owned())));
+        assert!(dev_dependencies.contains(&("typescript".to_owned(), "5.4.0".to_owned())));
+        assert_eq!(scripts.get("test").map(String::as_str), Some("cargo test"));
+    }
+
+    #[test]
+    fn read_file_handles_missing_optional_fields() {
+        let package =
+            PackageManifest::read_file(fixture_path("manifest-minimal.json").to_str().unwrap());
+
+        assert_eq!(package.name.as_deref(), Some("minimal-app"));
+        assert!(package.get_dependencies().is_empty());
+        assert!(package.get_dev_dependencies().is_empty());
+        assert!(package.get_scripts().is_empty());
+    }
+
+    #[test]
+    fn save_writes_only_to_temp_fixture_copy() {
+        let temp_manifest_path = temp_manifest_path();
+        fs::copy(
+            fixture_path("manifest-with-fields.json"),
+            &temp_manifest_path,
+        )
+        .unwrap();
+
+        let mut package = PackageManifest::read_file(temp_manifest_path.to_str().unwrap());
+        package.add_dependency("socket-store".to_owned(), "^0.1.0".to_owned());
+        package.save_to_path(&temp_manifest_path).unwrap();
+
+        let saved = PackageManifest::read_file(temp_manifest_path.to_str().unwrap());
+        let dependencies = saved.get_dependencies();
+        assert!(dependencies.contains(&("socket-store".to_owned(), "0.1.0".to_owned())));
+        fs::remove_dir_all(temp_manifest_path.parent().unwrap()).unwrap();
     }
 }
