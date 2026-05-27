@@ -1,4 +1,5 @@
 {
+  "_id": "@rpm-fixture/shared",
   "name": "@rpm-fixture/shared",
   "description": "Fixture package shared",
   "maintainers": [],
