@@ -17,6 +17,26 @@ Use these limits unless the user explicitly asks for a larger refactor:
 - If a change crosses CLI, resolver, lockfile, registry, and linker boundaries at once, stop and split it.
 - When changing behavior, add or update a fixture or test in the same change.
 
+## Workflow Guidance
+
+Keep long-lived guidance in the right place:
+
+- Repository safety rules belong in `AGENTS.md`.
+- Human contribution process belongs in `CONTRIBUTING.md`.
+- Issue and PR structure belongs in `.github/` templates.
+- Active task procedure belongs in repository skills under `.agents/skills/`.
+- Deterministic checks belong in `scripts/` so hooks, CI, or agents can call them.
+
+Do not make `AGENTS.md` depend on a specific skill. Skills may depend on this guide.
+
+## Commit Discipline
+
+- Use one commit for one reason.
+- Do not combine behavior changes with cleanup, formatting, file moves, or renames.
+- A mechanical rename may be one commit even when it touches many import sites, if it has one purpose and no behavior change.
+- Stage only intended files. Do not use broad staging when unrelated worktree changes exist.
+- Before finishing PR work, verify the worktree is clean, the branch is pushed, validation is reported, and completed work is ready for review.
+
 ## SPEC Discipline
 
 Treat `SPEC.md` as the authority for contracts.
