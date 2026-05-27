@@ -1,4 +1,6 @@
-use super::constraint::LOCK_FILE_PATH;
+mod constraint;
+
+use constraint::LOCK_FILE_PATH;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{

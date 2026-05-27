@@ -1,7 +1,7 @@
 use rpm::command::{working_process, Command};
+use rpm::lockfile::LockFile;
 use rpm::opt::Opt;
-use rpm::packge_json::Package;
-use rpm::rapm_lock::lockfile::LockFile;
+use rpm::package_manifest::PackageManifest;
 use structopt::StructOpt;
 
 async fn run(opt: Opt) {
@@ -15,7 +15,7 @@ async fn run(opt: Opt) {
         }
         Command::Add { libs, dev } => {
             let time = std::time::Instant::now();
-            let mut pkg = Package::read_file("./package.json");
+            let mut pkg = PackageManifest::read_file("./package.json");
             let mut lockfile = LockFile::load().unwrap();
             let result = working_process::add(&mut pkg, &mut lockfile, libs, dev, true).await;
             result.expect("add failed\n");
