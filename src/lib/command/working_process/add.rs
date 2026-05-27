@@ -16,7 +16,7 @@ pub async fn add(
     libs: Vec<String>,
     dev: bool,
     write_manifest: bool,
-) -> Result<(), reqwest::Error> {
+) -> std::io::Result<()> {
     lockfile.set_project_metadata(pkg.get_name(), pkg.get_version());
     add_with_context(pkg, lockfile, libs, dev, write_manifest, true).await
 }
@@ -29,10 +29,10 @@ async fn add_with_context(
     dev: bool,
     write_manifest: bool,
     root_dependency: bool,
-) -> Result<(), reqwest::Error> {
+) -> std::io::Result<()> {
     for lib in libs {
         print!("installing {}...", lib);
-        std::io::stdout().flush().unwrap();
+        std::io::stdout().flush()?;
         sleep(std::time::Duration::from_millis(1)).await;
         print!("\r\x1b[K");
         let (library_name, requested_range) = parse_library_name(lib.clone());

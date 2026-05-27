@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
-use serde::{ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::{Error, Write},
-    path::Path,
+    io::{Error, ErrorKind, Write},
+    path::{Path, PathBuf},
 };
 
 use crate::{api, common::constraint::CACHE_DIR};
@@ -100,7 +100,7 @@ impl Version {
                     .map(|(key, version)| format!("{}@{}", key, version))
                     .collect::<Vec<String>>()
             })
-            .unwrap_or(vec![])
+            .unwrap_or_default()
     }
 }
 
@@ -112,12 +112,15 @@ pub struct Time {
 }
 
 impl Time {
-    fn new(created: String, modified: String) -> Self {
-        Self {
-            created: created.parse::<DateTime<Utc>>().unwrap(),
-            modified: modified.parse::<DateTime<Utc>>().unwrap(),
+    fn new<E>(created: &str, modified: &str) -> Result<Self, E>
+    where
+        E: de::Error,
+    {
+        Ok(Self {
+            created: created.parse::<DateTime<Utc>>().map_err(E::custom)?,
+            modified: modified.parse::<DateTime<Utc>>().map_err(E::custom)?,
             versions: HashMap::new(),
-        }
+        })
     }
 }
 
@@ -127,10 +130,13 @@ impl<'de> Deserialize<'de> for Time {
         D: Deserializer<'de>,
     {
         let map = HashMap::<String, String>::deserialize(deserializer)?;
-        Ok(Self::new(
-            map.get("created").unwrap().to_string(),
-            map.get("modified").unwrap().to_string(),
-        ))
+        let created = map
+            .get("created")
+            .ok_or_else(|| de::Error::missing_field("created"))?;
+        let modified = map
+            .get("modified")
+            .ok_or_else(|| de::Error::missing_field("modified"))?;
+        Self::new(created, modified)
     }
 }
 
@@ -261,32 +267,29 @@ impl Registry {
     }
 
     pub fn get_tarball_url(&self) -> Option<String> {
-        if self.versions.is_some() && self.dist_tags.is_some() {
-            let version = &self.versions.as_ref().unwrap();
-            let lastest = &self.dist_tags.as_ref().unwrap().get_latest().unwrap();
-            let url = version.get(lastest.to_owned()).unwrap().get_tarball();
-            Some(url)
-        } else {
-            let tarball = &self.dist.as_ref().unwrap().get_tarball();
-            Some(tarball.to_owned())
+        if let (Some(versions), Some(dist_tags)) = (&self.versions, &self.dist_tags) {
+            let latest = dist_tags.get_latest()?;
+            return versions.get(latest).map(|version| version.get_tarball());
         }
+        self.dist.as_ref().map(|dist| dist.get_tarball())
     }
 
     /// download tarball from registry and return tarball bytes
-    pub async fn download_tarball(&self, key: &str, version: &str) -> Result<(), reqwest::Error> {
-        let url = &self.get_tarball_url().unwrap();
-        let response = api::get_tarball(url).await;
+    pub async fn download_tarball(&self, key: &str, version: &str) -> std::io::Result<()> {
+        let url = self.get_tarball_url().ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("missing tarball URL for {key}@{version}"),
+            )
+        })?;
+        let mut bytes_file = api::get_tarball(&url).await?;
         let key = if key.contains("*") {
             key.replace("*", version)
         } else {
             key.to_owned()
         };
 
-        response
-            .ok()
-            .map(|mut bytes_file| save_tarball(&key, &mut bytes_file));
-
-        Ok(())
+        save_tarball(&key, &mut bytes_file)
     }
     /// get dependencies from registry
     /// return dependencies vector
@@ -305,27 +308,90 @@ impl Registry {
         if self.version.is_some() {
             self.version.as_ref()
         } else {
-            self.dist_tags.as_ref().unwrap().get_latest()
+            self.dist_tags
+                .as_ref()
+                .and_then(|dist_tags| dist_tags.get_latest())
         }
     }
 }
 
 fn save_tarball(tarball_name: &str, bytes_file: &mut [u8]) -> Result<(), Error> {
-    let base_path = CACHE_DIR;
+    save_tarball_to_dir(CACHE_DIR, tarball_name, bytes_file)
+}
+
+fn save_tarball_to_dir<P: AsRef<Path>>(
+    cache_dir: P,
+    tarball_name: &str,
+    bytes_file: &mut [u8],
+) -> Result<(), Error> {
     let file_name = tarball_name.replace("/", "-");
 
-    let dir = Path::new(base_path);
+    let dir = cache_dir.as_ref();
 
     if !dir.exists() {
-        fs::create_dir_all(dir)?;
+        fs::create_dir_all(dir).map_err(|error| {
+            Error::new(
+                error.kind(),
+                format!(
+                    "failed to create cache directory {}: {error}",
+                    dir.display()
+                ),
+            )
+        })?;
     }
 
-    let mut file = OpenOptions::new().write(true).create(true).open(format!(
-        "{}/{}.tgz",
-        dir.to_str().unwrap(),
-        file_name
-    ))?;
-    file.write_all(bytes_file)?;
-    file.flush()?;
+    let path: PathBuf = dir.join(format!("{file_name}.tgz"));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|error| {
+            Error::new(
+                error.kind(),
+                format!("failed to open cached tarball {}: {error}", path.display()),
+            )
+        })?;
+    file.write_all(bytes_file).map_err(|error| {
+        Error::new(
+            error.kind(),
+            format!("failed to write cached tarball {}: {error}", path.display()),
+        )
+    })?;
+    file.flush().map_err(|error| {
+        Error::new(
+            error.kind(),
+            format!("failed to flush cached tarball {}: {error}", path.display()),
+        )
+    })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::save_tarball_to_dir;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn save_tarball_reports_cache_write_errors() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let temp = std::env::temp_dir().join(format!(
+            "rpm-registry-cache-error-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        let cache_path = temp.join("cache-file");
+        fs::write(&cache_path, "not a directory").unwrap();
+
+        let error = save_tarball_to_dir(&cache_path, "a@1.0.0", &mut b"tarball".to_vec())
+            .expect_err("cache path file should fail tarball save");
+
+        assert!(error.to_string().contains("failed to open cached tarball"));
+        assert!(error.to_string().contains("cache-file"));
+        let _ = fs::remove_dir_all(temp);
+    }
 }
