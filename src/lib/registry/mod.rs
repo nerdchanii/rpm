@@ -218,6 +218,31 @@ pub struct Registry {
 }
 
 impl Registry {
+    fn version_metadata(&self, version: &str) -> Option<&Version> {
+        self.versions
+            .as_ref()
+            .and_then(|versions| versions.get(version))
+    }
+
+    pub fn get_dist_for_version(&self, version: &str) -> Option<&Dist> {
+        self.version_metadata(version)
+            .map(|metadata| &metadata.dist)
+            .or(self.dist.as_ref())
+    }
+
+    pub fn get_dependencies_for_version(&self, version: &str) -> Vec<String> {
+        self.version_metadata(version)
+            .map(|metadata| metadata.get_dependencies())
+            .unwrap_or_else(|| {
+                self.dependencies
+                    .as_ref()
+                    .iter()
+                    .flat_map(|x| x.iter())
+                    .map(|(k, v)| format!("{}@{}", k, v))
+                    .collect()
+            })
+    }
+
     pub fn get_tarball_name(&self) -> Option<String> {
         self.get_tarball_url().map(|url| {
             //ex https://registry.npmjs.org/axios/-/axios-0.21.1.tgz
@@ -248,7 +273,6 @@ impl Registry {
     }
 
     /// download tarball from registry and return tarball bytes
-
     pub async fn download_tarball(&self, key: &str, version: &str) -> Result<(), reqwest::Error> {
         let url = &self.get_tarball_url().unwrap();
         let response = api::get_tarball(url).await;
@@ -269,25 +293,12 @@ impl Registry {
     /// example: ["socket-store@0.0.1", "socket.io-client@1.22.3"]
     pub fn get_dependencies(&self) -> Vec<String> {
         // if versions is "" then version to latest
-        if self.versions.is_some() && self.dist_tags.is_some() {
-            let lastests = &self.dist_tags.as_ref().unwrap().get_latest().unwrap();
-            let version = self
-                .versions
-                .as_ref()
-                .unwrap()
-                .get(lastests.to_owned())
-                .unwrap();
-            let dependencies = version.get_dependencies();
-
-            dependencies
-        } else {
-            self.dependencies
-                .as_ref()
-                .iter()
-                .flat_map(|x| x.iter())
-                .map(|(k, v)| format!("{}@{}", k, v))
-                .collect()
+        if let (Some(_), Some(dist_tags)) = (&self.versions, &self.dist_tags) {
+            if let Some(latest) = dist_tags.get_latest() {
+                return self.get_dependencies_for_version(latest);
+            }
         }
+        self.get_dependencies_for_version("")
     }
 
     pub fn get_latest_version(&self) -> Option<&String> {

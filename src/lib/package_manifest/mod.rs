@@ -10,30 +10,7 @@ use std::{
 #[derive(Debug, Deserialize, Serialize)]
 pub struct VersionString(String);
 
-impl VersionString {
-    fn to_specific_version(&self) -> String {
-        let mut version = self.0.to_owned();
-        if version.contains("||") {
-            version = version
-                .split("||")
-                .collect::<Vec<&str>>()
-                .last_mut()
-                .unwrap()
-                .trim()
-                .to_owned();
-        }
-        if version.starts_with("^") {
-            version = version.replace("^", "");
-        }
-        if version.starts_with("~") {
-            version = version.replace("~", "");
-        }
-        version
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
-
 pub struct Author {
     name: String,
     email: String,
@@ -42,7 +19,6 @@ pub struct Author {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
-
 pub enum AuthorType {
     String(String),
     Object(Author),
@@ -103,6 +79,17 @@ impl PackageManifest {
         package
     }
 
+    pub fn get_name(&self) -> String {
+        self.name.clone().unwrap_or_default()
+    }
+
+    pub fn get_version(&self) -> String {
+        self.version
+            .as_ref()
+            .map(|version| version.0.clone())
+            .unwrap_or_default()
+    }
+
     pub fn get_bin(&self) -> Option<HashMap<String, String>> {
         self.bin.as_ref().map(|bin| bin.to_owned())
     }
@@ -142,7 +129,7 @@ impl PackageManifest {
     pub fn get_dependencies(&self) -> Vec<(String, String)> {
         let mut deps = Vec::new();
         for (key, version) in &self.dependencies {
-            deps.push((key.to_owned(), version.to_specific_version()))
+            deps.push((key.to_owned(), version.0.to_owned()))
         }
         deps
     }
@@ -151,7 +138,7 @@ impl PackageManifest {
         let mut deps = Vec::new();
         if let Some(dev_deps) = &self.dev_dependecies {
             for (key, version) in dev_deps {
-                deps.push((key.to_owned(), version.to_specific_version()))
+                deps.push((key.to_owned(), version.0.to_owned()))
             }
         }
         deps
@@ -178,9 +165,11 @@ mod package_json_test {
         let scripts = package.get_scripts();
 
         assert_eq!(package.name.as_deref(), Some("fixture-app"));
-        assert!(dependencies.contains(&("react".to_owned(), "18.2.0".to_owned())));
-        assert!(dependencies.contains(&("vite".to_owned(), "5.2.0".to_owned())));
-        assert!(dev_dependencies.contains(&("typescript".to_owned(), "5.4.0".to_owned())));
+        assert_eq!(package.get_name(), "fixture-app");
+        assert_eq!(package.get_version(), "0.1.0");
+        assert!(dependencies.contains(&("react".to_owned(), "^18.2.0".to_owned())));
+        assert!(dependencies.contains(&("vite".to_owned(), "~5.2.0".to_owned())));
+        assert!(dev_dependencies.contains(&("typescript".to_owned(), "^5.4.0".to_owned())));
         assert_eq!(scripts.get("test").map(String::as_str), Some("cargo test"));
     }
 
@@ -211,6 +200,6 @@ mod package_json_test {
 
         let saved = PackageManifest::read_file(temp_manifest_path.to_str().unwrap());
         let dependencies = saved.get_dependencies();
-        assert!(dependencies.contains(&("socket-store".to_owned(), "0.1.0".to_owned())));
+        assert!(dependencies.contains(&("socket-store".to_owned(), "^0.1.0".to_owned())));
     }
 }
