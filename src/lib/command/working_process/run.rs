@@ -1,8 +1,8 @@
-use crate::{node_linker::NodeModules, packge_json::Package};
+use crate::{node_linker::NodeModules, package_manifest::PackageManifest};
 use std::{os::unix::process::CommandExt, process::Command};
 
 pub async fn run(script_key: String) -> Result<(), std::io::Error> {
-    let package = Package::read_file("./package.json");
+    let package = PackageManifest::read_file("./package.json");
     let scripts = package.get_scripts();
     let script = scripts.get(&script_key);
     NodeModules::init();

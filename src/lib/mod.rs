@@ -1,10 +1,10 @@
 pub mod api;
 pub mod command;
 pub mod common;
+pub mod lockfile;
 pub mod node_linker;
 pub mod opt;
-pub mod packge_json;
+pub mod package_manifest;
 pub mod parser;
-pub mod rapm_lock;
 pub mod registry;
 pub mod util;

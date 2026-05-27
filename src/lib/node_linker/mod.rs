@@ -8,8 +8,8 @@ use std::{
 
 use crate::{
     common::constraint::CACHE_DIR,
-    packge_json::Package,
-    rapm_lock::lockfile::{Dependency, LockFile},
+    lockfile::{Dependency, LockFile},
+    package_manifest::PackageManifest,
 };
 use flate2::read::GzDecoder;
 use regex::Regex;
@@ -24,10 +24,10 @@ impl NodeModules {
         Self { path }
     }
 
-    pub fn read_package(package_name: &str) -> Package {
+    pub fn read_package(package_name: &str) -> PackageManifest {
         let node_module = PathBuf::from("node_modules");
         let path = node_module.join(package_name).join("package.json");
-        let pkg: Package = Package::read_file(path.to_str().unwrap());
+        let pkg: PackageManifest = PackageManifest::read_file(path.to_str().unwrap());
         pkg
     }
 

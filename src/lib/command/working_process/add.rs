@@ -1,12 +1,12 @@
 use std::io::Write;
 
-use crate::{api, packge_json::Package, rapm_lock::lockfile::LockFile, util::parse_library_name};
+use crate::{api, lockfile::LockFile, package_manifest::PackageManifest, util::parse_library_name};
 use async_recursion::async_recursion;
 use tokio::time::sleep;
 
 #[async_recursion]
 pub async fn add(
-    pkg: &mut Package,
+    pkg: &mut PackageManifest,
     lockfile: &mut LockFile,
     libs: Vec<String>,
     dev: bool,

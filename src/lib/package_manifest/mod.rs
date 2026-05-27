@@ -49,7 +49,7 @@ pub enum AuthorType {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Package {
+pub struct PackageManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,7 +92,7 @@ pub struct Package {
     // other fields implement soon.
 }
 
-impl Package {
+impl PackageManifest {
     pub fn read_file(file: &str) -> Self {
         let text = match fs::read_to_string(file) {
             Ok(text) => text,
@@ -172,7 +172,7 @@ impl Package {
 #[cfg(test)]
 mod package_json_test {
 
-    use super::Package;
+    use super::PackageManifest;
     use serde_json;
     use std::fs;
 
@@ -180,7 +180,7 @@ mod package_json_test {
     fn read_file() {
         // let p = OpenOptions::new().read(true).open("./package.json");
         let text = fs::read_to_string("./package.json").unwrap();
-        let mut package: Package = serde_json::from_str(&text).unwrap();
+        let mut package: PackageManifest = serde_json::from_str(&text).unwrap();
         println!("{:?}\n\n\n", package);
         package.add_dependency("socket-store".to_owned(), "^0.1.0".to_owned());
 
