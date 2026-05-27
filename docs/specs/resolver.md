@@ -25,6 +25,13 @@ preserves both the requested range and the selected version. The graph is the
 input to later installer phases that download tarballs, verify integrity,
 extract packages, link `node_modules`, and write lockfile or manifest state.
 
+Version and range satisfaction rules are owned by the semver resolution
+contract, tracked separately in issue #1. This resolver boundary does not define
+the syntax or precedence rules for `^`, `~`, `*`, comparators, prereleases, or
+tag-like input. Resolver strategies call the version selection abstraction and
+record its selected version; they must not duplicate range parsing policy in the
+traversal implementation.
+
 Traversal policy is behind a replaceable `ResolutionStrategy` boundary, or an
 equivalent internal abstraction. The resolver must not rely on recursive calls
 for correctness, and callers must not depend on the concrete queue or worklist
@@ -35,7 +42,7 @@ The first strategy is an iterative FIFO worklist:
 1. Seed the worklist with direct dependency requests.
 2. Pop the oldest pending request.
 3. Read package metadata through the metadata abstraction.
-4. Select a version according to RPM's version and range contract.
+4. Select a version through the version selection abstraction.
 5. Add or merge the resolved package into the graph.
 6. Enqueue that package's dependency requests.
 7. Continue until the worklist is empty or resolution fails.
