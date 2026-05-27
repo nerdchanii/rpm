@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs::OpenOptions,
-    io::{Read, Result, Write},
+    io::{Error, ErrorKind, Read, Result, Write},
+    path::Path,
 };
 use toml::Value;
 
@@ -112,14 +113,26 @@ impl LockFile {
     // }
 
     pub fn load() -> Result<Self> {
+        Self::load_from_path(LOCK_FILE_PATH)
+    }
+
+    pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         let mut buffer = String::new();
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(LOCK_FILE_PATH)?;
+            .open(path.as_ref())?;
         file.read_to_string(&mut buffer)?;
-        let lock: Self = toml::from_str(&buffer).unwrap();
+        if buffer.trim().is_empty() {
+            return Err(Error::new(ErrorKind::InvalidData, "lockfile is empty"));
+        }
+        let lock: Self = toml::from_str(&buffer).map_err(|error| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("failed to parse lockfile: {error}"),
+            )
+        })?;
 
         Ok(lock)
     }
@@ -180,11 +193,42 @@ impl LockFile {
 mod lock_file_test {
 
     use super::*;
+    use std::path::PathBuf;
+
+    fn fixture_path(file: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("lockfile")
+            .join(file)
+    }
 
     #[test]
-    fn test_lock_file() {
-        let lock = LockFile::load().unwrap();
-        println!("{:?\n}", lock.name);
-        println!("{:?\n}", lock.version);
+    fn load_reads_fixture_without_touching_repo_root() {
+        let lock = LockFile::load_from_path(fixture_path("valid.rpm.lock")).unwrap();
+
+        assert_eq!(lock.name, "fixture-app");
+        assert_eq!(lock.version, "0.1.0");
+        assert_eq!(
+            lock.get_dependency("react")
+                .map(|dependency| dependency.get_version()),
+            Some("18.2.0".to_owned())
+        );
+    }
+
+    #[test]
+    fn load_rejects_empty_lockfile() {
+        let error = LockFile::load_from_path(fixture_path("empty.rpm.lock")).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "lockfile is empty");
+    }
+
+    #[test]
+    fn load_rejects_invalid_lockfile() {
+        let error = LockFile::load_from_path(fixture_path("invalid.rpm.lock")).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert!(error.to_string().contains("failed to parse lockfile"));
     }
 }

@@ -1,0 +1,6 @@
+name = "fixture-app"
+version = "0.1.0"
+
+[react]
+version = "18.2.0"
+dependencies = ["loose-envify@1.4.0"]
