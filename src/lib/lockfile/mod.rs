@@ -193,19 +193,11 @@ impl LockFile {
 mod lock_file_test {
 
     use super::*;
-    use std::path::PathBuf;
-
-    fn fixture_path(file: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("lockfile")
-            .join(file)
-    }
+    use crate::util::test_support::fixture_path;
 
     #[test]
     fn load_reads_fixture_without_touching_repo_root() {
-        let lock = LockFile::load_from_path(fixture_path("valid.rpm.lock")).unwrap();
+        let lock = LockFile::load_from_path(fixture_path(&["lockfile", "valid.rpm.lock"])).unwrap();
 
         assert_eq!(lock.name, "fixture-app");
         assert_eq!(lock.version, "0.1.0");
@@ -218,7 +210,8 @@ mod lock_file_test {
 
     #[test]
     fn load_rejects_empty_lockfile() {
-        let error = LockFile::load_from_path(fixture_path("empty.rpm.lock")).unwrap_err();
+        let error = LockFile::load_from_path(fixture_path(&["lockfile", "empty.rpm.lock"]))
+            .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::InvalidData);
         assert_eq!(error.to_string(), "lockfile is empty");
@@ -226,7 +219,8 @@ mod lock_file_test {
 
     #[test]
     fn load_rejects_invalid_lockfile() {
-        let error = LockFile::load_from_path(fixture_path("invalid.rpm.lock")).unwrap_err();
+        let error = LockFile::load_from_path(fixture_path(&["lockfile", "invalid.rpm.lock"]))
+            .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::InvalidData);
         assert!(error.to_string().contains("failed to parse lockfile"));
