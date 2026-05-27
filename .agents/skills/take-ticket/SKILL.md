@@ -35,11 +35,37 @@ Use this workflow for a GitHub issue that should become a focused PR. Keep repos
 6. Validate:
    - run the narrowest relevant command from `AGENTS.md`
    - report warnings separately from failures
-7. Finish:
+7. Run Codex review loop before merge:
+   - add a PR comment: `@codex review`
+   - wait 10 seconds, then confirm a Codex reaction/emoji is present on that comment
+   - if confirmed, poll roughly every 3 minutes for Codex review output
+   - while waiting, emit no filler status text when there is no Codex response yet; keep context clean
+   - for each Codex review comment, decide `accept` or `reject` and record a reason
+   - if accepted and the review includes a concrete suggestion:
+     - apply the suggestion
+     - resolve the thread
+   - if accepted without a ready suggestion:
+     - make the needed change yourself
+     - resolve the thread
+     - restart the `@codex review` step
+   - if rejected:
+     - reply with the reason when needed
+     - do not resolve unless the review state is clear
+   - continue until all review threads are resolved or clearly rejected
+8. Finish:
    - update the PR checklist, preferably through a worker subagent
    - push all commits
    - mark completed work ready for review
    - run `bash scripts/check-workflow-final.sh <pr-number>`
+   - after the ticket work, answer the user's follow-up interview questions if they ask them
+   - use those answers to decide whether a follow-up issue is truly required
+   - only open a follow-up issue when all are true:
+     - the problem is structural and likely to recur
+     - it is not just local permissions, local environment, or agent/operator error
+     - an existing open issue will not naturally absorb it
+     - leaving it untracked is likely to slow or block future ticket work
+   - prefer at most one or two follow-up issues
+   - if the user says `ticket loop`, treat the "next task recommendation" as the next `take-ticket` candidate
 
 ## Internal Checklist
 
@@ -52,9 +78,11 @@ Use this locally while working; do not paste it into the public PR template unle
 - [ ] Draft PR opened with kickoff commit.
 - [ ] Implementation stayed focused.
 - [ ] Relevant validation ran.
+- [ ] Codex review loop completed.
 - [ ] PR checklist updated.
 - [ ] Final audit script passed.
 - [ ] PR marked ready for review.
+- [ ] Post-ticket interview reviewed for necessary follow-up issues.
 ```
 
 ## Subagent Guidance
@@ -63,3 +91,25 @@ Use this locally while working; do not paste it into the public PR template unle
 - PR checklist worker: PR body updates through `gh`. No repository file edits. Prefer a lightweight model.
 - Code worker: only for bounded, disjoint file ownership. Tell workers they are not alone in the codebase and must not revert others' edits. Use a stronger model only when the slice needs it.
 - Main agent: contract checklist, split decisions, commits, validation, and final state.
+
+## Follow-up Issue Rules
+
+When the user asks retrospective questions after the ticket, treat that interview as part of the ticket loop rather than a separate conversation.
+
+- Mine the interview for repeated friction, structural slowdown, and future blockers.
+- Do not open issues for:
+  - local permission prompts
+  - sandbox or workstation quirks
+  - one-off operator mistakes
+  - sensitive or security-restricted details better kept out of public issues
+- Before opening a new issue, inspect existing open issues and ask whether the problem will likely be solved as a side effect of one of them.
+- Open a new issue only for the remaining gaps that are still likely to recur after nearby issues land.
+- If no such gap remains, do not open anything.
+
+## Review Loop Notes
+
+- The Codex review loop is merge-gating for this skill.
+- `accept` means the review found a real issue and a code or PR state change should follow.
+- `reject` means the review is not correct, not applicable, or already covered; always keep a reason.
+- After accepted changes, re-run the narrowest relevant validation before restarting review.
+- Once all review feedback is resolved or rejected clearly, merge and provide the next task recommendation.
