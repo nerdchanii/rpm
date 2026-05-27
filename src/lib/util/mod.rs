@@ -25,6 +25,63 @@ pub fn parse_library_name(lib: String) -> (String, String) {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use std::{
+        fs,
+        io,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    /// Shared helpers for hermetic tests. Keep all fixture reads explicit and
+    /// copy mutable inputs into unique temp directories before editing them.
+    pub(crate) fn fixture_path(parts: &[&str]) -> PathBuf {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures");
+        for part in parts {
+            path.push(part);
+        }
+        path
+    }
+
+    pub(crate) struct TempProject {
+        root: PathBuf,
+    }
+
+    impl TempProject {
+        pub(crate) fn new(prefix: &str) -> io::Result<Self> {
+            let unique_id = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!("rpm-{prefix}-{unique_id}"));
+            fs::create_dir_all(&root)?;
+            Ok(Self { root })
+        }
+
+        pub(crate) fn copy_fixture<P: AsRef<Path>, Q: AsRef<Path>>(
+            &self,
+            fixture: P,
+            destination: Q,
+        ) -> io::Result<PathBuf> {
+            let destination = self.root.join(destination.as_ref());
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(fixture.as_ref(), &destination)?;
+            Ok(destination)
+        }
+    }
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

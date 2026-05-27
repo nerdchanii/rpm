@@ -166,34 +166,12 @@ impl PackageManifest {
 mod package_json_test {
 
     use super::PackageManifest;
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    fn fixture_path(file: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("package_manifest")
-            .join(file)
-    }
-
-    fn temp_manifest_path() -> PathBuf {
-        let unique_id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("rpm-package-manifest-{unique_id}"));
-        fs::create_dir_all(&temp_dir).unwrap();
-        temp_dir.join("package.json")
-    }
+    use crate::util::test_support::{fixture_path, TempProject};
 
     #[test]
     fn read_file_uses_fixture_data() {
-        let package =
-            PackageManifest::read_file(fixture_path("manifest-with-fields.json").to_str().unwrap());
+        let fixture = fixture_path(&["package_manifest", "manifest-with-fields.json"]);
+        let package = PackageManifest::read_file(fixture.to_str().unwrap());
 
         let dependencies = package.get_dependencies();
         let dev_dependencies = package.get_dev_dependencies();
@@ -208,8 +186,8 @@ mod package_json_test {
 
     #[test]
     fn read_file_handles_missing_optional_fields() {
-        let package =
-            PackageManifest::read_file(fixture_path("manifest-minimal.json").to_str().unwrap());
+        let fixture = fixture_path(&["package_manifest", "manifest-minimal.json"]);
+        let package = PackageManifest::read_file(fixture.to_str().unwrap());
 
         assert_eq!(package.name.as_deref(), Some("minimal-app"));
         assert!(package.get_dependencies().is_empty());
@@ -219,12 +197,13 @@ mod package_json_test {
 
     #[test]
     fn save_writes_only_to_temp_fixture_copy() {
-        let temp_manifest_path = temp_manifest_path();
-        fs::copy(
-            fixture_path("manifest-with-fields.json"),
-            &temp_manifest_path,
-        )
-        .unwrap();
+        let temp_project = TempProject::new("package-manifest").unwrap();
+        let temp_manifest_path = temp_project
+            .copy_fixture(
+                fixture_path(&["package_manifest", "manifest-with-fields.json"]),
+                "package.json",
+            )
+            .unwrap();
 
         let mut package = PackageManifest::read_file(temp_manifest_path.to_str().unwrap());
         package.add_dependency("socket-store".to_owned(), "^0.1.0".to_owned());
@@ -233,6 +212,5 @@ mod package_json_test {
         let saved = PackageManifest::read_file(temp_manifest_path.to_str().unwrap());
         let dependencies = saved.get_dependencies();
         assert!(dependencies.contains(&("socket-store".to_owned(), "0.1.0".to_owned())));
-        fs::remove_dir_all(temp_manifest_path.parent().unwrap()).unwrap();
     }
 }
