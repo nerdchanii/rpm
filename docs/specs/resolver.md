@@ -54,6 +54,10 @@ Future strategies may replace FIFO traversal with priority-based, heuristic,
 peer-aware, or backtracking behavior without changing fetch, extract, link, or
 lockfile write phases.
 
+The installer performance baseline in `docs/specs/installer-performance.md`
+documents the current recursive bottleneck and the measurement fixture for
+future staged installer work.
+
 ## Error Cases
 
 Resolution fails before installer side effects when package metadata is missing,
