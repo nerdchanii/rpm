@@ -9,7 +9,7 @@ use std::{
 };
 
 pub async fn run(script_key: String) -> Result<i32, std::io::Error> {
-    let package = PackageManifest::read_file("./package.json");
+    let package = PackageManifest::read_default()?;
     run_script(&script_key, &package, Path::new("."))
 }
 
@@ -107,7 +107,7 @@ mod tests {
                 format!("{{\"scripts\": {{{scripts}}}}}"),
             )
             .unwrap();
-            PackageManifest::read_file(self.root.join("package.json").to_str().unwrap())
+            PackageManifest::read_from_path(self.root.join("package.json")).unwrap()
         }
     }
 

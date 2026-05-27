@@ -4,6 +4,7 @@ use std::{
     os::unix::fs::symlink,
     path::{Path, PathBuf},
     thread::sleep,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -25,11 +26,10 @@ impl NodeModules {
         Self { path }
     }
 
-    pub fn read_package(package_name: &str) -> PackageManifest {
+    pub fn read_package(package_name: &str) -> Result<PackageManifest, std::io::Error> {
         let node_module = PathBuf::from("node_modules");
         let path = node_module.join(package_name).join("package.json");
-        let pkg: PackageManifest = PackageManifest::read_file(path.to_str().unwrap());
-        pkg
+        PackageManifest::read_from_path(path)
     }
 
     pub fn get_path(&self) -> PathBuf {
@@ -142,7 +142,7 @@ fn staging_path(node_modules_path: &Path) -> PathBuf {
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    parent.join(format!(".node_modules.rpm-staging-{}", std::process::id()))
+    parent.join(format!(".node_modules.rpm-staging-{}", unique_suffix()))
 }
 
 fn backup_path(node_modules_path: &Path) -> PathBuf {
@@ -150,7 +150,15 @@ fn backup_path(node_modules_path: &Path) -> PathBuf {
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    parent.join(format!(".node_modules.rpm-backup-{}", std::process::id()))
+    parent.join(format!(".node_modules.rpm-backup-{}", unique_suffix()))
+}
+
+fn unique_suffix() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos}", std::process::id())
 }
 
 fn replace_node_modules(target: &Path, staging_dir: &Path) -> Result<(), std::io::Error> {

@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
-use serde_json::to_writer_pretty;
+use serde_json::{from_str, to_writer_pretty};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::{BufWriter, Error},
+    io::{BufWriter, Error, ErrorKind},
     path::Path,
 };
 
@@ -24,7 +24,7 @@ pub enum AuthorType {
     Object(Author),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct PackageManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -69,14 +69,26 @@ pub struct PackageManifest {
 }
 
 impl PackageManifest {
-    pub fn read_file(file: &str) -> Self {
-        let text = match fs::read_to_string(file) {
-            Ok(text) => text,
-            Err(_) => "{}".to_string(),
-        };
+    pub fn read_file(file: &str) -> std::io::Result<Self> {
+        Self::read_from_path(file)
+    }
 
-        let package: Self = serde_json::from_str(&text).unwrap();
-        package
+    pub fn read_from_path<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+        let path = path.as_ref();
+        let text = read_manifest_text(path)?;
+        from_str(&text).map_err(|error| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "failed to parse package manifest {}: {error}",
+                    path.display()
+                ),
+            )
+        })
+    }
+
+    pub fn read_default() -> std::io::Result<Self> {
+        Self::read_from_path("./package.json")
     }
 
     pub fn get_name(&self) -> String {
@@ -94,20 +106,35 @@ impl PackageManifest {
         self.bin.as_ref().map(|bin| bin.to_owned())
     }
 
-    pub fn save(&self) -> core::result::Result<(), ()> {
-        self.save_to_path("./package.json").map_err(|_| ())
+    pub fn save(&self) -> std::io::Result<()> {
+        self.save_to_path("./package.json")
     }
 
     pub fn save_to_path<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+        let path = path.as_ref();
         let package_json_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(true)
-            .open(path.as_ref())?;
+            .open(path)
+            .map_err(|error| {
+                Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to open package manifest {}: {error}",
+                        path.display()
+                    ),
+                )
+            })?;
 
         let writer = &mut BufWriter::new(package_json_file);
-        to_writer_pretty(writer, self).map_err(Error::other)
+        to_writer_pretty(writer, self).map_err(|error| {
+            Error::other(format!(
+                "failed to write package manifest {}: {error}",
+                path.display()
+            ))
+        })
     }
 
     pub fn add_dependency(&mut self, pkg_name: String, version: String) {
@@ -145,7 +172,21 @@ impl PackageManifest {
     }
 
     pub fn get_scripts(&self) -> HashMap<String, String> {
-        self.scripts.clone().unwrap_or(HashMap::new())
+        self.scripts.clone().unwrap_or_default()
+    }
+}
+
+fn read_manifest_text(path: &Path) -> std::io::Result<String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok("{}".to_string()),
+        Err(error) => Err(Error::new(
+            error.kind(),
+            format!(
+                "failed to read package manifest {}: {error}",
+                path.display()
+            ),
+        )),
     }
 }
 
@@ -158,7 +199,7 @@ mod package_json_test {
     #[test]
     fn read_file_uses_fixture_data() {
         let fixture = fixture_path(&["package_manifest", "manifest-with-fields.json"]);
-        let package = PackageManifest::read_file(fixture.to_str().unwrap());
+        let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
 
         let dependencies = package.get_dependencies();
         let dev_dependencies = package.get_dev_dependencies();
@@ -176,9 +217,38 @@ mod package_json_test {
     #[test]
     fn read_file_handles_missing_optional_fields() {
         let fixture = fixture_path(&["package_manifest", "manifest-minimal.json"]);
-        let package = PackageManifest::read_file(fixture.to_str().unwrap());
+        let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
 
         assert_eq!(package.name.as_deref(), Some("minimal-app"));
+        assert!(package.get_dependencies().is_empty());
+        assert!(package.get_dev_dependencies().is_empty());
+        assert!(package.get_scripts().is_empty());
+    }
+
+    #[test]
+    fn read_from_path_reports_invalid_manifest_with_path() {
+        let fixture = fixture_path(&["package_manifest", "manifest-invalid.json"]);
+        let error = PackageManifest::read_from_path(&fixture).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("failed to parse package manifest"));
+        assert!(error.to_string().contains("manifest-invalid.json"));
+    }
+
+    #[test]
+    fn read_from_path_uses_empty_manifest_for_missing_file() {
+        let temp_project = TempProject::new("package-manifest-missing").unwrap();
+        let missing_manifest = temp_project
+            .copy_fixture(
+                fixture_path(&["package_manifest", "manifest-minimal.json"]),
+                "nested/fixture.json",
+            )
+            .unwrap()
+            .with_file_name("missing-package.json");
+        let package = PackageManifest::read_from_path(missing_manifest)
+            .expect("missing package.json should initialize an empty manifest");
+
         assert!(package.get_dependencies().is_empty());
         assert!(package.get_dev_dependencies().is_empty());
         assert!(package.get_scripts().is_empty());
@@ -194,11 +264,11 @@ mod package_json_test {
             )
             .unwrap();
 
-        let mut package = PackageManifest::read_file(temp_manifest_path.to_str().unwrap());
+        let mut package = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
         package.add_dependency("socket-store".to_owned(), "^0.1.0".to_owned());
         package.save_to_path(&temp_manifest_path).unwrap();
 
-        let saved = PackageManifest::read_file(temp_manifest_path.to_str().unwrap());
+        let saved = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
         let dependencies = saved.get_dependencies();
         assert!(dependencies.contains(&("socket-store".to_owned(), "^0.1.0".to_owned())));
     }
