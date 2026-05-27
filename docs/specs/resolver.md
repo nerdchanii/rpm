@@ -15,10 +15,13 @@ implementation can stay simple without becoming the long-term installer shape.
 
 The resolver consumes dependency requests and package metadata through explicit
 abstractions. A dependency request includes the package name, the requested
-range or version text, and whether the request is a direct production or direct
-development dependency. Package metadata access supplies available versions,
-dist metadata, and dependency declarations without downloading or extracting
-tarballs as part of traversal.
+range or version text, and a request kind. Request kinds distinguish direct
+production dependencies, direct development dependencies, and transitive
+dependencies discovered from package metadata. Only direct request kinds may
+drive manifest dependency updates; transitive requests are graph inputs and must
+not be treated as root manifest entries. Package metadata access supplies
+available versions, dist metadata, and dependency declarations without
+downloading or extracting tarballs as part of traversal.
 
 The resolver produces a resolved dependency graph. Each resolved package record
 preserves both the requested range and the selected version. The graph is the
@@ -44,7 +47,7 @@ The first strategy is an iterative FIFO worklist:
 3. Read package metadata through the metadata abstraction.
 4. Select a version through the version selection abstraction.
 5. Add or merge the resolved package into the graph.
-6. Enqueue that package's dependency requests.
+6. Enqueue that package's dependency requests as transitive requests.
 7. Continue until the worklist is empty or resolution fails.
 
 Future strategies may replace FIFO traversal with priority-based, heuristic,
