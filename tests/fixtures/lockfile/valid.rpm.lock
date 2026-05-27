@@ -1,6 +1,12 @@
+lockfile_version = 1
 name = "fixture-app"
 version = "0.1.0"
 
-[react]
+["react@18.2.0"]
+name = "react"
+requested = "^18.0.0"
 version = "18.2.0"
+relationship = "direct"
+tarball = "https://registry.npmjs.org/react/-/react-18.2.0.tgz"
+integrity = "sha512-fixture"
 dependencies = ["loose-envify@1.4.0"]

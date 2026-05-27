@@ -1,0 +1,17 @@
+lockfile_version = 1
+name = "fixture-app-with-stale-content"
+version = "0.1.0"
+
+["stale-package@1.0.0"]
+name = "stale-package"
+requested = "1.0.0"
+version = "1.0.0"
+relationship = "direct"
+dependencies = []
+
+["another-stale-package@1.0.0"]
+name = "another-stale-package"
+requested = "1.0.0"
+version = "1.0.0"
+relationship = "transitive"
+dependencies = []

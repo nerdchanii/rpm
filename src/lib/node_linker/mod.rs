@@ -85,6 +85,12 @@ impl NodeModules {
         let lock_file = LockFile::load_from_path(lockfile_path)
             .map_err(|error| phase_error("resolve", error))?;
         let packages = lock_file.get_packages();
+        if packages.is_empty() {
+            return Err(phase_error(
+                "resolve",
+                Error::new(ErrorKind::InvalidData, "lockfile has no packages to link"),
+            ));
+        }
         let cache_resolver = NodeResolver::new(cache_dir.as_ref().to_path_buf());
         cache_resolver
             .resolve_deps(&mut modules, &packages)
@@ -330,7 +336,7 @@ mod tests {
         fs::write(
             path,
             format!(
-                "name = \"fixture-app\"\nversion = \"0.1.0\"\n\n[\"{package}@1.0.0\"]\nversion = \"1.0.0\"\ndependencies = [{dependencies}]\n"
+                "lockfile_version = 1\nname = \"fixture-app\"\nversion = \"0.1.0\"\n\n[\"{package}@1.0.0\"]\nversion = \"1.0.0\"\ndependencies = [{dependencies}]\n"
             ),
         )
         .unwrap();
@@ -428,6 +434,25 @@ mod tests {
     }
 
     #[test]
+    fn init_keeps_existing_node_modules_when_lockfile_is_empty() {
+        let temp = TempNodeModules::new();
+        let existing_file = temp.node_modules().join("keep.txt");
+        fs::write(&existing_file, "existing").unwrap();
+        fs::write(temp.lockfile_path(), "").unwrap();
+
+        let error = NodeModules::init_from_paths(
+            temp.node_modules(),
+            temp.lockfile_path(),
+            temp.cache_dir(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("resolve failed"));
+        assert!(error.to_string().contains("lockfile has no packages"));
+        assert_eq!(fs::read_to_string(existing_file).unwrap(), "existing");
+    }
+
+    #[test]
     fn init_keeps_existing_node_modules_when_link_fails() {
         let temp = TempNodeModules::new();
         let existing_file = temp.node_modules().join("keep.txt");
@@ -451,7 +476,7 @@ mod tests {
         let temp = TempNodeModules::new();
         fs::write(
             temp.lockfile_path(),
-            "name = \"fixture-app\"\nversion = \"0.1.0\"\n\n[\"a@1.0.0\"]\nversion = \"1.0.0\"\ndependencies = [\"b@1.0.0\"]\n\n[\"b@1.0.0\"]\nversion = \"1.0.0\"\ndependencies = []\n",
+            "lockfile_version = 1\nname = \"fixture-app\"\nversion = \"0.1.0\"\n\n[\"a@1.0.0\"]\nversion = \"1.0.0\"\ndependencies = [\"b@1.0.0\"]\n\n[\"b@1.0.0\"]\nversion = \"1.0.0\"\ndependencies = []\n",
         )
         .unwrap();
         write_package_tgz(&temp.cache_dir(), "a", "1.0.0");
