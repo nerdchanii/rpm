@@ -1,0 +1,49 @@
+{
+  "name": "@rpm-fixture/wildcard-minor",
+  "dist-tags": {
+    "latest": "1.3.0"
+  },
+  "versions": {
+    "1.2.0": {
+      "name": "@rpm-fixture/wildcard-minor",
+      "version": "1.2.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/wildcard-minor/-/wildcard-minor-1.2.0.tgz",
+        "integrity": "sha512-wildcardminor120",
+        "shasum": "fixture-rpm-fixture-wildcard-minor-1-2-0"
+      },
+      "description": "@rpm-fixture/wildcard-minor 1.2.0 semver fixture"
+    },
+    "1.2.9": {
+      "name": "@rpm-fixture/wildcard-minor",
+      "version": "1.2.9",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/wildcard-minor/-/wildcard-minor-1.2.9.tgz",
+        "integrity": "sha512-wildcardminor129",
+        "shasum": "fixture-rpm-fixture-wildcard-minor-1-2-9"
+      },
+      "description": "@rpm-fixture/wildcard-minor 1.2.9 semver fixture"
+    },
+    "1.3.0": {
+      "name": "@rpm-fixture/wildcard-minor",
+      "version": "1.3.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/wildcard-minor/-/wildcard-minor-1.3.0.tgz",
+        "integrity": "sha512-wildcardminor130",
+        "shasum": "fixture-rpm-fixture-wildcard-minor-1-3-0"
+      },
+      "description": "@rpm-fixture/wildcard-minor 1.3.0 semver fixture"
+    }
+  },
+  "_id": "@rpm-fixture/wildcard-minor",
+  "maintainers": [
+    {
+      "name": "rpm-fixture",
+      "email": "fixtures@example.invalid"
+    }
+  ],
+  "description": "@rpm-fixture/wildcard-minor semver fixture"
+}

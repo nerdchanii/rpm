@@ -1,0 +1,7 @@
+{
+  "name": "semver-unsatisfied-app",
+  "version": "0.0.0",
+  "dependencies": {
+    "@rpm-fixture/unsatisfied": ">=9.0.0 <10.0.0"
+  }
+}

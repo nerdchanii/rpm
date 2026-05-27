@@ -369,7 +369,7 @@ fn save_tarball_to_dir<P: AsRef<Path>>(
 
 #[cfg(test)]
 mod tests {
-    use super::save_tarball_to_dir;
+    use super::{save_tarball_to_dir, Registry};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -393,5 +393,31 @@ mod tests {
         assert!(error.to_string().contains("failed to open cached tarball"));
         assert!(error.to_string().contains("cache-file"));
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn semver_registry_fixtures_match_registry_metadata_shape() {
+        let fixture_roots = [
+            "tests/fixtures/install-projects/semver-baseline/registry",
+            "tests/fixtures/install-projects/semver-unsatisfied/registry",
+            "tests/fixtures/install-projects/semver-invalid-range/registry",
+        ];
+
+        for root in fixture_roots {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(root);
+            for entry in fs::read_dir(&root).expect("semver registry fixture directory exists") {
+                let entry = entry.expect("semver registry fixture entry is readable");
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                    continue;
+                }
+
+                let fixture =
+                    fs::read_to_string(&path).expect("semver registry fixture is readable");
+                serde_json::from_str::<Registry>(&fixture).unwrap_or_else(|error| {
+                    panic!("{} did not deserialize: {error}", path.display())
+                });
+            }
+        }
     }
 }

@@ -1,0 +1,7 @@
+{
+  "name": "semver-invalid-range-app",
+  "version": "0.0.0",
+  "dependencies": {
+    "@rpm-fixture/invalid-range": "=>1.0.0"
+  }
+}

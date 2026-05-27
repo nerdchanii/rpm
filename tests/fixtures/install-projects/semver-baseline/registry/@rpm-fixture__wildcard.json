@@ -1,0 +1,49 @@
+{
+  "name": "@rpm-fixture/wildcard",
+  "dist-tags": {
+    "latest": "3.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/wildcard",
+      "version": "1.0.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/wildcard/-/wildcard-1.0.0.tgz",
+        "integrity": "sha512-wildcard100",
+        "shasum": "fixture-rpm-fixture-wildcard-1-0-0"
+      },
+      "description": "@rpm-fixture/wildcard 1.0.0 semver fixture"
+    },
+    "2.0.0": {
+      "name": "@rpm-fixture/wildcard",
+      "version": "2.0.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/wildcard/-/wildcard-2.0.0.tgz",
+        "integrity": "sha512-wildcard200",
+        "shasum": "fixture-rpm-fixture-wildcard-2-0-0"
+      },
+      "description": "@rpm-fixture/wildcard 2.0.0 semver fixture"
+    },
+    "3.0.0": {
+      "name": "@rpm-fixture/wildcard",
+      "version": "3.0.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/wildcard/-/wildcard-3.0.0.tgz",
+        "integrity": "sha512-wildcard300",
+        "shasum": "fixture-rpm-fixture-wildcard-3-0-0"
+      },
+      "description": "@rpm-fixture/wildcard 3.0.0 semver fixture"
+    }
+  },
+  "_id": "@rpm-fixture/wildcard",
+  "maintainers": [
+    {
+      "name": "rpm-fixture",
+      "email": "fixtures@example.invalid"
+    }
+  ],
+  "description": "@rpm-fixture/wildcard semver fixture"
+}

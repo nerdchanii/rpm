@@ -2,7 +2,7 @@
 
 Status: Draft  
 Owner: resolver/install  
-Last reviewed: 2026-05-27
+Last reviewed: 2026-05-28
 
 ## Purpose
 
@@ -28,12 +28,10 @@ preserves both the requested range and the selected version. The graph is the
 input to later installer phases that download tarballs, verify integrity,
 extract packages, link `node_modules`, and write lockfile or manifest state.
 
-Version and range satisfaction rules are owned by the semver resolution
-contract, tracked separately in issue #1. This resolver boundary does not define
-the syntax or precedence rules for `^`, `~`, `*`, comparators, prereleases, or
-tag-like input. Resolver strategies call the version selection abstraction and
-record its selected version; they must not duplicate range parsing policy in the
-traversal implementation.
+Version and range satisfaction rules are owned by
+`docs/specs/semver-resolution.md`. Resolver strategies call the version
+selection abstraction and record its selected version; they must not duplicate
+range parsing policy in the traversal implementation.
 
 Traversal policy is behind a replaceable `ResolutionStrategy` boundary, or an
 equivalent internal abstraction. The resolver must not rely on recursive calls
@@ -74,6 +72,10 @@ records with requested range and selected version. Integration fixtures may add
 expected lockfile snapshots or filesystem trees for later installer phases, but
 resolver fixtures should not mutate the repository root, `.rpm`, `rpm.lock`, or
 `node_modules`.
+
+The semver baseline fixtures are defined by
+`docs/specs/semver-resolution.md` and must be used before installer flow relies
+on semver range behavior.
 
 ## Open Questions
 

@@ -1,0 +1,38 @@
+{
+  "name": "@rpm-fixture/unsatisfied",
+  "dist-tags": {
+    "latest": "2.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/unsatisfied",
+      "version": "1.0.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/unsatisfied/-/unsatisfied-1.0.0.tgz",
+        "integrity": "sha512-unsatisfied100",
+        "shasum": "fixture-rpm-fixture-unsatisfied-1-0-0"
+      },
+      "description": "@rpm-fixture/unsatisfied 1.0.0 semver fixture"
+    },
+    "2.0.0": {
+      "name": "@rpm-fixture/unsatisfied",
+      "version": "2.0.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/unsatisfied/-/unsatisfied-2.0.0.tgz",
+        "integrity": "sha512-unsatisfied200",
+        "shasum": "fixture-rpm-fixture-unsatisfied-2-0-0"
+      },
+      "description": "@rpm-fixture/unsatisfied 2.0.0 semver fixture"
+    }
+  },
+  "_id": "@rpm-fixture/unsatisfied",
+  "maintainers": [
+    {
+      "name": "rpm-fixture",
+      "email": "fixtures@example.invalid"
+    }
+  ],
+  "description": "@rpm-fixture/unsatisfied semver fixture"
+}

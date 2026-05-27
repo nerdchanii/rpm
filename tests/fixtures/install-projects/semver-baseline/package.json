@@ -1,0 +1,14 @@
+{
+  "name": "semver-baseline-app",
+  "version": "0.0.0",
+  "dependencies": {
+    "@rpm-fixture/exact": "1.2.3",
+    "@rpm-fixture/caret": "^1.2.3",
+    "@rpm-fixture/caret-zero": "^0.2.0",
+    "@rpm-fixture/tilde": "~1.2.3",
+    "@rpm-fixture/wildcard": "*",
+    "@rpm-fixture/wildcard-major": "1.x",
+    "@rpm-fixture/wildcard-minor": "1.2.x",
+    "@rpm-fixture/comparator": ">=1.0.0 <2.0.0"
+  }
+}

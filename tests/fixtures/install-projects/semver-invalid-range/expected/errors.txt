@@ -1,0 +1,1 @@
+@rpm-fixture/invalid-range requested =>1.0.0 error invalid range
