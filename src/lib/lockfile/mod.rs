@@ -1,4 +1,4 @@
-mod constraint;
+pub(crate) mod constraint;
 
 use constraint::LOCK_FILE_PATH;
 use regex::Regex;
