@@ -1,29 +1,14 @@
-curl -o rpm.tar.gz -l https://raw.githubusercontent.com/nerdchanii/rpm/main/rpm.tar.gz 
-# make /.rpm in User root
-mkdir ~/.rpm
-# decompress tar.gz and remove
-tar -zxf rpm.tar.gz -C ~/.rpm && rm rpm.tar.gz
-echo "choose your shell to install rpm using number"
-select sehll in "zsh" "bash"
-do
-    case $sehll in
-        "zsh")
-                if echo "alias rpm='~/.rpm/rpm'" >> ~/.zshrc  ;
-                then
-                    source ~/.zshrc >/dev/null 2>&1;
-                    echo "rpm has been installed successfully";
-                    break
-                fi
-            ;;
-        "bash")
-            echo "alias rpm="~/.rpm/rpm"" >> ~/.bashrc;
-            cd .;
-            break
-            ;;
-        *)
-            echo "Please select zsh or bash"
-            ;;
-    esac
-done
+#!/usr/bin/env bash
+set -euo pipefail
 
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
 
+git clone https://github.com/nerdchanii/rpm.git "$tmp_dir/rpm"
+cd "$tmp_dir/rpm"
+cargo build --release
+mkdir -p "$HOME/.rpm"
+cp target/release/rpm "$HOME/.rpm/rpm"
+
+echo 'Add $HOME/.rpm to PATH, or run rpm as $HOME/.rpm/rpm.'
+echo "rpm has been installed successfully"
