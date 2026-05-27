@@ -1,7 +1,12 @@
-# zsh scripts
-mkdir ~/.rpm ;
-tar -zxf rpm.tar.gz -C ~/.rpm ;
-echo "alias rpm="~/.rpm/rpm"" >> ~/.zshrc ;
-echo "rpm has been installed successfully" ;
-source ~/.zshrc > /dev/null 2>&1;
-cd .
+#!/usr/bin/env zsh
+set -e
+
+cargo build --release
+mkdir -p "$HOME/.rpm"
+cp target/release/rpm "$HOME/.rpm/rpm"
+
+if ! grep -q 'export PATH="$HOME/.rpm:$PATH"' "$HOME/.zshrc" 2>/dev/null; then
+  echo 'export PATH="$HOME/.rpm:$PATH"' >> "$HOME/.zshrc"
+fi
+
+echo "rpm has been installed successfully"

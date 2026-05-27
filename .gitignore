@@ -1,4 +1,11 @@
-/target
-node_modules/*
-.rpm/*
+/target/
+node_modules/
+.rpm/
 .note/
+
+# Generated release/build artifacts
+*.tar.gz
+*.tgz
+*.zip
+dist/
+build/

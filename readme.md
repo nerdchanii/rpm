@@ -3,13 +3,13 @@
 - [RPM (Rapid node Package Manager)](#rpm-rapid-node-package-manager)
   - [Get started](#get-started)
     - [Installation](#installation)
-      - [without clone](#without-clone)
-      - [wit git clone](#wit-git-clone)
+      - [Build from source](#build-from-source)
   - [How to use](#how-to-use)
-    - [Avariable Commands](#avariable-commands)
+    - [Available Commands](#available-commands)
       - [install](#install)
       - [add](#add)
       - [run](#run)
+  - [Examples](#examples)
   - [List of available libraries](#list-of-available-libraries)
   - [Contributing](#contributing)
 
@@ -19,65 +19,21 @@ rpm is a fast and easy-to-use package manager for Node.js. It is built with Rust
 
 ### Installation
 
-#### without clone
-
-> You can follow the script below, or you can use the scripts in [`scripts/withoutclone/installation`](/scripts/withoutclone/installation.sh).
->
-1. download rpm.tar.gz
-
-```sh
-curl -o rpm.tar.gz -l https://raw.githubusercontent.com/nerdchanii/rpm/main/rpm.tar.gz 
-```
-
-2. make /.rpm in User root
-
-```sh
-mkdir ~/.rpm
-```
-
-3. decompress tar.gz and remove
-
-```sh
-tar -zxf rpm.tar.gz -C ~/.rpm && rm rpm.tar.gz
-```
-
-4. setup alias
-
-```sh
-# with zsh
-echo "alias rpm="~/.rpm/rpm"" >> ~/.zshrc
-
-# with bash
-echo "alias rpm="~/.rpm/rpm"" >> ~/.bashrc
-```
-
-5. apply terminal(or restart)
-
-- ⚠️ if not work relaod terminal or open new Terminal
-
-```sh
-# with zsh
-source ~/.zshrc
-
-# with bash
-source ~/.bashrc
-```
-
-#### wit git clone
+#### Build from source
 
 ```bash
-# clone 
-git clone https://github.coom/nerdchanii/rpm.git && cd rpm 
-# if you use zsh
-zsh scripts/installation.zsh.sh
-
-# if you use sh 
-sh scripts/installation.sh
+git clone https://github.com/nerdchanii/rpm.git
+cd rpm
+cargo build --release
+mkdir -p ~/.rpm
+cp target/release/rpm ~/.rpm/rpm
 ```
+
+Add `~/.rpm` to your shell `PATH`, or run the binary directly as `~/.rpm/rpm`.
 
 ## How to use
 
-### Avariable Commands
+### Available Commands
 
 #### install
 
@@ -115,6 +71,10 @@ if your package.json
 rpm run dev 
 rpm run server
 ```
+
+## Examples
+
+The sample Node project that previously lived in the repository root is available at [`examples/vite-react-typescript-starter`](examples/vite-react-typescript-starter).
 
 ## List of available libraries
 
