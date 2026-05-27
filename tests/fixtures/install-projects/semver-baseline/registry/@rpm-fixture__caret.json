@@ -1,0 +1,49 @@
+{
+  "name": "@rpm-fixture/caret",
+  "dist-tags": {
+    "latest": "2.0.0"
+  },
+  "versions": {
+    "1.2.3": {
+      "name": "@rpm-fixture/caret",
+      "version": "1.2.3",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/caret/-/caret-1.2.3.tgz",
+        "integrity": "sha512-caret123",
+        "shasum": "fixture-rpm-fixture-caret-1-2-3"
+      },
+      "description": "@rpm-fixture/caret 1.2.3 semver fixture"
+    },
+    "1.9.9": {
+      "name": "@rpm-fixture/caret",
+      "version": "1.9.9",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/caret/-/caret-1.9.9.tgz",
+        "integrity": "sha512-caret199",
+        "shasum": "fixture-rpm-fixture-caret-1-9-9"
+      },
+      "description": "@rpm-fixture/caret 1.9.9 semver fixture"
+    },
+    "2.0.0": {
+      "name": "@rpm-fixture/caret",
+      "version": "2.0.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/caret/-/caret-2.0.0.tgz",
+        "integrity": "sha512-caret200",
+        "shasum": "fixture-rpm-fixture-caret-2-0-0"
+      },
+      "description": "@rpm-fixture/caret 2.0.0 semver fixture"
+    }
+  },
+  "_id": "@rpm-fixture/caret",
+  "maintainers": [
+    {
+      "name": "rpm-fixture",
+      "email": "fixtures@example.invalid"
+    }
+  ],
+  "description": "@rpm-fixture/caret semver fixture"
+}

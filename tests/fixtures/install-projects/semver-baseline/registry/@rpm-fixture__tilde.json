@@ -1,0 +1,49 @@
+{
+  "name": "@rpm-fixture/tilde",
+  "dist-tags": {
+    "latest": "1.3.0"
+  },
+  "versions": {
+    "1.2.3": {
+      "name": "@rpm-fixture/tilde",
+      "version": "1.2.3",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/tilde/-/tilde-1.2.3.tgz",
+        "integrity": "sha512-tilde123",
+        "shasum": "fixture-rpm-fixture-tilde-1-2-3"
+      },
+      "description": "@rpm-fixture/tilde 1.2.3 semver fixture"
+    },
+    "1.2.9": {
+      "name": "@rpm-fixture/tilde",
+      "version": "1.2.9",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/tilde/-/tilde-1.2.9.tgz",
+        "integrity": "sha512-tilde129",
+        "shasum": "fixture-rpm-fixture-tilde-1-2-9"
+      },
+      "description": "@rpm-fixture/tilde 1.2.9 semver fixture"
+    },
+    "1.3.0": {
+      "name": "@rpm-fixture/tilde",
+      "version": "1.3.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/tilde/-/tilde-1.3.0.tgz",
+        "integrity": "sha512-tilde130",
+        "shasum": "fixture-rpm-fixture-tilde-1-3-0"
+      },
+      "description": "@rpm-fixture/tilde 1.3.0 semver fixture"
+    }
+  },
+  "_id": "@rpm-fixture/tilde",
+  "maintainers": [
+    {
+      "name": "rpm-fixture",
+      "email": "fixtures@example.invalid"
+    }
+  ],
+  "description": "@rpm-fixture/tilde semver fixture"
+}

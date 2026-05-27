@@ -1,0 +1,49 @@
+{
+  "name": "@rpm-fixture/wildcard-major",
+  "dist-tags": {
+    "latest": "2.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/wildcard-major",
+      "version": "1.0.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/wildcard-major/-/wildcard-major-1.0.0.tgz",
+        "integrity": "sha512-wildcardmajor100",
+        "shasum": "fixture-rpm-fixture-wildcard-major-1-0-0"
+      },
+      "description": "@rpm-fixture/wildcard-major 1.0.0 semver fixture"
+    },
+    "1.9.0": {
+      "name": "@rpm-fixture/wildcard-major",
+      "version": "1.9.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/wildcard-major/-/wildcard-major-1.9.0.tgz",
+        "integrity": "sha512-wildcardmajor190",
+        "shasum": "fixture-rpm-fixture-wildcard-major-1-9-0"
+      },
+      "description": "@rpm-fixture/wildcard-major 1.9.0 semver fixture"
+    },
+    "2.0.0": {
+      "name": "@rpm-fixture/wildcard-major",
+      "version": "2.0.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/wildcard-major/-/wildcard-major-2.0.0.tgz",
+        "integrity": "sha512-wildcardmajor200",
+        "shasum": "fixture-rpm-fixture-wildcard-major-2-0-0"
+      },
+      "description": "@rpm-fixture/wildcard-major 2.0.0 semver fixture"
+    }
+  },
+  "_id": "@rpm-fixture/wildcard-major",
+  "maintainers": [
+    {
+      "name": "rpm-fixture",
+      "email": "fixtures@example.invalid"
+    }
+  ],
+  "description": "@rpm-fixture/wildcard-major semver fixture"
+}

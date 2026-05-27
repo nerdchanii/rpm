@@ -1,0 +1,49 @@
+{
+  "name": "@rpm-fixture/exact",
+  "dist-tags": {
+    "latest": "1.2.4"
+  },
+  "versions": {
+    "1.2.2": {
+      "name": "@rpm-fixture/exact",
+      "version": "1.2.2",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/exact/-/exact-1.2.2.tgz",
+        "integrity": "sha512-exact122",
+        "shasum": "fixture-rpm-fixture-exact-1-2-2"
+      },
+      "description": "@rpm-fixture/exact 1.2.2 semver fixture"
+    },
+    "1.2.3": {
+      "name": "@rpm-fixture/exact",
+      "version": "1.2.3",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/exact/-/exact-1.2.3.tgz",
+        "integrity": "sha512-exact123",
+        "shasum": "fixture-rpm-fixture-exact-1-2-3"
+      },
+      "description": "@rpm-fixture/exact 1.2.3 semver fixture"
+    },
+    "1.2.4": {
+      "name": "@rpm-fixture/exact",
+      "version": "1.2.4",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/exact/-/exact-1.2.4.tgz",
+        "integrity": "sha512-exact124",
+        "shasum": "fixture-rpm-fixture-exact-1-2-4"
+      },
+      "description": "@rpm-fixture/exact 1.2.4 semver fixture"
+    }
+  },
+  "_id": "@rpm-fixture/exact",
+  "maintainers": [
+    {
+      "name": "rpm-fixture",
+      "email": "fixtures@example.invalid"
+    }
+  ],
+  "description": "@rpm-fixture/exact semver fixture"
+}
