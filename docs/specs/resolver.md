@@ -2,7 +2,7 @@
 
 Status: Draft  
 Owner: resolver/install  
-Last reviewed: 2026-05-28
+Last reviewed: 2026-05-29
 
 ## Purpose
 
@@ -38,7 +38,8 @@ equivalent internal abstraction. The resolver must not rely on recursive calls
 for correctness, and callers must not depend on the concrete queue or worklist
 type used by a strategy.
 
-The first strategy is an iterative FIFO worklist:
+The first strategy is an iterative FIFO worklist implemented under
+`src/lib/resolver/`:
 
 1. Seed the worklist with direct dependency requests.
 2. Pop the oldest pending request.

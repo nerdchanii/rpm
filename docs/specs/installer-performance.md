@@ -2,7 +2,7 @@
 
 Status: Draft  
 Owner: resolver/install  
-Last reviewed: 2026-05-27
+Last reviewed: 2026-05-29
 
 ## Purpose
 
@@ -61,6 +61,11 @@ Later installer work should stage installation in this order:
 7. Extract packages into a staging area.
 8. Link `node_modules` from the staged package set.
 9. Write `rpm.lock` and `package.json` only after install state is ready.
+
+M1 now completes the first structural part of this direction by separating
+metadata reads from tarball download and by building a resolved graph before
+installer side effects begin. Bounded parallel download remains a later step,
+but the current structure must preserve that option.
 
 The graph resolution stage must preserve both the requested range and selected
 version for every package record, matching `docs/specs/resolver.md`.
