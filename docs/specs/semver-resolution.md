@@ -2,7 +2,7 @@
 
 Status: Draft
 Owner: resolver/install
-Last reviewed: 2026-05-28
+Last reviewed: 2026-05-29
 
 ## Purpose
 
@@ -12,8 +12,8 @@ the M1 baseline and the fixtures that future resolver implementation must pass.
 
 ## Contract
 
-M0 does not implement the full resolver. M1 must implement the first supported
-semver range baseline before installer behavior depends on range selection.
+M1 implements the first supported semver range baseline before installer
+behavior depends on range selection.
 
 The M1 baseline supports these request forms:
 
@@ -38,20 +38,16 @@ resolved `version` fields for each package record.
 
 ## Dependency Decision
 
-The Rust semver/range dependency is explicitly deferred to the M1 resolver
-implementation spike. The dependency must be chosen by comparing npm-compatible
-range behavior against the fixtures in
-`tests/fixtures/install-projects/semver-baseline/`, rather than by matching only
-Cargo semver behavior.
+The active M1 implementation uses the `node-semver` Rust dependency for
+npm-compatible range evaluation.
 
-A candidate dependency must preserve npm-compatible caret, tilde, wildcard, and
-comparator semantics or the implementation must add a compatibility layer around
-it. The default should be a Node/npm-compatible Rust range library, not a
-Cargo-oriented semver parser, unless fixture results prove compatibility.
+The owning code path is `src/lib/resolver/semver.rs`. Future dependency changes
+must preserve the fixture-backed npm-compatible behavior defined in this SPEC
+rather than matching Cargo semver behavior.
 
 ## Replacement Targets
 
-Current ad hoc normalization is a replacement target, not the resolver
+Historical ad hoc normalization was a replacement target, not the resolver
 contract:
 
 - `src/lib/command/working_process/add.rs::registry_request_from_requested`
@@ -65,9 +61,9 @@ contract:
 - `src/lib/registry/mod.rs::Registry::get_latest_version` is only a latest-tag
   helper and must not stand in for highest matching version selection.
 
-These compatibility paths may remain during M0 only to preserve current command
-behavior. M1 resolver work must replace them with a single version selection
-boundary.
+M1 resolver work replaces those paths with the `src/lib/resolver::select_version`
+boundary. New range-parsing logic must not be added back into unrelated
+installer or API call sites.
 
 ## Error Cases
 

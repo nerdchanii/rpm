@@ -7,4 +7,5 @@ pub mod opt;
 pub mod package_manifest;
 pub mod parser;
 pub mod registry;
+pub mod resolver;
 pub mod util;
