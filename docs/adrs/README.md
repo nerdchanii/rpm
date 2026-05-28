@@ -43,7 +43,7 @@ than a new contract decision.
 
 ## File Naming
 
-- Copy [TEMPLATE.md](/Users/gim-yechan/opensource/rpm/docs/adrs/TEMPLATE.md)
+- Copy [TEMPLATE.md](TEMPLATE.md)
 - Replace `XXXX` with the next four-digit ADR id
 - Use a short kebab-case filename after the id
 
