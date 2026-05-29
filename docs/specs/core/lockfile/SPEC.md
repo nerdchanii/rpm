@@ -89,7 +89,3 @@ reported as successful dependency resolution.
 
 Lockfile verification should cover v1 format round-tripping, empty lockfile
 initialization, malformed-file parse failures, and save truncation behavior.
-
-## Open Questions
-
-None currently.

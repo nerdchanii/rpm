@@ -55,7 +55,3 @@ a successful install.
 Recovery verification should cover staged replacement success plus resolve,
 extract, link, and write failures that leave the previous `node_modules`
 contents intact.
-
-## Open Questions
-
-None currently.
