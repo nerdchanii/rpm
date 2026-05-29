@@ -1,8 +1,8 @@
 ---
-spec_id: contract-name
+spec_id: contract_name
 title: Contract Name
 status: draft
-owner: area
+owner: core/area
 last_reviewed: YYYY-MM-DD
 authors:
   - github-handle
@@ -17,7 +17,7 @@ related_issues: []
 # Spec: Contract Name
 
 Status: Draft
-Owner: area
+Owner: core/area
 Last reviewed: YYYY-MM-DD
 
 ## Purpose

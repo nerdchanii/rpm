@@ -1,8 +1,26 @@
+---
+spec_id: node_modules_linker
+title: Node Modules Linker
+status: draft
+owner: core/linker
+last_reviewed: 2026-05-29
+authors:
+  - nerdchanii
+deciders:
+  - nerdchanii
+consulted: []
+informed: []
+related_adrs:
+  - 0002-single-crate-cli-core-boundary
+related_issues:
+  - 50
+---
+
 # Spec: Node Modules Linker
 
 Status: Draft
-Owner: installer/linker
-Last reviewed: 2026-05-28
+Owner: core/linker
+Last reviewed: 2026-05-29
 
 ## Purpose
 
@@ -47,3 +65,12 @@ implemented separately.
 Linking fails if a dependency target package has not been extracted, if the
 destination directory cannot be created, or if the symlink cannot be created.
 Failed linking must not be reported as a successful install or script setup.
+
+## Test Fixtures
+
+Linker verification should cover unscoped and scoped dependency links plus
+destination-directory and symlink-creation failures.
+
+## Open Questions
+
+None currently.

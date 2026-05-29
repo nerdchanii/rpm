@@ -1,8 +1,26 @@
+---
+spec_id: semver_resolution
+title: Semver Resolution
+status: draft
+owner: core/semver
+last_reviewed: 2026-05-29
+authors:
+  - nerdchanii
+deciders:
+  - nerdchanii
+consulted: []
+informed: []
+related_adrs:
+  - 0002-single-crate-cli-core-boundary
+related_issues:
+  - 50
+---
+
 # Spec: Semver Resolution
 
 Status: Draft
-Owner: resolver/install
-Last reviewed: 2026-05-28
+Owner: core/semver
+Last reviewed: 2026-05-29
 
 ## Purpose
 
@@ -33,8 +51,8 @@ Unsatisfied ranges and invalid ranges are resolver failures. They must fail
 before tarball download, extraction, linking, lockfile writes, or manifest
 writes.
 
-Lockfile v1 already supports this contract by storing both `requested` and
-resolved `version` fields for each package record.
+The lockfile contract already supports this baseline by storing both
+`requested` and resolved `version` fields for each package record.
 
 ## Dependency Decision
 

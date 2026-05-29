@@ -1,8 +1,26 @@
+---
+spec_id: package_manifest
+title: Package Manifest
+status: draft
+owner: core/manifest
+last_reviewed: 2026-05-29
+authors:
+  - nerdchanii
+deciders:
+  - nerdchanii
+consulted: []
+informed: []
+related_adrs:
+  - 0002-single-crate-cli-core-boundary
+related_issues:
+  - 50
+---
+
 # Spec: Package Manifest
 
 Status: Draft
-Owner: package-manifest
-Last reviewed: 2026-05-28
+Owner: core/manifest
+Last reviewed: 2026-05-29
 
 ## Purpose
 

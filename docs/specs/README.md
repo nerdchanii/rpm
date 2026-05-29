@@ -129,16 +129,50 @@ also do at least one of these:
 
 SPEC-only changes must not leave required implementation work implicit.
 
+## Directory Layout
+
+The current SPEC set is organized by ownership boundary:
+
+```text
+docs/specs/
+  README.md
+  TEMPLATE.md
+  cli/
+    README.md
+    run/
+      SPEC.md
+  core/
+    README.md
+    manifest/
+      SPEC.md
+    semver/
+      SPEC.md
+    resolver/
+      SPEC.md
+    lockfile/
+      SPEC.md
+    install/
+      recovery/
+        SPEC.md
+      performance/
+        SPEC.md
+    linker/
+      SPEC.md
+```
+
+Repository structure and ownership conventions that are not themselves package
+manager contracts live under `docs/conventions/`.
+
 ## Suggested Structure
 
 Use this structure for new or rewritten SPECs:
 
 ```markdown
 ---
-spec_id: contract-name
+spec_id: contract_name
 title: Contract Name
 status: draft
-owner: area
+owner: core/area
 last_reviewed: YYYY-MM-DD
 authors:
   - github-handle
@@ -150,10 +184,10 @@ related_adrs: []
 related_issues: []
 ---
 
-# Spec: <Contract Name>
+# Spec: Contract Name
 
 Status: Draft
-Owner: <area>
+Owner: core/area
 Last reviewed: YYYY-MM-DD
 
 ## Purpose
@@ -216,3 +250,16 @@ M1 should start from:
 - a clear rule for when ADRs are required
 - a clear rule that contract changes are SPEC-driven
 - explicit follow-up tracking when implementation is deferred
+
+## Current Index
+
+- `docs/specs/cli/run/SPEC.md`: `rpm run` command contract
+- `docs/specs/core/manifest/SPEC.md`: `package.json` interpretation
+- `docs/specs/core/semver/SPEC.md`: npm-compatible semver selection baseline
+- `docs/specs/core/resolver/SPEC.md`: dependency graph resolution boundary
+- `docs/specs/core/lockfile/SPEC.md`: `rpm.lock` v1 contract
+- `docs/specs/core/install/recovery/SPEC.md`: staged install replacement and
+  recovery
+- `docs/specs/core/install/performance/SPEC.md`: installer bottleneck and
+  measurement baseline
+- `docs/specs/core/linker/SPEC.md`: `node_modules` linking contract

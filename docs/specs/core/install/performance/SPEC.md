@@ -1,8 +1,26 @@
+---
+spec_id: installer_performance
+title: Installer Performance Baseline
+status: draft
+owner: core/install/performance
+last_reviewed: 2026-05-29
+authors:
+  - nerdchanii
+deciders:
+  - nerdchanii
+consulted: []
+informed: []
+related_adrs:
+  - 0002-single-crate-cli-core-boundary
+related_issues:
+  - 50
+---
+
 # Spec: Installer Performance Baseline
 
-Status: Draft  
-Owner: resolver/install  
-Last reviewed: 2026-05-27
+Status: Draft
+Owner: core/install/performance
+Last reviewed: 2026-05-29
 
 ## Purpose
 
@@ -63,9 +81,9 @@ Later installer work should stage installation in this order:
 9. Write `rpm.lock` and `package.json` only after install state is ready.
 
 The graph resolution stage must preserve both the requested range and selected
-version for every package record, matching `docs/specs/resolver.md`.
+version for every package record, matching `docs/specs/core/resolver/SPEC.md`.
 
-## Measurement Fixture
+## Test Fixtures
 
 Use `tests/fixtures/install-projects/performance-small/` as the first
 measurement fixture. It intentionally includes two direct dependencies that

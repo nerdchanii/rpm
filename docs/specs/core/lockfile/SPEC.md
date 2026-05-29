@@ -1,10 +1,36 @@
-# Lockfile v1
+---
+spec_id: lockfile_v1
+title: Lockfile v1
+status: draft
+owner: core/lockfile
+last_reviewed: 2026-05-29
+authors:
+  - nerdchanii
+deciders:
+  - nerdchanii
+consulted: []
+informed: []
+related_adrs:
+  - 0002-single-crate-cli-core-boundary
+related_issues:
+  - 50
+---
+
+# Spec: Lockfile v1
+
+Status: Draft
+Owner: core/lockfile
+Last reviewed: 2026-05-29
+
+## Purpose
 
 `rpm.lock` is the reproducibility contract for installs. It records the
 requested package graph and the resolved package facts needed by later install
 phases.
 
-## Format
+## Contract
+
+### Format
 
 The lockfile is TOML and starts with project metadata:
 
@@ -39,7 +65,7 @@ Package entries record:
   provides a shasum.
 - `dependencies`: dependency edges as requested package references.
 
-## Loading
+### Loading
 
 An absent or empty lockfile initializes as an empty v1 lockfile. Empty loading
 must not be reported as successful dependency resolution; it only gives callers a
@@ -48,7 +74,22 @@ safe in-memory lockfile to mutate.
 Malformed TOML or malformed lockfile fields are load failures. Parse failures
 must include the lockfile path and parser context.
 
-## Saving
+### Saving
 
 Saving writes the complete current lockfile and truncates old content. Save
 errors must include the lockfile path and must not be hidden behind panics.
+
+## Error Cases
+
+Malformed TOML, malformed lockfile fields, and save failures must be returned
+with the lockfile path and parser or write context. Empty loading must not be
+reported as successful dependency resolution.
+
+## Test Fixtures
+
+Lockfile verification should cover v1 format round-tripping, empty lockfile
+initialization, malformed-file parse failures, and save truncation behavior.
+
+## Open Questions
+
+None currently.

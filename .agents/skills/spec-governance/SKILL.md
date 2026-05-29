@@ -38,7 +38,8 @@ Use the narrowest authoritative SPEC for the contract.
 Current repository stage:
 
 ```text
-docs/specs/<topic>.md
+docs/specs/cli/<command>/SPEC.md
+docs/specs/core/<topic>/SPEC.md
 ```
 
 After the Cargo workspace is split, prefer crate-local specs for crate-owned contracts:
@@ -50,7 +51,14 @@ crates/<crate-name>/docs/SPEC.md
 Use root-level specs only for cross-crate contracts:
 
 ```text
-docs/specs/<cross-cutting-topic>.md
+docs/specs/<area>/.../SPEC.md
+```
+
+Repository structure and ownership rules that are not package-manager contracts
+live under:
+
+```text
+docs/conventions/
 ```
 
 Do not treat design notes, roadmap notes, or issue text as SPEC authority. They may explain intent, but they do not override SPEC.

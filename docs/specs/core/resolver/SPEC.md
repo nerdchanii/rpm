@@ -1,8 +1,26 @@
+---
+spec_id: resolver_boundary
+title: Resolver Strategy Boundary
+status: draft
+owner: core/resolver
+last_reviewed: 2026-05-29
+authors:
+  - nerdchanii
+deciders:
+  - nerdchanii
+consulted: []
+informed: []
+related_adrs:
+  - 0002-single-crate-cli-core-boundary
+related_issues:
+  - 50
+---
+
 # Spec: Resolver Strategy Boundary
 
-Status: Draft  
-Owner: resolver/install  
-Last reviewed: 2026-05-28
+Status: Draft
+Owner: core/resolver
+Last reviewed: 2026-05-29
 
 ## Purpose
 
@@ -29,7 +47,7 @@ input to later installer phases that download tarballs, verify integrity,
 extract packages, link `node_modules`, and write lockfile or manifest state.
 
 Version and range satisfaction rules are owned by
-`docs/specs/semver-resolution.md`. Resolver strategies call the version
+`docs/specs/core/semver/SPEC.md`. Resolver strategies call the version
 selection abstraction and record its selected version; they must not duplicate
 range parsing policy in the traversal implementation.
 
@@ -52,7 +70,8 @@ Future strategies may replace FIFO traversal with priority-based, heuristic,
 peer-aware, or backtracking behavior without changing fetch, extract, link, or
 lockfile write phases.
 
-The installer performance baseline in `docs/specs/installer-performance.md`
+The installer performance baseline in
+`docs/specs/core/install/performance/SPEC.md`
 documents the current recursive bottleneck and the measurement fixture for
 future staged installer work.
 
@@ -74,7 +93,7 @@ resolver fixtures should not mutate the repository root, `.rpm`, `rpm.lock`, or
 `node_modules`.
 
 The semver baseline fixtures are defined by
-`docs/specs/semver-resolution.md` and must be used before installer flow relies
+`docs/specs/core/semver/SPEC.md` and must be used before installer flow relies
 on semver range behavior.
 
 ## Open Questions
