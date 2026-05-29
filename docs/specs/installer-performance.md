@@ -6,15 +6,15 @@ Last reviewed: 2026-05-27
 
 ## Purpose
 
-RPM's current installer is intentionally still a prototype, but the M0 recovery
+RPM's current installer is intentionally still a prototype, but the active M1
 track needs a stable description of the bottleneck before changing behavior.
 This document records where the recursive install flow lives, what future
-staging should look like, and which fixture should be used to measure later
+staging should look like, and which fixture should be used to measure staged
 changes.
 
-This document does not authorize an installer rewrite. It is the baseline for a
-later milestone that can change scheduling, concurrency, deduplication, and
-transaction safety with tests.
+This document does not authorize an installer rewrite by itself. It is the
+baseline for staged M1 work and later milestones that can change scheduling,
+concurrency, deduplication, and transaction safety with tests.
 
 ## Current Bottleneck
 

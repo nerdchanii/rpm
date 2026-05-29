@@ -62,6 +62,11 @@ ADRs justify architectural and long-lived boundary decisions.
 
 SPECs define concrete repository contracts.
 
+Milestone contract issues coordinate the scope and ordering of milestone work,
+but they do not replace SPEC authority. If a milestone issue, issue comment, or
+milestone description conflicts with an owning SPEC, the SPEC still wins until
+the SPEC is deliberately updated.
+
 Use an ADR when deciding:
 
 - product boundary
