@@ -12,8 +12,8 @@ the M1 baseline and the fixtures that future resolver implementation must pass.
 
 ## Contract
 
-M0 does not implement the full resolver. M1 must implement the first supported
-semver range baseline before installer behavior depends on range selection.
+M1 must implement the first supported semver range baseline before installer
+behavior depends on range selection.
 
 The M1 baseline supports these request forms:
 
@@ -65,9 +65,8 @@ contract:
 - `src/lib/registry/mod.rs::Registry::get_latest_version` is only a latest-tag
   helper and must not stand in for highest matching version selection.
 
-These compatibility paths may remain during M0 only to preserve current command
-behavior. M1 resolver work must replace them with a single version selection
-boundary.
+These compatibility paths may remain only until the active M1 resolver work
+replaces them with a single version selection boundary.
 
 ## Error Cases
 

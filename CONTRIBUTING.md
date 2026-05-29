@@ -14,6 +14,30 @@ Use the closest issue template and include:
 
 Issue text explains intent, but it does not override an owning SPEC.
 
+## Milestones
+
+Use GitHub milestones for milestone-level tracking, not as the detailed source
+of truth for scope.
+
+Each active milestone should have one first issue that acts as the milestone
+contract issue.
+
+That issue should:
+
+- stay open until the milestone itself is complete
+- be labeled so it is distinguishable from implementation issues
+- remain pinned while the milestone is active
+- hold the current summary of:
+  - purpose
+  - in scope
+  - out of scope
+  - owning SPECs and ADRs known so far
+  - delivery order or dependency chain
+  - exit criteria
+
+If new ADRs or SPECs become relevant during the milestone, update the milestone
+contract issue body. Do not rely on comments alone as the current summary.
+
 ## Pull Requests
 
 Open PRs with a clear summary, validation notes, and a focused checklist. Keep implementation and cleanup separate.
