@@ -83,6 +83,12 @@ contract.
 If RPM copies or derives code, tests, or fixtures from `node-semver`, the
 repository must preserve the required ISC license notice.
 
+Copied or derived `node-semver` fixtures are allowed for #42 when they are kept
+with clear provenance and the required ISC notice. Runtime semver code should
+not be a mandatory line-by-line port: it may use a Rust-native parser,
+intermediate representation, cache strategy, or selection algorithm when the
+compatibility fixtures prove the same observable behavior.
+
 ## Replacement Targets
 
 Current ad hoc normalization is a replacement target, not the resolver
@@ -132,6 +138,9 @@ project that should resolve completely.
 #42 must add or adapt additional fixtures that cover the full `node-semver`
 compatibility target. Fixture groups may be split by behavior area so failures
 remain readable.
+
+Imported or derived `node-semver` fixture groups must be clearly separated from
+RPM-authored fixtures and must preserve the required ISC notice.
 
 Failing resolver fixtures are separate project scenarios:
 

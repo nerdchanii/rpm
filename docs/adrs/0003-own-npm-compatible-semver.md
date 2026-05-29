@@ -54,6 +54,12 @@ RPM may adapt behavior, fixtures, and implementation ideas from `node-semver`
 when useful. Any copied or derived ISC-licensed material must preserve the
 required license notice in the repository.
 
+RPM may use copied or derived `node-semver` fixtures as the compatibility
+corpus when that improves coverage. The Rust implementation does not need to be
+a line-by-line port: it should preserve `node-semver` behavior while using an
+internal structure that is pure, maintainable, and performance-oriented for
+RPM's resolver and future crate extraction.
+
 RPM will not make an external Rust semver crate the long-lived source of truth
 for npm range behavior. External crates may still be used as temporary
 comparison tools or implementation aids when tests prove they match the active
@@ -66,6 +72,10 @@ SPEC.
   semantics and fixtures.
 - M1 semver work should not stop at an intentionally weak range subset when the
   issue scope calls for full compatibility.
+- Imported or derived `node-semver` fixtures are acceptable when ISC notices are
+  preserved and provenance is clear.
+- Runtime code should optimize for Rust performance and resolver ergonomics
+  while keeping fixture-proven `node-semver` compatibility.
 - Publishing semver as a separate crate is deferred until after the in-repo
   implementation is complete and stable enough to extract cleanly.
 - The resolver should call a single semver selection boundary instead of
