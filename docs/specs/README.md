@@ -198,7 +198,7 @@ Last reviewed: YYYY-MM-DD
 
 ## Test Fixtures
 
-## Open Questions
+## Open Questions (Optional)
 ```
 
 Documents may temporarily contain extra sections while the current SPEC set is

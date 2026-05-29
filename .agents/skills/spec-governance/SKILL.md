@@ -131,7 +131,7 @@ Last reviewed: YYYY-MM-DD
 
 ## Test Fixtures
 
-## Open Questions
+## Open Questions (Optional)
 ```
 
 ## Review Checklist
