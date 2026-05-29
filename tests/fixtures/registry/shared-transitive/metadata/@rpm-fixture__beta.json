@@ -1,0 +1,24 @@
+{
+  "_id": "@rpm-fixture/beta",
+  "name": "@rpm-fixture/beta",
+  "description": "Fixture package beta",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/beta",
+      "version": "1.0.0",
+      "description": "Fixture package beta",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/beta/-/beta-1.0.0.tgz",
+        "shasum": "fixture-beta-1.0.0",
+        "integrity": "sha512-fixture-beta-1.0.0"
+      },
+      "dependencies": {
+        "@rpm-fixture/shared": "^1.0.0"
+      }
+    }
+  }
+}

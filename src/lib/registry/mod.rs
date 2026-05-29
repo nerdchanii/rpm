@@ -370,8 +370,30 @@ fn save_tarball_to_dir<P: AsRef<Path>>(
 #[cfg(test)]
 mod tests {
     use super::{save_tarball_to_dir, Registry};
+    use crate::util::test_support::fixture_path;
     use std::fs;
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn registry_fixture_file_name(package_name: &str) -> String {
+        format!("{}.json", package_name.replace('/', "__"))
+    }
+
+    fn load_registry_fixture(root: &Path, package_name: &str, version: &str) -> Registry {
+        let path = root.join(registry_fixture_file_name(package_name));
+        let fixture = fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("failed to read registry fixture {}: {error}", path.display())
+        });
+        let registry: Registry = serde_json::from_str(&fixture).unwrap_or_else(|error| {
+            panic!("{} did not deserialize: {error}", path.display())
+        });
+        assert!(
+            registry.version_metadata(version).is_some(),
+            "{} is missing {package_name}@{version}",
+            path.display()
+        );
+        registry
+    }
 
     #[test]
     fn save_tarball_reports_cache_write_errors() {
@@ -398,6 +420,8 @@ mod tests {
     #[test]
     fn semver_registry_fixtures_match_registry_metadata_shape() {
         let fixture_roots = [
+            "tests/fixtures/registry/shared-transitive/metadata",
+            "tests/fixtures/install-projects/performance-small/registry",
             "tests/fixtures/install-projects/semver-baseline/registry",
             "tests/fixtures/install-projects/semver-unsatisfied/registry",
             "tests/fixtures/install-projects/semver-invalid-range/registry",
@@ -419,5 +443,31 @@ mod tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn registry_fixture_loader_loads_shared_transitive_graph() {
+        let root = fixture_path(&["registry", "shared-transitive", "metadata"]);
+
+        let alpha = load_registry_fixture(&root, "@rpm-fixture/alpha", "1.0.0");
+        let beta = load_registry_fixture(&root, "@rpm-fixture/beta", "1.0.0");
+        let shared = load_registry_fixture(&root, "@rpm-fixture/shared", "1.0.0");
+
+        assert_eq!(
+            alpha.get_dependencies_for_version("1.0.0"),
+            vec!["@rpm-fixture/shared@^1.0.0"]
+        );
+        assert_eq!(
+            beta.get_dependencies_for_version("1.0.0"),
+            vec!["@rpm-fixture/shared@^1.0.0"]
+        );
+        assert!(shared.get_dependencies_for_version("1.0.0").is_empty());
+
+        let alpha_dist = alpha.get_dist_for_version("1.0.0").unwrap();
+        assert_eq!(
+            alpha_dist.tarball,
+            "https://registry.example.invalid/@rpm-fixture/alpha/-/alpha-1.0.0.tgz"
+        );
+        assert_eq!(alpha_dist.shasum, "fixture-alpha-1.0.0");
     }
 }
