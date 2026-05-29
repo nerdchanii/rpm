@@ -1,0 +1,24 @@
+{
+  "_id": "@rpm-fixture/alpha",
+  "name": "@rpm-fixture/alpha",
+  "description": "Fixture package alpha",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/alpha",
+      "version": "1.0.0",
+      "description": "Fixture package alpha",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/alpha/-/alpha-1.0.0.tgz",
+        "shasum": "fixture-alpha-1.0.0",
+        "integrity": "sha512-fixture-alpha-1.0.0"
+      },
+      "dependencies": {
+        "@rpm-fixture/shared": "^1.0.0"
+      }
+    }
+  }
+}

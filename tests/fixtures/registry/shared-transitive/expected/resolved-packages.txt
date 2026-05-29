@@ -1,0 +1,3 @@
+@rpm-fixture/alpha@1.0.0 requested ^1.0.0
+@rpm-fixture/beta@1.0.0 requested ^1.0.0
+@rpm-fixture/shared@1.0.0 requested ^1.0.0

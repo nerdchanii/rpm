@@ -1,0 +1,22 @@
+{
+  "_id": "@rpm-fixture/shared",
+  "name": "@rpm-fixture/shared",
+  "description": "Fixture package shared",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/shared",
+      "version": "1.0.0",
+      "description": "Fixture package shared",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/shared/-/shared-1.0.0.tgz",
+        "shasum": "fixture-shared-1.0.0",
+        "integrity": "sha512-fixture-shared-1.0.0"
+      },
+      "dependencies": {}
+    }
+  }
+}
