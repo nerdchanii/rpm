@@ -6,18 +6,6 @@ use crate::registry::Registry;
 use std::io::Error;
 
 pub async fn get_registry(lib_name: &str, version: &str) -> std::io::Result<Registry> {
-    // if version == "" => url/pkg
-    // version != "" => url/pkg/version
-    // if version start with ^ or ~ => remove ^ or ~
-    let specific_version = version.starts_with('^') || version.starts_with('~');
-    let version = if specific_version {
-        version[1..].to_string()
-    } else if version == "*" {
-        "latest".to_string()
-    } else {
-        version.to_string()
-    };
-
     let request_url = format!("{}/{}/{}", REGISTRY_PATH, lib_name, version);
     let registry = reqwest::get(&request_url)
         .await

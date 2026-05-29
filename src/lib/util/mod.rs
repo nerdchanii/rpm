@@ -1,27 +1,29 @@
-use regex::Regex;
-
 pub fn parse_library_name(lib: String) -> (String, String) {
-    let regex = Regex::new(r"^(?P<package_name>@?[^@]*)(@(?P<version>.+))?$").unwrap();
-
-    if let Some(captures) = regex.captures(&lib) {
-        let package_name = captures.name("package_name").unwrap().as_str().to_owned();
-        let version = captures
-            .name("version")
-            .map(|m| m.as_str())
-            .unwrap_or_else(|| "")
-            .to_owned();
-        // version ex) >=1.0.1 < 3
-        let version_regex = Regex::new(r"^(?P<version>[^<>=]+)").unwrap();
-        let version = version_regex
-            .captures(&version)
-            .map(|m| m.name("version").unwrap().as_str().to_owned())
-            .unwrap_or_else(|| "".to_owned());
-
-        return (package_name, version);
+    if let Some(package_without_scope) = lib.strip_prefix('@') {
+        let Some(scope_separator) = package_without_scope.find('/') else {
+            return (lib, String::new());
+        };
+        let search_from = scope_separator + 2;
+        if let Some(version_separator) = lib[search_from..].find('@') {
+            let version_separator = search_from + version_separator;
+            return (
+                lib[..version_separator].to_string(),
+                lib[version_separator + 1..].to_string(),
+            );
+        }
+        return (lib, String::new());
     }
 
-    println!("lib error with {}", lib);
-    panic!("error: parse library name error");
+    if let Some(version_separator) = lib.rfind('@') {
+        if version_separator > 0 {
+            return (
+                lib[..version_separator].to_string(),
+                lib[version_separator + 1..].to_string(),
+            );
+        }
+    }
+
+    (lib, String::new())
 }
 
 #[cfg(test)]
@@ -127,5 +129,13 @@ mod tests {
         let (lib_name, version) = parse_library_name(lib.to_owned());
         assert_eq!(lib_name, "ipaddr.js");
         assert_eq!(version, "1.9.1");
+    }
+
+    #[test]
+    fn parse_preserves_comparator_ranges() {
+        let lib = "@rpm-fixture/comparator@>=1.0.0 <2.0.0";
+        let (lib_name, version) = parse_library_name(lib.to_owned());
+        assert_eq!(lib_name, "@rpm-fixture/comparator");
+        assert_eq!(version, ">=1.0.0 <2.0.0");
     }
 }

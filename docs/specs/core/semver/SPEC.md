@@ -17,6 +17,8 @@ related_issues:
   - 42
   - 50
   - 59
+  - 67
+  - 68
 ---
 
 # Spec: Semver Resolution
@@ -97,17 +99,9 @@ compatibility fixtures prove the same observable behavior.
 
 ## Replacement Targets
 
-Current ad hoc normalization is a replacement target, not the resolver
+Remaining latest-tag fallback is a replacement target, not the resolver
 contract:
 
-- `src/lib/command/working_process/add.rs::registry_request_from_requested`
-  strips `^` and `~` and chooses the last disjunct after `||`.
-- `src/lib/api/mod.rs::get_registry` strips `^` and `~` and maps `*` to
-  `latest` before making a registry request.
-- `src/lib/util/mod.rs::parse_library_name` truncates comparator expressions
-  such as `>=1.0.0 <2.0.0` before resolver policy can inspect them.
-- `src/lib/lockfile/mod.rs::Dependency::get_dependencies_name` extracts names
-  with a regex that special-cases caret text.
 - `src/lib/registry/mod.rs::Registry::get_latest_version` is only a latest-tag
   helper and must not stand in for highest matching version selection.
 
@@ -141,6 +135,11 @@ The success baseline fixture is
 requests, offline registry metadata, and expected selected package records for a
 project that should resolve completely.
 
+The derived `node-semver` compatibility subset lives under
+`tests/fixtures/semver/node-semver/`. This fixture group is separate from
+RPM-authored resolver fixtures, records upstream provenance, and is covered by
+the ISC notice in `THIRD_PARTY_NOTICES.md`.
+
 #42 must add or adapt additional fixtures that cover the full `node-semver`
 compatibility target. Fixture groups may be split by behavior area so failures
 remain readable.
@@ -169,3 +168,7 @@ Required fixture cases:
 ## Open Questions
 
 - Whether M1 supports npm dist-tags other than `latest`. Tracked by #59.
+- Whether future JavaScript wrappers expose `node-semver` `coerce` behavior for
+  JavaScript-only object and function inputs. Tracked by #67.
+- Whether remaining advanced loose-mode fixture cases are Rust-core behavior,
+  wrapper behavior, or intentionally not applicable. Tracked by #68.
