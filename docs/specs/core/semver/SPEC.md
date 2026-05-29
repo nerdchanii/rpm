@@ -102,6 +102,17 @@ contract:
 These compatibility paths may remain only until the active M1 resolver work
 replaces them with a single version selection boundary.
 
+## API Safety
+
+Production semver code must not panic on user-controlled version or range
+input. Parsing, comparison, satisfaction, and selection APIs must report invalid
+input, unsupported syntax, and unsatisfied ranges through typed errors or
+explicit non-match results.
+
+Do not add `panic!`, `unwrap`, or `expect` in production semver code except for
+compile-time constants or impossible internal invariants documented with a short
+comment. Tests may use them.
+
 ## Error Cases
 
 - An exact version that is absent from metadata fails resolution.
