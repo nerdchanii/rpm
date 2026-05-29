@@ -4,7 +4,6 @@ use crate::{
     api,
     lockfile::{LockFile, Relationship},
     package_manifest::PackageManifest,
-    resolver,
     util::parse_library_name,
 };
 use async_recursion::async_recursion;
@@ -37,16 +36,20 @@ async fn add_with_context(
         sleep(std::time::Duration::from_millis(1)).await;
         print!("\r\x1b[K");
         let (library_name, requested_range) = parse_library_name(lib.clone());
-        let registry = api::get_registry(&library_name).await?;
+        let registry_range = registry_request_from_requested(&requested_range);
+        let registry = api::get_registry(&library_name, &registry_range).await?;
         let requested = if requested_range.is_empty() {
             "latest".to_string()
         } else {
             requested_range.clone()
         };
-        let version = resolver::select_version(&registry, &requested)?;
+        let version = registry
+            .get_latest_version()
+            .map(|version| version.to_owned())
+            .unwrap_or_else(|| requested_range.clone());
         let key = format!("{}@{}", library_name, version);
 
-        registry.download_tarball_for_version(&key, &version).await?;
+        registry.download_tarball(&key, &version).await?;
         let dependencies = registry.get_dependencies_for_version(&version);
         let dist = registry.get_dist_for_version(&version);
         let manifest_version = manifest_version_from_requested(&requested, &version);
@@ -84,6 +87,21 @@ async fn add_with_context(
     Ok(())
 }
 
+fn registry_request_from_requested(requested: &str) -> String {
+    let mut version = requested.to_string();
+    if version.contains("||") {
+        version = version
+            .split("||")
+            .last()
+            .map(|version| version.trim().to_string())
+            .unwrap_or_default();
+    }
+    if version.starts_with('^') || version.starts_with('~') {
+        version.remove(0);
+    }
+    version
+}
+
 fn manifest_version_from_requested(requested: &str, resolved: &str) -> String {
     if requested == "latest" {
         resolved.to_string()
@@ -94,6 +112,18 @@ fn manifest_version_from_requested(requested: &str, resolved: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::registry_request_from_requested;
+
+    #[test]
+    fn registry_request_preserves_legacy_manifest_range_normalization() {
+        assert_eq!(registry_request_from_requested("^18.0.0"), "18.0.0");
+        assert_eq!(registry_request_from_requested("~5.2.0"), "5.2.0");
+        assert_eq!(
+            registry_request_from_requested("^17.0.0 || ^18.0.0"),
+            "18.0.0"
+        );
+    }
+
     #[test]
     fn manifest_version_preserves_requested_range_for_direct_adds() {
         assert_eq!(

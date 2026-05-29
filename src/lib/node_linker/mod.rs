@@ -44,7 +44,7 @@ impl NodeModules {
         Self::init_from_paths("node_modules", LOCK_FILE_PATH, CACHE_DIR)
     }
 
-    pub(crate) fn init_from_paths<P, Q, R>(
+    fn init_from_paths<P, Q, R>(
         node_modules_path: P,
         lockfile_path: Q,
         cache_dir: R,
@@ -54,20 +54,6 @@ impl NodeModules {
         Q: AsRef<Path>,
         R: AsRef<Path>,
     {
-        let lock_file = LockFile::load_from_path(lockfile_path)
-            .map_err(|error| phase_error("resolve", error))?;
-        Self::init_from_lockfile(node_modules_path, &lock_file, cache_dir)
-    }
-
-    pub(crate) fn init_from_lockfile<P, R>(
-        node_modules_path: P,
-        lock_file: &LockFile,
-        cache_dir: R,
-    ) -> Result<Self, std::io::Error>
-    where
-        P: AsRef<Path>,
-        R: AsRef<Path>,
-    {
         let dir = node_modules_path.as_ref();
         let staging_dir = staging_path(dir);
         if staging_dir.exists() {
@@ -75,7 +61,7 @@ impl NodeModules {
         }
         fs::create_dir_all(&staging_dir).map_err(|error| phase_error("write", error))?;
 
-        let result = Self::build_staged(&staging_dir, lock_file, cache_dir)
+        let result = Self::build_staged(&staging_dir, lockfile_path, cache_dir)
             .and_then(|modules| replace_node_modules(dir, &staging_dir).map(|()| modules));
 
         if result.is_err() {
@@ -85,16 +71,19 @@ impl NodeModules {
         result.map(|_| Self::new(dir.to_path_buf()))
     }
 
-    fn build_staged<P, R>(
+    fn build_staged<P, Q, R>(
         staging_dir: P,
-        lock_file: &LockFile,
+        lockfile_path: Q,
         cache_dir: R,
     ) -> Result<Self, std::io::Error>
     where
         P: AsRef<Path>,
+        Q: AsRef<Path>,
         R: AsRef<Path>,
     {
         let mut modules = Self::new(staging_dir.as_ref().to_path_buf());
+        let lock_file = LockFile::load_from_path(lockfile_path)
+            .map_err(|error| phase_error("resolve", error))?;
         let packages = lock_file.get_packages();
         if packages.is_empty() {
             return Err(phase_error(
@@ -259,11 +248,10 @@ impl NodeResolver {
         let mut archive = Archive::new(gz);
 
         let destination = node_module.get_destination(name.to_string());
-        if !destination.exists() {
-            fs::create_dir_all(&destination)?;
-        }
 
-        archive.unpack(&destination)?;
+        if !destination.exists() {
+            archive.unpack(&destination)?;
+        };
         let pkg_path = destination.join("package");
 
         if pkg_path.exists() {

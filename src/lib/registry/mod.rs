@@ -224,17 +224,6 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn available_versions(&self) -> Vec<&str> {
-        self.versions
-            .as_ref()
-            .map(|versions| versions.keys().map(String::as_str).collect())
-            .unwrap_or_default()
-    }
-
-    pub fn latest_tag_version(&self) -> Option<&String> {
-        self.dist_tags.as_ref().and_then(|dist_tags| dist_tags.get_latest())
-    }
-
     fn version_metadata(&self, version: &str) -> Option<&Version> {
         self.versions
             .as_ref()
@@ -260,8 +249,8 @@ impl Registry {
             })
     }
 
-    pub fn get_tarball_name_for_version(&self, version: &str) -> Option<String> {
-        self.get_tarball_url_for_version(version).map(|url| {
+    pub fn get_tarball_name(&self) -> Option<String> {
+        self.get_tarball_url().map(|url| {
             //ex https://registry.npmjs.org/axios/-/axios-0.21.1.tgz
             let url = url.replace("https://registry.npmjs.org/", "");
             let url: Vec<&str> = url.split("/-/").collect::<Vec<&str>>();
@@ -277,19 +266,17 @@ impl Registry {
         })
     }
 
-    pub fn get_tarball_url_for_version(&self, version: &str) -> Option<String> {
-        self.version_metadata(version)
-            .map(|metadata| metadata.get_tarball())
-            .or_else(|| self.dist.as_ref().map(|dist| dist.get_tarball()))
+    pub fn get_tarball_url(&self) -> Option<String> {
+        if let (Some(versions), Some(dist_tags)) = (&self.versions, &self.dist_tags) {
+            let latest = dist_tags.get_latest()?;
+            return versions.get(latest).map(|version| version.get_tarball());
+        }
+        self.dist.as_ref().map(|dist| dist.get_tarball())
     }
 
     /// download tarball from registry and return tarball bytes
-    pub async fn download_tarball_for_version(
-        &self,
-        key: &str,
-        version: &str,
-    ) -> std::io::Result<()> {
-        let url = self.get_tarball_url_for_version(version).ok_or_else(|| {
+    pub async fn download_tarball(&self, key: &str, version: &str) -> std::io::Result<()> {
+        let url = self.get_tarball_url().ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidData,
                 format!("missing tarball URL for {key}@{version}"),
@@ -328,37 +315,8 @@ impl Registry {
     }
 }
 
-pub(crate) fn save_tarball(tarball_name: &str, bytes_file: &mut [u8]) -> Result<(), Error> {
+fn save_tarball(tarball_name: &str, bytes_file: &mut [u8]) -> Result<(), Error> {
     save_tarball_to_dir(CACHE_DIR, tarball_name, bytes_file)
-}
-
-pub(crate) fn save_tarball_in_dir<P: AsRef<Path>>(
-    cache_dir: P,
-    tarball_name: &str,
-    bytes_file: &mut [u8],
-) -> Result<(), Error> {
-    save_tarball_to_dir(cache_dir, tarball_name, bytes_file)
-}
-
-#[cfg(test)]
-pub(crate) fn load_fixture_registry<P: AsRef<Path>>(
-    fixture_root: P,
-    package_name: &str,
-) -> Result<Registry, Error> {
-    let file_name = package_name.replace('/', "__");
-    let path = fixture_root.as_ref().join(format!("{file_name}.json"));
-    let contents = fs::read_to_string(&path).map_err(|error| {
-        Error::new(
-            error.kind(),
-            format!("failed to read registry fixture {}: {error}", path.display()),
-        )
-    })?;
-    serde_json::from_str(&contents).map_err(|error| {
-        Error::new(
-            ErrorKind::InvalidData,
-            format!("failed to parse registry fixture {}: {error}", path.display()),
-        )
-    })
 }
 
 fn save_tarball_to_dir<P: AsRef<Path>>(

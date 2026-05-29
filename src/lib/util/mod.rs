@@ -1,24 +1,27 @@
+use regex::Regex;
+
 pub fn parse_library_name(lib: String) -> (String, String) {
-    if lib.starts_with('@') {
-        let without_scope_marker = &lib[1..];
-        let Some(slash_index) = without_scope_marker.find('/') else {
-            println!("lib error with {}", lib);
-            panic!("error: parse library name error");
-        };
-        let package_end = slash_index + 2;
-        let scoped_tail = &lib[package_end..];
-        if let Some(version_index) = scoped_tail.find('@') {
-            let split_index = package_end + version_index;
-            return (lib[..split_index].to_string(), lib[split_index + 1..].to_string());
-        }
-        return (lib, String::new());
+    let regex = Regex::new(r"^(?P<package_name>@?[^@]*)(@(?P<version>.+))?$").unwrap();
+
+    if let Some(captures) = regex.captures(&lib) {
+        let package_name = captures.name("package_name").unwrap().as_str().to_owned();
+        let version = captures
+            .name("version")
+            .map(|m| m.as_str())
+            .unwrap_or_else(|| "")
+            .to_owned();
+        // version ex) >=1.0.1 < 3
+        let version_regex = Regex::new(r"^(?P<version>[^<>=]+)").unwrap();
+        let version = version_regex
+            .captures(&version)
+            .map(|m| m.name("version").unwrap().as_str().to_owned())
+            .unwrap_or_else(|| "".to_owned());
+
+        return (package_name, version);
     }
 
-    if let Some((package_name, version)) = lib.split_once('@') {
-        return (package_name.to_string(), version.to_string());
-    }
-
-    (lib, String::new())
+    println!("lib error with {}", lib);
+    panic!("error: parse library name error");
 }
 
 #[cfg(test)]
@@ -67,10 +70,6 @@ pub(crate) mod test_support {
             }
             fs::copy(fixture.as_ref(), &destination)?;
             Ok(destination)
-        }
-
-        pub(crate) fn project_root(&self) -> &Path {
-            &self.root
         }
     }
 
@@ -128,13 +127,5 @@ mod tests {
         let (lib_name, version) = parse_library_name(lib.to_owned());
         assert_eq!(lib_name, "ipaddr.js");
         assert_eq!(version, "1.9.1");
-    }
-
-    #[test]
-    fn parse_lib_preserves_comparator_range() {
-        let lib = "@scope/pkg@>=1.0.0 <2.0.0";
-        let (lib_name, version) = parse_library_name(lib.to_owned());
-        assert_eq!(lib_name, "@scope/pkg");
-        assert_eq!(version, ">=1.0.0 <2.0.0");
     }
 }

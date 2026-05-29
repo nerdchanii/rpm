@@ -1,6 +1,7 @@
 pub(crate) mod constraint;
 
 use constraint::LOCK_FILE_PATH;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -68,10 +69,13 @@ impl Dependency {
     }
 
     pub fn get_dependencies_name(&self) -> HashSet<String> {
+        let regex = Regex::new(r"^(?P<package_name>@?[^@]*)(@\^?(?P<version>.*))?$").unwrap();
         let mut dependencies = HashSet::new();
         for dep in self.dependencies.iter() {
-            let (name, _) = parse_library_name(dep.clone());
-            dependencies.insert(name);
+            if let Some(pkg_name) = regex.captures(dep) {
+                let name = pkg_name.name("package_name").map(|m| m.as_str()).unwrap();
+                dependencies.insert(name.to_string());
+            }
         }
         dependencies
     }
@@ -433,4 +437,3 @@ mod lock_file_test {
         assert!(!saved.contains("stale-package"));
     }
 }
-use crate::util::parse_library_name;
