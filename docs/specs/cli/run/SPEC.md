@@ -50,7 +50,3 @@ status. Script failures must preserve the child process status.
 
 Run-script verification should cover missing-script errors, child exit-code
 preservation, and PATH setup for project-local binaries.
-
-## Open Questions
-
-None currently.

@@ -14,6 +14,7 @@ related_adrs:
   - 0002-single-crate-cli-core-boundary
 related_issues:
   - 50
+  - 58
 ---
 
 # Spec: Resolver Strategy Boundary
@@ -99,7 +100,8 @@ on semver range behavior.
 ## Open Questions
 
 - Which Rust module owns the first `ResolutionStrategy` trait or equivalent
-  type?
+  type? Tracked by #58.
 - How should peer dependencies be represented before a peer-aware strategy
-  exists?
+  exists? Tracked by #58.
 - Should graph conflicts be reported as structured diagnostics before M1?
+  Tracked by #58.

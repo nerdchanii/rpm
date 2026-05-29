@@ -131,7 +131,7 @@ Last reviewed: YYYY-MM-DD
 
 ## Test Fixtures
 
-## Open Questions
+## Open Questions (Optional)
 ```
 
 ## Review Checklist
@@ -143,6 +143,7 @@ Before finishing any contract-affecting change, verify:
 - The SPEC defines observable contract, not incidental implementation detail.
 - Tests or fixtures cover the contract.
 - If the SPEC changed, the change explains why.
+- Any `Open Questions` left in an accepted SPEC have linked tracking issues.
 - Other docs link to the authoritative SPEC instead of redefining it.
 
 ## Reporting Format

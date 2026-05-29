@@ -14,6 +14,7 @@ related_adrs:
   - 0002-single-crate-cli-core-boundary
 related_issues:
   - 50
+  - 60
 ---
 
 # Spec: Installer Performance Baseline
@@ -112,8 +113,8 @@ must not be reported as a successful install.
 
 ## Open Questions
 
-- Which module owns the first installer measurement harness?
+- Which module owns the first installer measurement harness? Tracked by #60.
 - Should metadata fetch counts be collected through a fake registry API or a
-  resolver event log?
+  resolver event log? Tracked by #60.
 - What integrity format is authoritative before tarball verification is
-  implemented?
+  implemented? Tracked by #60.

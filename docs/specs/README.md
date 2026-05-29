@@ -198,7 +198,7 @@ Last reviewed: YYYY-MM-DD
 
 ## Test Fixtures
 
-## Open Questions
+## Open Questions (Optional)
 ```
 
 Documents may temporarily contain extra sections while the current SPEC set is
@@ -214,6 +214,9 @@ SPECs may include an `Open Questions` section.
 That section is allowed for questions that are still outside the active
 contract and are not currently blocking implementation or review.
 
+`Open Questions` is optional. Omit the section when there are no real
+unresolved follow-up questions.
+
 `Open Questions` should be used for:
 
 - deferred decisions that do not change today's contract
@@ -226,6 +229,10 @@ contract and are not currently blocking implementation or review.
 - decisions that reviewers must guess in order to approve code
 - behavior already established by code and tests
 - vague brainstorming with no contract relevance
+
+If an accepted SPEC keeps any open question, each item must have a linked issue
+for follow-up tracking. Questions that need eventual resolution but do not yet
+have an issue should not remain in an accepted SPEC.
 
 If implementation work becomes blocked by an `Open Question`, that question is
 no longer safe to leave open.

@@ -50,7 +50,12 @@ List the fixtures, snapshots, or targeted tests that verify this contract.
 
 If no fixture exists yet, say what verification should exist next.
 
-## Open Questions
+## Open Questions (Optional)
+
+Include this section only when there are real unresolved follow-up questions.
 
 Record only questions that are outside the active contract and do not block the
 current implementation or review.
+
+If an accepted SPEC keeps any open question, each item should link to a
+tracking issue.

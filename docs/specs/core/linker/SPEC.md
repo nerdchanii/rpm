@@ -70,7 +70,3 @@ Failed linking must not be reported as a successful install or script setup.
 
 Linker verification should cover unscoped and scoped dependency links plus
 destination-directory and symlink-creation failures.
-
-## Open Questions
-
-None currently.

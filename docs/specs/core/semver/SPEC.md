@@ -14,6 +14,7 @@ related_adrs:
   - 0002-single-crate-cli-core-boundary
 related_issues:
   - 50
+  - 59
 ---
 
 # Spec: Semver Resolution
@@ -122,6 +123,6 @@ Required fixture cases:
 
 ## Open Questions
 
-- Whether M1 supports npm dist-tags other than `latest`.
+- Whether M1 supports npm dist-tags other than `latest`. Tracked by #59.
 - Whether prerelease selection is unsupported or supported only when explicitly
-  requested.
+  requested. Tracked by #59.

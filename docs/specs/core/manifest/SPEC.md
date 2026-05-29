@@ -40,6 +40,9 @@ manifest content.
 Saving writes the complete current manifest and truncates old content. Save
 errors must be returned to callers with the manifest path.
 
+The full npm `package.json` schema is intentionally out of scope for this
+contract today.
+
 ## Error Cases
 
 Invalid JSON is an input error and must not be reported as a successful command.
@@ -49,7 +52,3 @@ panics.
 ## Test Fixtures
 
 Manifest fixtures live under `tests/fixtures/package_manifest/`.
-
-## Open Questions
-
-- The full npm `package.json` schema is intentionally not implemented yet.
