@@ -34,8 +34,9 @@ resolver implementation must pass.
 
 ## Contract
 
-#42 must implement npm-compatible semver selection with full `node-semver`
-compatibility as the behavior target. RPM must not define a permanent
+#42 must implement npm-compatible semver with full `node-semver` compatibility
+as the target. Compatibility includes observable range and version behavior and
+the public `node-semver` API surface. RPM must not define a permanent
 RPM-specific semver dialect.
 
 The semver implementation may land with fixtures grouped by behavior area, but
@@ -43,6 +44,11 @@ accepted #42 behavior must be measured against `node-semver` semantics for
 versions, comparators, ranges, wildcard and x-ranges, hyphen ranges, tilde,
 caret, range unions, prerelease handling, build metadata ordering, and invalid
 input handling.
+
+Accepted #42 API work must track the public `node-semver` operations. Rust
+internals may use Rust naming conventions and typed `Result` or `Option`
+returns, but the core must preserve enough operation shape to expose compatible
+Rust, WASM, or npm wrappers without redefining behavior.
 
 The M1 installer path depends on at least the following request forms:
 

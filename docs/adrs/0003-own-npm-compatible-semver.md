@@ -40,10 +40,10 @@ surface can be used as the reference for RPM's own implementation.
 
 RPM will own its npm-compatible semver implementation inside `core`.
 
-The compatibility target is full `node-semver` range and version behavior, not a
-small permanent subset. The implementation may land in stages, but accepted
-semver work must move toward `node-semver` compatibility instead of defining an
-RPM-specific range dialect.
+The compatibility target is full `node-semver` compatibility, including range
+and version behavior and the public `node-semver` API surface. The
+implementation may land in stages, but accepted semver work must move toward
+`node-semver` compatibility instead of defining an RPM-specific range dialect.
 
 This decision does not split semver into a separate Cargo crate yet. ADR 0002's
 single-crate `cli/core` boundary remains active: RPM should first implement and
@@ -60,6 +60,11 @@ a line-by-line port: it should preserve `node-semver` behavior while using an
 internal structure that is pure, maintainable, and performance-oriented for
 RPM's resolver and future crate extraction.
 
+API compatibility is part of the target. Internal Rust APIs may use Rust naming
+and typed return values while the implementation is still in-repo, but the
+module should retain enough `node-semver` operation shape to expose compatible
+Rust, WASM, or npm wrappers without redefining behavior later.
+
 RPM will not make an external Rust semver crate the long-lived source of truth
 for npm range behavior. External crates may still be used as temporary
 comparison tools or implementation aids when tests prove they match the active
@@ -72,6 +77,8 @@ SPEC.
   semantics and fixtures.
 - M1 semver work should not stop at an intentionally weak range subset when the
   issue scope calls for full compatibility.
+- Full compatibility includes the `node-semver` public API surface, not only the
+  resolver's immediate version-selection entry point.
 - Imported or derived `node-semver` fixtures are acceptable when ISC notices are
   preserved and provenance is clear.
 - Runtime code should optimize for Rust performance and resolver ergonomics
