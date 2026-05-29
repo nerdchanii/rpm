@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::core::semver::{self, SemverError};
 use crate::{api, common::constraint::CACHE_DIR};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -236,6 +237,32 @@ impl Registry {
             .or(self.dist.as_ref())
     }
 
+    pub fn select_version(&self, requested: &str) -> Result<String, SemverError> {
+        if requested.is_empty() || requested == "latest" {
+            if let Some(version) = self.get_latest_version() {
+                return Ok(version.to_owned());
+            }
+        }
+        let Some(versions) = self.versions.as_ref() else {
+            return self
+                .version
+                .as_ref()
+                .filter(|version| {
+                    requested.is_empty() || requested == "latest" || *version == requested
+                })
+                .cloned()
+                .ok_or_else(|| SemverError::UnsatisfiedRange {
+                    range: requested.to_string(),
+                });
+        };
+        let selected = semver::max_satisfying(versions.keys().map(String::as_str), requested)?;
+        selected
+            .map(str::to_string)
+            .ok_or_else(|| SemverError::UnsatisfiedRange {
+                range: requested.to_string(),
+            })
+    }
+
     pub fn get_dependencies_for_version(&self, version: &str) -> Vec<String> {
         self.version_metadata(version)
             .map(|metadata| metadata.get_dependencies())
@@ -276,12 +303,15 @@ impl Registry {
 
     /// download tarball from registry and return tarball bytes
     pub async fn download_tarball(&self, key: &str, version: &str) -> std::io::Result<()> {
-        let url = self.get_tarball_url().ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidData,
-                format!("missing tarball URL for {key}@{version}"),
-            )
-        })?;
+        let url = self
+            .get_dist_for_version(version)
+            .map(|dist| dist.get_tarball())
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    format!("missing tarball URL for {key}@{version}"),
+                )
+            })?;
         let mut bytes_file = api::get_tarball(&url).await?;
         let key = if key.contains("*") {
             key.replace("*", version)
@@ -471,5 +501,44 @@ mod tests {
             "https://registry.example.invalid/@rpm-fixture/alpha/-/alpha-1.0.0.tgz"
         );
         assert_eq!(alpha_dist.shasum, "fixture-alpha-1.0.0");
+    }
+
+    #[test]
+    fn selects_highest_matching_semver_baseline_versions() {
+        let root = fixture_path(&["install-projects", "semver-baseline", "registry"]);
+        let cases = [
+            ("@rpm-fixture/exact", "1.2.3", "1.2.3"),
+            ("@rpm-fixture/caret", "^1.2.3", "1.9.9"),
+            ("@rpm-fixture/caret-zero", "^0.2.0", "0.2.9"),
+            ("@rpm-fixture/tilde", "~1.2.3", "1.2.9"),
+            ("@rpm-fixture/wildcard", "*", "3.0.0"),
+            ("@rpm-fixture/wildcard-major", "1.x", "1.9.0"),
+            ("@rpm-fixture/wildcard-minor", "1.2.x", "1.2.9"),
+            ("@rpm-fixture/comparator", ">=1.0.0 <2.0.0", "1.5.0"),
+        ];
+
+        for (package, requested, expected) in cases {
+            let registry = load_registry_fixture(&root, package, expected);
+            assert_eq!(registry.select_version(requested).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn semver_selection_reports_unsatisfied_and_invalid_ranges() {
+        let unsatisfied_root =
+            fixture_path(&["install-projects", "semver-unsatisfied", "registry"]);
+        let unsatisfied =
+            load_registry_fixture(&unsatisfied_root, "@rpm-fixture/unsatisfied", "1.0.0");
+        let error = unsatisfied
+            .select_version(">=9.0.0 <10.0.0")
+            .expect_err("unsatisfied range should fail");
+        assert!(error.to_string().contains("unsatisfied range"));
+
+        let invalid_root = fixture_path(&["install-projects", "semver-invalid-range", "registry"]);
+        let invalid = load_registry_fixture(&invalid_root, "@rpm-fixture/invalid-range", "1.0.0");
+        let error = invalid
+            .select_version("=>1.0.0")
+            .expect_err("invalid range should fail");
+        assert!(error.to_string().contains("invalid range"));
     }
 }
