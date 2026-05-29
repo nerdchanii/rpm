@@ -382,11 +382,13 @@ mod tests {
     fn load_registry_fixture(root: &Path, package_name: &str, version: &str) -> Registry {
         let path = root.join(registry_fixture_file_name(package_name));
         let fixture = fs::read_to_string(&path).unwrap_or_else(|error| {
-            panic!("failed to read registry fixture {}: {error}", path.display())
+            panic!(
+                "failed to read registry fixture {}: {error}",
+                path.display()
+            )
         });
-        let registry: Registry = serde_json::from_str(&fixture).unwrap_or_else(|error| {
-            panic!("{} did not deserialize: {error}", path.display())
-        });
+        let registry: Registry = serde_json::from_str(&fixture)
+            .unwrap_or_else(|error| panic!("{} did not deserialize: {error}", path.display()));
         assert!(
             registry.version_metadata(version).is_some(),
             "{} is missing {package_name}@{version}",
