@@ -39,6 +39,30 @@ cargo test
 
 Use local scripts when they match the change you are making. CI remains the shared verification point for pull requests.
 
+## Local Git Hooks
+
+The repository includes an opt-in local hook path for fast guardrails before review.
+CI remains the source of enforcement.
+
+Install the repo-local hooks with:
+
+```sh
+bash scripts/install-git-hooks.sh
+```
+
+The installer only points your local clone at `.githooks/` through
+`git config --local core.hooksPath .githooks` and marks the hook scripts
+executable. It does not change tracked files outside the hook setup.
+
+Default hooks:
+
+- `pre-commit`: `cargo fmt --check`
+- `pre-push`: `cargo test`
+
+If you need to bypass the local guardrail for a one-off case, use normal Git hook
+escape hatches such as `--no-verify`. Do not treat that as a replacement for the
+repository validation gate.
+
 ## Commits
 
 Use atomic commits:
