@@ -1,4 +1,4 @@
-# Spec: Workspace Layout
+# Convention: Workspace Layout
 
 Status: Draft
 Owner: repository
@@ -10,7 +10,7 @@ RPM needs explicit ownership boundaries before large behavior changes move code
 across CLI parsing, resolver behavior, registry access, lockfile handling, and
 `node_modules` linking.
 
-## Contract
+## Rule
 
 The repository remains a single Cargo package for now.
 

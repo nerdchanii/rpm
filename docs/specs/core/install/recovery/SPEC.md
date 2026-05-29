@@ -1,8 +1,26 @@
+---
+spec_id: install_recovery
+title: Install Recovery
+status: draft
+owner: core/install/recovery
+last_reviewed: 2026-05-29
+authors:
+  - nerdchanii
+deciders:
+  - nerdchanii
+consulted: []
+informed: []
+related_adrs:
+  - 0002-single-crate-cli-core-boundary
+related_issues:
+  - 50
+---
+
 # Spec: Install Recovery
 
 Status: Draft
-Owner: installer/recovery
-Last reviewed: 2026-05-28
+Owner: core/install/recovery
+Last reviewed: 2026-05-29
 
 ## Purpose
 
@@ -31,3 +49,13 @@ reported as successful downloads.
 A failed resolve, fetch, extract, or link phase must leave the previous
 `node_modules` directory untouched. A failed write phase must not be reported as
 a successful install.
+
+## Test Fixtures
+
+Recovery verification should cover staged replacement success plus resolve,
+extract, link, and write failures that leave the previous `node_modules`
+contents intact.
+
+## Open Questions
+
+None currently.
