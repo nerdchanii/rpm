@@ -127,3 +127,34 @@ The performance regression is expected for this checkpoint: the benchmark now
 exercises the expanded compatibility implementation and facade split, not only
 the earlier optimized subset. This benchmark remains useful as the new
 standalone-ready baseline for future parser and range-evaluation optimization.
+
+## Post-Optimization: Zero-Suffix Range Evaluation
+
+Change: range evaluation no longer allocates a temporary `Version` for
+comparators that need the npm-compatible virtual `-0` suffix during matching.
+`max_satisfying` and `min_satisfying` also compute derived version options once
+per call instead of once per candidate version.
+
+Validation after the change:
+
+- `cargo fmt --check`
+- `cargo test semver`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+
+Five post-build samples with the same command and iteration count:
+
+| Operation | Mean ns/iter | Min ns/iter | Max ns/iter | Previous non-outlier mean | Delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| parse | 3435 | 3265 | 3606 | 3743 | -8.2% |
+| compare | 2807 | 2704 | 2987 | 3119 | -10.0% |
+| satisfies | 8697 | 7957 | 9084 | 9197 | -5.4% |
+| max_satisfying | 15466 | 13284 | 16603 | 19850 | -22.1% |
+
+Raw samples, in run order:
+
+| Operation | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| parse | 3435 | 3265 | 3275 | 3606 | 3597 |
+| compare | 2704 | 2728 | 2767 | 2987 | 2851 |
+| satisfies | 8918 | 8961 | 9084 | 8585 | 7957 |
+| max_satisfying | 16603 | 16156 | 16385 | 13284 | 14900 |

@@ -58,11 +58,10 @@ where
     I: IntoIterator<Item = &'a str>,
 {
     let range = Range::parse_with_options(range, options)?;
+    let version_options = version_options_from_range(options);
     let mut selected: Option<(&'a str, Version)> = None;
     for raw_version in versions {
-        let Ok(version) =
-            Version::parse_with_options(raw_version, version_options_from_range(options))
-        else {
+        let Ok(version) = Version::parse_with_options(raw_version, version_options) else {
             continue;
         };
         if !range.satisfies_with_options(&version, options) {
@@ -92,11 +91,10 @@ where
     I: IntoIterator<Item = &'a str>,
 {
     let range = Range::parse_with_options(range, options)?;
+    let version_options = version_options_from_range(options);
     let mut selected: Option<(&'a str, Version)> = None;
     for raw_version in versions {
-        let Ok(version) =
-            Version::parse_with_options(raw_version, version_options_from_range(options))
-        else {
+        let Ok(version) = Version::parse_with_options(raw_version, version_options) else {
             continue;
         };
         if !range.satisfies_with_options(&version, options) {

@@ -1,7 +1,9 @@
+use std::cmp::Ordering;
+
 use crate::core::resolver::semver::RangeOptions;
 
 use super::{Comparator, ComparatorOp, ComparatorSet, Range};
-use crate::core::resolver::semver::version::Version;
+use crate::core::resolver::semver::version::{PrereleaseIdentifier, Version};
 
 impl Range {
     /// Returns whether `version` satisfies this range with default options.
@@ -44,19 +46,19 @@ impl Comparator {
         {
             return version >= &self.version.next_prerelease();
         }
-        let comparison_version;
-        let comparator_version = if self.include_zero_suffix {
-            comparison_version = self.version.next_prerelease();
-            &comparison_version
+        let ordering = if self.include_zero_suffix {
+            compare_with_zero_suffix(version, &self.version)
         } else {
-            &self.version
+            version.cmp(&self.version)
         };
         match self.op {
-            ComparatorOp::Exact => version == comparator_version,
-            ComparatorOp::GreaterThan => version > comparator_version,
-            ComparatorOp::GreaterThanOrEqual => version >= comparator_version,
-            ComparatorOp::LessThan => version < comparator_version,
-            ComparatorOp::LessThanOrEqual => version <= comparator_version,
+            ComparatorOp::Exact => ordering == Ordering::Equal,
+            ComparatorOp::GreaterThan => ordering == Ordering::Greater,
+            ComparatorOp::GreaterThanOrEqual => {
+                matches!(ordering, Ordering::Greater | Ordering::Equal)
+            }
+            ComparatorOp::LessThan => ordering == Ordering::Less,
+            ComparatorOp::LessThanOrEqual => matches!(ordering, Ordering::Less | Ordering::Equal),
         }
     }
 
@@ -66,5 +68,48 @@ impl Comparator {
         } else {
             self.version.clone()
         }
+    }
+}
+
+fn compare_with_zero_suffix(version: &Version, comparator: &Version) -> Ordering {
+    version.compare_main(comparator).then_with(|| {
+        compare_prerelease_with_zero_suffix(&version.prerelease, &comparator.prerelease)
+    })
+}
+
+fn compare_prerelease_with_zero_suffix(
+    version: &[PrereleaseIdentifier],
+    comparator: &[PrereleaseIdentifier],
+) -> Ordering {
+    if version.is_empty() {
+        return Ordering::Greater;
+    }
+    for (left, right) in version.iter().zip(comparator.iter()) {
+        let ordering = compare_prerelease_identifier(left, right);
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    if version.len() <= comparator.len() {
+        return version.len().cmp(&(comparator.len() + 1));
+    }
+    compare_prerelease_identifier(
+        &version[comparator.len()],
+        &PrereleaseIdentifier::Numeric(0),
+    )
+    .then_with(|| version.len().cmp(&(comparator.len() + 1)))
+}
+
+fn compare_prerelease_identifier(
+    left: &PrereleaseIdentifier,
+    right: &PrereleaseIdentifier,
+) -> Ordering {
+    match (left, right) {
+        (PrereleaseIdentifier::Numeric(left), PrereleaseIdentifier::Numeric(right)) => {
+            left.cmp(right)
+        }
+        (PrereleaseIdentifier::Numeric(_), PrereleaseIdentifier::Text(_)) => Ordering::Less,
+        (PrereleaseIdentifier::Text(_), PrereleaseIdentifier::Numeric(_)) => Ordering::Greater,
+        (PrereleaseIdentifier::Text(left), PrereleaseIdentifier::Text(right)) => left.cmp(right),
     }
 }
