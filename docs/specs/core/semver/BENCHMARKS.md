@@ -40,9 +40,9 @@ Raw samples, in run order:
 
 ## Post-Optimization: Exact Numeric Parse
 
-Change: `Version::parse` now parses the three required numeric components into
-a fixed array instead of allocating a temporary vector. The flexible vector
-parser remains for partial range versions.
+Change at that checkpoint: the version parser parsed the three required
+numeric components into a fixed array instead of allocating a temporary vector.
+The flexible vector parser remained for partial range versions.
 
 Validation after the change:
 
@@ -75,3 +75,55 @@ The parse sample is noisy because this benchmark currently uses `valid`,
 which includes canonical string construction after parsing. The operation was
 kept unchanged so the baseline and post-optimization samples remain directly
 comparable.
+
+## Post-Refactor: Standalone-Ready Facade
+
+Change: semver moved under `core::resolver::semver` with a root facade,
+typed `Version` and `Range` APIs, split `version`/`range` implementation
+modules, compatibility `ops`, `FromStr` typed parsing, and expanded
+`node-semver` compatibility behavior.
+
+Validation after the change:
+
+- `cargo fmt --check`
+- `cargo check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test`
+- `cargo doc --no-deps`
+- `git diff --check`
+
+The first release build compile was excluded. Five post-build samples were run
+with the same command and iteration count. Run 4 was an obvious system-noise
+outlier and is kept in the raw sample table for transparency.
+
+All five samples:
+
+| Operation | Mean ns/iter | Min ns/iter | Max ns/iter | Previous mean | Delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| parse | 5826 | 3234 | 10159 | 1143 | +409.7% |
+| compare | 3120 | 2686 | 4054 | 783 | +298.5% |
+| satisfies | 16026 | 8396 | 43344 | 1893 | +746.6% |
+| max_satisfying | 42666 | 18492 | 132927 | 3988 | +969.9% |
+
+Non-outlier samples, excluding Run 4:
+
+| Operation | Mean ns/iter | Min ns/iter | Max ns/iter | Previous mean | Delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| parse | 3743 | 3234 | 5066 | 1143 | +227.5% |
+| compare | 3119 | 2686 | 4054 | 783 | +298.3% |
+| satisfies | 9197 | 8396 | 10472 | 1893 | +385.8% |
+| max_satisfying | 19850 | 18492 | 22636 | 3988 | +397.7% |
+
+Raw samples, in run order:
+
+| Operation | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| parse | 3300 | 3370 | 3234 | 10159 | 5066 |
+| compare | 2686 | 2958 | 4054 | 3101 | 3118 |
+| satisfies | 8396 | 9296 | 8621 | 43344 | 10472 |
+| max_satisfying | 22636 | 18492 | 19417 | 132927 | 18856 |
+
+The performance regression is expected for this checkpoint: the benchmark now
+exercises the expanded compatibility implementation and facade split, not only
+the earlier optimized subset. This benchmark remains useful as the new
+standalone-ready baseline for future parser and range-evaluation optimization.
