@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rpm::core::semver;
+use rpm::core::resolver::semver;
 
 const ITERATIONS: usize = 50_000;
 

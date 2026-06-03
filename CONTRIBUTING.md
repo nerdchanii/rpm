@@ -57,7 +57,7 @@ same baseline Cargo checks that run in CI pass locally:
 ```sh
 cargo fmt --check
 cargo check
-cargo clippy --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
@@ -81,6 +81,7 @@ executable. It does not change tracked files outside the hook setup.
 Default hooks:
 
 - `pre-commit`: `cargo fmt --check`
+- `pre-push`: `cargo clippy --all-targets --all-features -- -D warnings`
 - `pre-push`: `cargo test`
 
 If you need to bypass the local guardrail for a one-off case, use normal Git hook

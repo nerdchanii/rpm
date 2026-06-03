@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::core::semver::{self, SemverError};
+use crate::core::resolver::semver::{self, SemverError};
 use crate::{api, common::constraint::CACHE_DIR};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -323,7 +323,11 @@ impl Registry {
     }
     /// get dependencies from registry
     /// return dependencies vector
-    /// example: ["socket-store@0.0.1", "socket.io-client@1.22.3"]
+    /// example:
+    ///
+    /// ```text
+    /// ["socket-store@0.0.1", "socket.io-client@1.22.3"]
+    /// ```
     pub fn get_dependencies(&self) -> Vec<String> {
         // if versions is "" then version to latest
         if let (Some(_), Some(dist_tags)) = (&self.versions, &self.dist_tags) {

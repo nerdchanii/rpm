@@ -2,8 +2,8 @@
 spec_id: semver_resolution
 title: Semver Resolution
 status: draft
-owner: core/semver
-last_reviewed: 2026-05-30
+owner: core/resolver/semver
+last_reviewed: 2026-06-03
 authors:
   - nerdchanii
 deciders:
@@ -13,6 +13,7 @@ informed: []
 related_adrs:
   - 0002-single-crate-cli-core-boundary
   - 0003-own-npm-compatible-semver
+  - 0004-semver-standalone-ready-boundary
 related_issues:
   - 42
   - 50
@@ -24,8 +25,8 @@ related_issues:
 # Spec: Semver Resolution
 
 Status: Draft
-Owner: core/semver
-Last reviewed: 2026-05-30
+Owner: core/resolver/semver
+Last reviewed: 2026-06-03
 
 ## Purpose
 
@@ -73,29 +74,23 @@ writes.
 The lockfile contract already supports this baseline by storing both
 `requested` and resolved `version` fields for each package record.
 
-## Dependency Decision
+## Compatibility Authority
 
-ADR 0003 decides that RPM owns its npm-compatible semver implementation inside
-`core`. The long-lived behavior source of truth is this SPEC plus
-`node-semver` compatibility fixtures, not an external Rust semver crate.
-
-Semver remains inside the current single Cargo package while the compatibility
-boundary is implemented. Extracting and publishing a separate crate is deferred
-until after the in-repo implementation is stable and covered by compatibility
-fixtures.
-
-External crates may be used as comparison tools or temporary implementation
-aids only when tests prove they match the active `node-semver` compatibility
-contract.
-
-If RPM copies or derives code, tests, or fixtures from `node-semver`, the
-repository must preserve the required ISC license notice.
+ADR 0003 decides that RPM owns its npm-compatible semver behavior. The
+long-lived behavior source of truth is this SPEC plus `node-semver`
+compatibility fixtures.
 
 Copied or derived `node-semver` fixtures are allowed for #42 when they are kept
-with clear provenance and the required ISC notice. Runtime semver code should
-not be a mandatory line-by-line port: it may use a Rust-native parser,
-intermediate representation, cache strategy, or selection algorithm when the
-compatibility fixtures prove the same observable behavior.
+with clear provenance and the required ISC notice.
+
+## Resolver Boundary
+
+Non-semver RPM code must call semver through the semver root facade. The
+resolver and registry must not duplicate semver parsing or range evaluation
+logic.
+
+This boundary is intended to keep version selection centralized. ADR 0004 owns
+the implementation module layout and future extraction direction.
 
 ## Replacement Targets
 

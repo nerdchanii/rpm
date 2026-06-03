@@ -4,4 +4,4 @@
 //! access, lockfile handling, install flow, linking, and script execution.
 //! Existing core-owned modules remain in their legacy paths until later moves.
 
-pub mod semver;
+pub mod resolver;
