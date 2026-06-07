@@ -291,6 +291,13 @@ fn rejects_invalid_ranges() {
 }
 
 #[test]
+fn rejects_dist_tags_as_semver_ranges() {
+    assert_eq!(valid_range("latest"), None);
+    assert!(satisfies("999.0.0", "latest").is_err());
+    assert!(max_satisfying(["999.0.0"], "latest").is_err());
+}
+
+#[test]
 fn passes_derived_node_semver_valid_version_subset() {
     for version in node_semver_subset().valid_versions {
         assert!(valid(&version).is_some(), "{version} should be valid");

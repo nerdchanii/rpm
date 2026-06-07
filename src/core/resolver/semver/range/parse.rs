@@ -5,7 +5,7 @@ use super::{ComparatorSet, Range};
 
 pub(crate) fn parse_range(input: &str, options: RangeOptions) -> Result<Range, SemverError> {
     let input = input.trim();
-    if input.is_empty() || input == "latest" {
+    if input.is_empty() {
         return Ok(any_range());
     }
     let mut sets = Vec::new();
