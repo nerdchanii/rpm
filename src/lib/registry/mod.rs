@@ -19,6 +19,10 @@ impl DistTags {
     fn get_latest(&self) -> Option<&String> {
         self.inner.get("latest")
     }
+
+    fn get(&self, name: &str) -> Option<&String> {
+        self.inner.get(name)
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RepositoryObject {
@@ -242,6 +246,13 @@ impl Registry {
             if let Some(version) = self.get_latest_version() {
                 return Ok(version.to_owned());
             }
+        }
+        if let Some(version) = self
+            .dist_tags
+            .as_ref()
+            .and_then(|dist_tags| dist_tags.get(requested))
+        {
+            return Ok(version.to_owned());
         }
         let Some(versions) = self.versions.as_ref() else {
             return self
@@ -525,6 +536,15 @@ mod tests {
             let registry = load_registry_fixture(&root, package, expected);
             assert_eq!(registry.select_version(requested).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn selects_dist_tag_before_semver_range_evaluation() {
+        let root = fixture_path(&["registry", "shared-transitive", "metadata"]);
+        let registry = load_registry_fixture(&root, "@rpm-fixture/beta", "1.0.0");
+
+        assert_eq!(registry.select_version("latest").unwrap(), "1.0.0");
+        assert_eq!(registry.select_version("next").unwrap(), "1.0.0");
     }
 
     #[test]
