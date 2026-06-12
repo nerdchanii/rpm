@@ -1,1 +1,1 @@
-pub const LOCK_FILE_PATH: &'static str = "rpm.lock";
+pub const LOCK_FILE_PATH: &str = "rpm.lock";

@@ -24,6 +24,8 @@ case "$hook_name" in
     run_gate "cargo fmt --check" cargo fmt --check
     ;;
   pre-push)
+    run_gate "cargo clippy --all-targets --all-features -- -D warnings" \
+      cargo clippy --all-targets --all-features -- -D warnings
     run_gate "cargo test" cargo test
     ;;
   *)

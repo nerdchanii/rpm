@@ -2,8 +2,8 @@
 spec_id: semver_resolution
 title: Semver Resolution
 status: draft
-owner: core/semver
-last_reviewed: 2026-05-29
+owner: core/resolver/semver
+last_reviewed: 2026-06-12
 authors:
   - nerdchanii
 deciders:
@@ -12,29 +12,48 @@ consulted: []
 informed: []
 related_adrs:
   - 0002-single-crate-cli-core-boundary
+  - 0003-own-npm-compatible-semver
+  - 0004-semver-standalone-ready-boundary
 related_issues:
+  - 42
   - 50
   - 59
+  - 67
+  - 68
 ---
 
 # Spec: Semver Resolution
 
 Status: Draft
-Owner: core/semver
-Last reviewed: 2026-05-29
+Owner: core/resolver/semver
+Last reviewed: 2026-06-12
 
 ## Purpose
 
 RPM must resolve dependency ranges with npm-compatible semver behavior before
 installer work depends on selected package versions. The semver contract defines
-the M1 baseline and the fixtures that future resolver implementation must pass.
+the compatibility target, resolver-facing behavior, and fixtures that future
+resolver implementation must pass.
 
 ## Contract
 
-M1 must implement the first supported semver range baseline before installer
-behavior depends on range selection.
+#42 must implement npm-compatible semver with full `node-semver` compatibility
+as the target. Compatibility includes observable range and version behavior and
+the public `node-semver` API surface. RPM must not define a permanent
+RPM-specific semver dialect.
 
-The M1 baseline supports these request forms:
+The semver implementation may land with fixtures grouped by behavior area, but
+accepted #42 behavior must be measured against `node-semver` semantics for
+versions, comparators, ranges, wildcard and x-ranges, hyphen ranges, tilde,
+caret, range unions, prerelease handling, build metadata ordering, and invalid
+input handling.
+
+Accepted #42 API work must track the public `node-semver` operations. Rust
+internals may use Rust naming conventions and typed `Result` or `Option`
+returns, but the core must preserve enough operation shape to expose compatible
+Rust, WASM, or npm wrappers without redefining behavior.
+
+The M1 installer path depends on at least the following request forms:
 
 - exact versions, for example `1.2.3`
 - caret ranges, for example `^1.2.3`
@@ -44,9 +63,24 @@ The M1 baseline supports these request forms:
 - common comparator ranges, for example `>=1.0.0 <2.0.0`
 
 For each supported request, the version selector chooses the highest matching
-stable version from npm registry metadata. The selected version is recorded in
-lockfile `version`; the original request text is preserved in lockfile
-`requested`.
+version from npm registry metadata according to `node-semver` range semantics.
+The selected version is recorded in lockfile `version`; the original request
+text is preserved in lockfile `requested`.
+
+npm dist-tags are registry metadata selectors, not semver ranges. Registry
+version selection must resolve named dist-tags, including `latest` and other
+published tags such as `next` or `beta`, before falling back to semver range
+evaluation. The semver facade must keep `node-semver` behavior for dist-tag
+strings: `latest`, `next`, `beta`, and other tag names are invalid semver
+ranges.
+
+Prerelease range behavior follows `node-semver` default semantics. RPM
+dependency range selection uses default range options and must not globally
+enable prerelease matching for ordinary ranges. Prerelease versions participate
+when the requested range explicitly allows them according to `node-semver`, for
+example by naming a prerelease comparator for the same version tuple. A registry
+dist-tag may still resolve directly to a prerelease version because dist-tag
+resolution happens before semver range evaluation.
 
 Unsatisfied ranges and invalid ranges are resolver failures. They must fail
 before tarball download, extraction, linking, lockfile writes, or manifest
@@ -55,37 +89,51 @@ writes.
 The lockfile contract already supports this baseline by storing both
 `requested` and resolved `version` fields for each package record.
 
-## Dependency Decision
+## Compatibility Authority
 
-The Rust semver/range dependency is explicitly deferred to the M1 resolver
-implementation spike. The dependency must be chosen by comparing npm-compatible
-range behavior against the fixtures in
-`tests/fixtures/install-projects/semver-baseline/`, rather than by matching only
-Cargo semver behavior.
+ADR 0003 decides that RPM owns its npm-compatible semver behavior. The
+long-lived behavior source of truth is this SPEC plus `node-semver`
+compatibility fixtures.
 
-A candidate dependency must preserve npm-compatible caret, tilde, wildcard, and
-comparator semantics or the implementation must add a compatibility layer around
-it. The default should be a Node/npm-compatible Rust range library, not a
-Cargo-oriented semver parser, unless fixture results prove compatibility.
+Copied or derived `node-semver` fixtures are allowed for #42 when they are kept
+with clear provenance and the required ISC notice.
+
+## Resolver Boundary
+
+Non-semver RPM code must call semver through the semver root facade for version
+and range behavior. The resolver and registry must not duplicate semver parsing
+or range evaluation logic.
+
+Registry code owns npm dist-tag interpretation. A request that matches a
+registry `dist-tags` key is resolved to the tag target version at the registry
+boundary. Only requests that are not registry dist-tags are evaluated as semver
+ranges.
+
+This boundary is intended to keep version selection centralized. ADR 0004 owns
+the implementation module layout and future extraction direction.
 
 ## Replacement Targets
 
-Current ad hoc normalization is a replacement target, not the resolver
-contract:
+Remaining latest-tag fallback helpers are replacement targets, not standalone
+resolver contracts:
 
-- `src/lib/command/working_process/add.rs::registry_request_from_requested`
-  strips `^` and `~` and chooses the last disjunct after `||`.
-- `src/lib/api/mod.rs::get_registry` strips `^` and `~` and maps `*` to
-  `latest` before making a registry request.
-- `src/lib/util/mod.rs::parse_library_name` truncates comparator expressions
-  such as `>=1.0.0 <2.0.0` before resolver policy can inspect them.
-- `src/lib/lockfile/mod.rs::Dependency::get_dependencies_name` extracts names
-  with a regex that special-cases caret text.
 - `src/lib/registry/mod.rs::Registry::get_latest_version` is only a latest-tag
-  helper and must not stand in for highest matching version selection.
+  helper. It must not stand in for highest matching version selection or for the
+  general named dist-tag selection boundary.
 
 These compatibility paths may remain only until the active M1 resolver work
 replaces them with a single version selection boundary.
+
+## API Safety
+
+Production semver code must not panic on user-controlled version or range
+input. Parsing, comparison, satisfaction, and selection APIs must report invalid
+input, unsupported syntax, and unsatisfied ranges through typed errors or
+explicit non-match results.
+
+Do not add `panic!`, `unwrap`, or `expect` in production semver code except for
+compile-time constants or impossible internal invariants documented with a short
+comment. Tests may use them.
 
 ## Error Cases
 
@@ -102,6 +150,18 @@ The success baseline fixture is
 `tests/fixtures/install-projects/semver-baseline/`. It defines direct dependency
 requests, offline registry metadata, and expected selected package records for a
 project that should resolve completely.
+
+The derived `node-semver` compatibility subset lives under
+`tests/fixtures/semver/node-semver/`. This fixture group is separate from
+RPM-authored resolver fixtures, records upstream provenance, and is covered by
+the ISC notice in `THIRD_PARTY_NOTICES.md`.
+
+#42 must add or adapt additional fixtures that cover the full `node-semver`
+compatibility target. Fixture groups may be split by behavior area so failures
+remain readable.
+
+Imported or derived `node-semver` fixture groups must be clearly separated from
+RPM-authored fixtures and must preserve the required ISC notice.
 
 Failing resolver fixtures are separate project scenarios:
 
@@ -123,6 +183,7 @@ Required fixture cases:
 
 ## Open Questions
 
-- Whether M1 supports npm dist-tags other than `latest`. Tracked by #59.
-- Whether prerelease selection is unsupported or supported only when explicitly
-  requested. Tracked by #59.
+- Whether future JavaScript wrappers expose `node-semver` `coerce` behavior for
+  JavaScript-only object and function inputs. Tracked by #67.
+- Whether remaining advanced loose-mode fixture cases are Rust-core behavior,
+  wrapper behavior, or intentionally not applicable. Tracked by #68.
