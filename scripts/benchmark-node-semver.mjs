@@ -138,9 +138,14 @@ function run(operation) {
 
 function installNodeSemver(version) {
   const prefix = mkdtempSync(join(tmpdir(), 'rpm-node-semver-bench-'));
-  execFileSync('npm', ['install', '--silent', '--prefix', prefix, `semver@${version}`], {
-    stdio: 'inherit',
-  });
+  try {
+    execFileSync('npm', ['install', '--silent', '--prefix', prefix, `semver@${version}`], {
+      stdio: 'inherit',
+    });
+  } catch (error) {
+    rmSync(prefix, { recursive: true, force: true });
+    throw error;
+  }
   return prefix;
 }
 
