@@ -20,7 +20,9 @@ const warmupSamples = envPositiveInteger(
   'RPM_SEMVER_BENCH_WARMUP_SAMPLES',
   DEFAULT_WARMUP_SAMPLES,
 );
-const moduleDir = process.env.NODE_SEMVER_MODULE_DIR || installNodeSemver(corpus.nodeSemverVersion);
+const moduleDir = process.env.NODE_SEMVER_MODULE_DIR
+  ? resolve(process.env.NODE_SEMVER_MODULE_DIR)
+  : installNodeSemver(corpus.nodeSemverVersion);
 const require = createRequire(join(moduleDir, 'benchmark-node-semver.cjs'));
 const semver = require('semver');
 const operations = [
