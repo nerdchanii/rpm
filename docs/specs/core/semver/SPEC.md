@@ -3,7 +3,7 @@ spec_id: semver_resolution
 title: Semver Resolution
 status: draft
 owner: core/resolver/semver
-last_reviewed: 2026-06-03
+last_reviewed: 2026-06-12
 authors:
   - nerdchanii
 deciders:
@@ -26,7 +26,7 @@ related_issues:
 
 Status: Draft
 Owner: core/resolver/semver
-Last reviewed: 2026-06-03
+Last reviewed: 2026-06-12
 
 ## Purpose
 
@@ -67,6 +67,21 @@ version from npm registry metadata according to `node-semver` range semantics.
 The selected version is recorded in lockfile `version`; the original request
 text is preserved in lockfile `requested`.
 
+npm dist-tags are registry metadata selectors, not semver ranges. Registry
+version selection must resolve named dist-tags, including `latest` and other
+published tags such as `next` or `beta`, before falling back to semver range
+evaluation. The semver facade must keep `node-semver` behavior for dist-tag
+strings: `latest`, `next`, `beta`, and other tag names are invalid semver
+ranges.
+
+Prerelease range behavior follows `node-semver` default semantics. RPM
+dependency range selection uses default range options and must not globally
+enable prerelease matching for ordinary ranges. Prerelease versions participate
+when the requested range explicitly allows them according to `node-semver`, for
+example by naming a prerelease comparator for the same version tuple. A registry
+dist-tag may still resolve directly to a prerelease version because dist-tag
+resolution happens before semver range evaluation.
+
 Unsatisfied ranges and invalid ranges are resolver failures. They must fail
 before tarball download, extraction, linking, lockfile writes, or manifest
 writes.
@@ -85,20 +100,26 @@ with clear provenance and the required ISC notice.
 
 ## Resolver Boundary
 
-Non-semver RPM code must call semver through the semver root facade. The
-resolver and registry must not duplicate semver parsing or range evaluation
-logic.
+Non-semver RPM code must call semver through the semver root facade for version
+and range behavior. The resolver and registry must not duplicate semver parsing
+or range evaluation logic.
+
+Registry code owns npm dist-tag interpretation. A request that matches a
+registry `dist-tags` key is resolved to the tag target version at the registry
+boundary. Only requests that are not registry dist-tags are evaluated as semver
+ranges.
 
 This boundary is intended to keep version selection centralized. ADR 0004 owns
 the implementation module layout and future extraction direction.
 
 ## Replacement Targets
 
-Remaining latest-tag fallback is a replacement target, not the resolver
-contract:
+Remaining latest-tag fallback helpers are replacement targets, not standalone
+resolver contracts:
 
 - `src/lib/registry/mod.rs::Registry::get_latest_version` is only a latest-tag
-  helper and must not stand in for highest matching version selection.
+  helper. It must not stand in for highest matching version selection or for the
+  general named dist-tag selection boundary.
 
 These compatibility paths may remain only until the active M1 resolver work
 replaces them with a single version selection boundary.
@@ -162,7 +183,6 @@ Required fixture cases:
 
 ## Open Questions
 
-- Whether M1 supports npm dist-tags other than `latest`. Tracked by #59.
 - Whether future JavaScript wrappers expose `node-semver` `coerce` behavior for
   JavaScript-only object and function inputs. Tracked by #67.
 - Whether remaining advanced loose-mode fixture cases are Rust-core behavior,

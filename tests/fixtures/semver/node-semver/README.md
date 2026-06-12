@@ -104,7 +104,8 @@ outside this Rust-core subset:
 
 - Remaining advanced loose-mode fixture inventory and classification is
   tracked by #68.
-- Prerelease/dist-tag policy questions are tracked by #59.
+- Dist-tags are registry metadata selectors, not semver ranges; that boundary
+  is defined in `docs/specs/core/semver/SPEC.md`.
 - JavaScript-only `coerce` object and function input behavior is tracked by
   #67 because those value kinds do not map directly to the typed Rust string
   and number APIs.
