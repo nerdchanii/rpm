@@ -9,6 +9,3 @@ node_modules/
 *.zip
 dist/
 build/
-
-# Generated benchmark history
-benches/histories/
