@@ -21,10 +21,38 @@ Keeping the corpus in one JSON file makes the Rust and JavaScript samples
 directly comparable without mutating package manifests, lockfiles, `.rpm`, or
 `node_modules`.
 
+## History Runner
+
+```sh
+node scripts/benchmark-semver.mjs
+```
+
+The history runner executes both benchmark implementations, parses their
+machine-readable output, computes per-operation summary statistics, and writes
+the results under `benches/histories/`.
+
+Each run creates the next available dated directory:
+
+```text
+benches/histories/YYYY-MM-DD-000/benchmarks.json
+benches/histories/YYYY-MM-DD-000/benchmark.svg
+```
+
+If `YYYY-MM-DD-000` already exists, the suffix advances to `-001`, `-002`, and
+so on. `benchmarks.json` stores raw runner output, metadata, per-operation
+samples, summary statistics, and Rust-vs-node comparison ratios.
+`benchmark.svg` renders the mean `ns_per_iter` values for quick visual review.
+
+For quick local validation:
+
+```sh
+RPM_SEMVER_BENCH_ITERATIONS=10 RPM_SEMVER_BENCH_SAMPLES=1 RPM_SEMVER_BENCH_WARMUP_SAMPLES=1 node scripts/benchmark-semver.mjs
+```
+
 ## Rust Runner
 
 ```sh
-cargo bench --bench semver
+cargo bench --bench semver --quiet
 ```
 
 The Rust runner records implementation metadata, target OS/architecture,
