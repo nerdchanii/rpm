@@ -21,6 +21,25 @@ Keeping the corpus in one JSON file makes the Rust and JavaScript samples
 directly comparable without mutating package manifests, lockfiles, `.rpm`, or
 `node_modules`.
 
+## Runner Roles
+
+The benchmark suite has two implementation runners and one history runner:
+
+```text
+benches/semver.rs                    # RPM Rust implementation runner
+scripts/benchmark-node-semver.mjs    # node-semver implementation runner
+scripts/benchmark-semver.mjs         # history/report generator
+```
+
+The implementation runners measure one semver implementation and print a
+stable CSV-like stream to stdout. The history runner executes both
+implementation runners, parses that stream, computes aggregate metrics, and
+writes history artifacts.
+
+Use the history runner for normal benchmark captures. Use the implementation
+runners directly only when debugging one side of the comparison or checking the
+raw machine-readable output.
+
 ## History Runner
 
 ```sh
@@ -42,6 +61,29 @@ If `YYYY-MM-DD-000` already exists, the suffix advances to `-001`, `-002`, and
 so on. `benchmarks.json` stores raw runner output, metadata, per-operation
 samples, summary statistics, and Rust-vs-node comparison ratios.
 `benchmark.svg` renders the mean `ns_per_iter` values for quick visual review.
+
+The JSON report uses this shape:
+
+```text
+schemaVersion
+generatedAt
+startedAt
+outputDir
+history
+settings
+commands
+runs
+summaries
+comparisons
+```
+
+Important fields:
+
+- `runs`: raw per-run data, including runner metadata, samples, and stdout
+- `summaries`: mean, median, min, max, standard deviation, and sample count per
+  operation
+- `comparisons`: operation-level Rust and node mean `ns_per_iter` values plus
+  Rust-vs-node speedup ratio
 
 For quick local validation:
 
@@ -89,12 +131,17 @@ RPM_SEMVER_BENCH_ITERATIONS=10 RPM_SEMVER_BENCH_SAMPLES=1 RPM_SEMVER_BENCH_WARMU
 Both runners emit CSV-like rows:
 
 ```text
+semver benchmark suite=representative
 metadata,key,value
 metadata,implementation,rpm-rust
 metadata,iterations,50000
 name,sample,total_ms,ns_per_iter
 version_parse,1,123.456,2469
 ```
+
+The history runner depends on this stdout contract. If an implementation runner
+changes its output columns, update `scripts/benchmark-semver.mjs` and this
+document in the same patch.
 
 `ns_per_iter` is the elapsed time for one full pass over the operation's corpus.
 All samples are recorded. If a run contains an obvious system-noise outlier,
