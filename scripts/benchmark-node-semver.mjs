@@ -103,7 +103,11 @@ function benchRangeParse() {
 function benchInvalidRange() {
   for (let index = 0; index < iterations; index += 1) {
     for (const range of corpus.invalidRanges) {
-      semver.validRange(range);
+      try {
+        new semver.Range(range);
+      } catch {
+        // Keep invalid range parsing comparable to Rust's Result-returning path.
+      }
     }
   }
 }
