@@ -95,7 +95,7 @@ function benchInvalidVersion() {
 function benchRangeParse() {
   for (let index = 0; index < iterations; index += 1) {
     for (const range of corpus.ranges) {
-      semver.validRange(range);
+      new semver.Range(range);
     }
   }
 }
