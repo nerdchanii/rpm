@@ -165,6 +165,9 @@ function npmVersion() {
 }
 
 function envPositiveInteger(name, fallback) {
-  const value = Number.parseInt(process.env[name] || '', 10);
-  return Number.isInteger(value) && value > 0 ? value : fallback;
+  const rawValue = process.env[name] || '';
+  if (!/^[1-9][0-9]*$/.test(rawValue)) {
+    return fallback;
+  }
+  return Number.parseInt(rawValue, 10);
 }

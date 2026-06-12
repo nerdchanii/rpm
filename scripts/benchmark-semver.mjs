@@ -6,9 +6,9 @@ import { spawnSync } from 'node:child_process';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..');
 const HISTORY_ROOT = join(REPO_ROOT, 'benches', 'histories');
-const ITERATIONS = process.env.RPM_SEMVER_BENCH_ITERATIONS || '50000';
-const SAMPLES = process.env.RPM_SEMVER_BENCH_SAMPLES || '5';
-const WARMUP_SAMPLES = process.env.RPM_SEMVER_BENCH_WARMUP_SAMPLES || '1';
+const ITERATIONS = envPositiveInteger('RPM_SEMVER_BENCH_ITERATIONS', 50_000);
+const SAMPLES = envPositiveInteger('RPM_SEMVER_BENCH_SAMPLES', 5);
+const WARMUP_SAMPLES = envPositiveInteger('RPM_SEMVER_BENCH_WARMUP_SAMPLES', 1);
 
 const env = {
   ...process.env,
@@ -277,4 +277,12 @@ function escapeXml(value) {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
+}
+
+function envPositiveInteger(name, fallback) {
+  const rawValue = process.env[name] || '';
+  if (!/^[1-9][0-9]*$/.test(rawValue)) {
+    return String(fallback);
+  }
+  return rawValue;
 }
