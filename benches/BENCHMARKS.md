@@ -15,16 +15,15 @@ benches/
   README.md                      # Bench directory overview
   semver.rs                      # RPM Rust implementation runner
   semver_corpus.json             # Shared benchmark corpus
-  histories/YYYY-MM-DD-000/      # Dirty generated benchmark output
+  histories/YYYY-MM-DD-000/      # Generated benchmark output
     benchmarks.json
     benchmark.svg
   template/BENCHMARKS.md         # Human summary template
 ```
 
-`benches/histories/` is intentionally not ignored. Running the history command
-should leave generated artifacts dirty so they can be inspected, compared,
-copied into notes, or committed deliberately when a benchmark checkpoint should
-be preserved.
+`benches/histories/` is generated output and is ignored by default. Running the
+history command should leave local artifacts available for inspection without
+dirtying the tracked worktree.
 
 ## Corpus
 
