@@ -1,14 +1,27 @@
 #!/usr/bin/env node
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..');
 const HISTORY_ROOT = join(REPO_ROOT, 'benches', 'histories');
+const TEMPLATE_PATH = join(REPO_ROOT, 'benches', 'template', 'BENCHMARKS.md');
+const BENCHMARKS_PATH = join(REPO_ROOT, 'benches', 'BENCHMARKS.md');
 const ITERATIONS = envPositiveInteger('RPM_SEMVER_BENCH_ITERATIONS', 50_000);
 const SAMPLES = envPositiveInteger('RPM_SEMVER_BENCH_SAMPLES', 5);
 const WARMUP_SAMPLES = envPositiveInteger('RPM_SEMVER_BENCH_WARMUP_SAMPLES', 1);
+
+if (process.argv[2] === '--render') {
+  const reportPath = process.argv[3];
+  if (!reportPath) {
+    throw new Error('usage: node scripts/benchmark-semver.mjs --render <benchmarks.json>');
+  }
+  const report = JSON.parse(await readFile(resolve(REPO_ROOT, reportPath), 'utf8'));
+  await writeBenchmarkMarkdown(report);
+  console.log(`benchmark summary written to ${relativePath(BENCHMARKS_PATH)}`);
+  process.exit(0);
+}
 
 const env = {
   ...process.env,
@@ -61,10 +74,12 @@ const svg = renderSvg(report);
 await mkdir(outputDir, { recursive: true });
 await writeFile(join(outputDir, 'benchmarks.json'), `${JSON.stringify(report, null, 2)}\n`);
 await writeFile(join(outputDir, 'benchmark.svg'), svg);
+await writeBenchmarkMarkdown(report);
 
 console.log(`benchmark history written to ${relativePath(outputDir)}`);
 console.log(`- ${relativePath(join(outputDir, 'benchmarks.json'))}`);
 console.log(`- ${relativePath(join(outputDir, 'benchmark.svg'))}`);
+console.log(`- ${relativePath(BENCHMARKS_PATH)}`);
 
 function runBenchmark(spec, benchmarkEnv) {
   const [command, ...args] = spec.command;
@@ -226,6 +241,112 @@ function renderSvg(report) {
 ${rows}
 </svg>
 `;
+}
+
+async function writeBenchmarkMarkdown(report) {
+  const template = await readFile(TEMPLATE_PATH, 'utf8');
+  const rustMetadata = report.runs.find((run) => run.implementation === 'rpm-rust')?.metadata || {};
+  const nodeMetadata =
+    report.runs.find((run) => run.implementation === 'node-semver')?.metadata || {};
+  const command = commandForReport(report);
+  const status = statusForReport(report);
+  const historyDirectory = report.outputDir;
+  const values = {
+    benchmark_data: `${historyDirectory}/benchmarks.json`,
+    benchmark_chart: `${historyDirectory}/benchmark.svg`,
+    history_directory: historyDirectory,
+    generated_at: report.generatedAt,
+    status_yaml: yamlQuote(status),
+    status,
+    date: report.generatedAt.slice(0, 10),
+    command,
+    host: `${nodeMetadata.platform || rustMetadata.target_os || 'unknown'} ${
+      nodeMetadata.arch || rustMetadata.target_arch || 'unknown'
+    }`,
+    rust: rustMetadata.rustc_version || 'unknown',
+    node: nodeMetadata.node_version || 'unknown',
+    npm: nodeMetadata.npm_version || 'unknown',
+    node_semver: nodeMetadata.node_semver_version || 'unknown',
+    iterations: report.settings.iterations,
+    samples: report.settings.samples,
+    warmup_samples: report.settings.warmupSamples,
+    outlier_policy:
+      rustMetadata.outlier_policy || nodeMetadata.outlier_policy || 'record_all_samples',
+    summary_rows: renderSummaryRows(report.comparisons),
+    notes: notesForReport(report),
+  };
+  await writeFile(BENCHMARKS_PATH, replaceTemplate(template, values));
+}
+
+function commandForReport(report) {
+  const baseCommand = 'node scripts/benchmark-semver.mjs';
+  if (
+    report.settings.iterations === 50_000 &&
+    report.settings.samples === 5 &&
+    report.settings.warmupSamples === 1
+  ) {
+    return baseCommand;
+  }
+  return [
+    `RPM_SEMVER_BENCH_ITERATIONS=${report.settings.iterations}`,
+    `RPM_SEMVER_BENCH_SAMPLES=${report.settings.samples}`,
+    `RPM_SEMVER_BENCH_WARMUP_SAMPLES=${report.settings.warmupSamples}`,
+    baseCommand,
+  ].join(' ');
+}
+
+function statusForReport(report) {
+  if (
+    report.settings.iterations === 50_000 &&
+    report.settings.samples === 5 &&
+    report.settings.warmupSamples === 1
+  ) {
+    return 'Representative suite';
+  }
+  return 'Quick validation checkpoint, not representative benchmark numbers';
+}
+
+function renderSummaryRows(comparisons) {
+  return comparisons
+    .map(
+      (comparison) =>
+        `| ${comparison.operation} | ${formatNumber(comparison.rpmRustMeanNsPerIter)} | ${formatNumber(
+          comparison.nodeSemverMeanNsPerIter,
+        )} | ${comparison.rustSpeedupVsNode.toFixed(2)}x |`,
+    )
+    .join('\n');
+}
+
+function notesForReport(report) {
+  if (
+    report.settings.iterations === 50_000 &&
+    report.settings.samples === 5 &&
+    report.settings.warmupSamples === 1
+  ) {
+    return '- Generated from tracked benchmark history.';
+  }
+  return [
+    '- Generated from tracked benchmark history.',
+    '- This run uses reduced settings for validation and should not be treated as representative performance data.',
+  ].join('\n');
+}
+
+function replaceTemplate(template, values) {
+  const rendered = template.replace(/\{\{([a-z_]+)\}\}/g, (match, key) => {
+    if (!Object.hasOwn(values, key)) {
+      throw new Error(`unknown benchmark template placeholder: ${key}`);
+    }
+    return String(values[key]);
+  });
+  return `${rendered.trimEnd()}\n`;
+}
+
+function formatNumber(value) {
+  return Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+function yamlQuote(value) {
+  return JSON.stringify(value);
 }
 
 function localDate() {
