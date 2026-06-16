@@ -152,6 +152,8 @@ docs/specs/
     lockfile/
       SPEC.md
     install/
+      cache/
+        SPEC.md
       recovery/
         SPEC.md
       performance/
@@ -265,6 +267,8 @@ M1 should start from:
 - `docs/specs/core/semver/SPEC.md`: npm-compatible semver selection baseline
 - `docs/specs/core/resolver/SPEC.md`: dependency graph resolution boundary
 - `docs/specs/core/lockfile/SPEC.md`: `rpm.lock` v1 contract
+- `docs/specs/core/install/cache/SPEC.md`: install tarball cache filename and
+  registry tarball write boundary
 - `docs/specs/core/install/recovery/SPEC.md`: staged install replacement and
   recovery
 - `docs/specs/core/install/performance/SPEC.md`: installer bottleneck and

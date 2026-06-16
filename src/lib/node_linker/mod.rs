@@ -12,6 +12,7 @@ use crate::{
     lockfile::constraint::LOCK_FILE_PATH,
     lockfile::{Dependency, LockFile},
     package_manifest::PackageManifest,
+    registry::tarball_cache_file_name,
 };
 use flate2::read::GzDecoder;
 use tar::Archive;
@@ -239,10 +240,9 @@ impl NodeResolver {
     ) -> Result<(), std::io::Error> {
         let name = package_name_from_lock_key(&key)?;
         let cached_version = dependency.get_version();
-        let tgz_name = name.replace("/", "-");
         let tgz_path = self
             .cache_dir
-            .join(format!("{}@{}.tgz", &tgz_name, cached_version));
+            .join(tarball_cache_file_name(name, &cached_version));
         let tgz = File::open(tgz_path)?;
         let gz = GzDecoder::new(tgz);
         let mut archive = Archive::new(gz);

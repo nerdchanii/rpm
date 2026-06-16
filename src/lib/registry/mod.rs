@@ -288,20 +288,8 @@ impl Registry {
     }
 
     pub fn get_tarball_name(&self) -> Option<String> {
-        self.get_tarball_url().map(|url| {
-            //ex https://registry.npmjs.org/axios/-/axios-0.21.1.tgz
-            let url = url.replace("https://registry.npmjs.org/", "");
-            let url: Vec<&str> = url.split("/-/").collect::<Vec<&str>>();
-            // left name, right version
-            // if socket-store sotcket-store-0.1.0.tgz
-            // to socket-store@0.1.0.tgz
-            // if @babel/core core-2.3.1.tgz
-            // to @babel/core@2.3.1.tgz
-
-            let tarball_name = format!("{}-{}.tgz", url[0], url[1]);
-
-            tarball_name
-        })
+        self.get_latest_version()
+            .map(|version| tarball_cache_file_name(&self.name, version))
     }
 
     pub fn get_tarball_url(&self) -> Option<String> {
@@ -364,12 +352,25 @@ fn save_tarball(tarball_name: &str, bytes_file: &mut [u8]) -> Result<(), Error> 
     save_tarball_to_dir(CACHE_DIR, tarball_name, bytes_file)
 }
 
+pub(crate) fn tarball_cache_file_name(package_name: &str, version: &str) -> String {
+    normalized_tarball_cache_file_name(&format!("{package_name}@{version}"))
+}
+
+fn normalized_tarball_cache_file_name(cache_key: &str) -> String {
+    let file_name = cache_key.replace("/", "-");
+    if file_name.ends_with(".tgz") {
+        file_name
+    } else {
+        format!("{file_name}.tgz")
+    }
+}
+
 fn save_tarball_to_dir<P: AsRef<Path>>(
     cache_dir: P,
     tarball_name: &str,
     bytes_file: &mut [u8],
 ) -> Result<(), Error> {
-    let file_name = tarball_name.replace("/", "-");
+    let file_name = normalized_tarball_cache_file_name(tarball_name);
 
     let dir = cache_dir.as_ref();
 
@@ -385,7 +386,7 @@ fn save_tarball_to_dir<P: AsRef<Path>>(
         })?;
     }
 
-    let path: PathBuf = dir.join(format!("{file_name}.tgz"));
+    let path: PathBuf = dir.join(file_name);
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -442,6 +443,10 @@ mod tests {
         registry
     }
 
+    fn registry_from_json(fixture: &str) -> Registry {
+        serde_json::from_str(fixture).expect("inline registry fixture should deserialize")
+    }
+
     #[test]
     fn save_tarball_reports_cache_write_errors() {
         let nanos = SystemTime::now()
@@ -461,6 +466,89 @@ mod tests {
 
         assert!(error.to_string().contains("failed to open cached tarball"));
         assert!(error.to_string().contains("cache-file"));
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn tarball_cache_name_uses_package_and_version_for_unscoped_packages() {
+        let registry = registry_from_json(
+            r#"{
+              "_id": "axios",
+              "name": "axios",
+              "description": "axios fixture",
+              "maintainers": [],
+              "dist-tags": {
+                "latest": "0.21.1"
+              },
+              "versions": {
+                "0.21.1": {
+                  "name": "axios",
+                  "version": "0.21.1",
+                  "description": "axios fixture",
+                  "dist": {
+                    "tarball": "https://registry.npmjs.org/axios/-/axios-0.21.1.tgz",
+                    "shasum": "fixture-axios-0.21.1"
+                  },
+                  "dependencies": {}
+                }
+              }
+            }"#,
+        );
+
+        assert_eq!(
+            registry.get_tarball_name().as_deref(),
+            Some("axios@0.21.1.tgz")
+        );
+    }
+
+    #[test]
+    fn tarball_cache_name_uses_sanitized_scoped_package_name() {
+        let registry = registry_from_json(
+            r#"{
+              "_id": "@babel/core",
+              "name": "@babel/core",
+              "description": "@babel/core fixture",
+              "maintainers": [],
+              "dist-tags": {
+                "latest": "2.3.1"
+              },
+              "versions": {
+                "2.3.1": {
+                  "name": "@babel/core",
+                  "version": "2.3.1",
+                  "description": "@babel/core fixture",
+                  "dist": {
+                    "tarball": "https://registry.npmjs.org/@babel/core/-/core-2.3.1.tgz",
+                    "shasum": "fixture-babel-core-2.3.1"
+                  },
+                  "dependencies": {}
+                }
+              }
+            }"#,
+        );
+
+        assert_eq!(
+            registry.get_tarball_name().as_deref(),
+            Some("@babel-core@2.3.1.tgz")
+        );
+    }
+
+    #[test]
+    fn save_tarball_does_not_duplicate_tgz_extension() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let temp = std::env::temp_dir().join(format!(
+            "rpm-registry-cache-name-{}-{nanos}",
+            std::process::id()
+        ));
+
+        save_tarball_to_dir(&temp, "axios@0.21.1.tgz", &mut b"tarball".to_vec())
+            .expect("tarball save should succeed");
+
+        assert_eq!(fs::read(temp.join("axios@0.21.1.tgz")).unwrap(), b"tarball");
+        assert!(!temp.join("axios@0.21.1.tgz.tgz").exists());
         let _ = fs::remove_dir_all(temp);
     }
 
