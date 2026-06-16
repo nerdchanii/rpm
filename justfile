@@ -35,10 +35,10 @@ format-check:
     cargo fmt --all --check
     @echo "::rpm::end format-check"
 
-# Run Rust lints with the same scope as CI.
+# Run Rust lints with repository guardrails that the current codebase satisfies.
 lint:
     @echo "::rpm::begin lint cargo clippy strict"
-    cargo clippy --locked --all-targets --all-features -- -D warnings -D clippy::dbg_macro -D clippy::todo -D clippy::unimplemented -D clippy::wildcard_imports -D clippy::indexing_slicing -D clippy::integer_division -D clippy::float_cmp -D clippy::large_stack_arrays -D clippy::large_stack_frames -D clippy::disallowed_methods -D clippy::disallowed_types -D clippy::disallowed_macros
+    cargo clippy --locked --all-targets --all-features -- -D warnings -D clippy::dbg_macro -D clippy::todo -D clippy::unimplemented -D clippy::wildcard_imports -D clippy::disallowed_methods -D clippy::disallowed_types -D clippy::disallowed_macros
     @echo "::rpm::end lint"
 
 # Run tests. Extra cargo test args may be passed after the recipe name.

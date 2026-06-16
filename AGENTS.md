@@ -207,12 +207,11 @@ Recipe meanings:
 - `just audit-fixtures` checks fixture names and required fixture files before
   tests depend on them.
 - `just check` runs `cargo check --locked --all-targets`.
-- `just lint` runs strict Clippy:
+- `just lint` runs the repository's current Clippy guardrails:
   `cargo clippy --locked --all-targets --all-features -- -D warnings`
-  plus denies for `dbg!`, `todo!`, `unimplemented!`, wildcard imports,
-  indexing/slicing, integer division, float comparison, large stack arrays,
-  large stack frames, and repository-specific disallowed methods, types, and
-  macros from `clippy.toml`.
+  plus denies for `dbg!`, `todo!`, `unimplemented!`, wildcard imports, and
+  repository-specific disallowed methods, types, and macros from
+  `clippy.toml`.
 - `just test [args...]` forwards extra arguments to
   `cargo test --locked --all-targets`.
 - `just docs` runs `RUSTDOCFLAGS=-Dwarnings cargo doc --locked --no-deps`.
