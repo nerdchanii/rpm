@@ -159,7 +159,7 @@ Lockfile-related work must preserve both:
 
 ## Validation
 
-Run the narrowest relevant validation first:
+Run the narrowest relevant validation first while iterating:
 
 ```sh
 cargo check
@@ -172,4 +172,71 @@ Minimum expectations:
 - Rust compile or type-level change: run `cargo check`.
 - Parser, lockfile, resolver, or fixture change: run `cargo test` or the targeted test.
 - Refactor touching shared code: run `cargo clippy --all-targets --all-features` when feasible.
+- Before handoff, run `just validate` unless the change is documentation-only or
+  a narrower validation choice is explicitly justified.
 - If validation cannot be run, report exactly what was not verified.
+
+## Just Commands
+
+Use the root `justfile` for repeatable local commands. Recipes are intentionally
+strict: they use locked dependencies, cover all Rust targets where appropriate,
+turn clippy and rustdoc warnings into failures, audit fixtures before behavior
+tests, print stable `::rpm::begin ...` and `::rpm::end ...` markers, and disable
+Cargo color output so logs are easier for agents and CI parsers to scan.
+
+Common recipes:
+
+```sh
+just build
+just validate
+just format
+just lint
+just test
+just fixture semver-new-case
+just bench-fixture resolver-wide-graph
+```
+
+Recipe meanings:
+
+- `just build` runs `cargo build`.
+- `just validate` runs formatting check, fixture audit, compile check, lint,
+  tests, and docs.
+- `just verify` is an alias for `just validate`.
+- `just format` runs `cargo fmt --all`.
+- `just format-check` runs `cargo fmt --all --check`.
+- `just audit-fixtures` checks fixture names and required fixture files before
+  tests depend on them.
+- `just check` runs `cargo check --locked --all-targets`.
+- `just lint` runs strict Clippy:
+  `cargo clippy --locked --all-targets --all-features -- -D warnings`
+  plus denies for `dbg!`, `todo!`, `unimplemented!`, wildcard imports,
+  indexing/slicing, integer division, float comparison, large stack arrays,
+  large stack frames, and repository-specific disallowed methods, types, and
+  macros from `clippy.toml`.
+- `just test [args...]` forwards extra arguments to
+  `cargo test --locked --all-targets`.
+- `just docs` runs `RUSTDOCFLAGS=-Dwarnings cargo doc --locked --no-deps`.
+- `just bench [args...]` forwards extra arguments to `cargo bench --locked`.
+- `just fixture <name>` creates a new install-project fixture skeleton under
+  `tests/fixtures/install-projects/<name>`.
+- `just bench-fixture <name>` copies the current `performance-small` fixture to
+  `tests/fixtures/install-projects/performance-<name>` for benchmark-oriented
+  scenarios.
+
+Fixture and benchmark fixture names must be lowercase kebab-case. The creation
+scripts fail instead of overwriting an existing fixture.
+
+Patterns borrowed from Bun that fit this repository:
+
+- Keep short, memorable task names at the root (`build`, `lint`, `format`,
+  `test`) and hide longer tool commands behind them.
+- Keep heavier logic in `scripts/` and let the root task runner dispatch to it.
+- Provide separate write and check commands for formatting.
+- Make generated or derived files verifiable by a command that exits non-zero
+  when output is stale.
+- Prefer explicit benchmark or fixture entrypoints over ad hoc shell snippets.
+
+Code generation is not currently configured in this repository. Do not add a
+`just codegen` or stale-generated-file gate until there is a deterministic
+generator, committed generated outputs, and a verify command that regenerates
+then checks `git diff --exit-code` for those outputs.

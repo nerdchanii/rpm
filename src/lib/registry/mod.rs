@@ -322,7 +322,7 @@ impl Registry {
     }
     /// get dependencies from registry
     /// return dependencies vector
-    /// example:
+    /// Example:
     ///
     /// ```text
     /// ["socket-store@0.0.1", "socket.io-client@1.22.3"]
