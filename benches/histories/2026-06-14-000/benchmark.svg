@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="438" viewBox="0 0 980 438" role="img" aria-labelledby="title desc">
+  <title id="title">Semver benchmark comparison</title>
+  <desc id="desc">Mean nanoseconds per iteration for RPM Rust and node-semver benchmark operations.</desc>
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .title { font-size: 22px; font-weight: 700; fill: #111827; }
+    .meta { font-size: 12px; fill: #4b5563; }
+    .legend { font-size: 12px; fill: #374151; }
+    .label { font-size: 12px; fill: #111827; }
+    .value { font-size: 11px; fill: #374151; }
+    .speed { font-size: 12px; font-weight: 700; fill: #111827; text-anchor: end; }
+  </style>
+  <rect width="980" height="438" fill="#ffffff"/>
+  <text x="24" y="34" class="title">Semver benchmark comparison</text>
+  <text x="24" y="56" class="meta">2026-06-14T11:37:42.099Z · 10 iterations · 1 samples</text>
+  <rect x="24" y="72" width="12" height="12" fill="#2563eb"/>
+  <text x="42" y="82" class="legend">RPM Rust</text>
+  <rect x="126" y="72" width="12" height="12" fill="#f97316"/>
+  <text x="144" y="82" class="legend">node-semver</text>
+  <text x="956" y="82" class="legend" text-anchor="end">Rust speedup</text>
+
+  <text x="24" y="117" class="label">version_parse</text>
+  <rect x="190" y="100" width="20" height="12" rx="2" fill="#2563eb"/>
+  <rect x="190" y="116" width="494" height="12" rx="2" fill="#f97316"/>
+  <text x="768" y="111" class="value">3600 ns</text>
+  <text x="768" y="127" class="value">87008 ns</text>
+  <text x="868" y="119" class="speed">24.17x</text>
+
+  <text x="24" y="153" class="label">valid_canonical</text>
+  <rect x="190" y="136" width="34" height="12" rx="2" fill="#2563eb"/>
+  <rect x="190" y="152" width="51" height="12" rx="2" fill="#f97316"/>
+  <text x="768" y="147" class="value">6050 ns</text>
+  <text x="768" y="163" class="value">9004 ns</text>
+  <text x="868" y="155" class="speed">1.49x</text>
+
+  <text x="24" y="189" class="label">invalid_version</text>
+  <rect x="190" y="172" width="5" height="12" rx="2" fill="#2563eb"/>
+  <rect x="190" y="188" width="259" height="12" rx="2" fill="#f97316"/>
+  <text x="768" y="183" class="value">929 ns</text>
+  <text x="768" y="199" class="value">45729 ns</text>
+  <text x="868" y="191" class="speed">49.22x</text>
+
+  <text x="24" y="225" class="label">range_parse</text>
+  <rect x="190" y="208" width="47" height="12" rx="2" fill="#2563eb"/>
+  <rect x="190" y="224" width="65" height="12" rx="2" fill="#f97316"/>
+  <text x="768" y="219" class="value">8320 ns</text>
+  <text x="768" y="235" class="value">11537 ns</text>
+  <text x="868" y="227" class="speed">1.39x</text>
+
+  <text x="24" y="261" class="label">invalid_range</text>
+  <rect x="190" y="244" width="13" height="12" rx="2" fill="#2563eb"/>
+  <rect x="190" y="260" width="560" height="12" rx="2" fill="#f97316"/>
+  <text x="768" y="255" class="value">2266 ns</text>
+  <text x="768" y="271" class="value">98691 ns</text>
+  <text x="868" y="263" class="speed">43.55x</text>
+
+  <text x="24" y="297" class="label">satisfies</text>
+  <rect x="190" y="280" width="34" height="12" rx="2" fill="#2563eb"/>
+  <rect x="190" y="296" width="140" height="12" rx="2" fill="#f97316"/>
+  <text x="768" y="291" class="value">5933 ns</text>
+  <text x="768" y="307" class="value">24691 ns</text>
+  <text x="868" y="299" class="speed">4.16x</text>
+
+  <text x="24" y="333" class="label">max_satisfying</text>
+  <rect x="190" y="316" width="41" height="12" rx="2" fill="#2563eb"/>
+  <rect x="190" y="332" width="481" height="12" rx="2" fill="#f97316"/>
+  <text x="768" y="327" class="value">7145 ns</text>
+  <text x="768" y="343" class="value">84691 ns</text>
+  <text x="868" y="335" class="speed">11.85x</text>
+
+  <text x="24" y="369" class="label">min_satisfying</text>
+  <rect x="190" y="352" width="40" height="12" rx="2" fill="#2563eb"/>
+  <rect x="190" y="368" width="416" height="12" rx="2" fill="#f97316"/>
+  <text x="768" y="363" class="value">7087 ns</text>
+  <text x="768" y="379" class="value">73283 ns</text>
+  <text x="868" y="371" class="speed">10.34x</text>
+</svg>
