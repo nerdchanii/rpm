@@ -1,0 +1,344 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-06-14T11:37:42.099Z",
+  "startedAt": "2026-06-14T11:37:40.425Z",
+  "outputDir": "benches/histories/2026-06-14-000",
+  "history": {
+    "root": "benches/histories",
+    "directory": "2026-06-14-000"
+  },
+  "settings": {
+    "iterations": 10,
+    "samples": 1,
+    "warmupSamples": 1
+  },
+  "commands": [
+    {
+      "implementation": "rpm-rust",
+      "command": "cargo bench --bench semver --quiet"
+    },
+    {
+      "implementation": "node-semver",
+      "command": "node scripts/benchmark-node-semver.mjs"
+    }
+  ],
+  "runs": [
+    {
+      "implementation": "rpm-rust",
+      "command": "cargo bench --bench semver --quiet",
+      "metadata": {
+        "implementation": "rpm-rust",
+        "crate_version": "0.1.0",
+        "rustc_version": "rustc 1.94.1 (e408947bf 2026-03-25) (Homebrew)",
+        "target_os": "macos",
+        "target_arch": "aarch64",
+        "iterations": "10",
+        "samples": "1",
+        "warmup_samples": "1",
+        "outlier_policy": "record_all_samples"
+      },
+      "samples": [
+        {
+          "operation": "version_parse",
+          "sample": 1,
+          "totalMs": 0.036,
+          "nsPerIter": 3600
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 1,
+          "totalMs": 0.06,
+          "nsPerIter": 6050
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 1,
+          "totalMs": 0.009,
+          "nsPerIter": 929
+        },
+        {
+          "operation": "range_parse",
+          "sample": 1,
+          "totalMs": 0.083,
+          "nsPerIter": 8320
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 1,
+          "totalMs": 0.023,
+          "nsPerIter": 2266
+        },
+        {
+          "operation": "satisfies",
+          "sample": 1,
+          "totalMs": 0.059,
+          "nsPerIter": 5933
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 1,
+          "totalMs": 0.071,
+          "nsPerIter": 7145
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 1,
+          "totalMs": 0.071,
+          "nsPerIter": 7087
+        }
+      ],
+      "rawOutput": "semver benchmark suite=representative\nmetadata,key,value\nmetadata,implementation,rpm-rust\nmetadata,crate_version,0.1.0\nmetadata,rustc_version,rustc 1.94.1 (e408947bf 2026-03-25) (Homebrew)\nmetadata,target_os,macos\nmetadata,target_arch,aarch64\nmetadata,iterations,10\nmetadata,samples,1\nmetadata,warmup_samples,1\nmetadata,outlier_policy,record_all_samples\nname,sample,total_ms,ns_per_iter\nversion_parse,1,0.036,3600\nvalid_canonical,1,0.060,6050\ninvalid_version,1,0.009,929\nrange_parse,1,0.083,8320\ninvalid_range,1,0.023,2266\nsatisfies,1,0.059,5933\nmax_satisfying,1,0.071,7145\nmin_satisfying,1,0.071,7087"
+    },
+    {
+      "implementation": "node-semver",
+      "command": "node scripts/benchmark-node-semver.mjs",
+      "metadata": {
+        "implementation": "node-semver",
+        "node_version": "v26.0.0",
+        "npm_version": "11.12.1",
+        "node_semver_version": "7.8.2",
+        "platform": "darwin",
+        "arch": "arm64",
+        "iterations": "10",
+        "samples": "1",
+        "warmup_samples": "1",
+        "outlier_policy": "record_all_samples"
+      },
+      "samples": [
+        {
+          "operation": "version_parse",
+          "sample": 1,
+          "totalMs": 0.87,
+          "nsPerIter": 87008
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 1,
+          "totalMs": 0.09,
+          "nsPerIter": 9004
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 1,
+          "totalMs": 0.457,
+          "nsPerIter": 45729
+        },
+        {
+          "operation": "range_parse",
+          "sample": 1,
+          "totalMs": 0.115,
+          "nsPerIter": 11537
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 1,
+          "totalMs": 0.987,
+          "nsPerIter": 98691
+        },
+        {
+          "operation": "satisfies",
+          "sample": 1,
+          "totalMs": 0.247,
+          "nsPerIter": 24691
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 1,
+          "totalMs": 0.847,
+          "nsPerIter": 84691
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 1,
+          "totalMs": 0.733,
+          "nsPerIter": 73283
+        }
+      ],
+      "rawOutput": "semver benchmark suite=representative\nmetadata,key,value\nmetadata,implementation,node-semver\nmetadata,node_version,v26.0.0\nmetadata,npm_version,11.12.1\nmetadata,node_semver_version,7.8.2\nmetadata,platform,darwin\nmetadata,arch,arm64\nmetadata,iterations,10\nmetadata,samples,1\nmetadata,warmup_samples,1\nmetadata,outlier_policy,record_all_samples\nname,sample,total_ms,ns_per_iter\nversion_parse,1,0.870,87008\nvalid_canonical,1,0.090,9004\ninvalid_version,1,0.457,45729\nrange_parse,1,0.115,11537\ninvalid_range,1,0.987,98691\nsatisfies,1,0.247,24691\nmax_satisfying,1,0.847,84691\nmin_satisfying,1,0.733,73283"
+    }
+  ],
+  "summaries": {
+    "rpm-rust": {
+      "version_parse": {
+        "meanNsPerIter": 3600,
+        "medianNsPerIter": 3600,
+        "minNsPerIter": 3600,
+        "maxNsPerIter": 3600,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "valid_canonical": {
+        "meanNsPerIter": 6050,
+        "medianNsPerIter": 6050,
+        "minNsPerIter": 6050,
+        "maxNsPerIter": 6050,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "invalid_version": {
+        "meanNsPerIter": 929,
+        "medianNsPerIter": 929,
+        "minNsPerIter": 929,
+        "maxNsPerIter": 929,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "range_parse": {
+        "meanNsPerIter": 8320,
+        "medianNsPerIter": 8320,
+        "minNsPerIter": 8320,
+        "maxNsPerIter": 8320,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "invalid_range": {
+        "meanNsPerIter": 2266,
+        "medianNsPerIter": 2266,
+        "minNsPerIter": 2266,
+        "maxNsPerIter": 2266,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "satisfies": {
+        "meanNsPerIter": 5933,
+        "medianNsPerIter": 5933,
+        "minNsPerIter": 5933,
+        "maxNsPerIter": 5933,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "max_satisfying": {
+        "meanNsPerIter": 7145,
+        "medianNsPerIter": 7145,
+        "minNsPerIter": 7145,
+        "maxNsPerIter": 7145,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "min_satisfying": {
+        "meanNsPerIter": 7087,
+        "medianNsPerIter": 7087,
+        "minNsPerIter": 7087,
+        "maxNsPerIter": 7087,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      }
+    },
+    "node-semver": {
+      "version_parse": {
+        "meanNsPerIter": 87008,
+        "medianNsPerIter": 87008,
+        "minNsPerIter": 87008,
+        "maxNsPerIter": 87008,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "valid_canonical": {
+        "meanNsPerIter": 9004,
+        "medianNsPerIter": 9004,
+        "minNsPerIter": 9004,
+        "maxNsPerIter": 9004,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "invalid_version": {
+        "meanNsPerIter": 45729,
+        "medianNsPerIter": 45729,
+        "minNsPerIter": 45729,
+        "maxNsPerIter": 45729,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "range_parse": {
+        "meanNsPerIter": 11537,
+        "medianNsPerIter": 11537,
+        "minNsPerIter": 11537,
+        "maxNsPerIter": 11537,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "invalid_range": {
+        "meanNsPerIter": 98691,
+        "medianNsPerIter": 98691,
+        "minNsPerIter": 98691,
+        "maxNsPerIter": 98691,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "satisfies": {
+        "meanNsPerIter": 24691,
+        "medianNsPerIter": 24691,
+        "minNsPerIter": 24691,
+        "maxNsPerIter": 24691,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "max_satisfying": {
+        "meanNsPerIter": 84691,
+        "medianNsPerIter": 84691,
+        "minNsPerIter": 84691,
+        "maxNsPerIter": 84691,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      },
+      "min_satisfying": {
+        "meanNsPerIter": 73283,
+        "medianNsPerIter": 73283,
+        "minNsPerIter": 73283,
+        "maxNsPerIter": 73283,
+        "stddevNsPerIter": 0,
+        "samples": 1
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "operation": "version_parse",
+      "rpmRustMeanNsPerIter": 3600,
+      "nodeSemverMeanNsPerIter": 87008,
+      "rustSpeedupVsNode": 24.17
+    },
+    {
+      "operation": "valid_canonical",
+      "rpmRustMeanNsPerIter": 6050,
+      "nodeSemverMeanNsPerIter": 9004,
+      "rustSpeedupVsNode": 1.49
+    },
+    {
+      "operation": "invalid_version",
+      "rpmRustMeanNsPerIter": 929,
+      "nodeSemverMeanNsPerIter": 45729,
+      "rustSpeedupVsNode": 49.22
+    },
+    {
+      "operation": "range_parse",
+      "rpmRustMeanNsPerIter": 8320,
+      "nodeSemverMeanNsPerIter": 11537,
+      "rustSpeedupVsNode": 1.39
+    },
+    {
+      "operation": "invalid_range",
+      "rpmRustMeanNsPerIter": 2266,
+      "nodeSemverMeanNsPerIter": 98691,
+      "rustSpeedupVsNode": 43.55
+    },
+    {
+      "operation": "satisfies",
+      "rpmRustMeanNsPerIter": 5933,
+      "nodeSemverMeanNsPerIter": 24691,
+      "rustSpeedupVsNode": 4.16
+    },
+    {
+      "operation": "max_satisfying",
+      "rpmRustMeanNsPerIter": 7145,
+      "nodeSemverMeanNsPerIter": 84691,
+      "rustSpeedupVsNode": 11.85
+    },
+    {
+      "operation": "min_satisfying",
+      "rpmRustMeanNsPerIter": 7087,
+      "nodeSemverMeanNsPerIter": 73283,
+      "rustSpeedupVsNode": 10.34
+    }
+  ]
+}

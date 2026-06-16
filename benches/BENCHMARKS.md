@@ -7,6 +7,44 @@ These benchmarks are a performance investigation tool, not a permanent product
 claim. Use them to compare broad trends between RPM's Rust semver facade and
 `node-semver` before deciding whether an optimization is worth pursuing.
 
+## Current Public Checkpoint
+
+Status: Quick validation checkpoint, not representative benchmark numbers
+Date: 2026-06-14
+Generated history: `benches/histories/2026-06-14-001/`
+
+This checkpoint proves the history runner works end-to-end and gives reviewers a
+public snapshot with tracked JSON and SVG artifacts. The run used only 10
+iterations, one measured sample, and one warmup sample, so use it as validation
+output only. Run the default command before making performance claims.
+
+Command:
+
+```sh
+RPM_SEMVER_BENCH_ITERATIONS=10 RPM_SEMVER_BENCH_SAMPLES=1 RPM_SEMVER_BENCH_WARMUP_SAMPLES=1 node scripts/benchmark-semver.mjs
+```
+
+Environment:
+
+- Host: macOS aarch64
+- Rust: `rustc 1.94.1 (e408947bf 2026-03-25) (Homebrew)`
+- Node: `v26.0.0`
+- npm: `11.12.1`
+- node-semver: `7.8.2`
+
+Summary:
+
+| Operation | RPM Rust mean ns/iter | node-semver mean ns/iter | Rust speedup |
+| --- | ---: | ---: | ---: |
+| version_parse | 3,083 | 30,583 | 9.92x |
+| valid_canonical | 5,845 | 7,100 | 1.21x |
+| invalid_version | 920 | 26,441 | 28.74x |
+| range_parse | 7,500 | 8,987 | 1.20x |
+| invalid_range | 2,012 | 67,962 | 33.78x |
+| satisfies | 4,700 | 8,974 | 1.91x |
+| max_satisfying | 6,045 | 38,158 | 6.31x |
+| min_satisfying | 5,950 | 41,816 | 7.03x |
+
 ## Directory Structure
 
 ```text
@@ -21,9 +59,9 @@ benches/
   template/BENCHMARKS.md         # Human summary template
 ```
 
-`benches/histories/` is generated output and is ignored by default. Running the
-history command should leave local artifacts available for inspection without
-dirtying the tracked worktree.
+`benches/histories/` contains generated JSON and SVG benchmark output. These
+artifacts are public benchmark records and should be tracked when they are part
+of a branch's benchmark result.
 
 ## Corpus
 
@@ -57,6 +95,12 @@ writes history artifacts.
 Use the history runner for normal benchmark captures. Use the implementation
 runners directly only when debugging one side of the comparison or checking the
 raw machine-readable output.
+
+When a benchmark result needs PR review, rerun the comparison with the history
+runner, inspect the generated `benches/histories/YYYY-MM-DD-000/` artifacts
+locally, track the generated JSON and SVG artifacts, and copy a concise human
+checkpoint into this document. Do not keep ad hoc spec-doc benchmark SVG
+comparisons going.
 
 ## History Runner
 

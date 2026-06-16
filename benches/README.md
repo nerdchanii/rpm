@@ -19,5 +19,5 @@ benches/
 `template/BENCHMARKS.md` is a human-written checkpoint template. `histories/`
 contains generated artifacts from `node scripts/benchmark-semver.mjs`.
 
-Generated history is ignored by default. Review it locally before deciding
-whether any generated checkpoint should be copied into a tracked artifact.
+Generated history is public benchmark output. Review it locally, then track the
+JSON and SVG artifacts that are part of the branch's benchmark result.
