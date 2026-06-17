@@ -1,22 +1,22 @@
 ---
 name: spec-governance
-description: Keep SPEC.md authoritative for contract-affecting code changes, reviews, and stale-spec updates.
+description: Keep SPEC.md authoritative for RPM contract-affecting changes. Use when code, reviews, or tickets may affect CLI behavior, lockfiles, manifests, semver, registry/cache/install/linking behavior, scripts, or diagnostics.
 ---
 
 # SPEC Governance
 
 ## Core Rule
 
-Treat `SPEC.md` as the source of truth for contracts.
+Treat `SPEC.md` as the source of truth for observable package-manager contracts.
 
-If code and SPEC disagree, do not silently prefer code. Classify the mismatch before editing further:
+If code and SPEC disagree, classify the mismatch before editing further:
 
-- **Code violates active SPEC**: block or revise the code change.
-- **SPEC is stale**: update SPEC deliberately, with evidence.
-- **Desired behavior changes the contract**: update SPEC before or with implementation.
-- **No SPEC exists**: create a minimal SPEC before accepting the contract change.
+- code violates active SPEC
+- SPEC is stale
+- desired behavior changes the contract
+- no SPEC exists
 
-## What Counts As A Contract
+## Contract Triggers
 
 Use this skill for changes affecting:
 
@@ -31,130 +31,24 @@ Use this skill for changes affecting:
 - script execution behavior
 - public diagnostics or machine-readable output
 
-## Where Specs Live
-
-Use the narrowest authoritative SPEC for the contract.
-
-Current repository stage:
-
-```text
-docs/specs/cli/<command>/SPEC.md
-docs/specs/core/<topic>/SPEC.md
-```
-
-After the Cargo workspace is split, prefer crate-local specs for crate-owned contracts:
-
-```text
-crates/<crate-name>/docs/SPEC.md
-```
-
-Use root-level specs only for cross-crate contracts:
-
-```text
-docs/specs/<area>/.../SPEC.md
-```
-
-Repository structure and ownership rules that are not package-manager contracts
-live under:
-
-```text
-docs/conventions/
-```
-
-Do not treat design notes, roadmap notes, or issue text as SPEC authority. They may explain intent, but they do not override SPEC.
-
-Do not duplicate the same contract in multiple places. If a root document summarizes a crate SPEC, link to the crate SPEC and mark the crate SPEC as authoritative.
-
-## Workflow
+## Core Workflow
 
 1. Identify the changed behavior.
-2. Find the owning SPEC.
-3. Compare the code change against the documented contract.
-4. Classify the result:
-   - conforms to SPEC
-   - violates SPEC
-   - SPEC is stale
-   - no SPEC exists for this contract
-5. Act based on classification.
+2. Find the narrowest owning SPEC.
+3. Compare code behavior against the documented contract.
+4. Classify the result.
+5. Act based on classification before editing contract-affecting code further.
 
-## Classification Actions
+## When To Read References
 
-### Conforms To SPEC
+Read [references/spec-locations-and-actions.md](references/spec-locations-and-actions.md) when you need SPEC path conventions, classification actions, minimal SPEC template, or reporting format.
 
-Proceed with implementation or review.
+## Finish Check
 
-Still update tests or fixtures if the behavior is contract-critical.
+Before finishing contract-affecting work, verify:
 
-### Violates SPEC
-
-Stop the implementation path.
-
-Report:
-
-- SPEC path
-- relevant section
-- code path
-- exact mismatch
-- recommended correction
-
-Do not “fix” the SPEC to match accidental code drift.
-
-### SPEC Is Stale
-
-Update SPEC deliberately.
-
-The update must include:
-
-- why the current SPEC no longer represents intended behavior
-- what code or existing behavior proves the stale state
-- whether this is a correction or a contract change
-- what tests/fixtures verify the updated contract
-
-### No SPEC Exists
-
-Create a minimal SPEC before accepting the implementation.
-
-Use this minimal structure:
-
-```markdown
-# Spec: <Contract Name>
-
-Status: Draft  
-Owner: <crate-or-area>  
-Last reviewed: YYYY-MM-DD
-
-## Purpose
-
-## Contract
-
-## Error Cases
-
-## Test Fixtures
-
-## Open Questions (Optional)
-```
-
-## Review Checklist
-
-Before finishing any contract-affecting change, verify:
-
-- The owning SPEC exists.
-- The code behavior matches the SPEC.
-- The SPEC defines observable contract, not incidental implementation detail.
-- Tests or fixtures cover the contract.
-- If the SPEC changed, the change explains why.
-- Any `Open Questions` left in an accepted SPEC have linked tracking issues.
-- Other docs link to the authoritative SPEC instead of redefining it.
-
-## Reporting Format
-
-When reporting a SPEC conflict, use:
-
-```text
-SPEC status: conforms | violates | stale | missing
-SPEC path:
-Code path:
-Mismatch:
-Required action:
-Verification:
-```
+- the owning SPEC exists
+- code behavior matches the SPEC
+- tests or fixtures cover the contract
+- any SPEC change explains why it is stale or intentionally changing
+- other docs link to the authoritative SPEC instead of redefining it

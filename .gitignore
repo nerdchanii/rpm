@@ -2,6 +2,7 @@
 node_modules/
 .rpm/
 .note/
+.DS_Store
 
 # Generated release/build artifacts
 *.tar.gz

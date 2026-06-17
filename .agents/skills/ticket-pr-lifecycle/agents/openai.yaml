@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket PR Lifecycle"
+  short_description: "Run RPM ticket intake, draft PR, validation, and final audit."
+  default_prompt: "Use $ticket-pr-lifecycle to run RPM ticket intake, draft PR setup, focused implementation validation, and final audit."

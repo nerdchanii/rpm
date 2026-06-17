@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+usage: ticket-gen <issue-number-or-url> [--format jsonl|markdown|json]
+
+Generate a clean RPM ticket packet for agents. Includes issue metadata,
+issue comments, current branch/worktree state, linked PR candidates, and
+best-effort contract/fixture hints. The script does not mutate GitHub state.
+USAGE
+}
+
+format="jsonl"
+issue_ref=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --format)
+      if [ "$#" -lt 2 ]; then
+        printf 'ticket_gen.error=missing-format-value\n' >&2
+        exit 2
+      fi
+      format="$2"
+      shift 2
+      ;;
+    --format=*)
+      format="${1#--format=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      if [ -n "${issue_ref}" ]; then
+        printf 'ticket_gen.error=too-many-issue-refs\n' >&2
+        exit 2
+      fi
+      issue_ref="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ -z "${issue_ref}" ]; then
+  usage >&2
+  exit 2
+fi
+
+if [ "${format}" != "jsonl" ] && [ "${format}" != "markdown" ] && [ "${format}" != "json" ]; then
+  printf 'ticket_gen.error=invalid-format:%s\n' "${format}" >&2
+  exit 2
+fi
+
+if ! command -v gh >/dev/null 2>&1; then
+  printf 'ticket_gen.error=missing-gh\n' >&2
+  exit 127
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'ticket_gen.error=missing-jq\n' >&2
+  exit 127
+fi
+
+if printf '%s' "${issue_ref}" | grep -Eq '^[0-9]+$'; then
+  issue_number="${issue_ref}"
+else
+  issue_number="$(printf '%s\n' "${issue_ref}" | sed -E 's#^.*/issues/([0-9]+).*#\1#')"
+  if ! printf '%s' "${issue_number}" | grep -Eq '^[0-9]+$'; then
+    printf 'ticket_gen.error=invalid-issue-ref:%s\n' "${issue_ref}" >&2
+    exit 2
+  fi
+fi
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "${tmp_dir}"' EXIT
+
+issue_json="${tmp_dir}/issue.json"
+timeline_json="${tmp_dir}/timeline.json"
+prs_json="${tmp_dir}/prs.json"
+repo_json="${tmp_dir}/repo.json"
+packet_json="${tmp_dir}/packet.json"
+
+gh issue view "${issue_number}" \
+  --comments \
+  --json number,title,body,state,labels,author,assignees,comments,url,createdAt,updatedAt \
+  > "${issue_json}"
+
+gh repo view --json owner,name,url > "${repo_json}"
+repo="$(jq -r '.owner.login + "/" + .name' "${repo_json}")"
+
+gh api \
+  -H 'Accept: application/vnd.github+json' \
+  "repos/${repo}/issues/${issue_number}/timeline?per_page=100" \
+  > "${timeline_json}"
+
+jq '
+  [
+    .[]
+    | select(.event == "cross-referenced" or .event == "connected")
+    | .source.issue? // empty
+    | select(.pull_request? != null)
+    | {
+        number,
+        title,
+        state,
+        url: .html_url,
+        merged_at: (.pull_request.merged_at // null)
+      }
+  ]
+  | unique_by(.number)
+  | sort_by(.number)
+' "${timeline_json}" > "${prs_json}"
+
+branch="$(git branch --show-current 2>/dev/null || true)"
+worktree_status="$(git status --short 2>/dev/null || true)"
+
+if [ -n "${worktree_status}" ]; then
+  worktree_state="dirty"
+else
+  worktree_state="clean"
+fi
+
+jq -n \
+  --slurpfile issue "${issue_json}" \
+  --slurpfile prs "${prs_json}" \
+  --slurpfile repo "${repo_json}" \
+  --arg branch "${branch:-none}" \
+  --arg worktree "${worktree_state}" \
+  '{
+    ticket_context: {
+      issue: ($issue[0].url // ("#" + ($issue[0].number | tostring))),
+      issue_number: $issue[0].number,
+      branch: $branch,
+      pr: (if ($prs[0] | length) > 0 then ($prs[0] | sort_by(.number) | last | .url) else "none-yet" end),
+      scope: $issue[0].title,
+      spec_status: "unknown",
+      spec_paths: ["unknown"],
+      fixture_need: "unknown",
+      validation_plan: ["cargo check"],
+      may_create_followup_issues: false,
+      allowed_write_scope: "unknown",
+      blockers: "none"
+    },
+    repo: $repo[0],
+    issue: $issue[0],
+    linked_prs: $prs[0],
+    local: {
+      branch: $branch,
+      worktree: $worktree
+    }
+  }' > "${packet_json}"
+
+if [ "${format}" = "json" ]; then
+  cat "${packet_json}"
+  exit 0
+fi
+
+if [ "${format}" = "jsonl" ]; then
+  jq -c '
+    {type:"ticket_context", data:.ticket_context},
+    {type:"repo", data:.repo},
+    {type:"local_state", data:.local},
+    {type:"issue", data:.issue},
+    (.issue.comments[]? | {type:"issue_comment", data:.}),
+    (.linked_prs[]? | {type:"linked_pr", data:.})
+  ' "${packet_json}"
+  exit 0
+fi
+
+jq -r '
+  def user($node): ($node.author.login // "unknown");
+  def quote($text): (($text // "") | split("\n") | map("> " + .) | join("\n"));
+
+  "# RPM Ticket Packet",
+  "",
+  "## Context",
+  ("ticket_context.issue=" + .ticket_context.issue),
+  ("ticket_context.branch=" + .ticket_context.branch),
+  ("ticket_context.pr=" + .ticket_context.pr),
+  ("ticket_context.scope=" + .ticket_context.scope),
+  ("ticket_context.spec_status=" + .ticket_context.spec_status),
+  ("ticket_context.spec_paths=" + (.ticket_context.spec_paths | join(", "))),
+  ("ticket_context.fixture_need=" + .ticket_context.fixture_need),
+  ("ticket_context.validation_plan=" + (.ticket_context.validation_plan | join(", "))),
+  ("ticket_context.may_create_followup_issues=" + (.ticket_context.may_create_followup_issues | tostring)),
+  ("ticket_context.allowed_write_scope=" + .ticket_context.allowed_write_scope),
+  ("ticket_context.blockers=" + .ticket_context.blockers),
+  "",
+  "## Local State",
+  ("local.branch=" + .local.branch),
+  ("local.worktree=" + .local.worktree),
+  "",
+  "## Issue",
+  ("issue.number=#" + (.issue.number | tostring)),
+  ("issue.title=" + .issue.title),
+  ("issue.url=" + .issue.url),
+  ("issue.state=" + .issue.state),
+  ("issue.author=" + user(.issue)),
+  ("issue.labels=" + ((.issue.labels // []) | map(.name) | join(","))),
+  "",
+  "### Body",
+  quote(.issue.body),
+  "",
+  "### Comments",
+  (
+    if ((.issue.comments // []) | length) == 0 then
+      "none"
+    else
+      (.issue.comments[] |
+        "#### comment by " + user(.) + " at " + (.createdAt // "") + "\n" +
+        "url=" + (.url // "") + "\n" +
+        quote(.body)
+      )
+    end
+  ),
+  "",
+  "## Linked PRs",
+  (
+    if (.linked_prs | length) == 0 then
+      "none"
+    else
+      (.linked_prs[] |
+        "- #" + (.number | tostring) + " " + .state +
+        " merged_at=" + ((.merged_at // "null") | tostring) +
+        " url=" + .url +
+        " title=" + .title
+      )
+    end
+  )
+' "${packet_json}"

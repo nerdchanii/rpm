@@ -1,4 +1,4 @@
 interface:
   display_name: "Take Ticket"
-  short_description: "Run the minimal GitHub issue-to-PR workflow."
-  default_prompt: "Use the take-ticket workflow to inspect a GitHub issue, open a draft PR, implement a focused change, run deterministic audits, update the PR, and mark it ready when complete."
+  short_description: "Coordinate RPM ticket context and specialist handoffs."
+  default_prompt: "Use $take-ticket to prepare RPM ticket context and delegate issue-to-PR execution to the appropriate lifecycle, SPEC, fixture, and review-resolution skills."

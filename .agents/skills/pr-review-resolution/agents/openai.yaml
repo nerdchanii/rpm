@@ -1,0 +1,4 @@
+interface:
+  display_name: "PR Review Resolution"
+  short_description: "Resolve RPM PR review feedback with SPEC-aware defer rules."
+  default_prompt: "Use $pr-review-resolution to collect RPM PR review context, classify feedback, apply accepted fixes, and create deferred follow-up issues when allowed."

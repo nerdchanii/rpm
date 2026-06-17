@@ -1,115 +1,54 @@
 ---
 name: take-ticket
-description: Run the repository's minimal GitHub issue-to-PR workflow. Use when the user says to take a ticket, implement a GitHub issue, create the draft PR first, coordinate subagents, keep an internal checklist, run deterministic intake/final audits, update the PR, and mark completed work ready for review.
+description: Context handoff for RPM GitHub issue-to-PR work. Use when the user says to take a ticket, implement a GitHub issue, run the ticket loop, or coordinate RPM issue work; this skill prepares the shared context packet and delegates execution to ticket-pr-lifecycle, spec-governance, fixture-governance, and pr-review-resolution.
 ---
 
 # Take Ticket
 
-## Overview
+## Role
 
-Use this workflow for a GitHub issue that should become a focused PR. Keep repository rules in `AGENTS.md`; this skill only describes the active task procedure.
+Act as the coordinator for RPM ticket work. Keep this skill thin: collect stable context, choose the next specialized skill or agent, and preserve final accountability in the main session.
 
-## Workflow
+Do not place detailed implementation, review-resolution, or GitHub mutation procedures here. Delegate those to the owning skills.
 
-1. Run intake checks:
-   - `bash scripts/check-workflow-intake.sh`
-   - read the issue
-   - inspect the worktree before editing
-2. Delegate first exploration to an explorer subagent:
-   - ask for exact request, SPEC/contract impact, likely files, and validation
-   - do not allow file edits
-   - use a lightweight model when available
-3. Main agent owns the contract checklist:
-   - classify SPEC impact
-   - write a short plan
-   - split work if it crosses repository limits
-4. Open the PR before implementation:
-   - create a branch
-   - create an empty kickoff commit
-   - push the branch
-   - open a draft PR with contract, plan, validation, and `Closes #<issue>`
-5. Implement surgically:
-   - one purpose per patch
-   - no cleanup bundled with behavior changes
-   - use worker subagents only for bounded, disjoint ownership
-6. Validate:
-   - run the narrowest relevant command from `AGENTS.md`
-   - report warnings separately from failures
-7. Run Codex review loop before merge:
-   - add a PR comment: `@codex review`
-   - wait 10 seconds, then confirm a Codex reaction/emoji is present on that comment
-   - if confirmed, poll roughly every 3 minutes for Codex review output
-   - while waiting, emit no filler status text when there is no Codex response yet; keep context clean
-   - for each Codex review comment, decide `accept` or `reject` and record a reason
-   - if accepted and the review includes a concrete suggestion:
-     - apply the suggestion
-     - resolve the thread
-   - if accepted without a ready suggestion:
-     - make the needed change yourself
-     - resolve the thread
-     - restart the `@codex review` step
-   - if rejected:
-     - reply with the reason when needed
-     - do not resolve unless the review state is clear
-   - continue until all review threads are resolved or clearly rejected
-8. Finish:
-   - update the PR checklist, preferably through a worker subagent
-   - push all commits
-   - mark completed work ready for review
-   - run `bash scripts/check-workflow-final.sh <pr-number>`
-   - after the ticket work, answer the user's follow-up interview questions if they ask them
-   - use those answers to decide whether a follow-up issue is truly required
-   - only open a follow-up issue when all are true:
-     - the problem is structural and likely to recur
-     - it is not just local permissions, local environment, or agent/operator error
-     - an existing open issue will not naturally absorb it
-     - leaving it untracked is likely to slow or block future ticket work
-   - prefer at most one or two follow-up issues
-   - if the user says `ticket loop`, treat the "next task recommendation" as the next `take-ticket` candidate
+## One Command Surface
 
-## Internal Checklist
+Start by running:
 
-Use this locally while working; do not paste it into the public PR template unless useful.
-
-```markdown
-- [ ] Intake script passed.
-- [ ] Explorer returned issue and contract summary.
-- [ ] SPEC impact classified.
-- [ ] Draft PR opened with kickoff commit.
-- [ ] Implementation stayed focused.
-- [ ] Relevant validation ran.
-- [ ] Codex review loop completed.
-- [ ] PR checklist updated.
-- [ ] Final audit script passed.
-- [ ] PR marked ready for review.
-- [ ] Post-ticket interview reviewed for necessary follow-up issues.
+```sh
+scripts/ticket-gen <issue-number-or-url> --format jsonl
 ```
 
-## Subagent Guidance
+Pass the generated JSONL ticket packet to specialist skills and agents. Do not ask agents to hand-build `ticket_context.*` fields.
 
-- Explorer: issue reading, codebase search, SPEC impact, likely validation. No edits. Prefer a lightweight model such as 5.4-mini.
-- PR checklist worker: PR body updates through `gh`. No repository file edits. Prefer a lightweight model.
-- Code worker: only for bounded, disjoint file ownership. Tell workers they are not alone in the codebase and must not revert others' edits. Use a stronger model only when the slice needs it.
-- Main agent: contract checklist, split decisions, commits, validation, and final state.
+Use JSON only when a tool needs it:
 
-## Follow-up Issue Rules
+```sh
+scripts/ticket-gen <issue-number-or-url> --format json
+```
 
-When the user asks retrospective questions after the ticket, treat that interview as part of the ticket loop rather than a separate conversation.
+Follow-up issue creation is disabled unless a packet or main-session decision explicitly sets `may_create_followup_issues=true`.
 
-- Mine the interview for repeated friction, structural slowdown, and future blockers.
-- Do not open issues for:
-  - local permission prompts
-  - sandbox or workstation quirks
-  - one-off operator mistakes
-  - sensitive or security-restricted details better kept out of public issues
-- Before opening a new issue, inspect existing open issues and ask whether the problem will likely be solved as a side effect of one of them.
-- Open a new issue only for the remaining gaps that are still likely to recur after nearby issues land.
-- If no such gap remains, do not open anything.
+## Delegation Map
 
-## Review Loop Notes
+- Use `$ticket-pr-lifecycle` for intake checks, issue reading, draft PR setup, implementation discipline, validation, PR checklist updates, and final audit.
+- Use `$spec-governance` whenever the ticket may affect CLI, lockfile, manifest, semver, resolver, registry, cache, installer, linker, scripts, diagnostics, or other observable package-manager contracts.
+- Use `$fixture-governance` whenever tests need package manifests, lockfiles, registry metadata, install projects, or regression fixtures.
+- Use `$pr-review-resolution` for review handling; it should request/watch review with `bash scripts/watch-codex-review.sh <pr-number> --request-review --format jsonl` and collect final context with `bash scripts/collect-pr-review-context.sh <pr-number> --format jsonl`.
 
-- The Codex review loop is merge-gating for this skill.
-- `accept` means the review found a real issue and a code or PR state change should follow.
-- `reject` means the review is not correct, not applicable, or already covered; always keep a reason.
-- After accepted changes, re-run the narrowest relevant validation before restarting review.
-- Once all review feedback is resolved or rejected clearly, merge and provide the next task recommendation.
+## Preferred Agents
+
+- `ticket-explorer`: read-only issue/code/SPEC exploration. Use before implementation when the ticket is non-trivial.
+- `pr-review-resolver`: SPEC-aware review feedback classification, accepted fixes, validation, and deferred issue drafts/creation.
+- `pr-checklist-updater`: PR body/checklist updates only. No repository file edits.
+
+## Main Session Responsibilities
+
+The main session owns:
+
+1. Final scope decisions and split decisions.
+2. SPEC classification acceptance.
+3. Whether a subagent may create GitHub follow-up issues.
+4. Final diff review, commits, pushes, PR state, and user-facing summary.
+
+If a delegated skill or agent reports `blocked`, stop guessing. Either supply the missing context or report the blocker.
