@@ -1,0 +1,22 @@
+disallowed-methods = [
+  { path = "std::env::set_current_dir", reason = "pass project roots through APIs instead of changing process-wide cwd" },
+  { path = "std::mem::forget", reason = "leaking values should require an explicit local allow with rationale" },
+  { path = "std::mem::transmute", reason = "unsafe representation changes should require an explicit local allow with rationale" },
+  { path = "std::mem::zeroed", reason = "zeroed is undefined behavior for many Rust types; use MaybeUninit when needed" },
+  { path = "std::process::exit", reason = "return errors/statuses through command boundaries so tests can observe them" },
+]
+
+disallowed-types = [
+  { path = "std::sync::Mutex", reason = "prefer a documented concurrency primitive before introducing shared mutable state" },
+  { path = "std::sync::RwLock", reason = "prefer a documented concurrency primitive before introducing shared mutable state" },
+]
+
+disallowed-macros = [
+  { path = "std::dbg", reason = "debug prints must not be committed" },
+]
+
+avoid-breaking-exported-api = false
+pass-by-value-size-limit = 64
+enum-variant-size-threshold = 128
+stack-size-threshold = 131072
+too-large-for-stack = 4096
