@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     future::Future,
     io::{Error, ErrorKind, Write},
+    path::Path,
 };
 
 use tokio::time::sleep;
@@ -37,6 +38,25 @@ pub async fn add(
     dev: bool,
     write_manifest: bool,
 ) -> std::io::Result<()> {
+    add_with_cache_dir(
+        pkg,
+        lockfile,
+        libs,
+        dev,
+        write_manifest,
+        Path::new("./.rpm/.cache"),
+    )
+    .await
+}
+
+pub(crate) async fn add_with_cache_dir(
+    pkg: &mut PackageManifest,
+    lockfile: &mut LockFile,
+    libs: Vec<String>,
+    dev: bool,
+    write_manifest: bool,
+    cache_dir: &Path,
+) -> std::io::Result<()> {
     let request_kind = direct_request_kind(dev);
     let requests = libs
         .into_iter()
@@ -52,7 +72,15 @@ pub async fn add(
     let graph = resolve_dependency_graph(requests, &metadata).map_err(resolution_error_to_io)?;
 
     lockfile.set_project_metadata(pkg.get_name(), pkg.get_version());
-    apply_resolved_graph(pkg, lockfile, graph.packages(), &metadata, write_manifest).await
+    apply_resolved_graph(
+        pkg,
+        lockfile,
+        graph.packages(),
+        &metadata,
+        write_manifest,
+        cache_dir,
+    )
+    .await
 }
 
 async fn populate_metadata<F, Fut>(
@@ -105,6 +133,7 @@ async fn apply_resolved_graph(
     packages: &[ResolvedPackage],
     metadata: &InstallMetadata,
     write_manifest: bool,
+    cache_dir: &Path,
 ) -> std::io::Result<()> {
     for package in packages {
         print!("installing {}@{}...", package.package_name, package.version);
@@ -116,7 +145,8 @@ async fn apply_resolved_graph(
         let relationship = relationship_for_package(package);
         if let Some(locked_package) = metadata.locked_package_for_resolved(package) {
             if let Some(tarball) = &locked_package.tarball {
-                Registry::download_tarball_url(&locked_package.key, tarball).await?;
+                Registry::download_tarball_url_to_dir(&locked_package.key, tarball, cache_dir)
+                    .await?;
             }
             lockfile.add_dependency_entry(
                 &locked_package.key,
@@ -132,7 +162,9 @@ async fn apply_resolved_graph(
         } else {
             let key = format!("{}@{}", package.package_name, package.version);
             let registry = metadata.registry_io(&package.package_name)?;
-            registry.download_tarball(&key, &package.version).await?;
+            registry
+                .download_tarball_to_dir(&key, &package.version, cache_dir)
+                .await?;
 
             let dependencies = package
                 .dependencies

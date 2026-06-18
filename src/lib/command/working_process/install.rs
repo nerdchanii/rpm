@@ -1,36 +1,62 @@
 use crate::{
-    command::working_process, lockfile::LockFile, node_linker::NodeModules,
+    command::working_process::add_with_cache_dir, lockfile::LockFile, node_linker::NodeModules,
     package_manifest::PackageManifest,
 };
+use std::path::Path;
 
 pub async fn install() -> std::io::Result<()> {
-    let mut package_manifest = PackageManifest::read_default()?;
+    install_in(Path::new(".")).await
+}
+
+async fn install_in(project_root: &Path) -> std::io::Result<()> {
+    let package_path = project_root.join("package.json");
+    let lockfile_path = project_root.join("rpm.lock");
+    let cache_dir = project_root.join(".rpm").join(".cache");
+    let node_modules_path = project_root.join("node_modules");
+
+    let mut package_manifest = PackageManifest::read_from_path(&package_path)?;
     let dependencies = package_manifest.get_dependencies();
-    let mut lockfile = LockFile::load()?;
+    let mut lockfile = LockFile::load_from_path(&lockfile_path)?;
     let libs = dependencies
         .iter()
         .map(|(lib_name, version)| format!("{}@{}", lib_name, version))
         .collect::<Vec<String>>();
-    working_process::add(&mut package_manifest, &mut lockfile, libs, false, false).await?;
+    add_with_cache_dir(
+        &mut package_manifest,
+        &mut lockfile,
+        libs,
+        false,
+        false,
+        &cache_dir,
+    )
+    .await?;
 
     let dev_deps = package_manifest.get_dev_dependencies();
     let dev_libs = dev_deps
         .iter()
         .map(|(lib_name, version)| format!("{}@{}", lib_name, version))
         .collect::<Vec<String>>();
-    working_process::add(&mut package_manifest, &mut lockfile, dev_libs, true, false).await?;
+    add_with_cache_dir(
+        &mut package_manifest,
+        &mut lockfile,
+        dev_libs,
+        true,
+        false,
+        &cache_dir,
+    )
+    .await?;
 
-    lockfile.save()?;
-    package_manifest.save_to_path("./package.json")?;
+    lockfile.save_to_path(&lockfile_path)?;
+    package_manifest.save_to_path(&package_path)?;
     if !lockfile.get_packages().is_empty() {
-        NodeModules::init()?;
+        NodeModules::init_from_paths(&node_modules_path, &lockfile_path, &cache_dir)?;
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::install;
+    use super::install_in;
     use crate::{
         lockfile::{LockFile, Relationship},
         package_manifest::PackageManifest,
@@ -42,14 +68,13 @@ mod tests {
         fs, io,
         os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
-        sync::Mutex,
+        thread,
+        time::Duration,
     };
-
-    static INSTALL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[tokio::test]
     async fn installs_performance_small_fixture_from_deterministic_inputs() {
-        let _guard = INSTALL_TEST_LOCK.lock().unwrap();
+        let _guard = TestEnvLock::acquire().unwrap();
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root_before = root_fingerprints(&repo_root).unwrap();
         let fixture_root = fixture_path(&["install-projects", "performance-small"]);
@@ -59,8 +84,8 @@ mod tests {
             .unwrap();
         let project_root = package_path.parent().unwrap();
 
-        let _env = FixtureInstallEnv::new(project_root, &fixture_root.join("registry")).unwrap();
-        install().await.unwrap();
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        install_in(project_root).await.unwrap();
 
         let lock_path = project_root.join("rpm.lock");
         let lock = LockFile::load_from_path(&lock_path).unwrap();
@@ -150,7 +175,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_failure_preserves_existing_node_modules() {
-        let _guard = INSTALL_TEST_LOCK.lock().unwrap();
+        let _guard = TestEnvLock::acquire().unwrap();
         let fixture_root = fixture_path(&["install-projects", "performance-small"]);
         let project = TempProject::new("install-failure-preserves-node-modules").unwrap();
         let package_path = project
@@ -165,8 +190,8 @@ mod tests {
         read_only_permissions.set_mode(0o444);
         fs::set_permissions(&package_path, read_only_permissions).unwrap();
 
-        let _env = FixtureInstallEnv::new(project_root, &fixture_root.join("registry")).unwrap();
-        let error = install().await.unwrap_err();
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        let error = install_in(project_root).await.unwrap_err();
         fs::set_permissions(&package_path, original_permissions).unwrap();
 
         assert!(error
@@ -201,27 +226,47 @@ mod tests {
         Ok(entries)
     }
 
+    struct TestEnvLock {
+        path: PathBuf,
+    }
+
+    impl TestEnvLock {
+        fn acquire() -> io::Result<Self> {
+            let path = std::env::temp_dir().join("rpm-install-test-env-lock");
+            loop {
+                match fs::create_dir(&path) {
+                    Ok(()) => return Ok(Self { path }),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+
+    impl Drop for TestEnvLock {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir(&self.path);
+        }
+    }
+
     struct FixtureInstallEnv {
-        original_dir: PathBuf,
         previous_fixture_root: Option<OsString>,
     }
 
     impl FixtureInstallEnv {
-        fn new(project_root: &Path, registry_root: &Path) -> io::Result<Self> {
-            let original_dir = std::env::current_dir()?;
+        fn new(registry_root: &Path) -> Self {
             let previous_fixture_root = std::env::var_os("RPM_REGISTRY_FIXTURE_ROOT");
-            std::env::set_current_dir(project_root)?;
             std::env::set_var("RPM_REGISTRY_FIXTURE_ROOT", registry_root);
-            Ok(Self {
-                original_dir,
+            Self {
                 previous_fixture_root,
-            })
+            }
         }
     }
 
     impl Drop for FixtureInstallEnv {
         fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.original_dir);
             match &self.previous_fixture_root {
                 Some(value) => std::env::set_var("RPM_REGISTRY_FIXTURE_ROOT", value),
                 None => std::env::remove_var("RPM_REGISTRY_FIXTURE_ROOT"),

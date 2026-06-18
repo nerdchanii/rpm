@@ -45,7 +45,7 @@ impl NodeModules {
         Self::init_from_paths("node_modules", LOCK_FILE_PATH, CACHE_DIR)
     }
 
-    fn init_from_paths<P, Q, R>(
+    pub(crate) fn init_from_paths<P, Q, R>(
         node_modules_path: P,
         lockfile_path: Q,
         cache_dir: R,
