@@ -1,0 +1,2 @@
+@rpm-fixture/locked-parent@1.0.0 requested ^1.0.0
+@rpm-fixture/locked-child@1.0.0 requested ^1.0.0

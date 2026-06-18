@@ -1,0 +1,23 @@
+lockfile_version = 1
+name = "lockfile-reproducible-app"
+version = "0.0.0"
+
+["@rpm-fixture/locked-parent@1.0.0"]
+name = "@rpm-fixture/locked-parent"
+requested = "^1.0.0"
+version = "1.0.0"
+relationship = "direct"
+tarball = "https://registry.example.invalid/@rpm-fixture/locked-parent/-/locked-parent-1.0.0.tgz"
+integrity = "sha512-locked-parent-100"
+shasum = "fixture-locked-parent-1-0-0"
+dependencies = ["@rpm-fixture/locked-child@^1.0.0"]
+
+["@rpm-fixture/locked-child@1.0.0"]
+name = "@rpm-fixture/locked-child"
+requested = "^1.0.0"
+version = "1.0.0"
+relationship = "transitive"
+tarball = "https://registry.example.invalid/@rpm-fixture/locked-child/-/locked-child-1.0.0.tgz"
+integrity = "sha512-locked-child-100"
+shasum = "fixture-locked-child-1-0-0"
+dependencies = []

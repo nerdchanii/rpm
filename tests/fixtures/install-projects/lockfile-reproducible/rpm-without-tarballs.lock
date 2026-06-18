@@ -1,0 +1,17 @@
+lockfile_version = 1
+name = "lockfile-reproducible-app"
+version = "0.0.0"
+
+["@rpm-fixture/locked-parent@1.0.0"]
+name = "@rpm-fixture/locked-parent"
+requested = "^1.0.0"
+version = "1.0.0"
+relationship = "direct"
+dependencies = ["@rpm-fixture/locked-child@^1.0.0"]
+
+["@rpm-fixture/locked-child@1.0.0"]
+name = "@rpm-fixture/locked-child"
+requested = "^1.0.0"
+version = "1.0.0"
+relationship = "transitive"
+dependencies = []

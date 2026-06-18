@@ -302,6 +302,16 @@ impl Registry {
 
     /// download tarball from registry and return tarball bytes
     pub async fn download_tarball(&self, key: &str, version: &str) -> std::io::Result<()> {
+        self.download_tarball_to_dir(key, version, Path::new(CACHE_DIR))
+            .await
+    }
+
+    pub(crate) async fn download_tarball_to_dir(
+        &self,
+        key: &str,
+        version: &str,
+        cache_dir: &Path,
+    ) -> std::io::Result<()> {
         let url = self
             .get_dist_for_version(version)
             .map(|dist| dist.get_tarball())
@@ -318,8 +328,22 @@ impl Registry {
             key.to_owned()
         };
 
-        save_tarball(&key, &mut bytes_file)
+        save_tarball_to_dir(cache_dir, &key, &mut bytes_file)
     }
+
+    pub async fn download_tarball_url(key: &str, tarball_url: &str) -> std::io::Result<()> {
+        Self::download_tarball_url_to_dir(key, tarball_url, Path::new(CACHE_DIR)).await
+    }
+
+    pub(crate) async fn download_tarball_url_to_dir(
+        key: &str,
+        tarball_url: &str,
+        cache_dir: &Path,
+    ) -> std::io::Result<()> {
+        let mut bytes_file = api::get_tarball(tarball_url).await?;
+        save_tarball_to_dir(cache_dir, key, &mut bytes_file)
+    }
+
     /// get dependencies from registry
     /// return dependencies vector
     /// Example:
@@ -346,10 +370,6 @@ impl Registry {
                 .and_then(|dist_tags| dist_tags.get_latest())
         }
     }
-}
-
-fn save_tarball(tarball_name: &str, bytes_file: &mut [u8]) -> Result<(), Error> {
-    save_tarball_to_dir(CACHE_DIR, tarball_name, bytes_file)
 }
 
 pub(crate) fn tarball_cache_file_name(package_name: &str, version: &str) -> String {
@@ -556,6 +576,7 @@ mod tests {
     fn semver_registry_fixtures_match_registry_metadata_shape() {
         let fixture_roots = [
             "tests/fixtures/registry/shared-transitive/metadata",
+            "tests/fixtures/install-projects/lockfile-reproducible/registry",
             "tests/fixtures/install-projects/performance-small/registry",
             "tests/fixtures/install-projects/semver-baseline/registry",
             "tests/fixtures/install-projects/semver-unsatisfied/registry",

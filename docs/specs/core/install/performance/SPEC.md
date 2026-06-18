@@ -3,7 +3,7 @@ spec_id: installer_performance
 title: Installer Performance Baseline
 status: draft
 owner: core/install/performance
-last_reviewed: 2026-05-29
+last_reviewed: 2026-06-18
 authors:
   - nerdchanii
 deciders:
@@ -12,6 +12,7 @@ consulted: []
 informed: []
 related_adrs:
   - 0002-single-crate-cli-core-boundary
+  - 0005-installer-performance-measurement-boundary
 related_issues:
   - 50
   - 60
@@ -21,7 +22,7 @@ related_issues:
 
 Status: Draft
 Owner: core/install/performance
-Last reviewed: 2026-05-29
+Last reviewed: 2026-06-18
 
 ## Purpose
 
@@ -104,17 +105,31 @@ The initial success criterion for later implementation is not raw speed. The
 first criterion is that shared transitive packages are represented once in the
 resolved graph and downloaded once for a selected version.
 
+## Measurement Decisions
+
+ADR 0005 resolves the installer measurement ownership and pre-verification data
+sources for this baseline.
+
+The first measurement harness belongs to the install domain under `core`. It
+should not be owned by CLI, resolver, registry, linker, or legacy command
+modules. When `src/core/install` exists, install performance helpers should
+live under an install-owned performance module or its tests.
+
+Metadata fetch counts and tarball download counts should be collected through a
+fake registry API used by installer tests. The fake registry should serve
+deterministic fixture metadata and tarball responses while recording calls by
+package name and selected version. Resolver event logs may be added later for
+diagnostics, but they are not required for the first installer measurement
+harness.
+
+Before tarball verification is implemented, registry `dist.integrity` is the
+authoritative integrity field when present. Registry `dist.shasum` is the
+legacy fallback when `dist.integrity` is absent. Recording either value before
+verification does not mean RPM has cryptographically verified the tarball.
+
 ## Error Cases
 
 Pipeline work must keep failed graph resolution side-effect free. A missing
 package, invalid metadata document, unsatisfied range, failed tarball download,
 failed integrity check, failed extraction, failed link, or failed lockfile write
 must not be reported as a successful install.
-
-## Open Questions
-
-- Which module owns the first installer measurement harness? Tracked by #60.
-- Should metadata fetch counts be collected through a fake registry API or a
-  resolver event log? Tracked by #60.
-- What integrity format is authoritative before tarball verification is
-  implemented? Tracked by #60.
