@@ -320,6 +320,12 @@ impl Registry {
 
         save_tarball(&key, &mut bytes_file)
     }
+
+    pub async fn download_tarball_url(key: &str, tarball_url: &str) -> std::io::Result<()> {
+        let mut bytes_file = api::get_tarball(tarball_url).await?;
+        save_tarball(key, &mut bytes_file)
+    }
+
     /// get dependencies from registry
     /// return dependencies vector
     /// Example:
@@ -556,6 +562,7 @@ mod tests {
     fn semver_registry_fixtures_match_registry_metadata_shape() {
         let fixture_roots = [
             "tests/fixtures/registry/shared-transitive/metadata",
+            "tests/fixtures/install-projects/lockfile-reproducible/registry",
             "tests/fixtures/install-projects/performance-small/registry",
             "tests/fixtures/install-projects/semver-baseline/registry",
             "tests/fixtures/install-projects/semver-unsatisfied/registry",

@@ -77,6 +77,24 @@ impl Dependency {
         }
         dependencies
     }
+
+    pub fn get_dependencies(&self) -> Vec<String> {
+        let mut dependencies = self.dependencies.iter().cloned().collect::<Vec<_>>();
+        dependencies.sort();
+        dependencies
+    }
+
+    pub fn get_tarball(&self) -> Option<String> {
+        self.tarball.clone()
+    }
+
+    pub fn get_integrity(&self) -> Option<String> {
+        self.integrity.clone()
+    }
+
+    pub fn get_shasum(&self) -> Option<String> {
+        self.shasum.clone()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,6 +299,19 @@ impl LockFile {
 
     pub fn get_dependency(&self, name: &str) -> Option<&Dependency> {
         self.dependencies.get(name)
+    }
+
+    pub fn get_dependency_for_request(
+        &self,
+        package_name: &str,
+        requested: &str,
+    ) -> Option<(String, Dependency)> {
+        self.dependencies
+            .iter()
+            .find(|(_, dependency)| {
+                dependency.name == package_name && dependency.requested == requested
+            })
+            .map(|(key, dependency)| (key.clone(), dependency.clone()))
     }
 }
 
