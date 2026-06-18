@@ -47,6 +47,12 @@ has_allowed_label() {
   return 1
 }
 
+has_closing_issue_exemption() {
+  local body="$1"
+
+  grep -Eq '^No closing issue: .+' <<< "${body}"
+}
+
 if [ "$#" -gt 1 ]; then
   printf 'pr_policy.usage=check-pr-policy.sh [pr-number-or-url]\n'
   exit 2
@@ -100,8 +106,20 @@ printf 'pr_policy.closing_issues=%s\n' "${closing_issues_count}"
 if [ "${closing_issues_count}" -gt 0 ]; then
   printf 'pr_policy.connected_issue=ok\n'
 else
-  status="fail"
   printf 'pr_policy.connected_issue=missing\n'
+
+  if [ -n "${PR_POLICY_BODY:-}" ]; then
+    pr_body="${PR_POLICY_BODY}"
+  else
+    pr_body="$(gh pr view "${pr_ref}" --json body --jq '.body')"
+  fi
+
+  if has_closing_issue_exemption "${pr_body}"; then
+    printf 'pr_policy.closing_issue_exemption=ok\n'
+  else
+    status="fail"
+    printf 'pr_policy.closing_issue_exemption=missing\n'
+  fi
 fi
 
 printf 'pr_policy.status=%s\n' "${status}"

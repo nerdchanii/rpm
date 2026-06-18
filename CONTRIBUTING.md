@@ -49,7 +49,8 @@ verify:
   `refactor`, `planning`, `milestone-contract`, or
   `process:metadata-cleanup`
 - at least one GitHub-recognized closing issue reference, for example
-  `Closes #123`
+  `Closes #123`, or an explicit exemption in the PR body using
+  `No closing issue: <reason>`
 
 The PR policy workflow skips draft PRs and enforces this metadata when a PR is
 ready for review. The workflow depends on the approved labels already existing
@@ -59,7 +60,8 @@ Before marking a PR ready:
 
 - run the narrowest relevant validation
 - apply at least one approved label
-- replace the `Closes #` placeholder with a real closing issue reference
+- replace the `Closes #` placeholder with a real closing issue reference or a
+  documented `No closing issue: <reason>` exemption
 - update the PR checklist
 - push the branch
 - list follow-up work instead of expanding scope

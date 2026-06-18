@@ -16,7 +16,8 @@
 - [ ] Behavior changes include relevant tests or fixtures.
 - [ ] SPEC impact is classified when contract-affecting.
 - [ ] PR has at least one approved label: `bug`, `documentation`, `enhancement`, `refactor`, `planning`, `milestone-contract`, or `process:metadata-cleanup`.
-- [ ] `Closes #` below is replaced with a real issue number so GitHub recognizes the connected issue.
+- [ ] `Closes #` below is replaced with a real issue number, or this PR uses the documented `No closing issue: <reason>` exemption.
 - [ ] PR is ready for review when implementation is complete.
 
 Closes #
+<!-- If this PR qualifies for an exemption, replace the closing reference with: No closing issue: <reason> -->

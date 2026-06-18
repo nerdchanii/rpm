@@ -24,5 +24,4 @@ assignees: ""
 
 ## Related work
 
-<!-- Linked issues, PRs, specs, or notes. -->
-
+<!-- Linked issues, PRs, specs, or notes. Implementation PRs should close this issue with `Closes #<number>` when applicable. -->
