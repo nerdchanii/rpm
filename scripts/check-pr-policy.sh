@@ -54,11 +54,6 @@ fi
 
 pr_ref="${1:-${PR_POLICY_PR_REF:-}}"
 
-if [ -z "${pr_ref}" ] && [ -z "${PR_POLICY_LABELS:-}" ]; then
-  printf 'pr_policy.usage=check-pr-policy.sh [pr-number-or-url]\n'
-  exit 2
-fi
-
 status="ok"
 
 printf 'pr_policy.allowed_labels=%s\n' "$(print_allowed_labels)"
@@ -74,6 +69,11 @@ printf 'pr_policy.draft=%s\n' "${pr_draft}"
 if [ "${pr_draft}" = "true" ]; then
   printf 'pr_policy.status=skipped\n'
   exit 0
+fi
+
+if [ -z "${pr_ref}" ] && [ -z "${PR_POLICY_LABELS:-}" ]; then
+  printf 'pr_policy.usage=check-pr-policy.sh [pr-number-or-url]\n'
+  exit 2
 fi
 
 if [ -n "${PR_POLICY_LABELS:-}" ]; then
