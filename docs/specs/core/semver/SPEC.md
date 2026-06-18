@@ -3,7 +3,7 @@ spec_id: semver_resolution
 title: Semver Resolution
 status: draft
 owner: core/resolver/semver
-last_reviewed: 2026-06-12
+last_reviewed: 2026-06-18
 authors:
   - nerdchanii
 deciders:
@@ -26,7 +26,7 @@ related_issues:
 
 Status: Draft
 Owner: core/resolver/semver
-Last reviewed: 2026-06-12
+Last reviewed: 2026-06-18
 
 ## Purpose
 
@@ -135,6 +135,26 @@ Do not add `panic!`, `unwrap`, or `expect` in production semver code except for
 compile-time constants or impossible internal invariants documented with a short
 comment. Tests may use them.
 
+## JavaScript Wrapper Input Policy
+
+RPM does not currently expose a JavaScript semver API. When a WASM or npm
+wrapper exposes `coerce`, that wrapper must keep the Rust core typed boundary
+and map JavaScript values at the wrapper edge.
+
+Wrapper `coerce` must accept JavaScript strings and safe integers according to
+the existing Rust string and numeric APIs. A wrapper-owned `SemVer` object must
+round-trip as an already parsed version, matching `node-semver` behavior for
+its own `SemVer` instances.
+
+Arbitrary JavaScript objects and functions are intentionally unsupported
+wrapper inputs. A wrapper must not read an arbitrary object's `version`
+property and must not call a function input. Those values must produce a
+non-match result equivalent to `node-semver` `coerce` returning `null`.
+
+JavaScript-only coerce input fixtures belong with the future JavaScript wrapper
+that exposes this boundary. They must not be added to the Rust-core fixture
+subset until a concrete wrapper API exists.
+
 ## Error Cases
 
 - An exact version that is absent from metadata fails resolution.
@@ -163,6 +183,12 @@ remain readable.
 Imported or derived `node-semver` fixture groups must be clearly separated from
 RPM-authored fixtures and must preserve the required ISC notice.
 
+Advanced loose-mode cases that map to RPM's typed Rust APIs are covered in the
+derived fixture subset. JavaScript-only object, function, `undefined`, and
+other non-string value shapes are wrapper behavior or intentionally not
+applicable to the typed Rust core. Wrapper-specific `coerce` behavior for those
+JavaScript-only inputs remains tracked by #67.
+
 Failing resolver fixtures are separate project scenarios:
 
 - `tests/fixtures/install-projects/semver-unsatisfied/`
@@ -185,5 +211,3 @@ Required fixture cases:
 
 - Whether future JavaScript wrappers expose `node-semver` `coerce` behavior for
   JavaScript-only object and function inputs. Tracked by #67.
-- Whether remaining advanced loose-mode fixture cases are Rust-core behavior,
-  wrapper behavior, or intentionally not applicable. Tracked by #68.

@@ -1,0 +1,7 @@
+{
+  "name": "lockfile-reproducible-app",
+  "version": "0.0.0",
+  "dependencies": {
+    "@rpm-fixture/locked-parent": "^1.0.0"
+  }
+}

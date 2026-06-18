@@ -3,7 +3,7 @@ spec_id: resolver_boundary
 title: Resolver Strategy Boundary
 status: draft
 owner: core/resolver
-last_reviewed: 2026-05-29
+last_reviewed: 2026-06-18
 authors:
   - nerdchanii
 deciders:
@@ -12,6 +12,7 @@ consulted: []
 informed: []
 related_adrs:
   - 0002-single-crate-cli-core-boundary
+  - 0006-resolver-strategy-boundary
 related_issues:
   - 50
   - 58
@@ -21,7 +22,7 @@ related_issues:
 
 Status: Draft
 Owner: core/resolver
-Last reviewed: 2026-05-29
+Last reviewed: 2026-06-18
 
 ## Purpose
 
@@ -53,9 +54,10 @@ selection abstraction and record its selected version; they must not duplicate
 range parsing policy in the traversal implementation.
 
 Traversal policy is behind a replaceable `ResolutionStrategy` boundary, or an
-equivalent internal abstraction. The resolver must not rely on recursive calls
-for correctness, and callers must not depend on the concrete queue or worklist
-type used by a strategy.
+equivalent internal abstraction, owned by the `src/core/resolver` root module.
+Concrete strategies may live in private child modules, but callers depend on
+the resolver facade rather than a concrete queue or worklist type. The resolver
+must not rely on recursive calls for correctness.
 
 The first strategy is an iterative FIFO worklist:
 
@@ -71,6 +73,12 @@ Future strategies may replace FIFO traversal with priority-based, heuristic,
 peer-aware, or backtracking behavior without changing fetch, extract, link, or
 lockfile write phases.
 
+Before a peer-aware strategy exists, peer dependencies are represented as peer
+requirement metadata on resolved package records or metadata records. They are
+not direct dependency requests, transitive dependency requests, manifest update
+inputs, or `node_modules` link targets by themselves. A non-peer-aware strategy
+must not silently enqueue peer dependencies as ordinary dependencies.
+
 The installer performance baseline in
 `docs/specs/core/install/performance/SPEC.md`
 documents the current recursive bottleneck and the measurement fixture for
@@ -83,6 +91,13 @@ a requested range cannot be satisfied, dependency metadata is invalid, or the
 strategy detects an unsupported graph condition. Failed resolution must not be
 reported as a successful install, and it must not cause partial lockfile or
 manifest writes.
+
+M1 does not require a public structured diagnostic format for graph conflicts.
+Resolver failures must still be typed internally enough for callers to
+distinguish missing metadata, invalid metadata, unsatisfied ranges, invalid
+ranges, and unsupported graph conditions. A public machine-readable diagnostic
+format must be covered by an owning diagnostics SPEC before it becomes part of
+RPM's user-facing or API-facing contract.
 
 ## Test Fixtures
 
@@ -97,11 +112,8 @@ The semver baseline fixtures are defined by
 `docs/specs/core/semver/SPEC.md` and must be used before installer flow relies
 on semver range behavior.
 
-## Open Questions
+## Resolved Follow-Up
 
-- Which Rust module owns the first `ResolutionStrategy` trait or equivalent
-  type? Tracked by #58.
-- How should peer dependencies be represented before a peer-aware strategy
-  exists? Tracked by #58.
-- Should graph conflicts be reported as structured diagnostics before M1?
-  Tracked by #58.
+ADR 0006 records the resolved #58 boundary decisions for
+`ResolutionStrategy` ownership, pre-peer-aware dependency representation, and
+M1 graph-conflict diagnostics.

@@ -1,0 +1,38 @@
+{
+  "name": "@rpm-fixture/locked-child",
+  "dist-tags": {
+    "latest": "1.1.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/locked-child",
+      "version": "1.0.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/locked-child/-/locked-child-1.0.0.tgz",
+        "integrity": "sha512-locked-child-100",
+        "shasum": "fixture-locked-child-1-0-0"
+      },
+      "description": "@rpm-fixture/locked-child 1.0.0 fixture"
+    },
+    "1.1.0": {
+      "name": "@rpm-fixture/locked-child",
+      "version": "1.1.0",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/locked-child/-/locked-child-1.1.0.tgz",
+        "integrity": "sha512-locked-child-110",
+        "shasum": "fixture-locked-child-1-1-0"
+      },
+      "description": "@rpm-fixture/locked-child 1.1.0 fixture"
+    }
+  },
+  "_id": "@rpm-fixture/locked-child",
+  "maintainers": [
+    {
+      "name": "rpm-fixture",
+      "email": "fixtures@example.invalid"
+    }
+  ],
+  "description": "@rpm-fixture/locked-child fixture"
+}

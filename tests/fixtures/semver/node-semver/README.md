@@ -86,7 +86,8 @@ core is expected to pass now:
   partial, hyphen, tilde, caret, union, invalid ranges, spaced operators,
   standalone operators, wildcard ranges with prerelease/build metadata,
   numeric safety boundaries, include-prerelease hyphen ranges, and loose-mode
-  range parsing subsets, including long build metadata stripping
+  range parsing subsets, including loose numeric normalization and long build
+  metadata stripping
 - `satisfies` for exact, wildcard, comparator, spaced comparator, union, caret,
   tilde, `~>` alias, partial, hyphen range forms, and loose-mode include and
   exclude range parsing subsets
@@ -102,10 +103,28 @@ core is expected to pass now:
 The full upstream fixture corpus also covers behavior that remains tracked
 outside this Rust-core subset:
 
-- Remaining advanced loose-mode fixture inventory and classification is
-  tracked by #68.
+- Advanced loose-mode Rust-core cases from the pinned `range-parse.js` corpus
+  are represented in `compatibility-subset.json`, including loose comparator
+  normalization, loose prerelease suffix normalization, loose numeric
+  normalization, and loose long build metadata stripping.
+- Loose-mode range operation cases for `satisfies`, `max_satisfying`,
+  `min_satisfying`, `outside`, `gtr`, `ltr`, and `valid_range` are represented
+  when the upstream input shape maps to RPM's typed Rust APIs.
 - Dist-tags are registry metadata selectors, not semver ranges; that boundary
   is defined in `docs/specs/core/semver/SPEC.md`.
-- JavaScript-only `coerce` object and function input behavior is tracked by
-  #67 because those value kinds do not map directly to the typed Rust string
-  and number APIs.
+- JavaScript-only object, function, `undefined`, and other non-string value
+  shapes are wrapper behavior or intentionally not applicable to the typed Rust
+  APIs. `coerce` object and function input behavior remains tracked by #67.
+
+## JavaScript Wrapper Policy
+
+The Rust core intentionally keeps `coerce` typed as string and numeric APIs.
+Future JavaScript wrappers must map JavaScript-only inputs at the wrapper edge
+as defined in `docs/specs/core/semver/SPEC.md`: arbitrary objects and functions
+are unsupported and must produce the wrapper equivalent of `node-semver`
+`coerce` returning `null`.
+
+No wrapper-level fixtures are present yet because RPM does not currently expose
+a JavaScript semver API. When that API exists, its fixture group should cover
+the JavaScript-only object and function cases separately from this Rust-core
+compatibility subset.
