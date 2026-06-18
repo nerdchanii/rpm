@@ -42,9 +42,24 @@ contract issue body. Do not rely on comments alone as the current summary.
 
 Open PRs with a clear summary, validation notes, and a focused checklist. Keep implementation and cleanup separate.
 
+Before a PR is ready for review, it must have repository metadata that CI can
+verify:
+
+- at least one approved label: `bug`, `documentation`, `enhancement`,
+  `refactor`, `planning`, `milestone-contract`, or
+  `process:metadata-cleanup`
+- at least one GitHub-recognized closing issue reference, for example
+  `Closes #123`
+
+The PR policy workflow skips draft PRs and enforces this metadata when a PR is
+ready for review. The workflow depends on the approved labels already existing
+in the repository.
+
 Before marking a PR ready:
 
 - run the narrowest relevant validation
+- apply at least one approved label
+- replace the `Closes #` placeholder with a real closing issue reference
 - update the PR checklist
 - push the branch
 - list follow-up work instead of expanding scope

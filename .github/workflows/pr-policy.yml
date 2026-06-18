@@ -1,0 +1,31 @@
+name: PR Policy
+
+on:
+  pull_request:
+    branches: ["main"]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited
+      - ready_for_review
+      - labeled
+      - unlabeled
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  metadata:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check PR metadata policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-pr-policy.sh "${{ github.event.pull_request.number }}"
