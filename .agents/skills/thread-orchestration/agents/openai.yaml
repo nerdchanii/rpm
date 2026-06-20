@@ -1,4 +1,0 @@
-interface:
-  display_name: "Thread Orchestration"
-  short_description: "Coordinate background Codex thread loops."
-  default_prompt: "Use $thread-orchestration to coordinate reviewer and implementer threads until the task converges."
