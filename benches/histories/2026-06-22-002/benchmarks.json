@@ -1,0 +1,728 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-06-22T10:03:30.871Z",
+  "startedAt": "2026-06-22T10:01:49.021Z",
+  "outputDir": "benches/histories/2026-06-22-002",
+  "history": {
+    "root": "benches/histories",
+    "directory": "2026-06-22-002"
+  },
+  "settings": {
+    "iterations": 50000,
+    "samples": 5,
+    "warmupSamples": 1
+  },
+  "commands": [
+    {
+      "implementation": "rpm-rust",
+      "command": "cargo bench --bench semver --quiet"
+    },
+    {
+      "implementation": "node-semver",
+      "command": "node scripts/benchmark-node-semver.mjs"
+    }
+  ],
+  "runs": [
+    {
+      "implementation": "rpm-rust",
+      "command": "cargo bench --bench semver --quiet",
+      "metadata": {
+        "implementation": "rpm-rust",
+        "crate_version": "0.1.0",
+        "rustc_version": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+        "target_os": "macos",
+        "target_arch": "aarch64",
+        "iterations": "50000",
+        "samples": "5",
+        "warmup_samples": "1",
+        "outlier_policy": "record_all_samples"
+      },
+      "samples": [
+        {
+          "operation": "version_parse",
+          "sample": 1,
+          "totalMs": 130.589,
+          "nsPerIter": 2611
+        },
+        {
+          "operation": "version_parse",
+          "sample": 2,
+          "totalMs": 109.494,
+          "nsPerIter": 2189
+        },
+        {
+          "operation": "version_parse",
+          "sample": 3,
+          "totalMs": 98.958,
+          "nsPerIter": 1979
+        },
+        {
+          "operation": "version_parse",
+          "sample": 4,
+          "totalMs": 98.882,
+          "nsPerIter": 1977
+        },
+        {
+          "operation": "version_parse",
+          "sample": 5,
+          "totalMs": 99.202,
+          "nsPerIter": 1984
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 1,
+          "totalMs": 224.04,
+          "nsPerIter": 4480
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 2,
+          "totalMs": 211.971,
+          "nsPerIter": 4239
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 3,
+          "totalMs": 192.681,
+          "nsPerIter": 3853
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 4,
+          "totalMs": 184.44,
+          "nsPerIter": 3688
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 5,
+          "totalMs": 178.067,
+          "nsPerIter": 3561
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 1,
+          "totalMs": 23.36,
+          "nsPerIter": 467
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 2,
+          "totalMs": 23.339,
+          "nsPerIter": 466
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 3,
+          "totalMs": 23.332,
+          "nsPerIter": 466
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 4,
+          "totalMs": 23.638,
+          "nsPerIter": 472
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 5,
+          "totalMs": 23.856,
+          "nsPerIter": 477
+        },
+        {
+          "operation": "range_parse",
+          "sample": 1,
+          "totalMs": 219.156,
+          "nsPerIter": 4383
+        },
+        {
+          "operation": "range_parse",
+          "sample": 2,
+          "totalMs": 219.613,
+          "nsPerIter": 4392
+        },
+        {
+          "operation": "range_parse",
+          "sample": 3,
+          "totalMs": 222.435,
+          "nsPerIter": 4448
+        },
+        {
+          "operation": "range_parse",
+          "sample": 4,
+          "totalMs": 224.859,
+          "nsPerIter": 4497
+        },
+        {
+          "operation": "range_parse",
+          "sample": 5,
+          "totalMs": 232.31,
+          "nsPerIter": 4646
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 1,
+          "totalMs": 70.905,
+          "nsPerIter": 1418
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 2,
+          "totalMs": 70.963,
+          "nsPerIter": 1419
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 3,
+          "totalMs": 71.349,
+          "nsPerIter": 1426
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 4,
+          "totalMs": 71.292,
+          "nsPerIter": 1425
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 5,
+          "totalMs": 73.058,
+          "nsPerIter": 1461
+        },
+        {
+          "operation": "satisfies",
+          "sample": 1,
+          "totalMs": 210.067,
+          "nsPerIter": 4201
+        },
+        {
+          "operation": "satisfies",
+          "sample": 2,
+          "totalMs": 210.213,
+          "nsPerIter": 4204
+        },
+        {
+          "operation": "satisfies",
+          "sample": 3,
+          "totalMs": 210.346,
+          "nsPerIter": 4206
+        },
+        {
+          "operation": "satisfies",
+          "sample": 4,
+          "totalMs": 209.789,
+          "nsPerIter": 4195
+        },
+        {
+          "operation": "satisfies",
+          "sample": 5,
+          "totalMs": 209.078,
+          "nsPerIter": 4181
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 1,
+          "totalMs": 268.158,
+          "nsPerIter": 5363
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 2,
+          "totalMs": 267.033,
+          "nsPerIter": 5340
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 3,
+          "totalMs": 253.251,
+          "nsPerIter": 5065
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 4,
+          "totalMs": 252.587,
+          "nsPerIter": 5051
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 5,
+          "totalMs": 266.561,
+          "nsPerIter": 5331
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 1,
+          "totalMs": 266.593,
+          "nsPerIter": 5331
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 2,
+          "totalMs": 253.873,
+          "nsPerIter": 5077
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 3,
+          "totalMs": 250.011,
+          "nsPerIter": 5000
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 4,
+          "totalMs": 256.048,
+          "nsPerIter": 5120
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 5,
+          "totalMs": 272.869,
+          "nsPerIter": 5457
+        }
+      ],
+      "rawOutput": "semver benchmark suite=representative\nmetadata,key,value\nmetadata,implementation,rpm-rust\nmetadata,crate_version,0.1.0\nmetadata,rustc_version,rustc 1.96.0 (ac68faa20 2026-05-25)\nmetadata,target_os,macos\nmetadata,target_arch,aarch64\nmetadata,iterations,50000\nmetadata,samples,5\nmetadata,warmup_samples,1\nmetadata,outlier_policy,record_all_samples\nname,sample,total_ms,ns_per_iter\nversion_parse,1,130.589,2611\nversion_parse,2,109.494,2189\nversion_parse,3,98.958,1979\nversion_parse,4,98.882,1977\nversion_parse,5,99.202,1984\nvalid_canonical,1,224.040,4480\nvalid_canonical,2,211.971,4239\nvalid_canonical,3,192.681,3853\nvalid_canonical,4,184.440,3688\nvalid_canonical,5,178.067,3561\ninvalid_version,1,23.360,467\ninvalid_version,2,23.339,466\ninvalid_version,3,23.332,466\ninvalid_version,4,23.638,472\ninvalid_version,5,23.856,477\nrange_parse,1,219.156,4383\nrange_parse,2,219.613,4392\nrange_parse,3,222.435,4448\nrange_parse,4,224.859,4497\nrange_parse,5,232.310,4646\ninvalid_range,1,70.905,1418\ninvalid_range,2,70.963,1419\ninvalid_range,3,71.349,1426\ninvalid_range,4,71.292,1425\ninvalid_range,5,73.058,1461\nsatisfies,1,210.067,4201\nsatisfies,2,210.213,4204\nsatisfies,3,210.346,4206\nsatisfies,4,209.789,4195\nsatisfies,5,209.078,4181\nmax_satisfying,1,268.158,5363\nmax_satisfying,2,267.033,5340\nmax_satisfying,3,253.251,5065\nmax_satisfying,4,252.587,5051\nmax_satisfying,5,266.561,5331\nmin_satisfying,1,266.593,5331\nmin_satisfying,2,253.873,5077\nmin_satisfying,3,250.011,5000\nmin_satisfying,4,256.048,5120\nmin_satisfying,5,272.869,5457"
+    },
+    {
+      "implementation": "node-semver",
+      "command": "node scripts/benchmark-node-semver.mjs",
+      "metadata": {
+        "implementation": "node-semver",
+        "node_version": "v22.22.3",
+        "npm_version": "10.9.8",
+        "node_semver_version": "7.8.2",
+        "platform": "darwin",
+        "arch": "arm64",
+        "iterations": "50000",
+        "samples": "5",
+        "warmup_samples": "1",
+        "outlier_policy": "record_all_samples"
+      },
+      "samples": [
+        {
+          "operation": "version_parse",
+          "sample": 1,
+          "totalMs": 239.194,
+          "nsPerIter": 4783
+        },
+        {
+          "operation": "version_parse",
+          "sample": 2,
+          "totalMs": 235.848,
+          "nsPerIter": 4716
+        },
+        {
+          "operation": "version_parse",
+          "sample": 3,
+          "totalMs": 237.814,
+          "nsPerIter": 4756
+        },
+        {
+          "operation": "version_parse",
+          "sample": 4,
+          "totalMs": 233.949,
+          "nsPerIter": 4678
+        },
+        {
+          "operation": "version_parse",
+          "sample": 5,
+          "totalMs": 247.511,
+          "nsPerIter": 4950
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 1,
+          "totalMs": 251.546,
+          "nsPerIter": 5030
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 2,
+          "totalMs": 253.025,
+          "nsPerIter": 5060
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 3,
+          "totalMs": 242.702,
+          "nsPerIter": 4854
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 4,
+          "totalMs": 235.838,
+          "nsPerIter": 4716
+        },
+        {
+          "operation": "valid_canonical",
+          "sample": 5,
+          "totalMs": 242.757,
+          "nsPerIter": 4855
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 1,
+          "totalMs": 1161.873,
+          "nsPerIter": 23237
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 2,
+          "totalMs": 1133.252,
+          "nsPerIter": 22665
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 3,
+          "totalMs": 1078.542,
+          "nsPerIter": 21570
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 4,
+          "totalMs": 1119.12,
+          "nsPerIter": 22382
+        },
+        {
+          "operation": "invalid_version",
+          "sample": 5,
+          "totalMs": 1150.251,
+          "nsPerIter": 23005
+        },
+        {
+          "operation": "range_parse",
+          "sample": 1,
+          "totalMs": 213.185,
+          "nsPerIter": 4263
+        },
+        {
+          "operation": "range_parse",
+          "sample": 2,
+          "totalMs": 202.449,
+          "nsPerIter": 4048
+        },
+        {
+          "operation": "range_parse",
+          "sample": 3,
+          "totalMs": 201.139,
+          "nsPerIter": 4022
+        },
+        {
+          "operation": "range_parse",
+          "sample": 4,
+          "totalMs": 197.087,
+          "nsPerIter": 3941
+        },
+        {
+          "operation": "range_parse",
+          "sample": 5,
+          "totalMs": 191.647,
+          "nsPerIter": 3832
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 1,
+          "totalMs": 2373.015,
+          "nsPerIter": 47460
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 2,
+          "totalMs": 2454.416,
+          "nsPerIter": 49088
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 3,
+          "totalMs": 2297.763,
+          "nsPerIter": 45955
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 4,
+          "totalMs": 2425.521,
+          "nsPerIter": 48510
+        },
+        {
+          "operation": "invalid_range",
+          "sample": 5,
+          "totalMs": 2337.574,
+          "nsPerIter": 46751
+        },
+        {
+          "operation": "satisfies",
+          "sample": 1,
+          "totalMs": 259.264,
+          "nsPerIter": 5185
+        },
+        {
+          "operation": "satisfies",
+          "sample": 2,
+          "totalMs": 260.228,
+          "nsPerIter": 5204
+        },
+        {
+          "operation": "satisfies",
+          "sample": 3,
+          "totalMs": 254.802,
+          "nsPerIter": 5096
+        },
+        {
+          "operation": "satisfies",
+          "sample": 4,
+          "totalMs": 253.69,
+          "nsPerIter": 5073
+        },
+        {
+          "operation": "satisfies",
+          "sample": 5,
+          "totalMs": 270.149,
+          "nsPerIter": 5402
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 1,
+          "totalMs": 1364.587,
+          "nsPerIter": 27291
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 2,
+          "totalMs": 1340.66,
+          "nsPerIter": 26813
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 3,
+          "totalMs": 1319.436,
+          "nsPerIter": 26388
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 4,
+          "totalMs": 1339.028,
+          "nsPerIter": 26780
+        },
+        {
+          "operation": "max_satisfying",
+          "sample": 5,
+          "totalMs": 1229.381,
+          "nsPerIter": 24587
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 1,
+          "totalMs": 1005.483,
+          "nsPerIter": 20109
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 2,
+          "totalMs": 1001.422,
+          "nsPerIter": 20028
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 3,
+          "totalMs": 1001.502,
+          "nsPerIter": 20030
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 4,
+          "totalMs": 1033.507,
+          "nsPerIter": 20670
+        },
+        {
+          "operation": "min_satisfying",
+          "sample": 5,
+          "totalMs": 1115.974,
+          "nsPerIter": 22319
+        }
+      ],
+      "rawOutput": "semver benchmark suite=representative\nmetadata,key,value\nmetadata,implementation,node-semver\nmetadata,node_version,v22.22.3\nmetadata,npm_version,10.9.8\nmetadata,node_semver_version,7.8.2\nmetadata,platform,darwin\nmetadata,arch,arm64\nmetadata,iterations,50000\nmetadata,samples,5\nmetadata,warmup_samples,1\nmetadata,outlier_policy,record_all_samples\nname,sample,total_ms,ns_per_iter\nversion_parse,1,239.194,4783\nversion_parse,2,235.848,4716\nversion_parse,3,237.814,4756\nversion_parse,4,233.949,4678\nversion_parse,5,247.511,4950\nvalid_canonical,1,251.546,5030\nvalid_canonical,2,253.025,5060\nvalid_canonical,3,242.702,4854\nvalid_canonical,4,235.838,4716\nvalid_canonical,5,242.757,4855\ninvalid_version,1,1161.873,23237\ninvalid_version,2,1133.252,22665\ninvalid_version,3,1078.542,21570\ninvalid_version,4,1119.120,22382\ninvalid_version,5,1150.251,23005\nrange_parse,1,213.185,4263\nrange_parse,2,202.449,4048\nrange_parse,3,201.139,4022\nrange_parse,4,197.087,3941\nrange_parse,5,191.647,3832\ninvalid_range,1,2373.015,47460\ninvalid_range,2,2454.416,49088\ninvalid_range,3,2297.763,45955\ninvalid_range,4,2425.521,48510\ninvalid_range,5,2337.574,46751\nsatisfies,1,259.264,5185\nsatisfies,2,260.228,5204\nsatisfies,3,254.802,5096\nsatisfies,4,253.690,5073\nsatisfies,5,270.149,5402\nmax_satisfying,1,1364.587,27291\nmax_satisfying,2,1340.660,26813\nmax_satisfying,3,1319.436,26388\nmax_satisfying,4,1339.028,26780\nmax_satisfying,5,1229.381,24587\nmin_satisfying,1,1005.483,20109\nmin_satisfying,2,1001.422,20028\nmin_satisfying,3,1001.502,20030\nmin_satisfying,4,1033.507,20670\nmin_satisfying,5,1115.974,22319"
+    }
+  ],
+  "summaries": {
+    "rpm-rust": {
+      "version_parse": {
+        "meanNsPerIter": 2148,
+        "medianNsPerIter": 1984,
+        "minNsPerIter": 1977,
+        "maxNsPerIter": 2611,
+        "stddevNsPerIter": 245.25,
+        "samples": 5
+      },
+      "valid_canonical": {
+        "meanNsPerIter": 3964.2,
+        "medianNsPerIter": 3853,
+        "minNsPerIter": 3561,
+        "maxNsPerIter": 4480,
+        "stddevNsPerIter": 344.32,
+        "samples": 5
+      },
+      "invalid_version": {
+        "meanNsPerIter": 469.6,
+        "medianNsPerIter": 467,
+        "minNsPerIter": 466,
+        "maxNsPerIter": 477,
+        "stddevNsPerIter": 4.32,
+        "samples": 5
+      },
+      "range_parse": {
+        "meanNsPerIter": 4473.2,
+        "medianNsPerIter": 4448,
+        "minNsPerIter": 4383,
+        "maxNsPerIter": 4646,
+        "stddevNsPerIter": 95.7,
+        "samples": 5
+      },
+      "invalid_range": {
+        "meanNsPerIter": 1429.8,
+        "medianNsPerIter": 1425,
+        "minNsPerIter": 1418,
+        "maxNsPerIter": 1461,
+        "stddevNsPerIter": 15.92,
+        "samples": 5
+      },
+      "satisfies": {
+        "meanNsPerIter": 4197.4,
+        "medianNsPerIter": 4201,
+        "minNsPerIter": 4181,
+        "maxNsPerIter": 4206,
+        "stddevNsPerIter": 9,
+        "samples": 5
+      },
+      "max_satisfying": {
+        "meanNsPerIter": 5230,
+        "medianNsPerIter": 5331,
+        "minNsPerIter": 5051,
+        "maxNsPerIter": 5363,
+        "stddevNsPerIter": 140.89,
+        "samples": 5
+      },
+      "min_satisfying": {
+        "meanNsPerIter": 5197,
+        "medianNsPerIter": 5120,
+        "minNsPerIter": 5000,
+        "maxNsPerIter": 5457,
+        "stddevNsPerIter": 170.11,
+        "samples": 5
+      }
+    },
+    "node-semver": {
+      "version_parse": {
+        "meanNsPerIter": 4776.6,
+        "medianNsPerIter": 4756,
+        "minNsPerIter": 4678,
+        "maxNsPerIter": 4950,
+        "stddevNsPerIter": 93.73,
+        "samples": 5
+      },
+      "valid_canonical": {
+        "meanNsPerIter": 4903,
+        "medianNsPerIter": 4855,
+        "minNsPerIter": 4716,
+        "maxNsPerIter": 5060,
+        "stddevNsPerIter": 126.85,
+        "samples": 5
+      },
+      "invalid_version": {
+        "meanNsPerIter": 22571.8,
+        "medianNsPerIter": 22665,
+        "minNsPerIter": 21570,
+        "maxNsPerIter": 23237,
+        "stddevNsPerIter": 579.39,
+        "samples": 5
+      },
+      "range_parse": {
+        "meanNsPerIter": 4021.2,
+        "medianNsPerIter": 4022,
+        "minNsPerIter": 3832,
+        "maxNsPerIter": 4263,
+        "stddevNsPerIter": 142.42,
+        "samples": 5
+      },
+      "invalid_range": {
+        "meanNsPerIter": 47552.8,
+        "medianNsPerIter": 47460,
+        "minNsPerIter": 45955,
+        "maxNsPerIter": 49088,
+        "stddevNsPerIter": 1138.2,
+        "samples": 5
+      },
+      "satisfies": {
+        "meanNsPerIter": 5192,
+        "medianNsPerIter": 5185,
+        "minNsPerIter": 5073,
+        "maxNsPerIter": 5402,
+        "stddevNsPerIter": 116.34,
+        "samples": 5
+      },
+      "max_satisfying": {
+        "meanNsPerIter": 26371.8,
+        "medianNsPerIter": 26780,
+        "minNsPerIter": 24587,
+        "maxNsPerIter": 27291,
+        "stddevNsPerIter": 937.23,
+        "samples": 5
+      },
+      "min_satisfying": {
+        "meanNsPerIter": 20631.2,
+        "medianNsPerIter": 20109,
+        "minNsPerIter": 20028,
+        "maxNsPerIter": 22319,
+        "stddevNsPerIter": 877.29,
+        "samples": 5
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "operation": "version_parse",
+      "rpmRustMeanNsPerIter": 2148,
+      "nodeSemverMeanNsPerIter": 4776.6,
+      "rustSpeedupVsNode": 2.22
+    },
+    {
+      "operation": "valid_canonical",
+      "rpmRustMeanNsPerIter": 3964.2,
+      "nodeSemverMeanNsPerIter": 4903,
+      "rustSpeedupVsNode": 1.24
+    },
+    {
+      "operation": "invalid_version",
+      "rpmRustMeanNsPerIter": 469.6,
+      "nodeSemverMeanNsPerIter": 22571.8,
+      "rustSpeedupVsNode": 48.07
+    },
+    {
+      "operation": "range_parse",
+      "rpmRustMeanNsPerIter": 4473.2,
+      "nodeSemverMeanNsPerIter": 4021.2,
+      "rustSpeedupVsNode": 0.9
+    },
+    {
+      "operation": "invalid_range",
+      "rpmRustMeanNsPerIter": 1429.8,
+      "nodeSemverMeanNsPerIter": 47552.8,
+      "rustSpeedupVsNode": 33.26
+    },
+    {
+      "operation": "satisfies",
+      "rpmRustMeanNsPerIter": 4197.4,
+      "nodeSemverMeanNsPerIter": 5192,
+      "rustSpeedupVsNode": 1.24
+    },
+    {
+      "operation": "max_satisfying",
+      "rpmRustMeanNsPerIter": 5230,
+      "nodeSemverMeanNsPerIter": 26371.8,
+      "rustSpeedupVsNode": 5.04
+    },
+    {
+      "operation": "min_satisfying",
+      "rpmRustMeanNsPerIter": 5197,
+      "nodeSemverMeanNsPerIter": 20631.2,
+      "rustSpeedupVsNode": 3.97
+    }
+  ]
+}

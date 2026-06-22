@@ -147,9 +147,15 @@ async fn apply_resolved_graph(
         let relationship = relationship_for_package(package);
         if let Some(locked_package) = metadata.locked_package_for_resolved(package) {
             if let Some(tarball) = &locked_package.tarball {
-                Registry::download_tarball_url_to_dir(&locked_package.key, tarball, cache_dir)
-                    .await
-                    .map_err(|error| phase_error("fetch", error))?;
+                Registry::download_verified_tarball_url_to_dir(
+                    &locked_package.key,
+                    tarball,
+                    cache_dir,
+                    locked_package.integrity.as_deref(),
+                    locked_package.shasum.as_deref(),
+                )
+                .await
+                .map_err(download_error_to_phase)?;
             }
             lockfile.add_dependency_entry(
                 &locked_package.key,
@@ -168,7 +174,7 @@ async fn apply_resolved_graph(
             registry
                 .download_tarball_to_dir(&key, &package.version, cache_dir)
                 .await
-                .map_err(|error| phase_error("fetch", error))?;
+                .map_err(download_error_to_phase)?;
 
             let dependencies = package
                 .dependencies
@@ -185,7 +191,7 @@ async fn apply_resolved_graph(
                 relationship,
                 dist.map(|dist| dist.tarball.clone()),
                 dist.and_then(|dist| dist.integrity.clone()),
-                dist.map(|dist| dist.shasum.clone()),
+                dist.and_then(|dist| dist.shasum.clone()),
                 &dependencies,
             );
         }
@@ -280,6 +286,14 @@ fn resolution_error_to_io(error: ResolutionError) -> std::io::Error {
 
 fn phase_error(phase: &str, error: std::io::Error) -> std::io::Error {
     Error::new(error.kind(), format!("{phase} failed: {error}"))
+}
+
+fn download_error_to_phase(error: std::io::Error) -> std::io::Error {
+    if error.to_string().starts_with("integrity check failed") {
+        phase_error("integrity", error)
+    } else {
+        phase_error("fetch", error)
+    }
 }
 
 fn manifest_version_from_requested(requested: &str, resolved: &str) -> String {

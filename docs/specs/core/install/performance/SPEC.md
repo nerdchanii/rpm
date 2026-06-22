@@ -17,6 +17,7 @@ related_issues:
   - 50
   - 60
   - 83
+  - 89
 ---
 
 # Spec: Installer Performance Baseline
@@ -125,21 +126,22 @@ harness.
 
 ## Integrity Gate
 
-M3 defers cryptographic tarball verification. Until a later focused issue
-implements verification, RPM may record registry integrity metadata but must
-not claim that cached tarballs are verified.
+RPM verifies tarball bytes after download/cache publication and before
+extraction when supported integrity metadata is available. Registry
+`dist.integrity` is authoritative when present. Registry `dist.shasum` is the
+legacy fallback when `dist.integrity` is absent.
 
-When metadata is recorded before verification exists, registry `dist.integrity`
-is the authoritative field when present. Registry `dist.shasum` is the legacy
-fallback when `dist.integrity` is absent. Recording either value in `rpm.lock`
-does not mean RPM has cryptographically verified the downloaded bytes.
+The supported Subresource Integrity algorithm is `sha512`. If an SRI value
+contains multiple whitespace-separated tokens, RPM may select any matching
+`sha512` token. If `dist.integrity` is absent, RPM verifies `dist.shasum` as a
+hex-encoded SHA-1 digest. If both `dist.integrity` and `dist.shasum` are absent,
+RPM may proceed without verification but must not claim that the tarball was
+verified.
 
-A future verification implementation must run after tarball bytes are
-downloaded and before extraction begins. It must define the supported
-Subresource Integrity algorithms, the legacy `shasum` fallback behavior, and
-the error reported when bytes do not match the selected metadata. A verification
-failure must be returned as a failed integrity phase and must not publish
-extracted package contents or report the install as successful.
+Verification applies to tarballs downloaded from current registry metadata and
+to lockfile-backed tarball URLs. A verification failure must be returned as a
+failed integrity phase and must not publish extracted package contents,
+`rpm.lock`, or `package.json` as a successful install output.
 
 ## Error Cases
 

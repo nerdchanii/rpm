@@ -1,0 +1,12 @@
+lockfile_version = 1
+name = "integrity-mismatch"
+version = "0.1.0"
+
+["@rpm-fixture/alpha@1.0.0"]
+name = "@rpm-fixture/alpha"
+requested = "^1.0.0"
+version = "1.0.0"
+relationship = "direct"
+tarball = "https://registry.example.invalid/@rpm-fixture/alpha/-/alpha-1.0.0.tgz"
+integrity = "sha512-AA=="
+dependencies = []

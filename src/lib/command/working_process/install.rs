@@ -378,6 +378,75 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn registry_integrity_failure_preserves_existing_install_state() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "integrity-mismatch"]);
+        let project = TempProject::new("registry-integrity-failure").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let lockfile_path = project_root.join("rpm.lock");
+        fs::write(
+            &lockfile_path,
+            "lockfile_version = 1\nname = \"integrity-mismatch\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let existing_file = project_root.join("node_modules").join("keep.txt");
+        fs::create_dir_all(existing_file.parent().unwrap()).unwrap();
+        fs::write(&existing_file, "existing node_modules content").unwrap();
+        let original_package = fs::read(&package_path).unwrap();
+        let original_lockfile = fs::read(&lockfile_path).unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        let error = install_in(project_root).await.unwrap_err();
+
+        assert!(error.to_string().contains("integrity failed"));
+        assert!(error
+            .to_string()
+            .contains("sha512 SRI digest did not match"));
+        assert_eq!(fs::read(&package_path).unwrap(), original_package);
+        assert_eq!(fs::read(&lockfile_path).unwrap(), original_lockfile);
+        assert_eq!(
+            fs::read_to_string(&existing_file).unwrap(),
+            "existing node_modules content"
+        );
+    }
+
+    #[tokio::test]
+    async fn lockfile_integrity_failure_preserves_existing_install_state() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "integrity-mismatch"]);
+        let project = TempProject::new("lockfile-integrity-failure").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let lockfile_path = project
+            .copy_fixture(fixture_root.join("rpm.lock"), "rpm.lock")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let existing_file = project_root.join("node_modules").join("keep.txt");
+        fs::create_dir_all(existing_file.parent().unwrap()).unwrap();
+        fs::write(&existing_file, "existing node_modules content").unwrap();
+        let original_package = fs::read(&package_path).unwrap();
+        let original_lockfile = fs::read(&lockfile_path).unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        let error = install_in(project_root).await.unwrap_err();
+
+        assert!(error.to_string().contains("integrity failed"));
+        assert!(error
+            .to_string()
+            .contains("sha512 SRI digest did not match"));
+        assert_eq!(fs::read(&package_path).unwrap(), original_package);
+        assert_eq!(fs::read(&lockfile_path).unwrap(), original_lockfile);
+        assert_eq!(
+            fs::read_to_string(&existing_file).unwrap(),
+            "existing node_modules content"
+        );
+    }
+
     fn resolved_packages(lock: &LockFile) -> Vec<String> {
         let mut packages = lock
             .get_packages()

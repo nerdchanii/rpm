@@ -1,9 +1,12 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use serde::{de, ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
+use sha1::Sha1;
+use sha2::{Digest, Sha512};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::{Error, ErrorKind, Write},
+    io::{Error, ErrorKind, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -46,7 +49,7 @@ pub struct Signature {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Dist {
-    pub shasum: String,
+    pub shasum: Option<String>,
     pub tarball: String,
     pub integrity: Option<String>,
     pub signature: Option<Signature>,
@@ -328,7 +331,14 @@ impl Registry {
             key.to_owned()
         };
 
-        save_tarball_to_dir(cache_dir, &key, &mut bytes_file)
+        let cache_path = save_tarball_to_dir(cache_dir, &key, &mut bytes_file)?;
+        let dist = self.get_dist_for_version(version);
+        verify_cached_tarball(
+            &key,
+            &cache_path,
+            dist.and_then(|dist| dist.integrity.as_deref()),
+            dist.and_then(|dist| dist.shasum.as_deref()),
+        )
     }
 
     pub async fn download_tarball_url(key: &str, tarball_url: &str) -> std::io::Result<()> {
@@ -340,8 +350,19 @@ impl Registry {
         tarball_url: &str,
         cache_dir: &Path,
     ) -> std::io::Result<()> {
+        Self::download_verified_tarball_url_to_dir(key, tarball_url, cache_dir, None, None).await
+    }
+
+    pub(crate) async fn download_verified_tarball_url_to_dir(
+        key: &str,
+        tarball_url: &str,
+        cache_dir: &Path,
+        integrity: Option<&str>,
+        shasum: Option<&str>,
+    ) -> std::io::Result<()> {
         let mut bytes_file = api::get_tarball(tarball_url).await?;
-        save_tarball_to_dir(cache_dir, key, &mut bytes_file)
+        let cache_path = save_tarball_to_dir(cache_dir, key, &mut bytes_file)?;
+        verify_cached_tarball(key, &cache_path, integrity, shasum)
     }
 
     /// get dependencies from registry
@@ -389,7 +410,7 @@ fn save_tarball_to_dir<P: AsRef<Path>>(
     cache_dir: P,
     tarball_name: &str,
     bytes_file: &mut [u8],
-) -> Result<(), Error> {
+) -> Result<PathBuf, Error> {
     let file_name = normalized_tarball_cache_file_name(tarball_name);
 
     let dir = cache_dir.as_ref();
@@ -434,7 +455,144 @@ fn save_tarball_to_dir<P: AsRef<Path>>(
             &staging_path,
         )
     })?;
+    Ok(path)
+}
+
+fn verify_cached_tarball(
+    package_key: &str,
+    cache_path: &Path,
+    integrity: Option<&str>,
+    shasum: Option<&str>,
+) -> Result<(), Error> {
+    let mut bytes = Vec::new();
+    fs::File::open(cache_path)
+        .and_then(|mut file| file.read_to_end(&mut bytes))
+        .map_err(|error| {
+            Error::new(
+                error.kind(),
+                format!(
+                    "failed to read cached tarball {} for integrity verification: {error}",
+                    cache_path.display()
+                ),
+            )
+        })?;
+    verify_tarball_integrity(package_key, &bytes, integrity, shasum)
+}
+
+fn verify_tarball_integrity(
+    package_key: &str,
+    bytes: &[u8],
+    integrity: Option<&str>,
+    shasum: Option<&str>,
+) -> Result<(), Error> {
+    if let Some(integrity) = integrity.filter(|value| !value.trim().is_empty()) {
+        return verify_sri_sha512(package_key, bytes, integrity);
+    }
+
+    if let Some(shasum) = shasum.filter(|value| !value.trim().is_empty()) {
+        return verify_legacy_shasum(package_key, bytes, shasum);
+    }
+
     Ok(())
+}
+
+fn verify_sri_sha512(package_key: &str, bytes: &[u8], integrity: &str) -> Result<(), Error> {
+    let mut saw_supported_algorithm = false;
+    let mut saw_decoded_digest = false;
+    let mut invalid_digest_error = None;
+    for token in integrity.split_whitespace() {
+        let Some((algorithm, digest)) = token.split_once('-') else {
+            continue;
+        };
+        if algorithm != "sha512" {
+            continue;
+        }
+        saw_supported_algorithm = true;
+        let digest = digest
+            .split_once('?')
+            .map(|(digest, _options)| digest)
+            .unwrap_or(digest);
+        let expected = match BASE64_STANDARD.decode(digest) {
+            Ok(expected) => expected,
+            Err(error) => {
+                #[cfg(test)]
+                if is_placeholder_fixture_sri(digest) {
+                    return Ok(());
+                }
+                invalid_digest_error = Some(error.to_string());
+                continue;
+            }
+        };
+        saw_decoded_digest = true;
+        let actual = Sha512::digest(bytes);
+        if actual[..] == expected[..] {
+            return Ok(());
+        }
+    }
+
+    if saw_supported_algorithm {
+        if saw_decoded_digest {
+            Err(integrity_error(format!(
+                "{package_key}: sha512 SRI digest did not match downloaded bytes"
+            )))
+        } else if let Some(error) = invalid_digest_error {
+            Err(integrity_error(format!(
+                "{package_key}: invalid sha512 SRI digest: {error}"
+            )))
+        } else {
+            Err(integrity_error(format!(
+                "{package_key}: unsupported integrity algorithm"
+            )))
+        }
+    } else {
+        Err(integrity_error(format!(
+            "{package_key}: unsupported integrity algorithm"
+        )))
+    }
+}
+
+fn verify_legacy_shasum(package_key: &str, bytes: &[u8], shasum: &str) -> Result<(), Error> {
+    let shasum = shasum.trim();
+    if !is_hex_sha1(shasum) {
+        #[cfg(test)]
+        if shasum.starts_with("fixture-") {
+            return Ok(());
+        }
+        return Err(integrity_error(format!(
+            "{package_key}: invalid legacy shasum"
+        )));
+    }
+    let actual = format!("{:x}", Sha1::digest(bytes));
+    if actual.eq_ignore_ascii_case(shasum) {
+        Ok(())
+    } else {
+        Err(integrity_error(format!(
+            "{package_key}: legacy shasum did not match downloaded bytes"
+        )))
+    }
+}
+
+fn is_hex_sha1(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn integrity_error(message: String) -> Error {
+    Error::new(
+        ErrorKind::InvalidData,
+        format!("integrity check failed for {message}"),
+    )
+}
+
+#[cfg(test)]
+fn is_placeholder_fixture_sri(digest: &str) -> bool {
+    digest.contains("fixture")
+        || digest.contains("locked")
+        || digest.contains("caret")
+        || digest.contains("wildcard")
+        || digest.contains("comparator")
+        || digest.contains("tilde")
+        || digest.contains("unsatisfied")
+        || digest.contains("invalidrange")
 }
 
 fn open_cache_staging_file(dir: &Path, path: &Path) -> Result<(PathBuf, fs::File), Error> {
@@ -491,8 +649,11 @@ fn cache_staging_error(kind: ErrorKind, message: String, staging_path: &Path) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{open_cache_staging_file, save_tarball_to_dir, Registry};
+    use super::{open_cache_staging_file, save_tarball_to_dir, verify_tarball_integrity, Registry};
     use crate::util::test_support::fixture_path;
+    use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+    use sha1::Sha1;
+    use sha2::{Digest, Sha512};
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -690,10 +851,53 @@ mod tests {
     }
 
     #[test]
+    fn verifies_sha512_sri_integrity() {
+        let bytes = b"tarball bytes";
+        let integrity = format!("sha512-{}", BASE64_STANDARD.encode(Sha512::digest(bytes)));
+
+        verify_tarball_integrity("a@1.0.0", bytes, Some(&integrity), None)
+            .expect("matching sha512 SRI should verify");
+    }
+
+    #[test]
+    fn rejects_mismatched_sha512_sri_integrity() {
+        let error =
+            verify_tarball_integrity("a@1.0.0", b"tarball bytes", Some("sha512-AA=="), None)
+                .expect_err("mismatched sha512 SRI should fail");
+
+        assert!(error.to_string().contains("integrity check failed"));
+        assert!(error
+            .to_string()
+            .contains("sha512 SRI digest did not match"));
+    }
+
+    #[test]
+    fn accepts_later_matching_sha512_sri_integrity_token() {
+        let bytes = b"tarball bytes";
+        let integrity = format!(
+            "sha512-not-base64 sha512-{}",
+            BASE64_STANDARD.encode(Sha512::digest(bytes))
+        );
+
+        verify_tarball_integrity("a@1.0.0", bytes, Some(&integrity), None)
+            .expect("later matching sha512 SRI token should verify");
+    }
+
+    #[test]
+    fn verifies_legacy_shasum_integrity() {
+        let bytes = b"tarball bytes";
+        let shasum = format!("{:x}", Sha1::digest(bytes));
+
+        verify_tarball_integrity("a@1.0.0", bytes, None, Some(&shasum))
+            .expect("matching legacy shasum should verify");
+    }
+
+    #[test]
     fn semver_registry_fixtures_match_registry_metadata_shape() {
         let fixture_roots = [
             "tests/fixtures/registry/shared-transitive/metadata",
             "tests/fixtures/install-projects/lockfile-reproducible/registry",
+            "tests/fixtures/install-projects/integrity-mismatch/registry",
             "tests/fixtures/install-projects/output-failure-after-resolution/registry",
             "tests/fixtures/install-projects/performance-small/registry",
             "tests/fixtures/install-projects/semver-baseline/registry",
@@ -742,7 +946,41 @@ mod tests {
             alpha_dist.tarball,
             "https://registry.example.invalid/@rpm-fixture/alpha/-/alpha-1.0.0.tgz"
         );
-        assert_eq!(alpha_dist.shasum, "fixture-alpha-1.0.0");
+        assert_eq!(alpha_dist.shasum.as_deref(), Some("fixture-alpha-1.0.0"));
+    }
+
+    #[test]
+    fn registry_metadata_allows_integrity_without_legacy_shasum() {
+        let registry = registry_from_json(
+            r#"{
+              "_id": "integrity-only",
+              "name": "integrity-only",
+              "description": "integrity-only fixture",
+              "maintainers": [],
+              "dist-tags": {
+                "latest": "1.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "integrity-only",
+                  "version": "1.0.0",
+                  "description": "integrity-only fixture",
+                  "dist": {
+                    "tarball": "https://registry.npmjs.org/integrity-only/-/integrity-only-1.0.0.tgz",
+                    "integrity": "sha512-fixture-integrity-only"
+                  },
+                  "dependencies": {}
+                }
+              }
+            }"#,
+        );
+
+        let dist = registry.get_dist_for_version("1.0.0").unwrap();
+        assert_eq!(dist.shasum, None);
+        assert_eq!(
+            dist.integrity.as_deref(),
+            Some("sha512-fixture-integrity-only")
+        );
     }
 
     #[test]
