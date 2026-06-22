@@ -1,8 +1,8 @@
 ---
-benchmark_data: benches/histories/2026-06-22-000/benchmarks.json
-benchmark_chart: benches/histories/2026-06-22-000/benchmark.svg
-history_directory: benches/histories/2026-06-22-000
-generated_at: 2026-06-22T06:20:11.055Z
+benchmark_data: benches/histories/2026-06-22-001/benchmarks.json
+benchmark_chart: benches/histories/2026-06-22-001/benchmark.svg
+history_directory: benches/histories/2026-06-22-001
+generated_at: 2026-06-22T08:20:24.975Z
 status: "Representative suite"
 ---
 
@@ -10,7 +10,7 @@ status: "Representative suite"
 
 Status: Representative suite
 Date: 2026-06-22
-History directory: `benches/histories/2026-06-22-000`
+History directory: `benches/histories/2026-06-22-001`
 
 ## Command
 
@@ -38,14 +38,14 @@ node scripts/benchmark-semver.mjs
 
 | Operation | RPM Rust mean ns/iter | node-semver mean ns/iter | Rust speedup |
 | --- | ---: | ---: | ---: |
-| version_parse | 2,414 | 5,498.8 | 2.28x |
-| valid_canonical | 4,791.2 | 6,257.6 | 1.31x |
-| invalid_version | 598.2 | 28,989.6 | 48.46x |
-| range_parse | 5,933.6 | 5,067.6 | 0.85x |
-| invalid_range | 1,926.2 | 63,877 | 33.16x |
-| satisfies | 5,410 | 6,041 | 1.12x |
-| max_satisfying | 7,306.6 | 34,251.8 | 4.69x |
-| min_satisfying | 7,030.2 | 25,525.8 | 3.63x |
+| version_parse | 1,975.2 | 5,060 | 2.56x |
+| valid_canonical | 3,961.4 | 4,960.2 | 1.25x |
+| invalid_version | 505.2 | 22,101.2 | 43.75x |
+| range_parse | 4,648 | 3,930.6 | 0.85x |
+| invalid_range | 1,400.6 | 48,214.2 | 34.42x |
+| satisfies | 4,075.6 | 5,169.2 | 1.27x |
+| max_satisfying | 5,280.8 | 26,006.4 | 4.92x |
+| min_satisfying | 5,265 | 21,893.4 | 4.16x |
 
 ## Notes
 
