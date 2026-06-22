@@ -49,7 +49,7 @@ pub struct Signature {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Dist {
-    pub shasum: String,
+    pub shasum: Option<String>,
     pub tarball: String,
     pub integrity: Option<String>,
     pub signature: Option<Signature>,
@@ -337,7 +337,7 @@ impl Registry {
             &key,
             &cache_path,
             dist.and_then(|dist| dist.integrity.as_deref()),
-            dist.map(|dist| dist.shasum.as_str()),
+            dist.and_then(|dist| dist.shasum.as_deref()),
         )
     }
 
@@ -946,7 +946,41 @@ mod tests {
             alpha_dist.tarball,
             "https://registry.example.invalid/@rpm-fixture/alpha/-/alpha-1.0.0.tgz"
         );
-        assert_eq!(alpha_dist.shasum, "fixture-alpha-1.0.0");
+        assert_eq!(alpha_dist.shasum.as_deref(), Some("fixture-alpha-1.0.0"));
+    }
+
+    #[test]
+    fn registry_metadata_allows_integrity_without_legacy_shasum() {
+        let registry = registry_from_json(
+            r#"{
+              "_id": "integrity-only",
+              "name": "integrity-only",
+              "description": "integrity-only fixture",
+              "maintainers": [],
+              "dist-tags": {
+                "latest": "1.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "integrity-only",
+                  "version": "1.0.0",
+                  "description": "integrity-only fixture",
+                  "dist": {
+                    "tarball": "https://registry.npmjs.org/integrity-only/-/integrity-only-1.0.0.tgz",
+                    "integrity": "sha512-fixture-integrity-only"
+                  },
+                  "dependencies": {}
+                }
+              }
+            }"#,
+        );
+
+        let dist = registry.get_dist_for_version("1.0.0").unwrap();
+        assert_eq!(dist.shasum, None);
+        assert_eq!(
+            dist.integrity.as_deref(),
+            Some("sha512-fixture-integrity-only")
+        );
     }
 
     #[test]

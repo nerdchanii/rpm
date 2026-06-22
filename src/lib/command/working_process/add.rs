@@ -191,7 +191,7 @@ async fn apply_resolved_graph(
                 relationship,
                 dist.map(|dist| dist.tarball.clone()),
                 dist.and_then(|dist| dist.integrity.clone()),
-                dist.map(|dist| dist.shasum.clone()),
+                dist.and_then(|dist| dist.shasum.clone()),
                 &dependencies,
             );
         }
