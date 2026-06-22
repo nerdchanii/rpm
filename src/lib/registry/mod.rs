@@ -498,6 +498,8 @@ fn verify_tarball_integrity(
 
 fn verify_sri_sha512(package_key: &str, bytes: &[u8], integrity: &str) -> Result<(), Error> {
     let mut saw_supported_algorithm = false;
+    let mut saw_decoded_digest = false;
+    let mut invalid_digest_error = None;
     for token in integrity.split_whitespace() {
         let Some((algorithm, digest)) = token.split_once('-') else {
             continue;
@@ -517,11 +519,11 @@ fn verify_sri_sha512(package_key: &str, bytes: &[u8], integrity: &str) -> Result
                 if is_placeholder_fixture_sri(digest) {
                     return Ok(());
                 }
-                return Err(integrity_error(format!(
-                    "{package_key}: invalid sha512 SRI digest: {error}"
-                )));
+                invalid_digest_error = Some(error.to_string());
+                continue;
             }
         };
+        saw_decoded_digest = true;
         let actual = Sha512::digest(bytes);
         if actual[..] == expected[..] {
             return Ok(());
@@ -529,9 +531,19 @@ fn verify_sri_sha512(package_key: &str, bytes: &[u8], integrity: &str) -> Result
     }
 
     if saw_supported_algorithm {
-        Err(integrity_error(format!(
-            "{package_key}: sha512 SRI digest did not match downloaded bytes"
-        )))
+        if saw_decoded_digest {
+            Err(integrity_error(format!(
+                "{package_key}: sha512 SRI digest did not match downloaded bytes"
+            )))
+        } else if let Some(error) = invalid_digest_error {
+            Err(integrity_error(format!(
+                "{package_key}: invalid sha512 SRI digest: {error}"
+            )))
+        } else {
+            Err(integrity_error(format!(
+                "{package_key}: unsupported integrity algorithm"
+            )))
+        }
     } else {
         Err(integrity_error(format!(
             "{package_key}: unsupported integrity algorithm"
@@ -857,6 +869,18 @@ mod tests {
         assert!(error
             .to_string()
             .contains("sha512 SRI digest did not match"));
+    }
+
+    #[test]
+    fn accepts_later_matching_sha512_sri_integrity_token() {
+        let bytes = b"tarball bytes";
+        let integrity = format!(
+            "sha512-not-base64 sha512-{}",
+            BASE64_STANDARD.encode(Sha512::digest(bytes))
+        );
+
+        verify_tarball_integrity("a@1.0.0", bytes, Some(&integrity), None)
+            .expect("later matching sha512 SRI token should verify");
     }
 
     #[test]
