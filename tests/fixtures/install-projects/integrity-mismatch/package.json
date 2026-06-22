@@ -1,0 +1,7 @@
+{
+  "name": "integrity-mismatch",
+  "version": "0.1.0",
+  "dependencies": {
+    "@rpm-fixture/alpha": "^1.0.0"
+  }
+}
