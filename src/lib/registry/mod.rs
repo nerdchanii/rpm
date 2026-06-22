@@ -407,35 +407,91 @@ fn save_tarball_to_dir<P: AsRef<Path>>(
     }
 
     let path: PathBuf = dir.join(file_name);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&path)
-        .map_err(|error| {
-            Error::new(
-                error.kind(),
-                format!("failed to open cached tarball {}: {error}", path.display()),
-            )
-        })?;
-    file.write_all(bytes_file).map_err(|error| {
-        Error::new(
+    let path_display = path.display().to_string();
+    let (staging_path, mut file) = open_cache_staging_file(dir, &path)?;
+    if let Err(error) = file.write_all(bytes_file) {
+        drop(file);
+        return Err(cache_staging_error(
             error.kind(),
-            format!("failed to write cached tarball {}: {error}", path.display()),
-        )
-    })?;
-    file.flush().map_err(|error| {
-        Error::new(
+            format!("failed to write cached tarball {path_display}: {error}"),
+            &staging_path,
+        ));
+    }
+    if let Err(error) = file.flush() {
+        drop(file);
+        return Err(cache_staging_error(
             error.kind(),
-            format!("failed to flush cached tarball {}: {error}", path.display()),
+            format!("failed to flush cached tarball {path_display}: {error}"),
+            &staging_path,
+        ));
+    }
+    drop(file);
+
+    fs::rename(&staging_path, &path).map_err(|error| {
+        cache_staging_error(
+            error.kind(),
+            format!("failed to publish cached tarball {path_display}: {error}"),
+            &staging_path,
         )
     })?;
     Ok(())
 }
 
+fn open_cache_staging_file(dir: &Path, path: &Path) -> Result<(PathBuf, fs::File), Error> {
+    let path_display = path.display();
+    if path.file_name().and_then(|name| name.to_str()).is_none() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("failed to open cached tarball {path_display}: invalid cache file name"),
+        ));
+    };
+
+    for attempt in 0..1000 {
+        let staging_path = dir.join(format!(".rpm-cache-{}-{attempt}.tmp", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging_path)
+        {
+            Ok(file) => return Ok((staging_path, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to open cached tarball staging file {} for {path_display}: {error}",
+                        staging_path.display()
+                    ),
+                ));
+            }
+        }
+    }
+
+    Err(Error::new(
+        ErrorKind::AlreadyExists,
+        format!("failed to open cached tarball staging file for {path_display}: name collision"),
+    ))
+}
+
+fn cache_staging_error(kind: ErrorKind, message: String, staging_path: &Path) -> Error {
+    match fs::remove_file(staging_path) {
+        Ok(()) => Error::new(kind, message),
+        Err(cleanup_error) if cleanup_error.kind() == ErrorKind::NotFound => {
+            Error::new(kind, message)
+        }
+        Err(cleanup_error) => Error::new(
+            kind,
+            format!(
+                "{message}; additionally failed to remove staging file {}: {cleanup_error}",
+                staging_path.display()
+            ),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{save_tarball_to_dir, Registry};
+    use super::{open_cache_staging_file, save_tarball_to_dir, Registry};
     use crate::util::test_support::fixture_path;
     use std::fs;
     use std::path::Path;
@@ -486,6 +542,67 @@ mod tests {
 
         assert!(error.to_string().contains("failed to open cached tarball"));
         assert!(error.to_string().contains("cache-file"));
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn save_tarball_reports_publish_errors_and_removes_staging_file() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let temp = std::env::temp_dir().join(format!(
+            "rpm-registry-cache-publish-error-{}-{nanos}",
+            std::process::id()
+        ));
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(cache_dir.join("a@1.0.0.tgz")).unwrap();
+
+        let error = save_tarball_to_dir(&cache_dir, "a@1.0.0", &mut b"tarball".to_vec())
+            .expect_err("final cache directory should fail tarball publication");
+
+        assert!(error
+            .to_string()
+            .contains("failed to publish cached tarball"));
+        assert!(cache_dir.join("a@1.0.0.tgz").is_dir());
+
+        let staging_files = fs::read_dir(&cache_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".rpm-cache-")
+            })
+            .count();
+        assert_eq!(staging_files, 0);
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn cache_staging_file_name_stays_short_for_long_cache_names() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let temp = std::env::temp_dir().join(format!(
+            "rpm-registry-cache-staging-name-{}-{nanos}",
+            std::process::id()
+        ));
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let long_name = format!("{}@1.0.0.tgz", "a".repeat(180));
+        let final_path = cache_dir.join(&long_name);
+
+        let (staging_path, staging_file) =
+            open_cache_staging_file(&cache_dir, &final_path).unwrap();
+        drop(staging_file);
+
+        let staging_file_name = staging_path.file_name().unwrap().to_string_lossy();
+        assert!(staging_file_name.len() < 64);
+        assert!(!staging_file_name.contains(&long_name));
+        fs::remove_file(staging_path).unwrap();
         let _ = fs::remove_dir_all(temp);
     }
 
