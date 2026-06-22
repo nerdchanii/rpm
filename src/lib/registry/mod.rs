@@ -439,7 +439,7 @@ fn save_tarball_to_dir<P: AsRef<Path>>(
 
 fn open_cache_staging_file(dir: &Path, path: &Path) -> Result<(PathBuf, fs::File), Error> {
     let path_display = path.display();
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+    if path.file_name().and_then(|name| name.to_str()).is_none() {
         return Err(Error::new(
             ErrorKind::InvalidInput,
             format!("failed to open cached tarball {path_display}: invalid cache file name"),
@@ -447,7 +447,7 @@ fn open_cache_staging_file(dir: &Path, path: &Path) -> Result<(PathBuf, fs::File
     };
 
     for attempt in 0..1000 {
-        let staging_path = dir.join(format!(".{file_name}.tmp-{}-{attempt}", std::process::id()));
+        let staging_path = dir.join(format!(".rpm-cache-{}-{attempt}.tmp", std::process::id()));
         match OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -491,7 +491,7 @@ fn cache_staging_error(kind: ErrorKind, message: String, staging_path: &Path) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{save_tarball_to_dir, Registry};
+    use super::{open_cache_staging_file, save_tarball_to_dir, Registry};
     use crate::util::test_support::fixture_path;
     use std::fs;
     use std::path::Path;
@@ -573,10 +573,36 @@ mod tests {
                 entry
                     .file_name()
                     .to_string_lossy()
-                    .starts_with(".a@1.0.0.tgz.tmp-")
+                    .starts_with(".rpm-cache-")
             })
             .count();
         assert_eq!(staging_files, 0);
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn cache_staging_file_name_stays_short_for_long_cache_names() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let temp = std::env::temp_dir().join(format!(
+            "rpm-registry-cache-staging-name-{}-{nanos}",
+            std::process::id()
+        ));
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let long_name = format!("{}@1.0.0.tgz", "a".repeat(180));
+        let final_path = cache_dir.join(&long_name);
+
+        let (staging_path, staging_file) =
+            open_cache_staging_file(&cache_dir, &final_path).unwrap();
+        drop(staging_file);
+
+        let staging_file_name = staging_path.file_name().unwrap().to_string_lossy();
+        assert!(staging_file_name.len() < 64);
+        assert!(!staging_file_name.contains(&long_name));
+        fs::remove_file(staging_path).unwrap();
         let _ = fs::remove_dir_all(temp);
     }
 
