@@ -3,7 +3,7 @@ spec_id: install_recovery
 title: Install Recovery
 status: draft
 owner: core/install/recovery
-last_reviewed: 2026-05-29
+last_reviewed: 2026-06-22
 authors:
   - nerdchanii
 deciders:
@@ -14,6 +14,7 @@ related_adrs:
   - 0002-single-crate-cli-core-boundary
 related_issues:
   - 50
+  - 81
 ---
 
 # Spec: Install Recovery
@@ -39,10 +40,10 @@ complete successfully. If replacement itself fails, RPM attempts to restore the
 previous directory before returning the write failure.
 
 Failures must include the failed phase in the returned error message for cached
-package installation. This contract currently enforces `resolve`, `extract`,
-`link`, and `write` labels for cached package installation. Registry fetch and
-cache-write failures must be returned to callers instead of being ignored or
-reported as successful downloads.
+package installation. This contract currently enforces `resolve`, `fetch`,
+`extract`, `link`, and `write` labels for cached package installation. Registry
+fetch and cache-write failures must be returned to callers instead of being
+ignored or reported as successful downloads.
 
 ## Error Cases
 
@@ -53,5 +54,5 @@ a successful install.
 ## Test Fixtures
 
 Recovery verification should cover staged replacement success plus resolve,
-extract, link, and write failures that leave the previous `node_modules`
+fetch, extract, link, and write failures that leave the previous `node_modules`
 contents intact.
