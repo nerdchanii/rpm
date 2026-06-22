@@ -2,7 +2,12 @@ use crate::{
     command::working_process::add_with_cache_dir, lockfile::LockFile, node_linker::NodeModules,
     package_manifest::PackageManifest,
 };
-use std::path::Path;
+use std::{
+    fs,
+    io::{self, Error, ErrorKind},
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 pub async fn install() -> std::io::Result<()> {
     install_in(Path::new(".")).await
@@ -46,12 +51,154 @@ async fn install_in(project_root: &Path) -> std::io::Result<()> {
     )
     .await?;
 
-    lockfile.save_to_path(&lockfile_path)?;
-    package_manifest.save_to_path(&package_path)?;
-    if !lockfile.get_packages().is_empty() {
-        NodeModules::init_from_paths(&node_modules_path, &lockfile_path, &cache_dir)?;
+    let mut backups = backup_install_state(&[&lockfile_path, &package_path])?;
+    if let Err(error) = lockfile.save_to_path(&lockfile_path) {
+        return Err(restore_after(&mut backups, error));
+    }
+    if let Err(error) = package_manifest.save_to_path(&package_path) {
+        return Err(restore_after(&mut backups, error));
+    }
+    if let Err(error) = restore_state_permissions(&backups) {
+        return Err(restore_after(&mut backups, error));
+    }
+    let output_result = if lockfile.get_packages().is_empty() {
+        Ok(())
+    } else {
+        NodeModules::init_from_lockfile(&node_modules_path, &lockfile, &cache_dir).map(|_| ())
+    };
+
+    if let Err(error) = output_result {
+        return Err(restore_after(&mut backups, error));
+    }
+    commit_install_state(backups)?;
+    Ok(())
+}
+
+struct StateBackup {
+    final_path: PathBuf,
+    backup_path: Option<PathBuf>,
+    permissions: Option<fs::Permissions>,
+}
+
+fn backup_install_state(paths: &[&Path]) -> io::Result<Vec<StateBackup>> {
+    let mut backups = Vec::new();
+    for final_path in paths {
+        let backup_path = sibling_state_path(final_path, "backup");
+        if backup_path.exists() {
+            remove_path(&backup_path)?;
+        }
+        if final_path.exists() {
+            let permissions = fs::metadata(final_path)?.permissions();
+            if permissions.readonly() {
+                return Err(restore_after(
+                    &mut backups,
+                    Error::new(
+                        ErrorKind::PermissionDenied,
+                        format!("install state file {} is read-only", final_path.display()),
+                    ),
+                ));
+            }
+            if let Err(error) = fs::rename(final_path, &backup_path) {
+                return Err(restore_after(&mut backups, error));
+            }
+            backups.push(StateBackup {
+                final_path: final_path.to_path_buf(),
+                backup_path: Some(backup_path),
+                permissions: Some(permissions),
+            });
+        } else {
+            backups.push(StateBackup {
+                final_path: final_path.to_path_buf(),
+                backup_path: None,
+                permissions: None,
+            });
+        }
+    }
+    Ok(backups)
+}
+
+fn restore_state_permissions(backups: &[StateBackup]) -> io::Result<()> {
+    for backup in backups {
+        if let Some(permissions) = backup.permissions.clone() {
+            fs::set_permissions(&backup.final_path, permissions).map_err(|error| {
+                Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to restore install state permissions for {}: {error}",
+                        backup.final_path.display()
+                    ),
+                )
+            })?;
+        }
     }
     Ok(())
+}
+
+fn restore_after(backups: &mut [StateBackup], error: io::Error) -> io::Error {
+    match restore_install_state(backups) {
+        Ok(()) => error,
+        Err(restore_error) => Error::new(
+            error.kind(),
+            format!("{error}; additionally failed to restore install state: {restore_error}"),
+        ),
+    }
+}
+
+fn restore_install_state(backups: &mut [StateBackup]) -> io::Result<()> {
+    for backup in backups.iter_mut().rev() {
+        if backup.final_path.exists() {
+            remove_path(&backup.final_path)?;
+        }
+        if let Some(backup_path) = backup.backup_path.take() {
+            fs::rename(&backup_path, &backup.final_path).map_err(|error| {
+                Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to restore install state file {}: {error}",
+                        backup.final_path.display()
+                    ),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn commit_install_state(backups: Vec<StateBackup>) -> io::Result<()> {
+    for mut backup in backups {
+        if let Some(backup_path) = backup.backup_path.take() {
+            remove_path(&backup_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn sibling_state_path(path: &Path, kind: &str) -> PathBuf {
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("install-state");
+    parent.join(format!(".{file_name}.rpm-{kind}-{}", unique_suffix()))
+}
+
+fn unique_suffix() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos}", std::process::id())
+}
+
+fn remove_path(path: &Path) -> io::Result<()> {
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
 }
 
 #[cfg(test)]
@@ -174,10 +321,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_failure_preserves_existing_node_modules() {
+    async fn read_only_manifest_failure_preserves_existing_node_modules() {
         let _guard = TestEnvLock::acquire().unwrap();
         let fixture_root = fixture_path(&["install-projects", "performance-small"]);
-        let project = TempProject::new("install-failure-preserves-node-modules").unwrap();
+        let project = TempProject::new("install-read-only-manifest").unwrap();
         let package_path = project
             .copy_fixture(fixture_root.join("package.json"), "package.json")
             .unwrap();
@@ -194,9 +341,37 @@ mod tests {
         let error = install_in(project_root).await.unwrap_err();
         fs::set_permissions(&package_path, original_permissions).unwrap();
 
-        assert!(error
-            .to_string()
-            .contains("failed to open package manifest"));
+        assert!(error.to_string().contains("package.json is read-only"));
+        assert_eq!(
+            fs::read_to_string(&existing_file).unwrap(),
+            "existing node_modules content"
+        );
+    }
+
+    #[tokio::test]
+    async fn output_failure_preserves_existing_manifest_lockfile_and_node_modules() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "output-failure-after-resolution"]);
+        let project = TempProject::new("output-failure-preserves-state").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let lockfile_path = project
+            .copy_fixture(fixture_root.join("rpm.lock"), "rpm.lock")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let existing_file = project_root.join("node_modules").join("keep.txt");
+        fs::create_dir_all(existing_file.parent().unwrap()).unwrap();
+        fs::write(&existing_file, "existing node_modules content").unwrap();
+        let original_package = fs::read(&package_path).unwrap();
+        let original_lockfile = fs::read(&lockfile_path).unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        let error = install_in(project_root).await.unwrap_err();
+
+        assert!(error.to_string().contains("extract failed"));
+        assert_eq!(fs::read(&package_path).unwrap(), original_package);
+        assert_eq!(fs::read(&lockfile_path).unwrap(), original_lockfile);
         assert_eq!(
             fs::read_to_string(&existing_file).unwrap(),
             "existing node_modules content"

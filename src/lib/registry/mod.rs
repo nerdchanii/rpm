@@ -694,6 +694,7 @@ mod tests {
         let fixture_roots = [
             "tests/fixtures/registry/shared-transitive/metadata",
             "tests/fixtures/install-projects/lockfile-reproducible/registry",
+            "tests/fixtures/install-projects/output-failure-after-resolution/registry",
             "tests/fixtures/install-projects/performance-small/registry",
             "tests/fixtures/install-projects/semver-baseline/registry",
             "tests/fixtures/install-projects/semver-unsatisfied/registry",

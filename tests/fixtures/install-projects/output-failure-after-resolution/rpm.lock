@@ -1,0 +1,10 @@
+lockfile_version = 1
+name = "output-failure-after-resolution"
+version = "0.0.0"
+
+["@rpm-fixture/alpha@1.0.0"]
+name = "@rpm-fixture/alpha"
+requested = "^1.0.0"
+version = "1.0.0"
+relationship = "direct"
+dependencies = ["@rpm-fixture/shared@^1.0.0"]
