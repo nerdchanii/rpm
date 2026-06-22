@@ -100,7 +100,9 @@ where
         if !metadata.has_locked_request(&package_name, &request.requested)
             && !metadata.has_registry(&package_name)
         {
-            let registry = fetch_registry(package_name.clone()).await?;
+            let registry = fetch_registry(package_name.clone())
+                .await
+                .map_err(|error| phase_error("fetch", error))?;
             metadata.insert_registry(package_name.clone(), registry);
         }
 
@@ -146,7 +148,8 @@ async fn apply_resolved_graph(
         if let Some(locked_package) = metadata.locked_package_for_resolved(package) {
             if let Some(tarball) = &locked_package.tarball {
                 Registry::download_tarball_url_to_dir(&locked_package.key, tarball, cache_dir)
-                    .await?;
+                    .await
+                    .map_err(|error| phase_error("fetch", error))?;
             }
             lockfile.add_dependency_entry(
                 &locked_package.key,
@@ -164,7 +167,8 @@ async fn apply_resolved_graph(
             let registry = metadata.registry_io(&package.package_name)?;
             registry
                 .download_tarball_to_dir(&key, &package.version, cache_dir)
-                .await?;
+                .await
+                .map_err(|error| phase_error("fetch", error))?;
 
             let dependencies = package
                 .dependencies
@@ -268,7 +272,14 @@ fn relationship_for_package(package: &ResolvedPackage) -> Relationship {
 }
 
 fn resolution_error_to_io(error: ResolutionError) -> std::io::Error {
-    Error::new(ErrorKind::InvalidData, error.to_string())
+    phase_error(
+        "resolve",
+        Error::new(ErrorKind::InvalidData, error.to_string()),
+    )
+}
+
+fn phase_error(phase: &str, error: std::io::Error) -> std::io::Error {
+    Error::new(error.kind(), format!("{phase} failed: {error}"))
 }
 
 fn manifest_version_from_requested(requested: &str, resolved: &str) -> String {
@@ -422,20 +433,30 @@ fn package_name_from_lock_key(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        direct_request_kind, manifest_version_from_requested, populate_metadata,
-        relationship_for_package, requested_for_lockfile, InstallMetadata,
+        add_with_cache_dir, direct_request_kind, manifest_version_from_requested,
+        populate_metadata, relationship_for_package, requested_for_lockfile,
+        resolution_error_to_io, InstallMetadata,
     };
     use crate::{
         core::resolver::{
-            resolve_dependency_graph, DependencyRequest, DependencyRequestKind, ResolvedPackage,
-            ResolvedRequest,
+            resolve_dependency_graph, DependencyRequest, DependencyRequestKind, ResolutionError,
+            ResolvedPackage, ResolvedRequest,
         },
         lockfile::{LockFile, Relationship},
         package_manifest::PackageManifest,
         registry::Registry,
-        util::test_support::fixture_path,
+        util::test_support::{fixture_path, TempProject},
     };
-    use std::{cell::RefCell, collections::HashMap, fs, path::Path, rc::Rc};
+    use std::{
+        cell::RefCell,
+        collections::HashMap,
+        ffi::OsString,
+        fs, io,
+        path::{Path, PathBuf},
+        rc::Rc,
+        thread,
+        time::Duration,
+    };
 
     fn registry_fixture_file_name(package_name: &str) -> String {
         format!("{}.json", package_name.replace('/', "__"))
@@ -451,6 +472,56 @@ mod tests {
         });
         serde_json::from_str(&fixture)
             .unwrap_or_else(|error| panic!("{} did not deserialize: {error}", path.display()))
+    }
+
+    #[test]
+    fn resolution_errors_are_labeled_with_resolve_phase() {
+        let error = resolution_error_to_io(ResolutionError::MissingMetadata {
+            package_name: "@rpm-fixture/missing".to_string(),
+        });
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("resolve failed"));
+        assert!(error
+            .to_string()
+            .contains("missing package metadata for @rpm-fixture/missing"));
+    }
+
+    #[tokio::test]
+    async fn cache_download_errors_are_labeled_with_fetch_phase() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "performance-small"]);
+        let project = TempProject::new("add-fetch-phase").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let mut package_manifest = PackageManifest::read_from_path(&package_path).unwrap();
+        let mut lockfile = LockFile::load_from_path(project_root.join("rpm.lock")).unwrap();
+        let libs = package_manifest
+            .get_dependencies()
+            .into_iter()
+            .map(|(library_name, version)| format!("{library_name}@{version}"))
+            .collect::<Vec<_>>();
+        let cache_path = project_root.join(".rpm").join(".cache");
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(&cache_path, "not a directory").unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        let error = add_with_cache_dir(
+            &mut package_manifest,
+            &mut lockfile,
+            libs,
+            false,
+            false,
+            &cache_path,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("fetch failed"));
+        assert!(error.to_string().contains("failed to open cached tarball"));
+        assert!(error.to_string().contains(".rpm/.cache"));
     }
 
     #[tokio::test]
@@ -677,5 +748,53 @@ mod tests {
         );
         assert_eq!(manifest_version_from_requested("^1.2.0", "1.4.0"), "^1.2.0");
         assert_eq!(manifest_version_from_requested("latest", "1.4.0"), "1.4.0");
+    }
+
+    struct TestEnvLock {
+        path: PathBuf,
+    }
+
+    impl TestEnvLock {
+        fn acquire() -> io::Result<Self> {
+            let path = std::env::temp_dir().join("rpm-install-test-env-lock");
+            loop {
+                match fs::create_dir(&path) {
+                    Ok(()) => return Ok(Self { path }),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+
+    impl Drop for TestEnvLock {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir(&self.path);
+        }
+    }
+
+    struct FixtureInstallEnv {
+        previous_fixture_root: Option<OsString>,
+    }
+
+    impl FixtureInstallEnv {
+        fn new(registry_root: &Path) -> Self {
+            let previous_fixture_root = std::env::var_os("RPM_REGISTRY_FIXTURE_ROOT");
+            std::env::set_var("RPM_REGISTRY_FIXTURE_ROOT", registry_root);
+            Self {
+                previous_fixture_root,
+            }
+        }
+    }
+
+    impl Drop for FixtureInstallEnv {
+        fn drop(&mut self) {
+            match &self.previous_fixture_root {
+                Some(value) => std::env::set_var("RPM_REGISTRY_FIXTURE_ROOT", value),
+                None => std::env::remove_var("RPM_REGISTRY_FIXTURE_ROOT"),
+            }
+        }
     }
 }
