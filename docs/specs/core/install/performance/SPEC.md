@@ -3,7 +3,7 @@ spec_id: installer_performance
 title: Installer Performance Baseline
 status: draft
 owner: core/install/performance
-last_reviewed: 2026-06-18
+last_reviewed: 2026-06-22
 authors:
   - nerdchanii
 deciders:
@@ -16,13 +16,14 @@ related_adrs:
 related_issues:
   - 50
   - 60
+  - 83
 ---
 
 # Spec: Installer Performance Baseline
 
 Status: Draft
 Owner: core/install/performance
-Last reviewed: 2026-06-18
+Last reviewed: 2026-06-22
 
 ## Purpose
 
@@ -122,10 +123,23 @@ package name and selected version. Resolver event logs may be added later for
 diagnostics, but they are not required for the first installer measurement
 harness.
 
-Before tarball verification is implemented, registry `dist.integrity` is the
-authoritative integrity field when present. Registry `dist.shasum` is the
-legacy fallback when `dist.integrity` is absent. Recording either value before
-verification does not mean RPM has cryptographically verified the tarball.
+## Integrity Gate
+
+M3 defers cryptographic tarball verification. Until a later focused issue
+implements verification, RPM may record registry integrity metadata but must
+not claim that cached tarballs are verified.
+
+When metadata is recorded before verification exists, registry `dist.integrity`
+is the authoritative field when present. Registry `dist.shasum` is the legacy
+fallback when `dist.integrity` is absent. Recording either value in `rpm.lock`
+does not mean RPM has cryptographically verified the downloaded bytes.
+
+A future verification implementation must run after tarball bytes are
+downloaded and before extraction begins. It must define the supported
+Subresource Integrity algorithms, the legacy `shasum` fallback behavior, and
+the error reported when bytes do not match the selected metadata. A verification
+failure must be returned as a failed integrity phase and must not publish
+extracted package contents or report the install as successful.
 
 ## Error Cases
 
