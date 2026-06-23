@@ -47,6 +47,12 @@ test *args:
     cargo test --locked --all-targets {{args}}
     @echo "::rpm::end test"
 
+# Enforce the repository line coverage floor.
+coverage:
+    @echo "::rpm::begin coverage rustup run stable cargo llvm-cov --fail-under-lines 90"
+    rustup run stable cargo llvm-cov --locked --lib --bins --all-features --fail-under-lines 90
+    @echo "::rpm::end coverage"
+
 # Build documentation and fail on rustdoc warnings.
 docs:
     @echo "::rpm::begin docs RUSTDOCFLAGS=-Dwarnings cargo doc --locked --no-deps"

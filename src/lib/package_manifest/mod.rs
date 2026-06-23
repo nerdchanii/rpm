@@ -272,4 +272,55 @@ mod package_json_test {
         let dependencies = saved.get_dependencies();
         assert!(dependencies.contains(&("socket-store".to_owned(), "^0.1.0".to_owned())));
     }
+
+    #[test]
+    fn accessors_return_defaults_for_empty_manifest() {
+        let package = PackageManifest::default();
+
+        assert_eq!(package.get_name(), "");
+        assert_eq!(package.get_version(), "");
+        assert_eq!(package.get_bin(), None);
+        assert!(package.get_dependencies().is_empty());
+        assert!(package.get_dev_dependencies().is_empty());
+        assert!(package.get_scripts().is_empty());
+    }
+
+    #[test]
+    fn dependency_mutators_create_and_extend_dependency_sets() {
+        let mut package = PackageManifest::default();
+
+        package.add_dependency("left-pad".to_owned(), "^1.0.0".to_owned());
+        package.add_dev_dependency("typescript".to_owned(), "^5.0.0".to_owned());
+        package.add_dev_dependency("vitest".to_owned(), "^2.0.0".to_owned());
+
+        assert_eq!(
+            package.get_dependencies(),
+            vec![("left-pad".to_owned(), "^1.0.0".to_owned())]
+        );
+        let dev_dependencies = package.get_dev_dependencies();
+        assert!(dev_dependencies.contains(&("typescript".to_owned(), "^5.0.0".to_owned())));
+        assert!(dev_dependencies.contains(&("vitest".to_owned(), "^2.0.0".to_owned())));
+    }
+
+    #[test]
+    fn save_to_path_reports_open_errors_with_manifest_path() {
+        let temp_project = TempProject::new("package-manifest-save-error").unwrap();
+        let directory_path = temp_project
+            .copy_fixture(
+                fixture_path(&["package_manifest", "manifest-minimal.json"]),
+                "nested/package.json",
+            )
+            .unwrap()
+            .with_file_name("directory-target");
+        std::fs::create_dir_all(&directory_path).unwrap();
+
+        let error = PackageManifest::default()
+            .save_to_path(&directory_path)
+            .expect_err("saving to a directory should fail");
+
+        assert!(error
+            .to_string()
+            .contains("failed to open package manifest"));
+        assert!(error.to_string().contains("directory-target"));
+    }
 }
