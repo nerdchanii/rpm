@@ -23,3 +23,9 @@ jobs:
       run: cargo clippy --all-targets --all-features -- -D warnings
     - name: Run tests
       run: cargo test
+    - name: Install llvm tools
+      run: rustup component add llvm-tools-preview
+    - name: Install coverage tool
+      uses: taiki-e/install-action@cargo-llvm-cov
+    - name: Check coverage
+      run: rustup run stable cargo llvm-cov --locked --lib --bins --all-features --fail-under-lines 90

@@ -649,7 +649,10 @@ fn cache_staging_error(kind: ErrorKind, message: String, staging_path: &Path) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{open_cache_staging_file, save_tarball_to_dir, verify_tarball_integrity, Registry};
+    use super::{
+        open_cache_staging_file, save_tarball_to_dir, verify_cached_tarball,
+        verify_tarball_integrity, Registry,
+    };
     use crate::util::test_support::fixture_path;
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
     use sha1::Sha1;
@@ -981,6 +984,201 @@ mod tests {
             dist.integrity.as_deref(),
             Some("sha512-fixture-integrity-only")
         );
+    }
+
+    #[test]
+    fn root_metadata_fallbacks_cover_legacy_registry_shape() {
+        let registry = registry_from_json(
+            r#"{
+              "_id": "legacy-shape",
+              "name": "legacy-shape",
+              "version": "2.0.0",
+              "description": "legacy fixture",
+              "maintainers": [],
+              "dist": {
+                "tarball": "https://registry.example.invalid/legacy-shape/-/legacy-shape-2.0.0.tgz",
+                "shasum": "fixture-legacy-shape"
+              },
+              "dependencies": {
+                "left-pad": "^1.0.0",
+                "@scope/tool": "~2.0.0"
+              }
+            }"#,
+        );
+
+        assert_eq!(
+            registry.get_latest_version().map(String::as_str),
+            Some("2.0.0")
+        );
+        assert_eq!(registry.select_version("").unwrap(), "2.0.0");
+        assert_eq!(registry.select_version("latest").unwrap(), "2.0.0");
+        assert_eq!(registry.select_version("2.0.0").unwrap(), "2.0.0");
+        assert!(registry.select_version("1.0.0").is_err());
+        assert_eq!(
+            registry.get_tarball_url().as_deref(),
+            Some("https://registry.example.invalid/legacy-shape/-/legacy-shape-2.0.0.tgz")
+        );
+        assert_eq!(
+            registry
+                .get_dist_for_version("2.0.0")
+                .unwrap()
+                .shasum
+                .as_deref(),
+            Some("fixture-legacy-shape")
+        );
+
+        let dependencies = registry.get_dependencies();
+        assert!(dependencies.contains(&"left-pad@^1.0.0".to_owned()));
+        assert!(dependencies.contains(&"@scope/tool@~2.0.0".to_owned()));
+    }
+
+    #[test]
+    fn versioned_metadata_fallbacks_cover_dist_tags_and_missing_values() {
+        let registry = registry_from_json(
+            r#"{
+              "_id": "tagged",
+              "name": "tagged",
+              "description": "tagged fixture",
+              "maintainers": [],
+              "dist-tags": {
+                "latest": "1.0.0",
+                "beta": "2.0.0-beta.1"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "tagged",
+                  "version": "1.0.0",
+                  "description": "stable",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/tagged/-/tagged-1.0.0.tgz",
+                    "shasum": "fixture-tagged-stable"
+                  },
+                  "dependencies": {
+                    "stable-child": "^1.0.0"
+                  }
+                },
+                "2.0.0-beta.1": {
+                  "name": "tagged",
+                  "version": "2.0.0-beta.1",
+                  "description": "beta",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/tagged/-/tagged-2.0.0-beta.1.tgz",
+                    "shasum": "fixture-tagged-beta"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        assert_eq!(registry.select_version("beta").unwrap(), "2.0.0-beta.1");
+        assert_eq!(
+            registry.get_tarball_url().as_deref(),
+            Some("https://registry.example.invalid/tagged/-/tagged-1.0.0.tgz")
+        );
+        assert_eq!(
+            registry.get_dependencies(),
+            vec!["stable-child@^1.0.0".to_owned()]
+        );
+        assert!(registry
+            .get_dependencies_for_version("2.0.0-beta.1")
+            .is_empty());
+
+        let missing_latest = registry_from_json(
+            r#"{
+              "_id": "missing-latest",
+              "name": "missing-latest",
+              "description": "missing latest fixture",
+              "maintainers": [],
+              "dist-tags": {},
+              "versions": {}
+            }"#,
+        );
+        assert_eq!(missing_latest.get_latest_version(), None);
+        assert_eq!(missing_latest.get_tarball_name(), None);
+        assert_eq!(missing_latest.get_tarball_url(), None);
+    }
+
+    #[tokio::test]
+    async fn tarball_download_reports_missing_dist_before_fetching() {
+        let registry = registry_from_json(
+            r#"{
+              "_id": "downloadable",
+              "name": "downloadable",
+              "description": "download fixture",
+              "maintainers": [],
+              "dist-tags": {
+                "latest": "1.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "downloadable",
+                  "version": "1.0.0",
+                  "description": "download fixture",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/downloadable/-/downloadable-1.0.0.tgz",
+                    "shasum": "fixture-downloadable"
+                  }
+                }
+              }
+            }"#,
+        );
+        let missing = registry
+            .download_tarball_to_dir("downloadable", "9.9.9", Path::new("unused"))
+            .await
+            .expect_err("missing version dist should fail before network");
+        assert!(missing.to_string().contains("missing tarball URL"));
+    }
+
+    #[test]
+    fn integrity_verification_reports_invalid_variants() {
+        let invalid_sri = verify_tarball_integrity("pkg@1.0.0", b"bytes", Some("sha512-@@@"), None)
+            .expect_err("invalid base64 SRI should fail");
+        assert!(invalid_sri
+            .to_string()
+            .contains("invalid sha512 SRI digest"));
+
+        let unsupported_sri =
+            verify_tarball_integrity("pkg@1.0.0", b"bytes", Some("sha256-abcd"), None)
+                .expect_err("unsupported SRI algorithm should fail");
+        assert!(unsupported_sri
+            .to_string()
+            .contains("unsupported integrity algorithm"));
+
+        let invalid_shasum = verify_tarball_integrity("pkg@1.0.0", b"bytes", None, Some("not-hex"))
+            .expect_err("invalid shasum should fail");
+        assert!(invalid_shasum.to_string().contains("invalid legacy shasum"));
+
+        let mismatched_shasum = verify_tarball_integrity(
+            "pkg@1.0.0",
+            b"bytes",
+            None,
+            Some("0000000000000000000000000000000000000000"),
+        )
+        .expect_err("mismatched shasum should fail");
+        assert!(mismatched_shasum
+            .to_string()
+            .contains("legacy shasum did not match"));
+    }
+
+    #[test]
+    fn verify_cached_tarball_reports_read_errors_with_path() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let temp = std::env::temp_dir().join(format!(
+            "rpm-registry-verify-cache-error-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        let missing = temp.join("missing.tgz");
+
+        let error = verify_cached_tarball("pkg@1.0.0", &missing, None, None)
+            .expect_err("missing cached tarball should fail");
+
+        assert!(error.to_string().contains("failed to read cached tarball"));
+        assert!(error.to_string().contains("missing.tgz"));
+        let _ = fs::remove_dir_all(temp);
     }
 
     #[test]
