@@ -1,0 +1,12 @@
+{
+  "number": 3,
+  "title": "Deterministic scheduled queue",
+  "body": "## Context\n\nRPM needs a scheduled queue.\n\n## Research\n\nProject #7 is the inventory.\n\n## Contract\n\nSelection is read-only.\n\n## Initial scope\n\nSelect one issue.\n\n## Done criteria\n\nThe result is deterministic.\n\n## Related work\n\nNone.\n\n## Open decisions\n\nNone.\n",
+  "url": "https://github.com/nerdchanii/rpm/issues/3",
+  "state": "OPEN",
+  "labels": [
+    {
+      "name": "agent:research"
+    }
+  ]
+}

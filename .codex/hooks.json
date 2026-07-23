@@ -1,0 +1,54 @@
+{
+  "description": "RPM workflow role boundaries and per-issue completion gates.",
+  "hooks": {
+    "SubagentStart": [
+      {
+        "matcher": "^rpm_",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/agent_tool_policy.py\"",
+            "timeout": 10,
+            "statusMessage": "Registering RPM agent policy"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Agent|spawn_agent|apply_patch|Edit|Write|Bash|shell|exec|exec_command|functions\\.exec|functions\\.exec_command|mcp__.*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/agent_tool_policy.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking RPM agent tool boundary"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "^rpm_",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/agent_tool_policy.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "^rpm_issue_manager$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/issue_manager_stop_gate.py\"",
+            "timeout": 1800,
+            "statusMessage": "Verifying completed RPM issue workflow"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -5,13 +5,26 @@ status="ok"
 format="jsonl"
 skill_validator="${RPM_SKILL_VALIDATOR:-}"
 
-if [ "${1:-}" = "--format" ]; then
-  format="${2:-}"
-elif [ "${1:-}" = "--format=text" ]; then
-  format="text"
-elif [ "${1:-}" = "--format=jsonl" ]; then
-  format="jsonl"
-fi
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --format)
+      [ "$#" -ge 2 ] || {
+        printf 'agent_assets.error=missing-format-value\n' >&2
+        exit 2
+      }
+      format="$2"
+      shift 2
+      ;;
+    --format=*)
+      format="${1#--format=}"
+      shift
+      ;;
+    *)
+      printf 'agent_assets.error=unknown-argument:%s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 if [ "${format}" != "jsonl" ] && [ "${format}" != "text" ]; then
   printf 'agent_assets.error=invalid-format:%s\n' "${format}" >&2
@@ -30,12 +43,16 @@ emit_check() {
   local result="$2"
   local output="${3:-}"
   if [ "${format}" = "jsonl" ]; then
-    jq -nc --arg name "${name}" --arg status "${result}" --arg output "${output}" \
-      '{type:"agent_asset_check", data:{name:$name, status:$status, output:(if $output == "" then null else $output end)}}'
+    jq -nc \
+      --arg name "${name}" \
+      --arg status "${result}" \
+      --arg output "${output}" \
+      '{type:"agent_asset_check",data:{name:$name,status:$status,output:(if $output == "" then null else $output end)}}'
   else
     printf 'agent_assets.%s=%s\n' "${name}" "${result}"
     if [ -n "${output}" ]; then
-      printf 'agent_assets.%s.output.begin\n%s\nagent_assets.%s.output.end\n' "${name}" "${output}" "${name}"
+      printf 'agent_assets.%s.output.begin\n%s\nagent_assets.%s.output.end\n' \
+        "${name}" "${output}" "${name}"
     fi
   fi
 }
@@ -52,11 +69,11 @@ check() {
   fi
 }
 
-with_fake_watch_gh() {
+with_fake_collect_gh() {
   local fixture="$1"
   shift
   local temp_dir
-  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-watch-gh.XXXXXX")"
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-collect-gh.XXXXXX")"
   trap 'rm -rf "${temp_dir}"' RETURN
   cat >"${temp_dir}/gh" <<'GH'
 #!/usr/bin/env bash
@@ -68,22 +85,18 @@ if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
 fi
 
 if [ "${1:-}" = "api" ] && [ "${2:-}" = "graphql" ]; then
-  if [ -d "${RPM_WATCH_FIXTURE}" ]; then
-    count_file="${RPM_WATCH_FIXTURE}/.count"
-    count=0
-    if [ -f "${count_file}" ]; then
-      count="$(cat "${count_file}")"
-    fi
-    count=$((count + 1))
-    printf '%s\n' "${count}" > "${count_file}"
-    if [ -f "${RPM_WATCH_FIXTURE}/page-${count}.json" ]; then
-      cat "${RPM_WATCH_FIXTURE}/page-${count}.json"
-      exit 0
-    fi
-    cat "${RPM_WATCH_FIXTURE}/page-last.json"
+  count_file="${RPM_COLLECT_FIXTURE}/.count"
+  count=0
+  if [ -f "${count_file}" ]; then
+    count="$(cat "${count_file}")"
+  fi
+  count=$((count + 1))
+  printf '%s\n' "${count}" >"${count_file}"
+  if [ -f "${RPM_COLLECT_FIXTURE}/page-${count}.json" ]; then
+    cat "${RPM_COLLECT_FIXTURE}/page-${count}.json"
     exit 0
   fi
-  cat "${RPM_WATCH_FIXTURE}"
+  cat "${RPM_COLLECT_FIXTURE}/page-last.json"
   exit 0
 fi
 
@@ -91,174 +104,7 @@ printf 'unexpected gh call: %s\n' "$*" >&2
 exit 99
 GH
   chmod +x "${temp_dir}/gh"
-  PATH="${temp_dir}:${PATH}" RPM_WATCH_FIXTURE="${fixture}" "$@"
-}
-
-check_watch_no_signal_timeout() {
-  local fixture
-  fixture="$(mktemp "${TMPDIR:-/tmp}/rpm-watch-no-signal.XXXXXX.json")"
-  trap 'rm -f "${fixture}"' RETURN
-  cat >"${fixture}" <<'JSON'
-{"data":{"repository":{"pullRequest":{"comments":{"nodes":[]},"reviews":{"nodes":[]},"reviewThreads":{"nodes":[]}}}}}
-JSON
-
-  local output
-  set +e
-  output="$(with_fake_watch_gh "${fixture}" bash scripts/watch-codex-review.sh 1 --start-time 2026-01-01T00:00:00Z --timeout 0 --format jsonl 2>&1)"
-  local exit_code=$?
-  set -e
-
-  [ "${exit_code}" -eq 30 ] || {
-    printf 'expected exit 30, got %s\n%s\n' "${exit_code}" "${output}"
-    return 1
-  }
-  printf '%s\n' "${output}" | jq -e 'select(.type == "review_watch_status" and .data.status == "timeout")' >/dev/null
-}
-
-check_watch_review_precedes_thumbs_up() {
-  local fixture
-  fixture="$(mktemp "${TMPDIR:-/tmp}/rpm-watch-review-and-thumbs.XXXXXX.json")"
-  trap 'rm -f "${fixture}"' RETURN
-  cat >"${fixture}" <<'JSON'
-{"data":{"repository":{"pullRequest":{"comments":{"nodes":[{"author":{"login":"octocat"},"createdAt":"2026-01-01T00:00:01Z","body":"@codex review","reactionGroups":[{"content":"THUMBS_UP","users":{"totalCount":1,"nodes":[{"login":"chatgpt-codex-connector"}]}}]}]},"reviews":{"nodes":[{"author":{"login":"chatgpt-codex-connector"},"submittedAt":"2026-01-01T00:00:02Z","state":"COMMENTED","body":"No findings."}]},"reviewThreads":{"nodes":[]}}}}}
-JSON
-
-  local output
-  output="$(with_fake_watch_gh "${fixture}" bash scripts/watch-codex-review.sh 1 --start-time 2026-01-01T00:00:00Z --max-polls 1 --format jsonl 2>&1)"
-  printf '%s\n' "${output}" | jq -e 'select(.type == "review_watch_status" and .data.status == "review_output_ready")' >/dev/null
-}
-
-check_watch_ignores_user_thumbs_up() {
-  local fixture
-  fixture="$(mktemp "${TMPDIR:-/tmp}/rpm-watch-user-thumbs.XXXXXX.json")"
-  trap 'rm -f "${fixture}"' RETURN
-  cat >"${fixture}" <<'JSON'
-{"data":{"repository":{"pullRequest":{"comments":{"nodes":[{"author":{"login":"octocat"},"createdAt":"2026-01-01T00:00:01Z","body":"@codex review","reactionGroups":[{"content":"THUMBS_UP","users":{"totalCount":1,"nodes":[{"login":"octocat"}]}}]}]},"reviews":{"nodes":[]},"reviewThreads":{"nodes":[]}}}}}
-JSON
-
-  local output
-  set +e
-  output="$(with_fake_watch_gh "${fixture}" bash scripts/watch-codex-review.sh 1 --start-time 2026-01-01T00:00:00Z --max-polls 1 --format jsonl 2>&1)"
-  local exit_code=$?
-  set -e
-
-  [ "${exit_code}" -eq 30 ] || {
-    printf 'expected exit 30, got %s\n%s\n' "${exit_code}" "${output}"
-    return 1
-  }
-  if printf '%s\n' "${output}" | jq -e 'select(.type == "review_watch_status" and .data.status == "no_findings_reaction")' >/dev/null; then
-    printf 'user thumbs-up was treated as no findings\n%s\n' "${output}"
-    return 1
-  fi
-}
-
-check_watch_paginates_review_threads() {
-  local fixture_dir
-  fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-watch-paginated.XXXXXX")"
-  trap 'rm -rf "${fixture_dir}"' RETURN
-
-  local page
-  page=1
-  while [ "${page}" -le 9 ]; do
-    jq -n --argjson page "${page}" '
-    {
-      data: {
-        repository: {
-          pullRequest: {
-            comments: {nodes: []},
-            reviews: {nodes: []},
-            reviewThreads: {
-              pageInfo: {hasNextPage: true, endCursor: ("cursor-" + ($page | tostring))},
-              nodes: [
-                {
-                  id: ("old-thread-" + ($page | tostring)),
-                  isResolved: false,
-                  isOutdated: false,
-                  comments: {
-                    nodes: [
-                      {
-                        author: {login: "octocat"},
-                        createdAt: "2025-12-31T23:59:59Z",
-                        body: "old thread",
-                        url: ("https://example.test/old/" + ($page | tostring))
-                      }
-                    ]
-                  }
-                }
-              ]
-            }
-          }
-        }
-      }
-    }
-  ' > "${fixture_dir}/page-${page}.json"
-    page=$((page + 1))
-  done
-
-  jq -n '
-    {
-      data: {
-        repository: {
-          pullRequest: {
-            comments: {nodes: []},
-            reviews: {nodes: []},
-            reviewThreads: {
-              pageInfo: {hasNextPage: false, endCursor: "cursor-10"},
-              nodes: [
-                {
-                  id: "new-codex-thread",
-                  isResolved: false,
-                  isOutdated: false,
-                  comments: {
-                    nodes: [
-                      {
-                        author: {login: "chatgpt-codex-connector"},
-                        createdAt: "2026-01-01T00:00:01Z",
-                        body: "new finding",
-                        url: "https://example.test/new"
-                      }
-                    ]
-                  }
-                }
-              ]
-            }
-          }
-        }
-      }
-    }
-  ' > "${fixture_dir}/page-10.json"
-  cp "${fixture_dir}/page-10.json" "${fixture_dir}/page-last.json"
-
-  local output
-  output="$(with_fake_watch_gh "${fixture_dir}" bash scripts/watch-codex-review.sh 1 --start-time 2026-01-01T00:00:00Z --max-polls 1 --format jsonl 2>&1)"
-  printf '%s\n' "${output}" | jq -e 'select(.type == "review_watch_status" and .data.status == "review_threads_ready" and .data.thread_count == "1")' >/dev/null
-}
-
-check_watch_page_file_ordering_after_ten() {
-  local fixture_dir
-  fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-watch-page-order.XXXXXX")"
-  trap 'rm -rf "${fixture_dir}"' RETURN
-
-  local page
-  local page_file
-  page=1
-  while [ "${page}" -le 10 ]; do
-    printf -v page_file '%s/page-%06d.json' "${fixture_dir}" "${page}"
-    jq -n --argjson page "${page}" '{page: $page}' > "${page_file}"
-    page=$((page + 1))
-  done
-
-  grep -Fq "page-%06d.json" scripts/watch-codex-review.sh || {
-    printf 'watch review page files are not zero-padded\n'
-    return 1
-  }
-
-  local actual
-  actual="$(jq -s -r '[.[].page] | join(",")' "${fixture_dir}"/page-*.json)"
-  [ "${actual}" = "1,2,3,4,5,6,7,8,9,10" ] || {
-    printf 'expected numeric page order, got %s\n' "${actual}"
-    return 1
-  }
+  PATH="${temp_dir}:${PATH}" RPM_COLLECT_FIXTURE="${fixture}" "$@"
 }
 
 check_collect_paginates_comments_and_reviews() {
@@ -309,7 +155,7 @@ check_collect_paginates_comments_and_reviews() {
         }
       }
     }
-  ' > "${fixture_dir}/page-1.json"
+  ' >"${fixture_dir}/page-1.json"
 
   jq -n '
     {
@@ -352,11 +198,15 @@ check_collect_paginates_comments_and_reviews() {
         }
       }
     }
-  ' > "${fixture_dir}/page-2.json"
+  ' >"${fixture_dir}/page-2.json"
   cp "${fixture_dir}/page-2.json" "${fixture_dir}/page-last.json"
 
   local output
-  output="$(with_fake_watch_gh "${fixture_dir}" bash scripts/collect-pr-review-context.sh 1 --format json 2>&1)"
+  output="$(
+    with_fake_collect_gh \
+      "${fixture_dir}" \
+      bash scripts/collect-pr-review-context.sh 1 --format json 2>&1
+  )"
   printf '%s\n' "${output}" | jq -e '
     (.issueComments | length) == 101
     and (.reviews | length) == 101
@@ -411,7 +261,7 @@ check_collect_does_not_duplicate_exhausted_connections() {
         }
       }
     }
-  ' > "${fixture_dir}/page-1.json"
+  ' >"${fixture_dir}/page-1.json"
 
   jq -n '
     {
@@ -454,7 +304,7 @@ check_collect_does_not_duplicate_exhausted_connections() {
         }
       }
     }
-  ' > "${fixture_dir}/page-2.json"
+  ' >"${fixture_dir}/page-2.json"
 
   jq -n '
     {
@@ -497,11 +347,15 @@ check_collect_does_not_duplicate_exhausted_connections() {
         }
       }
     }
-  ' > "${fixture_dir}/page-3.json"
+  ' >"${fixture_dir}/page-3.json"
   cp "${fixture_dir}/page-3.json" "${fixture_dir}/page-last.json"
 
   local output
-  output="$(with_fake_watch_gh "${fixture_dir}" bash scripts/collect-pr-review-context.sh 1 --format json 2>&1)"
+  output="$(
+    with_fake_collect_gh \
+      "${fixture_dir}" \
+      bash scripts/collect-pr-review-context.sh 1 --format json 2>&1
+  )"
   printf '%s\n' "${output}" | jq -e '
     ([.issueComments[] | select(.body == "single issue comment")] | length) == 1
     and (.issueComments | length) == 1
@@ -510,14 +364,147 @@ check_collect_does_not_duplicate_exhausted_connections() {
   ' >/dev/null
 }
 
+check_readiness_ready() {
+  local output
+  output="$(
+    python3 scripts/check-agent-issue-readiness.py \
+      --body-file .agents/fixtures/backlog/readiness-ready.md \
+      --format jsonl
+  )"
+  printf '%s\n' "${output}" | jq -e '
+    .type == "issue_readiness_result"
+    and .data.status == "ready"
+    and .data.ready == true
+    and (.data.missing_sections | length) == 0
+    and (.data.unresolved_decisions | length) == 0
+  ' >/dev/null
+}
+
+check_readiness_missing() {
+  local output
+  local exit_code
+  set +e
+  output="$(
+    python3 scripts/check-agent-issue-readiness.py \
+      --body-file .agents/fixtures/backlog/readiness-missing.md \
+      --format json
+  )"
+  exit_code=$?
+  set -e
+  [ "${exit_code}" -eq 1 ] || {
+    printf 'expected readiness exit 1, got %s\n%s\n' "${exit_code}" "${output}"
+    return 1
+  }
+  printf '%s\n' "${output}" | jq -e '
+    .data.status == "needs-refinement"
+    and .data.ready == false
+    and (.data.missing_sections | index("Contract")) != null
+    and (.data.missing_sections | index("Done criteria")) != null
+  ' >/dev/null
+}
+
+check_readiness_unresolved() {
+  local output
+  local exit_code
+  set +e
+  output="$(
+    python3 scripts/check-agent-issue-readiness.py \
+      --body-file .agents/fixtures/backlog/readiness-unresolved.md \
+      --format jsonl
+  )"
+  exit_code=$?
+  set -e
+  [ "${exit_code}" -eq 1 ] || {
+    printf 'expected readiness exit 1, got %s\n%s\n' "${exit_code}" "${output}"
+    return 1
+  }
+  printf '%s\n' "${output}" | jq -e '
+    .data.ready == false
+    and any(.data.unresolved_decisions[]; .reason == "contract-tbd")
+    and any(.data.unresolved_decisions[]; .reason == "unchecked-decision")
+  ' >/dev/null
+}
+
+check_readiness_live_issue() {
+  local temp_dir
+  local output
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-readiness-gh.XXXXXX")"
+  trap 'rm -rf "${temp_dir}"' RETURN
+  cp .agents/fixtures/backlog/fake-gh "${temp_dir}/gh"
+  chmod +x "${temp_dir}/gh"
+  output="$(
+    PATH="${temp_dir}:${PATH}" \
+      RPM_READINESS_FIXTURE=".agents/fixtures/backlog/live-issue.json" \
+      python3 scripts/check-agent-issue-readiness.py --issue 3 --format jsonl
+  )"
+  printf '%s\n' "${output}" | jq -e '
+    .data.status == "ready"
+    and .data.source.kind == "live-issue"
+    and .data.source.number == 3
+    and .data.source.labels == ["agent:research"]
+  ' >/dev/null
+}
+
+with_fake_backlog_gh() {
+  local state_arg="$1"
+  local temp_dir
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-backlog-gh.XXXXXX")"
+  trap 'rm -rf "${temp_dir}"' RETURN
+  cp .agents/fixtures/backlog/fake-gh "${temp_dir}/gh"
+  chmod +x "${temp_dir}/gh"
+  PATH="${temp_dir}:${PATH}" \
+    RPM_BACKLOG_FIXTURE=".agents/fixtures/backlog/project-items.json" \
+    bash scripts/backlog-gen --state "${state_arg}" --format jsonl
+}
+
+check_backlog_research_batch() {
+  local output
+  output="$(with_fake_backlog_gh research)"
+  printf '%s\n' "${output}" | jq -e '
+    .type == "backlog_selection"
+    and .data.status == "selected"
+    and .data.project.number == 7
+    and .data.batch_limit == 1
+    and .data.count == 1
+    and [.data.issues[].number] == [3]
+  ' >/dev/null
+}
+
+check_backlog_no_work() {
+  local output
+  output="$(with_fake_backlog_gh blocked)"
+  printf '%s\n' "${output}" | jq -e '
+    .data.status == "no-work"
+    and .data.count == 0
+    and .data.issues == []
+  ' >/dev/null
+}
+
+check_backlog_inventory_order() {
+  local output
+  output="$(with_fake_backlog_gh all)"
+  printf '%s\n' "${output}" | jq -e '
+    .data.status == "selected"
+    and [.data.issues[].number] == [3, 7, 9]
+    and [.data.issues[].state] == ["research", "research", "ready"]
+  ' >/dev/null
+}
+
 for skill in .agents/skills/*; do
   [ -d "${skill}" ] || continue
   name="$(basename "${skill}")"
-  if [ -n "${skill_validator}" ]; then
-    check "skill_${name}" \
-      python3 "${skill_validator}" "${skill}"
+  if [ "${name}" = "take-ticket" ] || [ "${name}" = "prepare-backlog" ]; then
+    emit_check \
+      "skill_${name}" \
+      "ok" \
+      "hidden entry flags and routing are validated by check-agent-organization.py"
+  elif [ -n "${skill_validator}" ]; then
+    check "skill_${name}" python3 "${skill_validator}" "${skill}"
   else
-    emit_check "skill_${name}" "skip" "skill validator not found; set RPM_SKILL_VALIDATOR to enable this check"
+    emit_check \
+      "skill_${name}" \
+      "skip" \
+      "skill validator not found; set RPM_SKILL_VALIDATOR to enable this check"
   fi
 done
 
@@ -526,48 +513,71 @@ if [ -d .codex/agents ]; then
     [ -f "${agent}" ] || continue
     name="$(basename "${agent}" .toml)"
     check "agent_${name}_toml" \
-      python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "${agent}"
+      python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' "${agent}"
   done
 fi
 
-check "script_collect_pr_review_context_syntax" \
-  bash -n scripts/collect-pr-review-context.sh
+check "backlog_policy_schema" jq -e '
+  .version == 1
+  and .repository == "nerdchanii/rpm"
+  and .project.number == 7
+  and .project.required == true
+  and .labels == {
+    research:"agent:research",
+    ready:"agent:ready",
+    claimed:"agent:claimed",
+    blocked:"agent:blocked"
+  }
+  and .batch_limits == {research:1,execution:1}
+  and .allowed_transitions == {
+    untracked:["research"],
+    research:["research","ready","blocked"],
+    ready:["claimed","blocked"],
+    claimed:["ready","blocked"],
+    blocked:["research","ready"]
+  }
+' .agents/workflows/backlog-policy.json
 
-check "script_create_review_followup_issue_syntax" \
-  bash -n scripts/create-review-followup-issue.sh
+check "agent_organization" python3 scripts/check-agent-organization.py
+check "agent_hooks_json" jq -e . .codex/hooks.json
 
-check "script_ticket_gen_syntax" \
-  bash -n scripts/ticket-gen
+for hook in .codex/hooks/agent_tool_policy.py .codex/hooks/issue_manager_stop_gate.py; do
+  name="$(basename "${hook}" .py)"
+  check "hook_${name}_syntax" \
+    python3 -c 'import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "${hook}"
+done
 
-check "script_watch_codex_review_syntax" \
-  bash -n scripts/watch-codex-review.sh
+for script in \
+  scripts/backlog-gen \
+  scripts/check-agent-backlog-access.sh \
+  scripts/collect-pr-review-context.sh \
+  scripts/create-review-followup-issue.sh \
+  scripts/ticket-gen
+do
+  [ -f "${script}" ] || continue
+  name="$(basename "${script}")"
+  check "script_${name}_syntax" bash -n "${script}"
+done
 
-check "script_watch_codex_review_no_signal_timeout" \
-  check_watch_no_signal_timeout
-
-check "script_watch_codex_review_review_precedes_thumbs_up" \
-  check_watch_review_precedes_thumbs_up
-
-check "script_watch_codex_review_ignores_user_thumbs_up" \
-  check_watch_ignores_user_thumbs_up
-
-check "script_watch_codex_review_paginates_review_threads" \
-  check_watch_paginates_review_threads
-
-check "script_watch_codex_review_page_file_ordering_after_ten" \
-  check_watch_page_file_ordering_after_ten
-
-check "script_collect_pr_review_context_paginates_comments_and_reviews" \
-  check_collect_paginates_comments_and_reviews
-
-check "script_collect_pr_review_context_no_duplicate_exhausted_connections" \
-  check_collect_does_not_duplicate_exhausted_connections
-
+check "script_check_agent_issue_readiness_syntax" \
+  python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-agent-issue-readiness.py").read_text())'
+check "script_check_agent_organization_syntax" \
+  python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-agent-organization.py").read_text())'
 check "script_validate_agent_workflow_assets_syntax" \
   bash -n scripts/validate-agent-workflow-assets.sh
 
+check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews
+check "collect_pr_review_context_no_duplicates" check_collect_does_not_duplicate_exhausted_connections
+check "readiness_ready_fixture" check_readiness_ready
+check "readiness_missing_fixture" check_readiness_missing
+check "readiness_unresolved_fixture" check_readiness_unresolved
+check "readiness_live_issue_fixture" check_readiness_live_issue
+check "backlog_research_batch" check_backlog_research_batch
+check "backlog_no_work" check_backlog_no_work
+check "backlog_inventory_order" check_backlog_inventory_order
+
 if [ "${format}" = "jsonl" ]; then
-  jq -nc --arg status "${status}" '{type:"agent_assets_result", data:{status:$status}}'
+  jq -nc --arg status "${status}" '{type:"agent_assets_result",data:{status:$status}}'
 else
   printf 'agent_assets.status=%s\n' "${status}"
 fi

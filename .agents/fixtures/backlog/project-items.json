@@ -1,0 +1,58 @@
+{
+  "items": [
+    {
+      "id": "PVTI_ready_9",
+      "labels": [
+        "agent:ready",
+        "kind:feature"
+      ],
+      "content": {
+        "type": "Issue",
+        "number": 9,
+        "title": "Ready later",
+        "url": "https://github.com/nerdchanii/rpm/issues/9",
+        "repository": "nerdchanii/rpm"
+      }
+    },
+    {
+      "id": "PVTI_research_7",
+      "labels": [
+        "agent:research"
+      ],
+      "content": {
+        "type": "Issue",
+        "number": 7,
+        "title": "Research second",
+        "url": "https://github.com/nerdchanii/rpm/issues/7",
+        "repository": "nerdchanii/rpm"
+      }
+    },
+    {
+      "id": "PVTI_research_3",
+      "labels": [
+        "agent:research"
+      ],
+      "content": {
+        "type": "Issue",
+        "number": 3,
+        "title": "Research first",
+        "url": "https://github.com/nerdchanii/rpm/issues/3",
+        "repository": "nerdchanii/rpm"
+      }
+    },
+    {
+      "id": "PVTI_other_repo",
+      "labels": [
+        "agent:research"
+      ],
+      "content": {
+        "type": "Issue",
+        "number": 1,
+        "title": "Other repository",
+        "url": "https://github.com/example/other/issues/1",
+        "repository": "example/other"
+      }
+    }
+  ],
+  "totalCount": 4
+}

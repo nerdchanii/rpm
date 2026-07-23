@@ -1,4 +1,4 @@
 interface:
   display_name: "Take Ticket"
-  short_description: "Coordinate RPM ticket context and specialist handoffs."
-  default_prompt: "Use $take-ticket to prepare RPM ticket context and delegate issue-to-PR execution to the appropriate lifecycle, SPEC, fixture, and review-resolution skills."
+  short_description: "Execute one explicit or scheduled RPM ticket."
+  default_prompt: "Use $take-ticket in explicit mode for the supplied issue, or scheduled mode to claim and execute at most one ready RPM issue."

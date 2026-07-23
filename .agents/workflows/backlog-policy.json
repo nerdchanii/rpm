@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "repository": "nerdchanii/rpm",
+  "project": {
+    "owner": "@me",
+    "number": 7,
+    "required": true
+  },
+  "labels": {
+    "research": "agent:research",
+    "ready": "agent:ready",
+    "claimed": "agent:claimed",
+    "blocked": "agent:blocked"
+  },
+  "batch_limits": {
+    "research": 1,
+    "execution": 1
+  },
+  "issue_body": {
+    "managed_section_start": "<!-- rpm-agent-research:start -->",
+    "managed_section_end": "<!-- rpm-agent-research:end -->"
+  },
+  "allowed_transitions": {
+    "untracked": [
+      "research"
+    ],
+    "research": [
+      "research",
+      "ready",
+      "blocked"
+    ],
+    "ready": [
+      "claimed",
+      "blocked"
+    ],
+    "claimed": [
+      "ready",
+      "blocked"
+    ],
+    "blocked": [
+      "research",
+      "ready"
+    ]
+  },
+  "automation": {
+    "create_followup_issues_by_default": false,
+    "merge_pull_requests": false,
+    "request_codex_review": false
+  }
+}

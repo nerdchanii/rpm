@@ -14,6 +14,23 @@ Use the closest issue template and include:
 
 Issue text explains intent, but it does not override an owning SPEC.
 
+### Agent-backed backlog
+
+Unrefined product ideas use the Idea issue template and enter GitHub Project #7.
+The state labels and allowed transitions are defined in
+`.agents/workflows/backlog-policy.json`.
+
+- `agent:research`: evidence, contract impact, scope, or done criteria still need work
+- `agent:ready`: the readiness gate passed and scheduled execution may select the issue
+- `agent:claimed`: one scheduled execution owns the issue
+- `agent:blocked`: a user, product, permission, or dependency decision is required
+
+Scheduled research and ticket execution process at most the configured batch
+size. An issue reaches `agent:ready` only after its owning SPEC impact, scope,
+dependencies, observable done criteria, and validation plan are explicit.
+Repository automation does not request Codex review. Review feedback generated
+by the configured GitHub integration is handled after it appears.
+
 ## Milestones
 
 Use GitHub milestones for milestone-level tracking, not as the detailed source

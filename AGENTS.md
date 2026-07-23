@@ -31,6 +31,16 @@ For GitHub Project, milestone, roadmap, backlog, or issue-group requests:
 4. Update milestone-contract issues and execution DraftIssues according to the requested scope.
 5. Verify against the intended target set, not only the first subset edited.
 
+The agent-backed backlog policy lives in
+`.agents/workflows/backlog-policy.json`. Raw ideas enter Project #7 with the
+research state. Only ready items are eligible for scheduled ticket execution,
+and every scheduled execution must claim one item before starting work. Respect
+the policy batch limits and allowed state transitions.
+
+Repository agents consume review feedback after it appears on a pull request.
+Codex review creation is configured outside this repository workflow; agents
+must not post an `@codex review` request.
+
 ## Change Discipline
 
 - Do not move or rename files unless the user asks for it or the move/rename is the core purpose of the patch.

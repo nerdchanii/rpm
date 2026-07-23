@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${1:-}" = "project" ] && [ "${2:-}" = "item-list" ]; then
+  cat "${RPM_BACKLOG_FIXTURE:?RPM_BACKLOG_FIXTURE is required}"
+  exit 0
+fi
+
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
+  cat "${RPM_READINESS_FIXTURE:?RPM_READINESS_FIXTURE is required}"
+  exit 0
+fi
+
+printf 'unexpected gh call: %s\n' "$*" >&2
+exit 99

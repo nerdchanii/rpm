@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+usage: backlog-gen [--state research|ready|claimed|blocked|untracked|all] [--format json|jsonl]
+
+Read open RPM issues from the GitHub Project configured in
+.agents/workflows/backlog-policy.json. Queue states come only from the
+configured agent:* labels. Research and execution selections are capped by
+the configured batch limit. Output order is deterministic by issue number.
+The command never mutates GitHub state.
+USAGE
+}
+
+state="research"
+format="jsonl"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --state)
+      [ "$#" -ge 2 ] || {
+        printf 'backlog_gen.error=missing-state-value\n' >&2
+        exit 2
+      }
+      state="$2"
+      shift 2
+      ;;
+    --state=*)
+      state="${1#--state=}"
+      shift
+      ;;
+    --format)
+      [ "$#" -ge 2 ] || {
+        printf 'backlog_gen.error=missing-format-value\n' >&2
+        exit 2
+      }
+      format="$2"
+      shift 2
+      ;;
+    --format=*)
+      format="${1#--format=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'backlog_gen.error=unknown-argument:%s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "${state}" in
+  research|ready|claimed|blocked|untracked|all) ;;
+  *)
+    printf 'backlog_gen.error=invalid-state:%s\n' "${state}" >&2
+    exit 2
+    ;;
+esac
+case "${format}" in
+  json|jsonl) ;;
+  *)
+    printf 'backlog_gen.error=invalid-format:%s\n' "${format}" >&2
+    exit 2
+    ;;
+esac
+
+command -v gh >/dev/null 2>&1 || {
+  printf 'backlog_gen.error=missing-gh\n' >&2
+  exit 127
+}
+command -v jq >/dev/null 2>&1 || {
+  printf 'backlog_gen.error=missing-jq\n' >&2
+  exit 127
+}
+
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  printf 'backlog_gen.error=not-a-git-worktree\n' >&2
+  exit 2
+}
+policy="${root}/.agents/workflows/backlog-policy.json"
+[ -f "${policy}" ] || {
+  printf 'backlog_gen.error=missing-policy:%s\n' "${policy}" >&2
+  exit 2
+}
+
+if ! jq -e '
+  (.version == 1)
+  and (.repository | type == "string" and length > 0)
+  and (.project.number == 7)
+  and (.project.owner | type == "string" and length > 0)
+  and (.labels == {
+    research:"agent:research",
+    ready:"agent:ready",
+    claimed:"agent:claimed",
+    blocked:"agent:blocked"
+  })
+  and (.batch_limits.research == 1)
+  and (.batch_limits.execution == 1)
+' "${policy}" >/dev/null; then
+  printf 'backlog_gen.error=invalid-policy-contract:%s\n' "${policy}" >&2
+  exit 2
+fi
+
+repository="$(jq -r '.repository' "${policy}")"
+project_owner="$(jq -r '.project.owner' "${policy}")"
+project_number="$(jq -r '.project.number' "${policy}")"
+research_label="$(jq -r '.labels.research' "${policy}")"
+ready_label="$(jq -r '.labels.ready' "${policy}")"
+claimed_label="$(jq -r '.labels.claimed' "${policy}")"
+blocked_label="$(jq -r '.labels.blocked' "${policy}")"
+
+case "${state}" in
+  research)
+    batch_limit="$(jq -r '.batch_limits.research' "${policy}")"
+    ;;
+  ready|claimed)
+    batch_limit="$(jq -r '.batch_limits.execution' "${policy}")"
+    ;;
+  *)
+    batch_limit=0
+    ;;
+esac
+
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-backlog-gen.XXXXXX")"
+trap 'rm -rf "${temp_dir}"' EXIT
+raw="${temp_dir}/project-items.json"
+result="${temp_dir}/result.json"
+
+if ! gh project item-list "${project_number}" \
+  --owner "${project_owner}" \
+  --limit 1000 \
+  --query "is:issue is:open repo:${repository}" \
+  --format json >"${raw}"; then
+  printf 'backlog_gen.error=project-read-failed\n' >&2
+  exit 3
+fi
+
+if ! jq -e '.items | type == "array"' "${raw}" >/dev/null; then
+  printf 'backlog_gen.error=invalid-project-response\n' >&2
+  exit 3
+fi
+
+jq -n \
+  --slurpfile raw "${raw}" \
+  --arg repository "${repository}" \
+  --arg requested_state "${state}" \
+  --arg research_label "${research_label}" \
+  --arg ready_label "${ready_label}" \
+  --arg claimed_label "${claimed_label}" \
+  --arg blocked_label "${blocked_label}" \
+  --argjson project_number "${project_number}" \
+  --arg project_owner "${project_owner}" \
+  --argjson batch_limit "${batch_limit}" '
+  def label_names:
+    [(.labels // [])[] | if type == "string" then . else (.name // empty) end];
+  def item_repository:
+    (.content.repository // .repository // "");
+  def queue_labels($labels):
+    [
+      {state:"research", label:$research_label},
+      {state:"ready", label:$ready_label},
+      {state:"claimed", label:$claimed_label},
+      {state:"blocked", label:$blocked_label}
+      | select(.label as $label | $labels | index($label))
+    ];
+  [
+    $raw[0].items[]
+    | select((.content.type // "") == "Issue")
+    | select(item_repository == $repository)
+    | . as $item
+    | (label_names) as $labels
+    | (queue_labels($labels)) as $queue
+    | {
+        number: ($item.content.number // 0),
+        title: ($item.content.title // $item.title // ""),
+        url: ($item.content.url // ""),
+        repository: item_repository,
+        labels: ($labels | sort),
+        state: (
+          if ($queue | length) == 0 then "untracked"
+          elif ($queue | length) == 1 then $queue[0].state
+          else "invalid"
+          end
+        ),
+        project_item_id: ($item.id // null)
+      }
+  ]
+  | sort_by(.number, .url)
+  | . as $all
+  | [$all[] | select(.state == "invalid")] as $invalid
+  | [
+      $all[]
+      | select(
+          if $requested_state == "all" then true
+          else .state == $requested_state
+          end
+        )
+    ] as $matching
+  | (
+      if $batch_limit > 0 then $matching[:$batch_limit]
+      else $matching
+      end
+    ) as $selected
+  | {
+      type: "backlog_selection",
+      data: {
+        status: (
+          if ($invalid | length) > 0 then "blocked"
+          elif ($selected | length) == 0 then "no-work"
+          else "selected"
+          end
+        ),
+        repository: $repository,
+        project: {owner:$project_owner, number:$project_number},
+        requested_state: $requested_state,
+        batch_limit: (if $batch_limit > 0 then $batch_limit else null end),
+        count: ($selected | length),
+        issues: $selected,
+        invalid_items: $invalid
+      }
+    }
+' >"${result}"
+
+if [ "${format}" = "jsonl" ]; then
+  jq -c . "${result}"
+else
+  jq . "${result}"
+fi
+
+if jq -e '.data.status == "blocked"' "${result}" >/dev/null; then
+  exit 1
+fi

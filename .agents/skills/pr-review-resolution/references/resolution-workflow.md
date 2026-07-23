@@ -2,17 +2,16 @@
 
 ## Steps
 
-1. Request and wait for review output with:
-   `bash scripts/watch-codex-review.sh <pr-number> --request-review --format jsonl`
-2. If the script exits with timeout/blocked status, report the status instead of guessing.
-3. Collect complete review context:
+1. Start after the configured external review system has produced review comments or checks.
+2. Collect complete review context:
    `bash scripts/collect-pr-review-context.sh <pr-number> --format jsonl`
+3. If there is no actionable review comment, submitted review, or open review thread, return `status:"complete"` with no decisions and no changes.
 4. Spawn `pr-review-resolver` using the prompt in `templates.md`.
 5. Review resolver output and current diff.
 6. If resolver applied `accept-now` fixes, verify validation actually ran or rerun it in the main session.
 7. If resolver drafted follow-up issues, decide whether to create them. Use `--create` only when `may_create_followup_issues=true`.
 8. Main session replies to or resolves GitHub threads. The resolver should not be the final authority for thread resolution.
-9. Repeat review only when accepted changes were made or unresolved feedback remains.
+9. Collect context again only after the external review system produces new feedback.
 
 ## Decision Taxonomy
 

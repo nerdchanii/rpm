@@ -1,54 +1,75 @@
 ---
 name: take-ticket
-description: Context handoff for RPM GitHub issue-to-PR work. Use when the user says to take a ticket, implement a GitHub issue, run the ticket loop, or coordinate RPM issue work; this skill prepares the shared context packet and delegates execution to ticket-pr-lifecycle, spec-governance, fixture-governance, and pr-review-resolution.
+description: Explicit or scheduled entry point for claiming and executing one RPM GitHub issue.
+argument-hint: "[explicit <issue-number-or-url> | scheduled]"
+disable-model-invocation: true
 ---
 
 # Take Ticket
 
+요구 도구: Agent·Read·Bash.
+
 ## Role
 
-Act as the coordinator for RPM ticket work. Keep this skill thin: collect stable context, choose the next specialized skill or agent, and preserve final accountability in the main session.
+Act as the explicit user or scheduled entry point for one ticket execution run. Delegate all routing to `rpm_workflow_manager` and preserve final accountability in the main session.
 
-Do not place detailed implementation, review-resolution, or GitHub mutation procedures here. Delegate those to the owning skills.
+## Modes
 
-## One Command Surface
+### Explicit
 
-Start by running:
+Use `explicit <issue-number-or-url>` when the user selects an issue. Supply the exact issue, requested outcome, exclusions, repository, worktree, and authorization flags.
 
-```sh
-scripts/ticket-gen <issue-number-or-url> --format jsonl
-```
+### Scheduled
 
-Pass the generated JSONL ticket packet to specialist skills and agents. Do not ask agents to hand-build `ticket_context.*` fields.
+Use `scheduled` without an issue number. The router reads `.agents/workflows/backlog-policy.json`, claims at most the configured execution batch limit, and executes the single claimed issue.
 
-Use JSON only when a tool needs it:
+`no-work` is a healthy terminal result. Report it concisely and make no repository or GitHub mutation.
 
-```sh
-scripts/ticket-gen <issue-number-or-url> --format json
-```
+## Entry Workflow
 
-Follow-up issue creation is disabled unless a packet or main-session decision explicitly sets `may_create_followup_issues=true`.
+1. Read `.agents/workflows/backlog-policy.json`.
+2. Run `bash scripts/check-workflow-intake.sh`.
+3. For scheduled mode, run `bash scripts/check-agent-backlog-access.sh --format jsonl`. Stop before claiming when Project #7 or lifecycle labels are unavailable.
+4. Check the current branch and preserve unrelated worktree changes.
+5. Spawn only `rpm_workflow_manager` with:
+   - `workflow=take-ticket`
+   - `mode=explicit|scheduled`
+   - issue number or URL for explicit mode
+   - repository/worktree scope
+   - requested outcome and exclusions for explicit mode
+   - issue-defined intent and exclusions for scheduled mode
+   - `may_create_followup_issues` from policy or explicit user authorization
+   - maximum correction loops, normally `2`
+6. Wait for its structured result.
+7. When it returns a Draft PR checkpoint:
+   - inspect the reported contract decision and focused plan;
+   - create the Draft PR in the main session;
+   - resume the same router with the PR URL.
+8. When it returns `status:"complete"`:
+   - inspect the final diff and evidence;
+   - stage only intended files and create atomic Conventional Commits;
+   - push the issue branch;
+   - update the PR body with Contract, Changes, Validation, checklist, and `Closes #<issue>`;
+   - apply an approved PR label and mark the PR ready;
+   - run `bash scripts/check-workflow-final.sh <pr-number>`.
+9. When it returns `status:"no-work"`, finish successfully without retrying in the same run.
+10. When it returns `status:"blocked"`, resolve the stated decision or report the blocker. Do not silently substitute a different workflow.
 
-## Delegation Map
+The router owns detailed routing. Do not duplicate its manager or leaf map here.
 
-- Use `$ticket-pr-lifecycle` for intake checks, issue reading, draft PR setup, implementation discipline, validation, PR checklist updates, and final audit.
-- Use `$spec-governance` whenever the ticket may affect CLI, lockfile, manifest, semver, resolver, registry, cache, installer, linker, scripts, diagnostics, or other observable package-manager contracts.
-- Use `$fixture-governance` whenever tests need package manifests, lockfiles, registry metadata, install projects, or regression fixtures.
-- Use `$pr-review-resolution` for review handling; it should request/watch review with `bash scripts/watch-codex-review.sh <pr-number> --request-review --format jsonl` and collect final context with `bash scripts/collect-pr-review-context.sh <pr-number> --format jsonl`.
+## Isolation
 
-## Preferred Agents
-
-- `ticket-explorer`: read-only issue/code/SPEC exploration. Use before implementation when the ticket is non-trivial.
-- `pr-review-resolver`: SPEC-aware review feedback classification, accepted fixes, validation, and deferred issue drafts/creation.
-- `pr-checklist-updater`: PR body/checklist updates only. No repository file edits.
+Use one worktree per concurrently active issue. Sequential scheduled runs may reuse the same worktree after the previous task reaches a clean terminal state.
 
 ## Main Session Responsibilities
 
-The main session owns:
-
 1. Final scope decisions and split decisions.
 2. SPEC classification acceptance.
-3. Whether a subagent may create GitHub follow-up issues.
-4. Final diff review, commits, pushes, PR state, and user-facing summary.
+3. Draft PR creation at the router checkpoint.
+4. Whether follow-up issue creation is authorized.
+5. Final diff review, commits, pushes, PR state, final workflow audit, and user-facing summary.
 
-If a delegated skill or agent reports `blocked`, stop guessing. Either supply the missing context or report the blocker.
+Never post, request, or wait for `@codex review`. Repository-configured code review is a separate asynchronous system. Do not make ticket completion depend on that external review.
+Never merge the pull request.
+
+If the router reports `blocked`, stop guessing. Supply the missing decision or report the blocker.
