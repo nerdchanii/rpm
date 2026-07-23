@@ -369,7 +369,7 @@ mod tests {
         let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
         let error = install_in(project_root).await.unwrap_err();
 
-        assert!(error.to_string().contains("extract failed"));
+        assert_expected_error(&fixture_root, &error);
         assert_eq!(fs::read(&package_path).unwrap(), original_package);
         assert_eq!(fs::read(&lockfile_path).unwrap(), original_lockfile);
         assert_eq!(
@@ -402,10 +402,7 @@ mod tests {
         let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
         let error = install_in(project_root).await.unwrap_err();
 
-        assert!(error.to_string().contains("integrity failed"));
-        assert!(error
-            .to_string()
-            .contains("sha512 SRI digest did not match"));
+        assert_expected_error(&fixture_root, &error);
         assert_eq!(fs::read(&package_path).unwrap(), original_package);
         assert_eq!(fs::read(&lockfile_path).unwrap(), original_lockfile);
         assert_eq!(
@@ -435,16 +432,26 @@ mod tests {
         let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
         let error = install_in(project_root).await.unwrap_err();
 
-        assert!(error.to_string().contains("integrity failed"));
-        assert!(error
-            .to_string()
-            .contains("sha512 SRI digest did not match"));
+        assert_expected_error(&fixture_root, &error);
         assert_eq!(fs::read(&package_path).unwrap(), original_package);
         assert_eq!(fs::read(&lockfile_path).unwrap(), original_lockfile);
         assert_eq!(
             fs::read_to_string(&existing_file).unwrap(),
             "existing node_modules content"
         );
+    }
+
+    fn assert_expected_error(fixture_root: &Path, error: &io::Error) {
+        let expected =
+            fs::read_to_string(fixture_root.join("expected/error-substrings.txt")).unwrap();
+        let actual = error.to_string();
+
+        for substring in expected.lines().filter(|line| !line.is_empty()) {
+            assert!(
+                actual.contains(substring),
+                "expected error to contain {substring:?}, got {actual:?}"
+            );
+        }
     }
 
     fn resolved_packages(lock: &LockFile) -> Vec<String> {

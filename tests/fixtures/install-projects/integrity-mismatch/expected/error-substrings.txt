@@ -1,0 +1,3 @@
+integrity failed
+@rpm-fixture/alpha@1.0.0
+sha512 SRI digest did not match downloaded bytes
