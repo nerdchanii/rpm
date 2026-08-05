@@ -642,30 +642,94 @@ mod tests {
              package/version exactly once and nothing else"
         );
 
-        // Guard the fixture itself: alpha requests `@rpm-fixture/shared` as
-        // `~1.0.0` while beta requests it as `^1.0.0`, so the two requested
-        // range strings stay textually different while selecting version
-        // `1.0.0`. If the fixture ever collapsed to one shared range, the
-        // download assertions above would stop distinguishing version-keyed
-        // dedupe from range-keyed dedupe.
-        let mut resolved_from_lock = lockfile
+        // Guard the fixture's *input* shape: alpha must declare
+        // `@rpm-fixture/shared` as `~1.0.0` while beta declares it as `^1.0.0`,
+        // so the two requested range strings stay textually different while
+        // selecting version `1.0.0`. If the fixture ever collapsed to one
+        // shared range, the download assertions above would stop
+        // distinguishing version-keyed dedupe from range-keyed dedupe.
+        //
+        // This is deliberately asserted against the registry fixtures rather
+        // than the resolved lockfile. A package reached through several parents
+        // records only one parent's range in `requested`
+        // (`requested_for_lockfile` takes `requests.first()`), and which parent
+        // lands first follows the direct dependency order that
+        // `PackageManifest::get_dependencies` reads out of a `HashMap`, so it
+        // is not stable across processes. The lockfile also cannot detect a
+        // collapse to a single range, because it only ever records one winner.
+        assert_eq!(
+            fixture_declared_range(
+                &fixture_root,
+                "@rpm-fixture__alpha.json",
+                "@rpm-fixture/shared"
+            ),
+            "~1.0.0",
+            "fixture must keep alpha requesting `@rpm-fixture/shared` on `~1.0.0`"
+        );
+        assert_eq!(
+            fixture_declared_range(
+                &fixture_root,
+                "@rpm-fixture__beta.json",
+                "@rpm-fixture/shared"
+            ),
+            "^1.0.0",
+            "fixture must keep beta requesting `@rpm-fixture/shared` on `^1.0.0`"
+        );
+
+        // The direct dependency entries are keyed by their own package names and
+        // are unaffected by shared-transitive resolution order, so they stay
+        // exact. `@rpm-fixture/shared@1.0.0` is checked for presence only, for
+        // the ordering reason described above.
+        let mut direct_from_lock = lockfile
             .get_packages()
             .into_iter()
+            .filter(|(key, _)| key.as_str() != "@rpm-fixture/shared@1.0.0")
             .map(|(key, dependency)| format!("{key} requested {}", dependency.get_requested()))
             .collect::<Vec<_>>();
-        resolved_from_lock.sort();
-        let mut expected_resolved =
-            fs::read_to_string(fixture_root.join("expected/resolved-packages.txt"))
-                .unwrap()
-                .lines()
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-        expected_resolved.sort();
+        direct_from_lock.sort();
+        let mut expected_direct =
+            read_expected_lines(&fixture_root.join("expected").join("resolved-packages.txt"));
+        expected_direct.sort();
         assert_eq!(
-            resolved_from_lock, expected_resolved,
-            "fixture must keep alpha on `~1.0.0` and beta on `^1.0.0` for \
-             `@rpm-fixture/shared@1.0.0`"
+            direct_from_lock, expected_direct,
+            "install must record the fixture's direct dependency entries in the lockfile"
         );
+        assert!(
+            lockfile
+                .get_packages()
+                .into_iter()
+                .any(|(key, _)| key.as_str() == "@rpm-fixture/shared@1.0.0"),
+            "install must record the deduped shared transitive package in the lockfile"
+        );
+    }
+
+    /// Reads the declared range for `dependency` from a registry fixture
+    /// document, so a test can guard the fixture's input shape directly.
+    fn fixture_declared_range(
+        fixture_root: &Path,
+        registry_file: &str,
+        dependency: &str,
+    ) -> String {
+        let path = fixture_root.join("registry").join(registry_file);
+        let contents = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{} should be readable: {error}", path.display()));
+        let document = serde_json::from_str::<serde_json::Value>(&contents)
+            .unwrap_or_else(|error| panic!("{} should be valid JSON: {error}", path.display()));
+        document["versions"]["1.0.0"]["dependencies"][dependency]
+            .as_str()
+            .unwrap_or_else(|| panic!("{} should declare a range for {dependency}", path.display()))
+            .to_owned()
+    }
+
+    /// Reads an expectation fixture, skipping blank lines and `#` comments.
+    fn read_expected_lines(path: &Path) -> Vec<String> {
+        fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("{} should be readable: {error}", path.display()))
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_owned)
+            .collect()
     }
 
     #[tokio::test]
