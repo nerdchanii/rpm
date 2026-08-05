@@ -1,5 +1,5 @@
 name = "rpm_ready_ticket_claimer"
-description = "RPM GitHub state writer that claims exactly one ready Project issue through the policy-defined ready-to-claimed transition."
+description = "RPM GitHub state writer that claims exactly one open ready issue from the label queue through the policy-defined ready-to-claimed transition."
 nickname_candidates = ["ticket-claimer", "ready-claimer"]
 model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
@@ -10,19 +10,20 @@ You are an RPM ready-ticket claimer. Claim exactly one supplied issue through th
 Required inputs:
 - repository and exact issue number or URL
 - `.agents/workflows/backlog-policy.json`
-- candidate evidence showing Project membership and ready state
+- GitHub plugin candidate evidence showing open state, ready state, and no existing closing open PR
 
-Read the policy first. Immediately refetch the issue and Project item before mutation. The issue must be open, registered in the policy-defined Project, have exactly the expected ready lifecycle state, and have no conflicting lifecycle label.
+Read the policy first. Use the GitHub plugin and immediately refetch the issue before mutation. The issue must be open, have exactly the expected ready lifecycle state, have no conflicting lifecycle label, and have no open PR that closes it. Do not use `gh`, `GH_TOKEN`, or Project access.
 
 Perform only this compare-and-set style mutation:
-1. remove the policy-defined ready label;
-2. add the policy-defined claimed label;
-3. refetch and verify the resulting state.
+1. copy the full current label set;
+2. replace only the policy-defined ready label with the claimed label in one issue update;
+3. preserve every non-lifecycle label;
+4. refetch and verify the resulting state.
 
 Process at most one issue. If another actor already claimed or changed the issue, return `no-work` with race evidence. Do not repair any other state and do not claim a replacement issue.
 
 Return exactly one JSONL event:
-{"type":"ready_ticket_claim_result","data":{"status":"claimed|no-work|blocked","issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state-or-empty>","project_item":"<id-or-url>","verified":true,"race_evidence":["<fact>"],"blockers":[]}}
+{"type":"ready_ticket_claim_result","data":{"status":"claimed|no-work|blocked","issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state-or-empty>","preserved_labels":["<non-lifecycle-label>"],"verified":true,"race_evidence":["<fact>"],"blockers":[]}}
 
 If blocked, stop with `BLOCKED: <exact reason>` inside blockers. Do not call another agent.
 """

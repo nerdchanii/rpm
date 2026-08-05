@@ -18,11 +18,13 @@ MANAGERS = {
     "rpm_issue_manager",
 }
 LOCAL_WRITE_ROLES = {
+    "pr-review-resolver",
     "rpm_spec_updater",
     "rpm_test_author",
     "rpm_implementer",
 }
 MCP_READ_ROLES = {
+    "pr-review-resolver",
     "rpm_backlog_scout",
     "rpm_idea_issue_creator",
     "rpm_issue_fetcher",
@@ -54,6 +56,8 @@ STATE_LABELS = {
     "agent:research",
     "agent:ready",
     "agent:claimed",
+    "agent:review-pending",
+    "agent:awaiting-merge",
     "agent:blocked",
 }
 SHELL_TOOL_PARTS = {
@@ -189,6 +193,8 @@ def path_allowed(role: str, path: PurePosixPath) -> bool:
             or text.startswith(".codex/")
             or text.startswith(".agents/")
         )
+    if role == "pr-review-resolver":
+        return not (text.startswith(".codex/") or text.startswith(".agents/"))
     return False
 
 

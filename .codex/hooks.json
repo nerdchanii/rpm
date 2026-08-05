@@ -3,7 +3,7 @@
   "hooks": {
     "SubagentStart": [
       {
-        "matcher": "^rpm_",
+        "matcher": "^(rpm_|pr-review-resolver$)",
         "hooks": [
           {
             "type": "command",
@@ -29,7 +29,7 @@
     ],
     "SubagentStop": [
       {
-        "matcher": "^rpm_",
+        "matcher": "^(rpm_|pr-review-resolver$)",
         "hooks": [
           {
             "type": "command",

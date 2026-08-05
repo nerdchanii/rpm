@@ -1,15 +1,27 @@
 {
-  "version": 1,
+  "version": 3,
   "repository": "nerdchanii/rpm",
+  "execution_queue": {
+    "source": "issue-labels",
+    "open_issues_only": true,
+    "order": "issue-number-ascending",
+    "active_states": [
+      "claimed",
+      "review-pending"
+    ]
+  },
   "project": {
     "owner": "@me",
     "number": 7,
-    "required": true
+    "role": "local-roadmap",
+    "required_for_execution": false
   },
   "labels": {
     "research": "agent:research",
     "ready": "agent:ready",
     "claimed": "agent:claimed",
+    "review-pending": "agent:review-pending",
+    "awaiting-merge": "agent:awaiting-merge",
     "blocked": "agent:blocked"
   },
   "batch_limits": {
@@ -35,6 +47,15 @@
     ],
     "claimed": [
       "ready",
+      "review-pending",
+      "blocked"
+    ],
+    "review-pending": [
+      "review-pending",
+      "awaiting-merge",
+      "blocked"
+    ],
+    "awaiting-merge": [
       "blocked"
     ],
     "blocked": [
@@ -46,5 +67,19 @@
     "create_followup_issues_by_default": false,
     "merge_pull_requests": false,
     "request_codex_review": false
+  },
+  "merge_gate": {
+    "enabled": true,
+    "source_state": "awaiting-merge",
+    "order": "issue-number-ascending",
+    "batch_limit": 1,
+    "required_checks": [
+      "metadata",
+      "verify"
+    ],
+    "required_mergeable": true,
+    "forbid_unresolved_p0_p1": true,
+    "method": "squash",
+    "delete_branch": true
   }
 }

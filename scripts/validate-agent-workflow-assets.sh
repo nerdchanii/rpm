@@ -493,7 +493,7 @@ check_backlog_inventory_order() {
 for skill in .agents/skills/*; do
   [ -d "${skill}" ] || continue
   name="$(basename "${skill}")"
-  if [ "${name}" = "take-ticket" ] || [ "${name}" = "prepare-backlog" ]; then
+  if [ "${name}" = "take-ticket" ] || [ "${name}" = "prepare-backlog" ] || [ "${name}" = "merge-gatekeeper" ]; then
     emit_check \
       "skill_${name}" \
       "ok" \
@@ -518,14 +518,23 @@ if [ -d .codex/agents ]; then
 fi
 
 check "backlog_policy_schema" jq -e '
-  .version == 1
+  .version == 3
   and .repository == "nerdchanii/rpm"
+  and .execution_queue == {
+    source:"issue-labels",
+    open_issues_only:true,
+    order:"issue-number-ascending",
+    active_states:["claimed","review-pending"]
+  }
   and .project.number == 7
-  and .project.required == true
+  and .project.role == "local-roadmap"
+  and .project.required_for_execution == false
   and .labels == {
     research:"agent:research",
     ready:"agent:ready",
     claimed:"agent:claimed",
+    "review-pending":"agent:review-pending",
+    "awaiting-merge":"agent:awaiting-merge",
     blocked:"agent:blocked"
   }
   and .batch_limits == {research:1,execution:1}
@@ -533,8 +542,26 @@ check "backlog_policy_schema" jq -e '
     untracked:["research"],
     research:["research","ready","blocked"],
     ready:["claimed","blocked"],
-    claimed:["ready","blocked"],
+    claimed:["ready","review-pending","blocked"],
+    "review-pending":["review-pending","awaiting-merge","blocked"],
+    "awaiting-merge":["blocked"],
     blocked:["research","ready"]
+  }
+  and .automation == {
+    create_followup_issues_by_default:false,
+    merge_pull_requests:false,
+    request_codex_review:false
+  }
+  and .merge_gate == {
+    enabled:true,
+    source_state:"awaiting-merge",
+    order:"issue-number-ascending",
+    batch_limit:1,
+    required_checks:["metadata","verify"],
+    required_mergeable:true,
+    forbid_unresolved_p0_p1:true,
+    method:"squash",
+    delete_branch:true
   }
 ' .agents/workflows/backlog-policy.json
 
@@ -564,6 +591,10 @@ check "script_check_agent_issue_readiness_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-agent-issue-readiness.py").read_text())'
 check "script_check_agent_organization_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-agent-organization.py").read_text())'
+check "script_check_cloud_queue_contract_syntax" \
+  python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-cloud-queue-contract.py").read_text())'
+check "script_check_merge_gate_syntax" \
+  python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-merge-gate.py").read_text())'
 check "script_check_claude_security_syntax" \
   bash -n scripts/check-claude-security.sh
 check "script_validate_agent_workflow_assets_syntax" \
@@ -578,6 +609,145 @@ check "readiness_live_issue_fixture" check_readiness_live_issue
 check "backlog_research_batch" check_backlog_research_batch
 check "backlog_no_work" check_backlog_no_work
 check "backlog_inventory_order" check_backlog_inventory_order
+
+check "cloud_label_only_selection" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-issues.json \
+    --operation select-execution)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"selected\"
+    and .data.issues == [3]
+  " >/dev/null
+'
+check "cloud_multiple_lifecycle_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-invalid.json \
+    --operation select-execution)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"multiple-lifecycle-labels\"
+  " >/dev/null
+'
+check "cloud_active_work_no_work" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-active.json \
+    --operation select-execution)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"no-work\"
+    and .data.reason == \"active-work\"
+  " >/dev/null
+'
+check "cloud_ready_to_claimed" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-issues.json \
+    --operation transition --issue 3 --from-state ready --to-state claimed)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"transition\"
+    and .data.preserved_labels == [\"priority:high\"]
+    and .data.labels == [\"agent:claimed\",\"priority:high\"]
+  " >/dev/null
+'
+check "cloud_claimed_to_review_pending" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-active.json \
+    --operation transition --issue 4 --from-state claimed --to-state review-pending)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"transition\"
+    and .data.labels == [\"agent:review-pending\",\"kind:bug\"]
+  " >/dev/null
+'
+check "cloud_review_not_arrived_no_work" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-review.json \
+    --operation select-review)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"no-work\"
+    and .data.reason == \"review-not-arrived\"
+    and .data.issues == [12]
+  " >/dev/null
+'
+check "cloud_review_pending_to_awaiting_merge" sh -c '
+  selected="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-review-ready.json \
+    --operation select-review)"
+  transitioned="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-review-ready.json \
+    --operation transition --issue 12 --from-state review-pending --to-state awaiting-merge)"
+  printf "%s\n" "$selected" | jq -e ".data.status == \"selected\"" >/dev/null
+  printf "%s\n" "$transitioned" | jq -e "
+    .data.status == \"transition\"
+    and .data.preserved_labels == [\"kind:feature\"]
+    and .data.labels == [\"agent:awaiting-merge\",\"kind:feature\"]
+  " >/dev/null
+'
+check "cloud_queue_has_no_gh_or_project_dependency" sh -c '
+  ! rg -n "(^|[^[:alnum:]_])(gh|GH_TOKEN|Project)([^[:alnum:]_]|$)" \
+    scripts/check-cloud-queue-contract.py
+'
+check "merge_gate_pass" sh -c '
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-ready.json \
+    --operation select-merge)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"merge\"
+    and .data.issue == 12
+    and .data.pr == 44
+    and .data.method == \"squash\"
+    and .data.delete_branch == true
+  " >/dev/null
+'
+check "merge_gate_checks_pending_no_work" sh -c '
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-checks-pending.json \
+    --operation select-merge)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"no-work\"
+    and .data.reason == \"checks-pending\"
+    and .data.checks == [\"verify\"]
+  " >/dev/null
+'
+check "merge_gate_checks_failed_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-checks-failed.json \
+    --operation select-merge)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"checks-failed\"
+  " >/dev/null
+'
+check "merge_gate_no_candidate_no_work" sh -c '
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/cloud-issues.json \
+    --operation select-merge)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"no-work\"
+    and .data.reason == \"no-awaiting-merge-candidate\"
+  " >/dev/null
+'
+check "merge_gate_has_no_gh_or_project_dependency" sh -c '
+  ! rg -n "(^|[^[:alnum:]_])(gh|GH_TOKEN|Project)([^[:alnum:]_]|$)" \
+    scripts/check-merge-gate.py
+'
+check "local_prepare_keeps_project_registration" sh -c '
+  rg -q "register the new issue in the policy-defined Project" \
+    .codex/agents/rpm_idea_issue_creator.toml
+  rg -q "local Project preflight" .agents/skills/prepare-backlog/SKILL.md
+'
+check "workflow_forbids_merge_and_codex_request" sh -c '
+  ! rg -n -i \
+    "(gh pr merge|merge_pull_request|@codex review)" \
+    .agents/skills .codex/agents .agents/docs \
+    | rg -v \
+      "(Never|never|금지|Do not|does not|do not|without|request_codex_review|configured code review|does not post|no @codex review|or request @codex review|request, or wait for)"
+'
 
 if [ "${format}" = "jsonl" ]; then
   jq -nc --arg status "${status}" '{type:"agent_assets_result",data:{status:$status}}'

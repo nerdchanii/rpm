@@ -17,7 +17,8 @@ This file is a navigation and judgment guide, not the enforcement layer. Determi
 
 - Contract behavior belongs in the owning `SPEC.md` under `docs/specs/`.
 - Durable architectural decisions belong in `docs/adrs/`.
-- GitHub Project #7 is the public roadmap/backlog, especially for M4-M10 execution planning.
+- GitHub Project #7 is the local roadmap and backlog-preparation inventory, especially for M4-M10 execution planning.
+- Open issue lifecycle labels are the Cloud scheduled execution queue.
 - Draft issues can explain implementation intent, ordering, dependencies, and acceptance context, but they do not override SPECs or ADRs.
 - If code, SPEC, ADR, and issue text disagree, classify the mismatch before editing behavior.
 
@@ -32,14 +33,22 @@ For GitHub Project, milestone, roadmap, backlog, or issue-group requests:
 5. Verify against the intended target set, not only the first subset edited.
 
 The agent-backed backlog policy lives in
-`.agents/workflows/backlog-policy.json`. Raw ideas enter Project #7 with the
-research state. Only ready items are eligible for scheduled ticket execution,
-and every scheduled execution must claim one item before starting work. Respect
-the policy batch limits and allowed state transitions.
+`.agents/workflows/backlog-policy.json`. Raw ideas enter Project #7 locally with
+the research state. Only open issues carrying the ready lifecycle label are
+eligible for Cloud scheduled ticket execution, and every scheduled execution
+must claim one item before starting work. Project membership is not an
+execution eligibility condition. Respect the policy batch limits and allowed
+state transitions.
 
 Repository agents consume review feedback after it appears on a pull request.
 Codex review creation is configured outside this repository workflow; agents
 must not post an `@codex review` request.
+
+Merging is owned exclusively by the scheduled merge gatekeeper defined in
+`.agents/skills/merge-gatekeeper/`. It merges at most one awaiting-merge pull
+request per run and only when the deterministic policy `merge_gate` passes:
+required checks concluded, the PR is mergeable, and no unresolved P0/P1
+finding remains. Subagents never merge; the tool policy hook enforces this.
 
 ## Change Discipline
 
@@ -64,6 +73,12 @@ just validate
 ```
 
 Report exactly which checks ran and which did not. Do not claim completion without real evidence.
+
+## Code Review Rules
+
+- **Public contract integrity:** Flag changes to CLI, resolver, manifest, lockfile, registry, cache, install, linker, or script behavior that conflict with the owning SPEC or lack an explicit contract decision and regression coverage. The safe path identifies the owning SPEC, classifies the change, updates the narrowest contract when authorized, and adds focused regression evidence.
+- **User-controlled filesystem safety:** Flag package metadata, tarball entries, symlinks, dependency names, or lifecycle scripts that can escape workspace, cache, store, or `node_modules` boundaries, overwrite user files, or leave a partial transaction. The safe path validates and normalizes inputs before mutation, confines writes to approved roots, rejects traversal and unsafe links, and verifies rollback or atomic completion.
+- **Deterministic package state:** Flag resolution, lockfile, registry, or fixture results that depend on iteration order, network timing, ambient machine state, or an uncontrolled clock. The safe path defines stable ordering, uses explicit deterministic inputs and clocks, isolates network evidence, and proves repeatability with deterministic fixtures.
 
 ## Where Rules Belong
 

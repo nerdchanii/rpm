@@ -2,16 +2,16 @@
 
 ## Steps
 
-1. Start after the configured external review system has produced review comments or checks.
-2. Collect complete review context:
-   `bash scripts/collect-pr-review-context.sh <pr-number> --format jsonl`
-3. If there is no actionable review comment, submitted review, or open review thread, return `status:"complete"` with no decisions and no changes.
+1. For a scheduled run, use the GitHub plugin to find open issues in `agent:review-pending`, ordered by issue number, and select at most one linked open PR.
+2. Return `status:"no-work"` without mutation when there is no candidate or the latest Codex Automatic review has not arrived.
+3. Collect the latest Codex review and every unresolved review comment through the GitHub plugin. The local/manual fallback is `bash scripts/collect-pr-review-context.sh <pr-number> --format jsonl`.
 4. Spawn `pr-review-resolver` using the prompt in `templates.md`.
 5. Review resolver output and current diff.
 6. If resolver applied `accept-now` fixes, verify validation actually ran or rerun it in the main session.
 7. If resolver drafted follow-up issues, decide whether to create them. Use `--create` only when `may_create_followup_issues=true`.
-8. Main session replies to or resolves GitHub threads. The resolver should not be the final authority for thread resolution.
-9. Collect context again only after the external review system produces new feedback.
+8. Commit and push accepted fixes to the same PR branch, then run internal adversarial review. Do not assume Automatic review reruns.
+9. Keep `agent:review-pending` while actionable P0/P1 findings remain. Otherwise replace it with `agent:awaiting-merge` and remove stale `agent:claimed`, preserving ordinary labels.
+10. Never merge, request `@codex review`, or make a new Automatic review a completion dependency.
 
 ## Decision Taxonomy
 

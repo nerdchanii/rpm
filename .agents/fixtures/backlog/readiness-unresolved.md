@@ -4,7 +4,7 @@ RPM needs a deterministic queue for scheduled issue work.
 
 ## Research
 
-Project #7 contains the candidate issue.
+Project #7 contains the local research candidate.
 
 ## Contract
 

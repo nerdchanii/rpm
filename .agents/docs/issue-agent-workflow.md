@@ -95,6 +95,8 @@ repository patch tools. Writer patches are constrained by role:
 - SPEC updater: `docs/specs/**`
 - test author: `tests/**` and explicitly scoped test modules under `src/**`
 - implementer: production paths, excluding tests, SPECs, and agent configuration
+- PR review resolver: accepted review fixes across production, test, and SPEC
+  paths, excluding agent configuration
 
 MCP calls are limited by the project tool-policy hook to each role's assigned
 read or mutation boundary. Backlog GitHub writers, issue intake, and authorized
@@ -116,9 +118,11 @@ until `may_create_followup_issues=true` is supplied.
 ## Review Boundary
 
 The adversarial reviewer is an internal correctness gate over the issue, SPEC,
-diff, tests, and validation evidence. The ticket workflow does not post,
-request, or wait for `@codex review`. Repository-configured code review runs
-independently after the pull request is published.
+diff, tests, and validation evidence. The ticket workflow marks the validated
+PR review-ready and moves the linked issue to review-pending. It does not post,
+request, or wait for `@codex review`. Repository-configured Codex Automatic
+review runs independently. The scheduled reconciliation workflow applies
+accepted findings and moves an exhausted review to awaiting-merge.
 
 ## Completion Enforcement
 

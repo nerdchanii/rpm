@@ -85,13 +85,17 @@ EXPECTED_TRANSITIONS = {
     "untracked": ["research"],
     "research": ["research", "ready", "blocked"],
     "ready": ["claimed", "blocked"],
-    "claimed": ["ready", "blocked"],
+    "claimed": ["ready", "review-pending", "blocked"],
+    "review-pending": ["review-pending", "awaiting-merge", "blocked"],
+    "awaiting-merge": ["blocked"],
     "blocked": ["research", "ready"],
 }
 EXPECTED_LABELS = {
     "research": "agent:research",
     "ready": "agent:ready",
     "claimed": "agent:claimed",
+    "review-pending": "agent:review-pending",
+    "awaiting-merge": "agent:awaiting-merge",
     "blocked": "agent:blocked",
 }
 
@@ -138,15 +142,26 @@ def check_policy(errors: list[str]) -> None:
     if not isinstance(policy, dict):
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: policy must be an object")
         return
-    if policy.get("version") != 1:
-        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: version must be 1")
+    if policy.get("version") != 3:
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: version must be 3")
     if policy.get("repository") != "nerdchanii/rpm":
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: repository must be nerdchanii/rpm")
+    queue = policy.get("execution_queue")
+    if queue != {
+        "source": "issue-labels",
+        "open_issues_only": True,
+        "order": "issue-number-ascending",
+        "active_states": ["claimed", "review-pending"],
+    }:
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid execution queue contract")
     project = policy.get("project")
-    if not isinstance(project, dict) or project.get("number") != 7 or project.get(
-        "required"
-    ) is not True:
-        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: Project #7 must be required")
+    if not isinstance(project, dict) or project != {
+        "owner": "@me",
+        "number": 7,
+        "role": "local-roadmap",
+        "required_for_execution": False,
+    }:
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid local-roadmap Project contract")
     if policy.get("labels") != EXPECTED_LABELS:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: lifecycle labels changed")
     if policy.get("batch_limits") != {"research": 1, "execution": 1}:
@@ -164,8 +179,20 @@ def check_policy(errors: list[str]) -> None:
     ):
         fail(
             errors,
-            f"{POLICY_PATH.relative_to(ROOT)}: automatic follow-ups, merge, and Codex review must stay disabled",
+            f"{POLICY_PATH.relative_to(ROOT)}: automatic follow-ups, subagent merge, and Codex review must stay disabled",
         )
+    if policy.get("merge_gate") != {
+        "enabled": True,
+        "source_state": "awaiting-merge",
+        "order": "issue-number-ascending",
+        "batch_limit": 1,
+        "required_checks": ["metadata", "verify"],
+        "required_mergeable": True,
+        "forbid_unresolved_p0_p1": True,
+        "method": "squash",
+        "delete_branch": True,
+    }:
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid merge-gate contract")
 
 
 def check_role_contracts(
@@ -302,6 +329,30 @@ def check_entries_and_assets(errors: list[str]) -> None:
                 if required not in text:
                     fail(errors, f"{path.relative_to(ROOT)}: missing research contract {required!r}")
 
+    gatekeeper = ROOT / ".agents" / "skills" / "merge-gatekeeper" / "SKILL.md"
+    values = parse_frontmatter(gatekeeper, errors)
+    if values.get("disable-model-invocation") != "true":
+        fail(errors, f"{gatekeeper.relative_to(ROOT)}: entry must be hidden from model invocation")
+    try:
+        text = gatekeeper.read_text()
+    except OSError:
+        text = ""
+    if text:
+        for required in (
+            "no-work",
+            "check-merge-gate.py",
+            "At most one merge per run",
+            "merge_gate",
+        ):
+            if required not in text:
+                fail(errors, f"{gatekeeper.relative_to(ROOT)}: missing merge-gate contract {required!r}")
+        leaked = sorted(role for role in EXPECTED_SANDBOX if role in text)
+        if leaked:
+            fail(
+                errors,
+                f"{gatekeeper.relative_to(ROOT)}: gatekeeper must not delegate to roles: {', '.join(leaked)}",
+            )
+
     for relative in FORBIDDEN_ASSETS:
         path = ROOT / relative
         if path.is_file() or (path.is_dir() and any(item.is_file() for item in path.rglob("*"))):
@@ -332,6 +383,8 @@ def check_deterministic_assets(errors: list[str]) -> None:
     required_files = (
         "scripts/backlog-gen",
         "scripts/check-agent-backlog-access.sh",
+        "scripts/check-cloud-queue-contract.py",
+        "scripts/check-merge-gate.py",
         "scripts/check-agent-issue-readiness.py",
         ".codex/hooks/agent_tool_policy.py",
         ".codex/hooks/issue_manager_stop_gate.py",
@@ -464,6 +517,13 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "rpm_backlog_manager",
             "exec_command",
             {"cmd": "gh issue create --title x --body y"},
+            2,
+        ),
+        (
+            "review-resolver-merge",
+            "pr-review-resolver",
+            "exec_command",
+            {"cmd": "gh pr merge 1 --squash"},
             2,
         ),
     )

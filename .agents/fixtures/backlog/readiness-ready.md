@@ -4,7 +4,8 @@ RPM needs a deterministic queue for scheduled issue work.
 
 ## Research
 
-Project #7 and the four agent state labels are the authoritative queue.
+Project #7 is the local research inventory, and open issue lifecycle labels are
+the Cloud execution queue.
 
 ## Contract
 
