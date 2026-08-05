@@ -33,6 +33,13 @@ Every routine prompt begins with `gh auth status` and reports BLOCKED without
 mutating anything when authentication is missing, so a misconfigured
 environment fails safely.
 
+The setup script runs from the cloned repository, so a fix only takes effect
+once it is on the branch the environment checks out. When the cloud image
+carries third-party apt repositories that the sandbox network policy blocks,
+`apt-get update` exits non-zero even though the Ubuntu indexes were fetched;
+the script therefore treats the refresh as best effort and fails only when gh
+is still missing afterwards.
+
 ## Event-driven fires
 
 Cron keeps the loop alive, but `.github/workflows/agent-loop-triggers.yml`
