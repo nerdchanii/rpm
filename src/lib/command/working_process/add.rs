@@ -452,6 +452,7 @@ mod tests {
         resolution_error_to_io, InstallMetadata,
     };
     use crate::{
+        api,
         core::resolver::{
             resolve_dependency_graph, DependencyRequest, DependencyRequestKind, ResolutionError,
             ResolvedPackage, ResolvedRequest,
@@ -576,6 +577,67 @@ mod tests {
         assert_eq!(fetches.borrow().get("@rpm-fixture/alpha"), Some(&1));
         assert_eq!(fetches.borrow().get("@rpm-fixture/beta"), Some(&1));
         assert_eq!(fetches.borrow().get("@rpm-fixture/shared"), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn apply_resolved_graph_downloads_shared_transitive_package_once() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "performance-small"]);
+        let project = TempProject::new("add-download-dedupe").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let mut package_manifest = PackageManifest::read_from_path(&package_path).unwrap();
+        let mut lockfile = LockFile::load_from_path(project_root.join("rpm.lock")).unwrap();
+        let libs = package_manifest
+            .get_dependencies()
+            .into_iter()
+            .map(|(library_name, version)| format!("{library_name}@{version}"))
+            .collect::<Vec<_>>();
+        let cache_dir = project_root.join(".rpm").join(".cache");
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        api::test_support::reset_tarball_download_counts();
+        add_with_cache_dir(
+            &mut package_manifest,
+            &mut lockfile,
+            libs,
+            false,
+            false,
+            &cache_dir,
+        )
+        .await
+        .expect("performance-small fixture should install offline");
+
+        // `@rpm-fixture/shared@1.0.0` is reached through two different requested
+        // ranges (via alpha and via beta) but is one selected version, so the
+        // deduped graph must download it exactly once.
+        for package_key in [
+            "@rpm-fixture/alpha@1.0.0",
+            "@rpm-fixture/beta@1.0.0",
+            "@rpm-fixture/shared@1.0.0",
+        ] {
+            let downloads = api::test_support::tarball_download_count(package_key);
+            assert_eq!(
+                downloads,
+                1,
+                "expected exactly one tarball download for selected package/version \
+                 {package_key}, got {downloads}; recorded downloads: {:?}",
+                api::test_support::recorded_tarball_downloads()
+            );
+        }
+
+        assert_eq!(
+            api::test_support::recorded_tarball_downloads(),
+            vec![
+                ("@rpm-fixture/alpha@1.0.0".to_string(), 1),
+                ("@rpm-fixture/beta@1.0.0".to_string(), 1),
+                ("@rpm-fixture/shared@1.0.0".to_string(), 1),
+            ],
+            "install of the performance-small fixture should download each selected \
+             package/version exactly once and nothing else"
+        );
     }
 
     #[tokio::test]
