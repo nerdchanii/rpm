@@ -176,9 +176,11 @@ gh auth refresh -s read:project -s project
 ```
 
 Cloud execution, review reconciliation, and gated merge use the connected
-GitHub plugin. They do not run this preflight and do not require `gh`,
-`GH_TOKEN`, or Project access. The six lifecycle labels must exist before the
-first run. Their exact names live in the policy file. Run ticket execution in
+GitHub plugin. They do not run this preflight and do not require the `gh` CLI
+or Project access. The plugin still needs a credential: it authenticates with
+the `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable configured on the cloud
+environment, described in `docs/claude-cloud.md`. The six lifecycle labels must
+exist before the first run. Their exact names live in the policy file. Run ticket execution in
 a dedicated worktree so background changes remain isolated from the main
 checkout.
 

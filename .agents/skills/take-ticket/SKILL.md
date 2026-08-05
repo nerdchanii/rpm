@@ -29,7 +29,7 @@ Use `scheduled` without an issue number. The router reads `.agents/workflows/bac
 
 1. Read `.agents/workflows/backlog-policy.json`.
 2. Run `bash scripts/check-workflow-intake.sh`.
-3. For scheduled mode, use the connected GitHub plugin to verify repository and issue-label access. Do not require `gh`, `gh auth`, `GH_TOKEN`, or Project access. Project #7 is outside the Cloud execution gate.
+3. For scheduled mode, use the connected GitHub plugin to verify repository and issue-label access. Do not require `gh`, `gh auth`, or Project access. Project #7 is outside the Cloud execution gate.
 4. Check the current branch and preserve unrelated worktree changes.
 5. Spawn only `rpm_workflow_manager` with:
    - `workflow=take-ticket`

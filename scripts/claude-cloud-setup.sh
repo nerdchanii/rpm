@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # Claude Code cloud environment setup for RPM.
-# Configure this script as the cloud environment's setup script and set a
-# GH_TOKEN environment variable on the same environment (fine-grained PAT for
-# nerdchanii/rpm with contents, issues, and pull-requests read/write). The gh
-# CLI reads GH_TOKEN automatically, so scheduled routines need no extra login.
+# Reference this file as the cloud environment's setup script instead of pasting
+# its contents, so repository fixes reach the environment. Routines mutate
+# GitHub through the MCP plugin that .claude/settings.json enables, and that
+# plugin reads GITHUB_PERSONAL_ACCESS_TOKEN from the environment. The gh CLI
+# below is only a fallback for that path and is not required on its own.
 
 SUDO=""
 if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
@@ -28,9 +29,7 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 
 if ! command -v gh >/dev/null 2>&1; then
-  printf 'claude-cloud-setup: gh is required and could not be installed\n' >&2
-  printf 'claude-cloud-setup: install gh in the environment image or allow the GitHub CLI package source\n' >&2
-  exit 1
+  printf 'claude-cloud-setup: gh is unavailable; routines must use the GitHub MCP plugin\n' >&2
 fi
 
 if [ -f Cargo.toml ] && [ -x scripts/codex-cloud-setup.sh ]; then

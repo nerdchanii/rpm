@@ -27,7 +27,7 @@ verdict.
    exactly `true`, return `no-work` without mutation.
 2. Use the connected GitHub plugin to inventory open issues carrying the
    `agent:awaiting-merge` label, ordered by issue number ascending. Do not
-   require `gh` or `GH_TOKEN`. Select at most the gate batch limit.
+   require the `gh` CLI. Select at most the gate batch limit.
 3. Refetch the selected issue and its closing PRs. Collect for the open closing
    PR: required check conclusions named in `merge_gate.required_checks`,
    mergeability, and whether unresolved P0/P1 review threads remain.

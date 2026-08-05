@@ -43,8 +43,8 @@ Recommended interval: every 2 hours.
 Use $take-ticket in scheduled mode for nerdchanii/rpm.
 
 Follow .agents/workflows/backlog-policy.json. Use the connected GitHub plugin
-and the open issue lifecycle-label queue. Do not require gh, GH_TOKEN, or
-Project access. If any open issue is agent:claimed or agent:review-pending,
+and the open issue lifecycle-label queue. Do not require the gh CLI or Project
+access. If any open issue is agent:claimed or agent:review-pending,
 return no-work without mutation. Otherwise select at most one agent:ready issue
 in issue-number ascending order, refetch it, preserve ordinary labels, and
 replace agent:ready with agent:claimed. Skip an issue already closed by an open

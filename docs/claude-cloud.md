@@ -15,30 +15,39 @@ Manage them at <https://claude.ai/code/routines>.
 
 ## Environment setup
 
-The routines use the gh CLI for issue, label, and PR mutations. Configure the
-cloud environment once:
+The routines mutate issues, labels, and pull requests through the GitHub MCP
+plugin. The sandbox git client reaches GitHub through a proxy that authenticates
+git transactions only, so pushes work without configuration while GitHub API
+mutations need their own credential. Configure the cloud environment once:
 
 1. Create a fine-grained GitHub PAT scoped to `nerdchanii/rpm` with
-   read/write on contents, issues, and pull requests.
+   read/write on contents, issues, and pull requests. Keep the expiry short:
+   the environment variable field stores values in plain text and shows them to
+   everyone who uses that environment.
 2. In the routine's cloud environment settings, add an environment variable
-   `GH_TOKEN` with that PAT. The gh CLI picks it up automatically.
-3. Set `./scripts/claude-cloud-setup.sh` as the environment setup script. It
-   installs gh when missing and reuses `scripts/codex-cloud-setup.sh` for the
-   Rust toolchain. The result is cached across runs.
-4. Keep the default Trusted network access. If gh calls fail with
-   `x-deny-reason: host_not_allowed`, add `api.github.com` to the
-   environment's allowed domains.
+   `GITHUB_PERSONAL_ACCESS_TOKEN` with that PAT. The plugin sends it as the
+   bearer token for `https://api.githubcopilot.com/mcp/`.
+3. Set `./scripts/claude-cloud-setup.sh` as the environment setup script,
+   referencing the file rather than pasting its contents, so repository fixes
+   reach the environment. It prepares the Rust toolchain through
+   `scripts/codex-cloud-setup.sh` and installs the gh CLI as a fallback when
+   apt allows it. The result is cached across runs.
+4. Keep the default Trusted network access. If plugin or gh calls fail with
+   `x-deny-reason: host_not_allowed`, add `api.githubcopilot.com` and
+   `api.github.com` to the environment's allowed domains.
 
-Every routine prompt begins with `gh auth status` and reports BLOCKED without
-mutating anything when authentication is missing, so a misconfigured
-environment fails safely.
+`.claude/settings.json` enables `github@claude-plugins-official` and registers
+its marketplace, which is how cloud sessions load a plugin without the
+interactive `/plugin` installer. Confirm a session picked it up by checking that
+`mcp__plugin_github_github__*` tools are available: missing tools mean the
+plugin never loaded, while tools that return 401 mean the token is absent or
+insufficient.
 
 The setup script runs from the cloned repository, so a fix only takes effect
 once it is on the branch the environment checks out. When the cloud image
 carries third-party apt repositories that the sandbox network policy blocks,
 `apt-get update` exits non-zero even though the Ubuntu indexes were fetched;
-the script therefore treats the refresh as best effort and fails only when gh
-is still missing afterwards.
+the script therefore treats the refresh as best effort.
 
 ## Event-driven fires
 
