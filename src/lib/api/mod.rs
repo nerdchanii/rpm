@@ -160,9 +160,10 @@ fn package_key_from_tarball_url(tarball_url: &str) -> String {
 /// reach them.
 #[cfg(test)]
 pub(crate) mod test_support {
-    // A documented `std::sync::Mutex` guards the counter map because installer
-    // tests may run on a multi-threaded Tokio runtime, where a `thread_local`
-    // or `RefCell` counter would silently miscount downloads.
+    // A documented `std::sync::Mutex` guards the counter map because libtest
+    // runs test functions on parallel OS threads, so a `thread_local` or
+    // `RefCell` counter would be per-thread state that silently miscounts
+    // downloads across concurrently running tests.
     #![allow(clippy::disallowed_types)]
 
     use std::{

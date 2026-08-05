@@ -582,7 +582,8 @@ mod tests {
     #[tokio::test]
     async fn apply_resolved_graph_downloads_shared_transitive_package_once() {
         let _guard = TestEnvLock::acquire().unwrap();
-        let fixture_root = fixture_path(&["install-projects", "performance-small"]);
+        let fixture_root =
+            fixture_path(&["install-projects", "shared-transitive-divergent-ranges"]);
         let project = TempProject::new("add-download-dedupe").unwrap();
         let package_path = project
             .copy_fixture(fixture_root.join("package.json"), "package.json")
@@ -608,11 +609,13 @@ mod tests {
             &cache_dir,
         )
         .await
-        .expect("performance-small fixture should install offline");
+        .expect("divergent range fixture should install offline");
 
-        // `@rpm-fixture/shared@1.0.0` is reached through two different requested
-        // ranges (via alpha and via beta) but is one selected version, so the
-        // deduped graph must download it exactly once.
+        // `@rpm-fixture/shared@1.0.0` is reached through two textually different
+        // requested ranges (`~1.0.0` via alpha, `^1.0.0` via beta) that converge
+        // on one selected version, so the deduped graph must download it exactly
+        // once. Keying dedupe on the requested range instead of the selected
+        // package/version would download it twice here.
         for package_key in [
             "@rpm-fixture/alpha@1.0.0",
             "@rpm-fixture/beta@1.0.0",
@@ -635,8 +638,33 @@ mod tests {
                 ("@rpm-fixture/beta@1.0.0".to_string(), 1),
                 ("@rpm-fixture/shared@1.0.0".to_string(), 1),
             ],
-            "install of the performance-small fixture should download each selected \
+            "install of the divergent range fixture should download each selected \
              package/version exactly once and nothing else"
+        );
+
+        // Guard the fixture itself: alpha requests `@rpm-fixture/shared` as
+        // `~1.0.0` while beta requests it as `^1.0.0`, so the two requested
+        // range strings stay textually different while selecting version
+        // `1.0.0`. If the fixture ever collapsed to one shared range, the
+        // download assertions above would stop distinguishing version-keyed
+        // dedupe from range-keyed dedupe.
+        let mut resolved_from_lock = lockfile
+            .get_packages()
+            .into_iter()
+            .map(|(key, dependency)| format!("{key} requested {}", dependency.get_requested()))
+            .collect::<Vec<_>>();
+        resolved_from_lock.sort();
+        let mut expected_resolved =
+            fs::read_to_string(fixture_root.join("expected/resolved-packages.txt"))
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+        expected_resolved.sort();
+        assert_eq!(
+            resolved_from_lock, expected_resolved,
+            "fixture must keep alpha on `~1.0.0` and beta on `^1.0.0` for \
+             `@rpm-fixture/shared@1.0.0`"
         );
     }
 
