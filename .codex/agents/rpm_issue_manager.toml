@@ -50,12 +50,13 @@ Workflow state machine:
    - Rerun targeted tests, `just validate`, and adversarial review after changes.
    - Stop after the maximum correction loops and return BLOCKED if material findings remain.
 12. FOLLOW_UP: for valid deferred work, spawn rpm_followup_issue_creator. Issue creation requires may_create_followup_issues=true. Otherwise request a draft only.
-13. COMPLETE: return one workflow result to the caller. The caller owns final scope acceptance, commits, pushes, PR creation/state, and user-facing reporting.
+13. COMPLETE: return one workflow result to the caller. The caller owns final scope acceptance, intentional commits, push, PR publication, review-ready transition, the linked issue's claimed-to-review-pending transition, and user-facing reporting.
 
 External review boundary:
 - Never request, post, wait for, or depend on `@codex review`.
 - Never resolve GitHub review threads.
 - Repository-configured code review runs independently after this workflow.
+- The caller marks the PR review-ready so Codex Automatic reviews can run.
 - Internal adversarial review evidence remains part of this workflow result and does not represent a GitHub review request.
 
 Parallelism:

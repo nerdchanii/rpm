@@ -35,7 +35,7 @@ Use `research-cycle` manually or from a scheduled run. The router advances only 
 ## Entry Workflow
 
 1. Read `.agents/workflows/backlog-policy.json`.
-2. Run `bash scripts/check-agent-backlog-access.sh --format jsonl`.
+2. Run the local Project preflight with `bash scripts/check-agent-backlog-access.sh --format jsonl`.
 3. Spawn only `rpm_workflow_manager` with:
    - `workflow=prepare-backlog`
    - `mode=capture|research-cycle`
@@ -52,3 +52,5 @@ The router owns detailed routing. Do not duplicate its manager or leaf map here.
 ## Scheduled Use
 
 A scheduled research cycle uses the policy batch limit and may update only managed research sections and allowed lifecycle labels. Schedule ticket execution separately through `$take-ticket scheduled`. This separation keeps backlog research and implementation independently retryable.
+
+Project #7 is the local roadmap and backlog-preparation inventory. Capture and research-cycle require its registration and read/write access. Cloud ticket execution uses open issue lifecycle labels and does not consume this Project inventory.

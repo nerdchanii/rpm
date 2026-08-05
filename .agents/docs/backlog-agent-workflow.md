@@ -38,10 +38,16 @@ flowchart LR
     E -- "Actionable" --> G["Ready state"]
     G --> H["Scheduled single-ticket claim"]
     H --> I["Claimed state"]
-    I --> J["Per-issue execution"]
+    I --> J["Per-issue execution and review-ready PR"]
+    J --> K["Review pending"]
+    K --> L["Scheduled review reconciliation"]
+    L --> M["Awaiting merge"]
+    M --> N["Scheduled gated merge"]
+    N --> O["Merged, issue closed"]
 ```
 
-GitHub Project #7 is the public backlog inventory. Lifecycle labels encode the
+GitHub Project #7 is the local roadmap and backlog-preparation inventory.
+Open GitHub issue lifecycle labels are the Cloud execution queue and encode the
 agent state. The policy file owns their exact values and transitions.
 
 ## Capture Contract
@@ -71,7 +77,7 @@ user-authored text outside the markers remains unchanged.
 
 ## Research-Cycle Contract
 
-`$prepare-backlog research-cycle` runs manually or on a schedule:
+`$prepare-backlog research-cycle` runs in the authenticated local environment:
 
 1. Inventory Project #7 before filtering.
 2. Select at most the policy research batch with
@@ -89,11 +95,17 @@ terminal result.
 
 ## Claim-and-Execute Contract
 
-`$take-ticket scheduled` inventories ready candidates, claims at most the policy
-execution batch through `scripts/backlog-gen --state ready --format jsonl`, and
-starts the per-issue workflow for the claimed issue. The
-claimer changes only the ready lifecycle label to the claimed lifecycle label.
-It does not assign a user, edit the issue body, or change Project fields.
+`$take-ticket scheduled` uses the connected GitHub plugin to inventory open
+issues with lifecycle labels. Project membership is not an execution
+condition. It returns `no-work` while any open issue is claimed or
+review-pending. Otherwise it rejects conflicting lifecycle labels, sorts ready
+issues by issue number, selects at most one, refetches it, checks for an
+existing closing open PR, and replaces ready with claimed while preserving
+ordinary labels.
+
+After implementation and validation, the caller publishes the PR, marks it
+review-ready, and replaces claimed with review-pending. Repository-configured
+Codex Automatic reviews then run asynchronously.
 
 `$take-ticket explicit <issue>` executes a user-selected issue without running
 the scheduled candidate claim flow.
@@ -101,14 +113,42 @@ the scheduled candidate claim flow.
 Scheduled runs do not post, request, or wait for `@codex review`. Repository
 code-review settings run independently after a pull request is published.
 
+## Review-Reconciliation Contract
+
+`$pr-review-resolution` scheduled mode selects at most one open PR linked to an
+open review-pending issue. It returns `no-work` when no candidate exists or the
+Codex review has not arrived. Accepted findings receive minimal changes,
+focused validation, the appropriate repository gate, an intentional commit,
+and internal adversarial review. Actionable P0/P1 findings keep the issue
+review-pending. Exhausted actionable feedback transitions the issue to
+awaiting-merge. This workflow never merges and never requests `@codex review`.
+
+## Merge-Gate Contract
+
+`$merge-gatekeeper` scheduled mode is the single authorized merge path. It
+selects at most one open awaiting-merge issue with exactly one open closing PR
+and confirms the verdict with `scripts/check-merge-gate.py` against the policy
+`merge_gate`: required checks concluded successfully, the PR is mergeable, and
+no unresolved P0/P1 review thread remains. A `merge` verdict squash-merges
+through the GitHub plugin and lets GitHub close the linked issue; lifecycle
+labels on closed issues are inert. Pending checks or unknown mergeability
+return `no-work`. Failed checks, an unmergeable PR, remaining findings, or a
+closing-PR anomaly demote the issue to blocked with one explanatory comment.
+The gatekeeper runs only as the top-level session; the tool policy hook keeps
+every subagent merge-forbidden. The workflow automation flag
+`automation.merge_pull_requests` stays `false`: subagent workflows never merge.
+
 ## Suggested Automation Split
 
-Use two independent recurring jobs:
+Use three independent Cloud recurring jobs while local backlog preparation runs
+separately:
 
 | Job | Entry | Healthy empty result |
 |---|---|---|
-| Backlog research | `$prepare-backlog research-cycle` | `no-work` |
-| Ticket execution | `$take-ticket scheduled` | `no-work` |
+| Local backlog research | `$prepare-backlog research-cycle` | `no-work` |
+| Cloud ticket execution | `$take-ticket scheduled` | `no-work` |
+| Cloud PR feedback reconciliation | `$pr-review-resolution` scheduled mode | `no-work` |
+| Cloud gated merge | `$merge-gatekeeper` scheduled mode | `no-work` |
 
 Capture remains an intent-driven action through
 `$prepare-backlog capture <idea>`. A scheduled capture source must provide a
@@ -121,23 +161,32 @@ whole backlog.
 
 ## Automation Prerequisites
 
-Both jobs run the read-only preflight:
+Local capture and research run the read-only Project preflight:
 
 ```sh
 bash scripts/check-agent-backlog-access.sh --format jsonl
 ```
 
-The GitHub identity used by the scheduled task needs repository issue access
-and Project read/write access. For a local `gh` login, grant the required
-Project scopes interactively:
+The local GitHub identity needs repository issue access and Project read/write
+access. For a local `gh` login, grant the required Project scopes
+interactively:
 
 ```sh
 gh auth refresh -s read:project -s project
 ```
 
-The queue labels must exist before the first run. Their exact names live in the
-policy file. Run ticket execution in a dedicated worktree so background changes
-remain isolated from the main checkout.
+Cloud execution, review reconciliation, and gated merge use the connected
+GitHub plugin. They do not run this preflight and do not require `gh`,
+`GH_TOKEN`, or Project access. The six lifecycle labels must exist before the
+first run. Their exact names live in the policy file. Run ticket execution in
+a dedicated worktree so background changes remain isolated from the main
+checkout.
+
+Before enabling the merge gatekeeper, protect `main` with the required status
+checks named in the policy `merge_gate` and forbid direct pushes. The
+deterministic gate script and the server-side branch protection must agree, so
+the gate cannot pass locally while GitHub would still accept an unchecked
+merge.
 
 ## Mutation Boundaries
 
@@ -146,7 +195,12 @@ remain isolated from the main checkout.
 | Idea issue creator | New issue body, initial lifecycle label, Project registration |
 | Issue refiner | Managed research region and allowed lifecycle label transition |
 | Ready-ticket claimer | Ready-to-claimed lifecycle transition |
+| Ticket publication caller | Claimed-to-review-pending transition |
+| Review reconciliation caller | Review-pending-to-awaiting-merge transition |
+| Merge gatekeeper | Gate-passed squash merge, awaiting-merge-to-blocked demotion, one blocked-reason comment |
 | All backlog readers and judges | None |
 
 Repository source, SPEC, tests, fixtures, branches, commits, pull requests, and
-reviews remain outside the backlog workflow.
+reviews remain outside the backlog workflow. The merge gatekeeper is a separate
+top-level workflow; its only repository mutation is the gate-passed merge
+itself.

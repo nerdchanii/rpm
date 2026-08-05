@@ -39,7 +39,7 @@ Return the exact Review Resolver Output shape.
 ## Review Resolver Output
 
 ```jsonl
-{"type":"review_resolution_result","data":{"status":"complete|blocked","pr":"<number-or-url>","validation":["<command-or-not-run-with-reason>"],"decisions":[{"target":"<comment-url-or-thread-id>","classification":"<classification>","reason":"<one-line reason>","action":"<action taken>"}],"changes":[{"path":"<file>","summary":"<summary>"}],"follow_up_issues":[{"state":"opened|drafted","url":"<url-or-null>","path":"<draft-path-or-null>","title":"<title>"}],"blockers":[]}}
+{"type":"review_resolution_result","data":{"status":"complete|no-work|blocked","pr":"<number-or-url-or-empty>","issue":"<number-or-url-or-empty>","review_present":true,"validation":["<command-or-not-run-with-reason>"],"adversarial_review":"pass|findings|not-run","actionable_p0_p1_remaining":false,"final_issue_state":"review-pending|awaiting-merge|unchanged","decisions":[{"target":"<comment-url-or-thread-id>","classification":"<classification>","reason":"<one-line reason>","action":"<action taken>"}],"changes":[{"path":"<file>","summary":"<summary>"}],"follow_up_issues":[{"state":"opened|drafted","url":"<url-or-null>","path":"<draft-path-or-null>","title":"<title>"}],"blockers":[]}}
 ```
 
 ## Follow-Up Issue Body

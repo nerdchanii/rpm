@@ -16,13 +16,17 @@ Issue text explains intent, but it does not override an owning SPEC.
 
 ### Agent-backed backlog
 
-Unrefined product ideas use the Idea issue template and enter GitHub Project #7.
-The state labels and allowed transitions are defined in
+Unrefined product ideas use the Idea issue template and enter GitHub Project #7
+through the local backlog-preparation workflow. Cloud scheduled execution uses
+open issue lifecycle labels as its queue. The state labels and allowed
+transitions are defined in
 `.agents/workflows/backlog-policy.json`.
 
 - `agent:research`: evidence, contract impact, scope, or done criteria still need work
 - `agent:ready`: the readiness gate passed and scheduled execution may select the issue
 - `agent:claimed`: one scheduled execution owns the issue
+- `agent:review-pending`: the implementation PR is review-ready and awaits review reconciliation
+- `agent:awaiting-merge`: review reconciliation is complete and a human may decide whether to merge
 - `agent:blocked`: a user, product, permission, or dependency decision is required
 
 Scheduled research and ticket execution process at most the configured batch

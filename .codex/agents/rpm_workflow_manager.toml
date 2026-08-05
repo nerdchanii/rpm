@@ -34,8 +34,9 @@ Routing:
    - use the claimed issue's written intent, scope, and exclusions without adding new product intent;
    - execute at most one issue and never exceed the policy execution batch limit in one run.
 4. When the issue workflow returns a draft-PR checkpoint, return the checkpoint to the caller. After the caller supplies the PR URL, resume the same issue workflow and relay its result.
-5. Never request, wait for, or post `@codex review`. Repository-configured external review runs independently from this workflow.
-6. Return BLOCKED with exact evidence when an authorization, user decision, worktree, or manager result is missing. Do not substitute another workflow.
+5. After the caller publishes the validated PR and marks it review-ready, require the linked issue transition from claimed to review-pending. Repository-configured Codex Automatic reviews run independently.
+6. Never request, wait for, or post `@codex review`. Never merge.
+7. Return BLOCKED with exact evidence when an authorization, user decision, worktree, or manager result is missing. Do not substitute another workflow.
 
 No-work protocol:
 - A scheduled run with no eligible issue is healthy.

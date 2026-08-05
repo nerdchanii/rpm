@@ -5,9 +5,10 @@ usage() {
   cat <<'USAGE'
 usage: check-agent-backlog-access.sh [--format jsonl|text]
 
-Read-only preflight for scheduled RPM backlog work. It validates repository
-identity, the four agent queue labels, and read access to the configured
-GitHub Project and its items. It never creates or edits GitHub resources.
+Read-only preflight for local RPM backlog preparation. It validates repository
+identity, the six lifecycle labels, and read access to the configured
+local-roadmap GitHub Project and its items. Cloud ticket execution does not run
+this command. It never creates or edits GitHub resources.
 USAGE
 }
 
@@ -65,14 +66,18 @@ policy="${root}/.agents/workflows/backlog-policy.json"
 }
 
 if ! jq -e '
-  (.version == 1)
+  (.version == 2)
   and (.repository | type == "string" and length > 0)
   and (.project.number == 7)
   and (.project.owner | type == "string" and length > 0)
+  and (.project.role == "local-roadmap")
+  and (.project.required_for_execution == false)
   and (.labels == {
     research:"agent:research",
     ready:"agent:ready",
     claimed:"agent:claimed",
+    "review-pending":"agent:review-pending",
+    "awaiting-merge":"agent:awaiting-merge",
     blocked:"agent:blocked"
   })
 ' "${policy}" >/dev/null; then

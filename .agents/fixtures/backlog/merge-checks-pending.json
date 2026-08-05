@@ -1,0 +1,18 @@
+{
+  "issues": [
+    {
+      "number": 12,
+      "state": "OPEN",
+      "labels": ["agent:awaiting-merge", "kind:feature"],
+      "closing_prs": [
+        {
+          "number": 44,
+          "state": "OPEN",
+          "mergeable": true,
+          "checks": {"metadata": "success", "verify": "in_progress"},
+          "unresolved_p0_p1": false
+        }
+      ]
+    }
+  ]
+}

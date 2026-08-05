@@ -1,0 +1,25 @@
+{
+  "issues": [
+    {
+      "number": 9,
+      "url": "https://github.com/nerdchanii/rpm/issues/9",
+      "state": "OPEN",
+      "labels": ["agent:ready", "kind:feature"],
+      "closing_prs": []
+    },
+    {
+      "number": 3,
+      "url": "https://github.com/nerdchanii/rpm/issues/3",
+      "state": "OPEN",
+      "labels": ["agent:ready", "priority:high"],
+      "closing_prs": []
+    },
+    {
+      "number": 2,
+      "url": "https://github.com/nerdchanii/rpm/issues/2",
+      "state": "CLOSED",
+      "labels": ["agent:ready"],
+      "closing_prs": []
+    }
+  ]
+}

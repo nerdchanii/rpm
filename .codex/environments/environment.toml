@@ -1,0 +1,7 @@
+version = 1
+name = "RPM"
+
+[setup]
+script = """
+cargo fetch --locked
+"""

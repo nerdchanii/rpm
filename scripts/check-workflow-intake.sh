@@ -15,13 +15,6 @@ else
   printf 'workflow_intake.worktree=clean\n'
 fi
 
-if gh auth status >/dev/null 2>&1; then
-  printf 'workflow_intake.gh_auth=ok\n'
-else
-  status="fail"
-  printf 'workflow_intake.gh_auth=fail\n'
-fi
-
 if git remote get-url origin >/dev/null 2>&1; then
   printf 'workflow_intake.origin=ok\n'
 else

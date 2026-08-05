@@ -3,13 +3,14 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: backlog-gen [--state research|ready|claimed|blocked|untracked|all] [--format json|jsonl]
+usage: backlog-gen [--state research|ready|claimed|review-pending|awaiting-merge|blocked|untracked|all] [--format json|jsonl]
 
-Read open RPM issues from the GitHub Project configured in
-.agents/workflows/backlog-policy.json. Queue states come only from the
-configured agent:* labels. Research and execution selections are capped by
-the configured batch limit. Output order is deterministic by issue number.
-The command never mutates GitHub state.
+Read open RPM issues from the local-roadmap GitHub Project configured in
+.agents/workflows/backlog-policy.json. This command supports local capture and
+research workflows; Cloud execution uses the GitHub connector and issue labels
+directly. Queue states come only from configured agent:* labels. Research
+selection is capped by its batch limit. Output order is deterministic by issue
+number. The command never mutates GitHub state.
 USAGE
 }
 
@@ -54,7 +55,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "${state}" in
-  research|ready|claimed|blocked|untracked|all) ;;
+  research|ready|claimed|review-pending|awaiting-merge|blocked|untracked|all) ;;
   *)
     printf 'backlog_gen.error=invalid-state:%s\n' "${state}" >&2
     exit 2
@@ -88,14 +89,18 @@ policy="${root}/.agents/workflows/backlog-policy.json"
 }
 
 if ! jq -e '
-  (.version == 1)
+  (.version == 3)
   and (.repository | type == "string" and length > 0)
   and (.project.number == 7)
   and (.project.owner | type == "string" and length > 0)
+  and (.project.role == "local-roadmap")
+  and (.project.required_for_execution == false)
   and (.labels == {
     research:"agent:research",
     ready:"agent:ready",
     claimed:"agent:claimed",
+    "review-pending":"agent:review-pending",
+    "awaiting-merge":"agent:awaiting-merge",
     blocked:"agent:blocked"
   })
   and (.batch_limits.research == 1)
@@ -111,13 +116,15 @@ project_number="$(jq -r '.project.number' "${policy}")"
 research_label="$(jq -r '.labels.research' "${policy}")"
 ready_label="$(jq -r '.labels.ready' "${policy}")"
 claimed_label="$(jq -r '.labels.claimed' "${policy}")"
+review_pending_label="$(jq -r '.labels["review-pending"]' "${policy}")"
+awaiting_merge_label="$(jq -r '.labels["awaiting-merge"]' "${policy}")"
 blocked_label="$(jq -r '.labels.blocked' "${policy}")"
 
 case "${state}" in
   research)
     batch_limit="$(jq -r '.batch_limits.research' "${policy}")"
     ;;
-  ready|claimed)
+  ready|claimed|review-pending)
     batch_limit="$(jq -r '.batch_limits.execution' "${policy}")"
     ;;
   *)
@@ -151,6 +158,8 @@ jq -n \
   --arg research_label "${research_label}" \
   --arg ready_label "${ready_label}" \
   --arg claimed_label "${claimed_label}" \
+  --arg review_pending_label "${review_pending_label}" \
+  --arg awaiting_merge_label "${awaiting_merge_label}" \
   --arg blocked_label "${blocked_label}" \
   --argjson project_number "${project_number}" \
   --arg project_owner "${project_owner}" \
@@ -164,6 +173,8 @@ jq -n \
       {state:"research", label:$research_label},
       {state:"ready", label:$ready_label},
       {state:"claimed", label:$claimed_label},
+      {state:"review-pending", label:$review_pending_label},
+      {state:"awaiting-merge", label:$awaiting_merge_label},
       {state:"blocked", label:$blocked_label}
       | select(.label as $label | $labels | index($label))
     ];

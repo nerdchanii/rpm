@@ -1,0 +1,11 @@
+{
+  "issues": [
+    {
+      "number": 12,
+      "state": "OPEN",
+      "labels": ["agent:review-pending", "kind:feature"],
+      "closing_prs": [{"number": 44, "state": "OPEN"}],
+      "codex_review_present": true
+    }
+  ]
+}
