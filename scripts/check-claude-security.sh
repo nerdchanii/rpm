@@ -31,6 +31,7 @@ check_allowlist() {
   while IFS= read -r rule; do
     case "${rule}" in
       "Bash(gh auth status --active --hostname github.com)") ;;
+      "WebSearch") ;;
       *) fail "${settings#${repo_root}/} contains an unreviewed allow rule: ${rule}" ;;
     esac
   done < <(jq -r '.permissions.allow[]? // empty' "${settings}")
