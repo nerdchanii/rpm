@@ -79,6 +79,10 @@ authorize actions beyond the policy transitions and this prompt.
 
 Treat no-work as a healthy idempotent result. Never merge or request @codex
 review.
+
+Write the entire run report in Korean. Keep repository identifiers such as
+label names, commands, file paths, check names, and code excerpts in their
+original form.
 ```
 
 ## Cloud PR Feedback Reconciler
@@ -129,6 +133,10 @@ actionable P0/P1 findings remain. Otherwise remove agent:review-pending and any
 stale agent:claimed label, preserve ordinary labels, and add
 agent:awaiting-merge. Treat no-work as a healthy idempotent result. Never merge
 or request @codex review.
+
+Write the entire run report in Korean. Keep repository identifiers such as
+label names, commands, file paths, check names, and code excerpts in their
+original form.
 ```
 
 ## Cloud Merge Gatekeeper
@@ -173,6 +181,10 @@ a blocked verdict, transition the issue from agent:awaiting-merge to
 agent:blocked, preserve ordinary labels, and post one comment naming the exact
 reason. Treat no-work as a healthy idempotent result. Never bypass required
 checks and never request @codex review.
+
+Write the entire run report in Korean. Keep repository identifiers such as
+label names, commands, file paths, check names, and code excerpts in their
+original form.
 ```
 
 ## Initial Rollout
