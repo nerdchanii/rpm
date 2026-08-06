@@ -1,0 +1,9 @@
+# Direct dependency entries the install must record in `rpm.lock`.
+#
+# `@rpm-fixture/shared@1.0.0` is intentionally absent. It is reached through two
+# parents (`~1.0.0` via alpha, `^1.0.0` via beta) and the lockfile records only
+# whichever parent's edge resolved first, which is not a deterministic property.
+# The divergence of those two ranges is guarded against the registry fixtures
+# in `../registry/` instead.
+@rpm-fixture/alpha@1.0.0 requested ^1.0.0
+@rpm-fixture/beta@1.0.0 requested ^1.0.0

@@ -30,6 +30,7 @@ pub async fn get_registry(lib_name: &str, version: &str) -> std::io::Result<Regi
 pub async fn get_tarball(tarball_url: &str) -> std::io::Result<Vec<u8>> {
     #[cfg(test)]
     if std::env::var_os("RPM_REGISTRY_FIXTURE_ROOT").is_some() {
+        test_support::record_tarball_download(&package_key_from_tarball_url(tarball_url));
         return fixture_tarball(tarball_url);
     }
 
@@ -121,6 +122,87 @@ fn package_name_from_tarball_url(tarball_url: &str) -> std::io::Result<String> {
             ErrorKind::InvalidInput,
             format!("invalid fixture tarball URL path: {tarball_url}"),
         )),
+    }
+}
+
+/// Derive the selected `package-name@version` a fixture tarball URL stands for.
+///
+/// Install deduplication is keyed by the selected package and version, not by
+/// the requested range, so download measurement records the same unit. URLs
+/// that do not follow the fixture layout fall back to the raw URL, which keeps
+/// distinct downloads distinct instead of silently merging counters.
+#[cfg(test)]
+fn package_key_from_tarball_url(tarball_url: &str) -> String {
+    let Ok(package_name) = package_name_from_tarball_url(tarball_url) else {
+        return tarball_url.to_string();
+    };
+    let unscoped = package_name
+        .rsplit('/')
+        .next()
+        .unwrap_or(package_name.as_str());
+    let version = tarball_url
+        .rsplit('/')
+        .next()
+        .and_then(|file_name| file_name.strip_suffix(".tgz"))
+        .and_then(|stem| stem.strip_prefix(&format!("{unscoped}-")))
+        .filter(|version| !version.is_empty());
+    match version {
+        Some(version) => format!("{package_name}@{version}"),
+        None => tarball_url.to_string(),
+    }
+}
+
+/// Tarball download counters for the fixture registry API.
+///
+/// ADR 0005 places installer measurement on the fake registry API that serves
+/// deterministic fixture responses, recording calls by package name and
+/// selected version. These counters are test-only; production downloads never
+/// reach them.
+#[cfg(test)]
+pub(crate) mod test_support {
+    // A documented `std::sync::Mutex` guards the counter map because libtest
+    // runs test functions on parallel OS threads, so a `thread_local` or
+    // `RefCell` counter would be per-thread state that silently miscounts
+    // downloads across concurrently running tests.
+    #![allow(clippy::disallowed_types)]
+
+    use std::{
+        collections::HashMap,
+        sync::{Mutex, OnceLock},
+    };
+
+    fn counts() -> &'static Mutex<HashMap<String, u32>> {
+        static COUNTS: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+        COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn locked_counts() -> std::sync::MutexGuard<'static, HashMap<String, u32>> {
+        counts().lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub(crate) fn record_tarball_download(package_key: &str) {
+        *locked_counts().entry(package_key.to_string()).or_insert(0) += 1;
+    }
+
+    /// Clear recorded downloads. Tests must call this while holding the shared
+    /// install test env lock so counts never leak between tests.
+    pub(crate) fn reset_tarball_download_counts() {
+        locked_counts().clear();
+    }
+
+    pub(crate) fn tarball_download_count(package_key: &str) -> u32 {
+        locked_counts().get(package_key).copied().unwrap_or(0)
+    }
+
+    /// Recorded downloads as a stable, sorted `(package@version, count)` list
+    /// so expected download counts stay reviewable in test output.
+    pub(crate) fn recorded_tarball_downloads() -> Vec<(String, u32)> {
+        let mut recorded = locked_counts()
+            .iter()
+            .map(|(key, count)| (key.clone(), *count))
+            .collect::<Vec<_>>();
+        recorded.sort();
+        recorded
     }
 }
 
@@ -260,6 +342,27 @@ mod tests {
             .expect("package.json should exist in generated archive");
 
         assert_eq!(package_json, r#"{"name":"@rpm-fixture/alpha"}"#);
+    }
+
+    #[test]
+    fn package_key_from_tarball_url_records_selected_package_and_version() {
+        assert_eq!(
+            package_key_from_tarball_url(
+                "https://registry.example.invalid/@rpm-fixture/shared/-/shared-1.0.0.tgz"
+            ),
+            "@rpm-fixture/shared@1.0.0"
+        );
+        assert_eq!(
+            package_key_from_tarball_url(
+                "https://registry.example.invalid/alpha/-/alpha-2.1.0.tgz"
+            ),
+            "alpha@2.1.0"
+        );
+        assert_eq!(package_key_from_tarball_url("not-a-url"), "not-a-url");
+        assert_eq!(
+            package_key_from_tarball_url("https://registry.example.invalid/alpha/-/alpha.tgz"),
+            "https://registry.example.invalid/alpha/-/alpha.tgz"
+        );
     }
 
     #[test]

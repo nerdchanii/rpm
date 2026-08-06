@@ -452,6 +452,7 @@ mod tests {
         resolution_error_to_io, InstallMetadata,
     };
     use crate::{
+        api,
         core::resolver::{
             resolve_dependency_graph, DependencyRequest, DependencyRequestKind, ResolutionError,
             ResolvedPackage, ResolvedRequest,
@@ -576,6 +577,159 @@ mod tests {
         assert_eq!(fetches.borrow().get("@rpm-fixture/alpha"), Some(&1));
         assert_eq!(fetches.borrow().get("@rpm-fixture/beta"), Some(&1));
         assert_eq!(fetches.borrow().get("@rpm-fixture/shared"), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn apply_resolved_graph_downloads_shared_transitive_package_once() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root =
+            fixture_path(&["install-projects", "shared-transitive-divergent-ranges"]);
+        let project = TempProject::new("add-download-dedupe").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let mut package_manifest = PackageManifest::read_from_path(&package_path).unwrap();
+        let mut lockfile = LockFile::load_from_path(project_root.join("rpm.lock")).unwrap();
+        let libs = package_manifest
+            .get_dependencies()
+            .into_iter()
+            .map(|(library_name, version)| format!("{library_name}@{version}"))
+            .collect::<Vec<_>>();
+        let cache_dir = project_root.join(".rpm").join(".cache");
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        api::test_support::reset_tarball_download_counts();
+        add_with_cache_dir(
+            &mut package_manifest,
+            &mut lockfile,
+            libs,
+            false,
+            false,
+            &cache_dir,
+        )
+        .await
+        .expect("divergent range fixture should install offline");
+
+        // `@rpm-fixture/shared@1.0.0` is reached through two textually different
+        // requested ranges (`~1.0.0` via alpha, `^1.0.0` via beta) that converge
+        // on one selected version, so the deduped graph must download it exactly
+        // once. Keying dedupe on the requested range instead of the selected
+        // package/version would download it twice here.
+        for package_key in [
+            "@rpm-fixture/alpha@1.0.0",
+            "@rpm-fixture/beta@1.0.0",
+            "@rpm-fixture/shared@1.0.0",
+        ] {
+            let downloads = api::test_support::tarball_download_count(package_key);
+            assert_eq!(
+                downloads,
+                1,
+                "expected exactly one tarball download for selected package/version \
+                 {package_key}, got {downloads}; recorded downloads: {:?}",
+                api::test_support::recorded_tarball_downloads()
+            );
+        }
+
+        assert_eq!(
+            api::test_support::recorded_tarball_downloads(),
+            vec![
+                ("@rpm-fixture/alpha@1.0.0".to_string(), 1),
+                ("@rpm-fixture/beta@1.0.0".to_string(), 1),
+                ("@rpm-fixture/shared@1.0.0".to_string(), 1),
+            ],
+            "install of the divergent range fixture should download each selected \
+             package/version exactly once and nothing else"
+        );
+
+        // Guard the fixture's *input* shape: alpha must declare
+        // `@rpm-fixture/shared` as `~1.0.0` while beta declares it as `^1.0.0`,
+        // so the two requested range strings stay textually different while
+        // selecting version `1.0.0`. If the fixture ever collapsed to one
+        // shared range, the download assertions above would stop
+        // distinguishing version-keyed dedupe from range-keyed dedupe.
+        //
+        // This is deliberately asserted against the registry fixtures rather
+        // than the resolved lockfile. A package reached through several parents
+        // records only one parent's range in `requested`
+        // (`requested_for_lockfile` takes `requests.first()`), and which parent
+        // lands first follows the direct dependency order that
+        // `PackageManifest::get_dependencies` reads out of a `HashMap`, so it
+        // is not stable across processes. The lockfile also cannot detect a
+        // collapse to a single range, because it only ever records one winner.
+        assert_eq!(
+            fixture_declared_range(
+                &fixture_root,
+                "@rpm-fixture__alpha.json",
+                "@rpm-fixture/shared"
+            ),
+            "~1.0.0",
+            "fixture must keep alpha requesting `@rpm-fixture/shared` on `~1.0.0`"
+        );
+        assert_eq!(
+            fixture_declared_range(
+                &fixture_root,
+                "@rpm-fixture__beta.json",
+                "@rpm-fixture/shared"
+            ),
+            "^1.0.0",
+            "fixture must keep beta requesting `@rpm-fixture/shared` on `^1.0.0`"
+        );
+
+        // The direct dependency entries are keyed by their own package names and
+        // are unaffected by shared-transitive resolution order, so they stay
+        // exact. `@rpm-fixture/shared@1.0.0` is checked for presence only, for
+        // the ordering reason described above.
+        let mut direct_from_lock = lockfile
+            .get_packages()
+            .into_iter()
+            .filter(|(key, _)| key.as_str() != "@rpm-fixture/shared@1.0.0")
+            .map(|(key, dependency)| format!("{key} requested {}", dependency.get_requested()))
+            .collect::<Vec<_>>();
+        direct_from_lock.sort();
+        let mut expected_direct =
+            read_expected_lines(&fixture_root.join("expected").join("resolved-packages.txt"));
+        expected_direct.sort();
+        assert_eq!(
+            direct_from_lock, expected_direct,
+            "install must record the fixture's direct dependency entries in the lockfile"
+        );
+        assert!(
+            lockfile
+                .get_packages()
+                .into_iter()
+                .any(|(key, _)| key.as_str() == "@rpm-fixture/shared@1.0.0"),
+            "install must record the deduped shared transitive package in the lockfile"
+        );
+    }
+
+    /// Reads the declared range for `dependency` from a registry fixture
+    /// document, so a test can guard the fixture's input shape directly.
+    fn fixture_declared_range(
+        fixture_root: &Path,
+        registry_file: &str,
+        dependency: &str,
+    ) -> String {
+        let path = fixture_root.join("registry").join(registry_file);
+        let contents = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{} should be readable: {error}", path.display()));
+        let document = serde_json::from_str::<serde_json::Value>(&contents)
+            .unwrap_or_else(|error| panic!("{} should be valid JSON: {error}", path.display()));
+        document["versions"]["1.0.0"]["dependencies"][dependency]
+            .as_str()
+            .unwrap_or_else(|| panic!("{} should declare a range for {dependency}", path.display()))
+            .to_owned()
+    }
+
+    /// Reads an expectation fixture, skipping blank lines and `#` comments.
+    fn read_expected_lines(path: &Path) -> Vec<String> {
+        fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("{} should be readable: {error}", path.display()))
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_owned)
+            .collect()
     }
 
     #[tokio::test]
