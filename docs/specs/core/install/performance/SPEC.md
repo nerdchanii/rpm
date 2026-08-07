@@ -92,7 +92,9 @@ version for every package record, matching `docs/specs/core/resolver/SPEC.md`.
 Use `tests/fixtures/install-projects/performance-small/` as the first
 measurement fixture. It intentionally includes two direct dependencies that
 share one transitive dependency so later implementation can prove graph
-deduplication before adding concurrency.
+deduplication before adding concurrency. The expected-output files and in-test
+count assertions that install fixtures use are documented in
+`docs/conventions/install_fixture_outputs.md`.
 
 Measurement runs should copy the fixture to a temporary directory before
 mutation. A measurement must record:
