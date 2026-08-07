@@ -10,6 +10,7 @@ use std::{fs, io::ErrorKind, path::PathBuf};
 pub async fn get_registry(lib_name: &str, version: &str) -> std::io::Result<Registry> {
     #[cfg(test)]
     if let Some(registry) = read_registry_fixture(lib_name)? {
+        test_support::record_metadata_read(lib_name);
         return Ok(registry);
     }
 
@@ -204,6 +205,51 @@ pub(crate) mod test_support {
         recorded.sort();
         recorded
     }
+
+    // Metadata read counters. A registry metadata document covers every version
+    // of a package, so version selection happens after the fetch. Metadata reads
+    // are therefore counted by package name, while tarball downloads are counted
+    // by the selected `package@version`.
+    fn metadata_counts() -> &'static Mutex<HashMap<String, u32>> {
+        static METADATA_COUNTS: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+        METADATA_COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn locked_metadata_counts() -> std::sync::MutexGuard<'static, HashMap<String, u32>> {
+        metadata_counts()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub(crate) fn record_metadata_read(package_name: &str) {
+        *locked_metadata_counts()
+            .entry(package_name.to_string())
+            .or_insert(0) += 1;
+    }
+
+    /// Clear recorded metadata reads. Tests must call this while holding the
+    /// shared install test env lock so counts never leak between tests.
+    pub(crate) fn reset_metadata_read_counts() {
+        locked_metadata_counts().clear();
+    }
+
+    pub(crate) fn metadata_read_count(package_name: &str) -> u32 {
+        locked_metadata_counts()
+            .get(package_name)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Recorded metadata reads as a stable, sorted `(package-name, count)` list
+    /// so expected read counts stay reviewable in test output.
+    pub(crate) fn recorded_metadata_reads() -> Vec<(String, u32)> {
+        let mut recorded = locked_metadata_counts()
+            .iter()
+            .map(|(name, count)| (name.clone(), *count))
+            .collect::<Vec<_>>();
+        recorded.sort();
+        recorded
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +335,30 @@ mod tests {
 
         assert_eq!(registry.name, "@rpm-fixture/alpha");
         assert_eq!(registry.select_version("^1.0.0").unwrap(), "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn get_registry_counts_metadata_reads_by_package_name() {
+        let _fixture_root =
+            FixtureRoot::set(fixture_path(&["registry", "shared-transitive", "metadata"]));
+        test_support::reset_metadata_read_counts();
+
+        get_registry("@rpm-fixture/alpha", "").await.unwrap();
+        get_registry("@rpm-fixture/beta", "").await.unwrap();
+        get_registry("@rpm-fixture/shared", "").await.unwrap();
+        get_registry("@rpm-fixture/alpha", "").await.unwrap();
+
+        assert_eq!(test_support::metadata_read_count("@rpm-fixture/alpha"), 2);
+        assert_eq!(test_support::metadata_read_count("@rpm-fixture/beta"), 1);
+        assert_eq!(test_support::metadata_read_count("@rpm-fixture/shared"), 1);
+        assert_eq!(
+            test_support::recorded_metadata_reads(),
+            vec![
+                ("@rpm-fixture/alpha".to_string(), 2),
+                ("@rpm-fixture/beta".to_string(), 1),
+                ("@rpm-fixture/shared".to_string(), 1),
+            ],
+        );
     }
 
     #[test]
