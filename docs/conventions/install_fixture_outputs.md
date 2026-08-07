@@ -39,7 +39,9 @@ One line per resolved lockfile entry to assert:
 
 Compared (sorted) against a derivation of `LockFile::get_packages()`. Use it to
 assert the resolved graph shape, including that a shared transitive package is
-represented once (see the resolver SPEC node-uniqueness invariant). Omit entries
+represented once (see the installer performance SPEC, whose first success
+criterion is that shared transitive packages are represented once in the
+resolved graph and downloaded once). Omit entries
 whose `requested` range is not deterministic across runs (for example a transitive
 package reached through several parents records only one parent's range) and guard
 their input shape against the `registry/` fixture instead.
@@ -47,9 +49,10 @@ their input shape against the `registry/` fixture instead.
 ### `error-substrings.txt` — install error snapshot
 
 One substring per line; each must appear in the install error string. Use it for
-phase-labeled failures (fetch, integrity, extract, link, write). Older fixtures
-use `errors.txt` (a full-line match variant); prefer `error-substrings.txt` for
-new fixtures.
+phase-labeled failures (fetch, integrity, extract, link, write). This is the
+only error-expectation file the harness reads (`assert_expected_error` in
+`src/lib/command/working_process/install.rs`). A legacy `errors.txt` exists in
+some older fixtures but is read by no code; do not use it for new fixtures.
 
 ## Measurement counts (asserted in-test)
 
@@ -57,13 +60,15 @@ Download and metadata-read counts are not checked into `expected/`; they are
 asserted in the test through the fake-registry harness in `api::test_support`:
 
 - tarball downloads per selected `package@version` — `recorded_tarball_downloads()`
-- metadata reads per package name — `recorded_metadata_reads()`
+- metadata reads per package name — `recorded_metadata_reads()` (not yet
+  implemented; tracked by #93, landing in #106)
 
 Express expected counts as sorted `[(key, count)]` assertions with a failure
 message that prints the full recorded snapshot, so a count drift names the
-offending package/version. See
-`apply_resolved_graph_downloads_shared_transitive_package_once` and
-`install_counts_metadata_reads_once_per_package`.
+offending package/version. For the tarball-download pattern, see
+`apply_resolved_graph_downloads_shared_transitive_package_once`; the
+metadata-read analogue (`install_counts_metadata_reads_once_per_package`) is
+planned in #106.
 
 ## Optional snapshots (when a scenario needs them)
 
