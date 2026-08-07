@@ -70,6 +70,47 @@ and performance SPECs.
 | replace output | `replace_node_modules` renames staged output into place and restores a backup on write failure | `node_modules` and sibling backup | staged replacement success plus extract/link failure recovery tests | conforms | #81 may add a direct replacement-failure fixture |
 | integrity gate | installer records `dist.integrity` or `dist.shasum` and verifies supported metadata before extraction | lockfile metadata and cached tarball bytes | lockfile, registry metadata, and integrity failure fixture tests | conforms | none after #89 |
 
+## M4 Side-Effect Audit
+
+The 2026-08-07 M4 audit re-checks installer phase side effects after the M4
+measurement and deduplication work (#92 contract and gap audit, #93 metadata-read
+counter, #94 graph dedup proof, #103 tarball download counter). M4 adds no
+production install behavior: all measurement instrumentation is `#[cfg(test)]`-only
+recording inside the fake registry API, and the deduplication proofs exercise
+behavior the resolver already had. The audit confirms M3 recovery guarantees are
+not weakened and classifies each phase against its owning SPEC.
+
+| Phase | Owning SPEC(s) | M4 change | Side-effect status | Current tests | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| read manifest | manifest | none | `package.json` read only | manifest parser tests and install fixture copy tests | conforms |
+| resolve graph | resolver, lockfile | none (dedup proven, not added) | in-memory graph; no output writes before resolution | resolver tests; #94 graph proof (`graph.packages().len() == 3`); #103 download proof | conforms |
+| fetch/cache | cache, performance | measurement only (`#[cfg(test)]` counters) | `.rpm/.cache` staged write plus rename; metadata reads side-effect free | registry cache tests; #103 tarball download counter; #93 metadata-read counter | conforms |
+| verify (integrity) | performance | none | lockfile metadata and cached tarball bytes; failure blocks extraction | lockfile, registry metadata, and integrity failure fixture tests | conforms |
+| extract | recovery, linker | none | temporary sibling staging directory | linker extract-failure recovery tests | conforms |
+| link | recovery, linker | none | temporary sibling staging directory | linker missing-target recovery tests | conforms |
+| write lockfile | lockfile, recovery | none | `rpm.lock` and sibling backup; restore on later failure | lockfile save tests and output-failure install fixture | conforms |
+| write manifest | manifest, recovery | none | `package.json` and sibling backup; restore on later failure | manifest save tests, read-only manifest test, output-failure install fixture | conforms |
+| replace output | recovery | none | rename staged output into place; backup restore on write failure | staged replacement success and extract/link failure recovery tests | conforms |
+
+Findings:
+
+- M4 introduces no production side effects. The metadata-read counter (#93) and
+  tarball download counter (#103) are `#[cfg(test)]`-only and record inside the
+  `RPM_REGISTRY_FIXTURE_ROOT`-gated branches of `get_registry` and `get_tarball`;
+  production reads and downloads never reach them.
+- Failed graph resolution stays side-effect free: `populate_metadata` writes only
+  to in-memory `InstallMetadata`, and `resolve_dependency_graph` runs before
+  `apply_resolved_graph` touches the lockfile, manifest, cache, or `node_modules`.
+- Failed fetch, verify, extract, link, or write phases are not reported as
+  successful installs; each maps to a labeled phase error returned to the caller,
+  matching the recovery contract above.
+- Graph node uniqueness is now stated in `resolver/SPEC.md` (see the M4 gap audit
+  in `docs/specs/core/README.md`), and the dedup proofs (#94, #103) confirm the
+  resolved graph and cache represent a selected package/version once, consistent
+  with the cache SPEC's version-keyed filename.
+- No phase is stale, no contract is changed by M4, and no phase lacks SPEC
+  ownership. No new follow-up issue is required from this audit.
+
 ## Test Fixtures
 
 Recovery verification should cover staged replacement success plus resolve,
