@@ -42,7 +42,8 @@ Findings:
 - Graph node uniqueness was implied by the resolver merge step but was not
   stated as an invariant in the owning resolver SPEC. This audit adds the
   invariant there; the dedup behavior was already proven by the resolver test
-  added in #103 and referenced by #94.
+  tracked by #94 (landed via #74). The download-dedup proof is a separate
+  install-layer test landed in #103.
 - The performance SPEC states the measurement-harness contract (metadata fetch
   and tarball download counts via a fake registry). The tarball download
   counter exists (#103); the metadata-read counter is the remaining
