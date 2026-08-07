@@ -703,6 +703,57 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn install_counts_metadata_reads_once_per_package() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root =
+            fixture_path(&["install-projects", "shared-transitive-divergent-ranges"]);
+        let project = TempProject::new("add-metadata-count").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let mut package_manifest = PackageManifest::read_from_path(&package_path).unwrap();
+        let mut lockfile = LockFile::load_from_path(project_root.join("rpm.lock")).unwrap();
+        let libs = package_manifest
+            .get_dependencies()
+            .into_iter()
+            .map(|(library_name, version)| format!("{library_name}@{version}"))
+            .collect::<Vec<_>>();
+        let cache_dir = project_root.join(".rpm").join(".cache");
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        api::test_support::reset_metadata_read_counts();
+        add_with_cache_dir(
+            &mut package_manifest,
+            &mut lockfile,
+            libs,
+            false,
+            false,
+            &cache_dir,
+        )
+        .await
+        .expect("divergent range fixture should install offline");
+
+        // `add_with_cache_dir` fetches each package's metadata exactly once:
+        // `populate_metadata` dedupes by package name before version selection,
+        // and it loads metadata through `api::get_registry`, which the fake
+        // registry harness records. This proves the measurement harness observes
+        // metadata reads independently of tarball downloads, keyed by package.
+        for package_name in [
+            "@rpm-fixture/alpha",
+            "@rpm-fixture/beta",
+            "@rpm-fixture/shared",
+        ] {
+            assert_eq!(
+                api::test_support::metadata_read_count(package_name),
+                1,
+                "expected exactly one metadata read for {package_name}; recorded reads: {:?}",
+                api::test_support::recorded_metadata_reads()
+            );
+        }
+    }
+
     /// Reads the declared range for `dependency` from a registry fixture
     /// document, so a test can guard the fixture's input shape directly.
     fn fixture_declared_range(
