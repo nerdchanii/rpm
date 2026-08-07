@@ -1,3 +1,4 @@
+# Expected-output convention: docs/conventions/install_fixture_outputs.md.
 # Direct dependency entries the install must record in `rpm.lock`.
 #
 # `@rpm-fixture/shared@1.0.0` is intentionally absent. It is reached through two
