@@ -48,6 +48,14 @@ preserves both the requested range and the selected version. The graph is the
 input to later installer phases that download tarballs, verify integrity,
 extract packages, link `node_modules`, and write lockfile or manifest state.
 
+The resolved graph contains at most one record per `<name>@<version>`. A
+package reached through several parents is merged into a single node, so a
+shared transitive package/version is represented once even when it is reached
+through different requested ranges. This node-uniqueness invariant is the basis
+for the deduplication proofs in
+`docs/specs/core/install/performance/SPEC.md`, and it is the reason later
+installer phases may download and cache a selected version at most once.
+
 Version and range satisfaction rules are owned by
 `docs/specs/core/semver/SPEC.md`. Resolver strategies call the version
 selection abstraction and record its selected version; they must not duplicate
