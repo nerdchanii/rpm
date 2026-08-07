@@ -97,8 +97,9 @@ deduplication before adding concurrency.
 Measurement runs should copy the fixture to a temporary directory before
 mutation. A measurement must record:
 
-- number of metadata fetches by package name and selected version
-- number of tarball downloads by package name and selected version
+- number of metadata fetches by package name (a registry document covers every
+  version, so version selection happens after the fetch)
+- number of tarball downloads by selected package and version
 - resolved package/version list
 - whether `rpm.lock`, `package.json`, `.rpm`, or `node_modules` were written
   before the graph was fully resolved
