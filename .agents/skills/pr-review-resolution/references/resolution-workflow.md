@@ -24,4 +24,12 @@
 
 Only `accept-now` may change code in the current PR.
 
+Cross-PR dependency awareness: the collected context may include
+`pr_sibling_pr` events describing other open PRs (number, title, branch,
+changed files, body). When a finding asserts something is "missing" or
+"not yet implemented", check whether a sibling PR introduces it. If so,
+prefer a forward-looking `accept-now` reword that stays accurate both before
+and after that sibling lands (e.g. "tracked by #N, landing in #<sibling>");
+otherwise defer. This avoids classifying a real dependency as a defect.
+
 If validation fails after an accepted change, stop and return a blocked result with the failing command and log summary.

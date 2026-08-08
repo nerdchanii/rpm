@@ -256,6 +256,17 @@ jq -n \
   }
 ' > "${tmp_dir}/review-context.json"
 
+# Sibling open PRs (cross-PR dependency context). Excludes this PR itself.
+# Lets a resolver/reviewer see what other still-open PRs introduce or cite,
+# e.g. a counter that "does not exist yet" because it lands in another PR.
+gh pr list --state open --json number,title,headRefName,baseRefName,files,body 2>/dev/null \
+  | jq --argjson self "${pr_number}" \
+       '[.[] | select(.number != $self)
+              | {number,title,headRefName,baseRefName,
+                 files:[.files[].path],
+                 body:((.body // "")[:600])}]' \
+  > "${tmp_dir}/sibling-prs.json" 2>/dev/null || printf '[]' > "${tmp_dir}/sibling-prs.json"
+
 if [ "${format}" = "json" ]; then
   cat "${tmp_dir}/review-context.json"
   exit 0
@@ -280,6 +291,7 @@ if [ "${format}" = "jsonl" ]; then
     }}),
     (.reviewThreads[]? as $thread | $thread.comments.nodes[]? | {type:"pr_review_thread_comment", thread_id:$thread.id, data:.})
   ' "${tmp_dir}/review-context.json"
+  jq -c '.[] | {type:"pr_sibling_pr", data:.}' "${tmp_dir}/sibling-prs.json" 2>/dev/null || true
   exit 0
 fi
 
@@ -357,3 +369,13 @@ jq -r '
     end
   )
 ' "${tmp_dir}/review-context.json"
+
+echo ""
+echo "## Sibling Open PRs (cross-PR dependency context)"
+if [ -s "${tmp_dir}/sibling-prs.json" ] \
+  && [ "$(jq 'length' "${tmp_dir}/sibling-prs.json" 2>/dev/null || echo 0)" -gt 0 ]; then
+  jq -r '.[] | "### #\(.number) \(.title)\nbranch=\(.headRefName) base=\(.baseRefName)\nfiles: \(.files | join(", "))\nbody: \(.body)\n"' \
+    "${tmp_dir}/sibling-prs.json"
+else
+  echo "none"
+fi
