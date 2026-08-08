@@ -76,7 +76,9 @@ sync_links() {
   while IFS= read -r s; do
     [ -d "$s" ] || continue
     name="$(basename "$s")"
-    ln -sfn "$SKILLS_DIR/$name" "$CLAUDE_LINKS_DIR/$name"
+    # Relative target so the links survive across clones/CI (a machine-absolute
+    # target like /Users/.../ would dangle everywhere else).
+    ln -sfn "../../.agents/skills/$name" "$CLAUDE_LINKS_DIR/$name"
   done < <(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type d)
   local l target
   for l in "$CLAUDE_LINKS_DIR"/*; do

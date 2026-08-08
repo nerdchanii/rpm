@@ -89,17 +89,24 @@ merge_one() {
     echo "skip: mergeState=$merge_state (resolve conflicts/blocking reviews first)"; return 1
   fi
 
-  # Required checks must be green.
-  local checks_json bucket failed=()
-  checks_json="$(gh pr checks "$pr" --json name,bucket 2>/dev/null || printf '[]')"
+  # Required checks must be green. gh exits 8 while checks are pending, so
+  # capture JSON regardless of exit code and classify each required check.
+  local checks_json bucket failed=() pending=()
+  checks_json="$(gh pr checks "$pr" --json name,bucket 2>/dev/null || true)"
+  printf '%s' "$checks_json" | jq -e . >/dev/null 2>&1 || checks_json='[]'
   for c in "${required_checks[@]}"; do
-    bucket="$(printf '%s' "$checks_json" | jq -r --arg n "$c" '.[] | select(.name==$n) | .bucket // ""' | head -1)"
-    if [ "$bucket" != "pass" ]; then
-      failed+=("$c=${bucket:-missing}")
-    fi
+    bucket="$(printf '%s' "$checks_json" | jq -r --arg n "$c" '.[]? | select(.name==$n) | .bucket // ""' | head -1)"
+    case "$bucket" in
+      pass) : ;;
+      fail|failure|cancelled|timed_out|action_required) failed+=("$c=$bucket") ;;
+      *) pending+=("$c=${bucket:-pending}") ;;
+    esac
   done
   if [ "${#failed[@]}" -gt 0 ]; then
-    echo "skip: required checks not green: ${failed[*]}"; return 1
+    echo "skip: required checks failed: ${failed[*]}"; return 1
+  fi
+  if [ "${#pending[@]}" -gt 0 ]; then
+    echo "skip: required checks pending: ${pending[*]} (retry shortly)"; return 1
   fi
 
   # Best-effort unresolved-thread check (P0/P1 proxy). gh --json reviewThreads
