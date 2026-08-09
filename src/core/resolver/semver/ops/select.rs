@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use crate::core::resolver::semver::options::version_options_from_range;
 use crate::core::resolver::semver::range::Range;
 use crate::core::resolver::semver::version::compare::compare_build_versions;
@@ -68,7 +70,12 @@ where
             continue;
         }
         match &selected {
-            Some((_, selected_version)) if version <= *selected_version => {}
+            // Build metadata is ignored by `Version::cmp`, so equal-precedence
+            // candidates (keys differing only in build metadata) are broken by
+            // `compare_build_versions` to keep `max_satisfying` deterministic
+            // regardless of the `versions` map iteration order.
+            Some((_, selected_version))
+                if compare_build_versions(&version, selected_version) != Ordering::Greater => {}
             _ => selected = Some((raw_version, version)),
         }
     }
@@ -101,7 +108,12 @@ where
             continue;
         }
         match &selected {
-            Some((_, selected_version)) if version >= *selected_version => {}
+            // Build metadata is ignored by `Version::cmp`, so equal-precedence
+            // candidates (keys differing only in build metadata) are broken by
+            // `compare_build_versions` to keep `min_satisfying` deterministic
+            // regardless of the `versions` map iteration order.
+            Some((_, selected_version))
+                if compare_build_versions(&version, selected_version) != Ordering::Less => {}
             _ => selected = Some((raw_version, version)),
         }
     }

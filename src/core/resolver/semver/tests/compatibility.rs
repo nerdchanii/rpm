@@ -285,6 +285,46 @@ fn selects_highest_and_lowest_satisfying_versions() {
 }
 
 #[test]
+fn breaks_build_metadata_ties_deterministically_regardless_of_input_order() {
+    // `Version::cmp` ignores build metadata, so these three keys share equal
+    // precedence. Before the build-metadata tie-break, `max_satisfying` and
+    // `min_satisfying` kept the first candidate seen, which depended on the
+    // randomized `HashMap` iteration order at the registry boundary. The
+    // tie-break makes the selected raw key repeatable across runs.
+    //
+    // `compare_build_identifiers` compares identifiers lexically, so among
+    // `+one`, `+two`, `+zulu` the order is one < two < zulu.
+    let keys = ["1.0.0+one", "1.0.0+two", "1.0.0+zulu"];
+    let permutations = [
+        ["1.0.0+one", "1.0.0+two", "1.0.0+zulu"],
+        ["1.0.0+one", "1.0.0+zulu", "1.0.0+two"],
+        ["1.0.0+two", "1.0.0+one", "1.0.0+zulu"],
+        ["1.0.0+two", "1.0.0+zulu", "1.0.0+one"],
+        ["1.0.0+zulu", "1.0.0+one", "1.0.0+two"],
+        ["1.0.0+zulu", "1.0.0+two", "1.0.0+one"],
+    ];
+    for order in permutations {
+        assert_eq!(
+            max_satisfying(order, "1.0.0").unwrap(),
+            Some("1.0.0+zulu"),
+            "max_satisfying must select the greatest build metadata for {order:?}",
+        );
+        assert_eq!(
+            min_satisfying(order, "1.0.0").unwrap(),
+            Some("1.0.0+one"),
+            "min_satisfying must select the least build metadata for {order:?}",
+        );
+    }
+    // Confirm the choice is not accidental: with a version that has clear
+    // precedence the build tie-break is never consulted.
+    let _ = keys;
+    assert_eq!(
+        max_satisfying(["1.0.0+zulu", "1.0.1+one"], "^1.0.0").unwrap(),
+        Some("1.0.1+one"),
+    );
+}
+
+#[test]
 fn rejects_invalid_ranges() {
     assert!(satisfies("1.0.0", "=>1.0.0").is_err());
     assert!(satisfies("1.0.0", "1..2").is_err());
