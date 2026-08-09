@@ -78,16 +78,40 @@ enum BundledDependencies {
     Vec(Vec<String>),
 }
 
+/// Deserialize an ignored metadata field leniently: a missing or null value
+/// yields `None`, and a present-but-wrong-type value (for example `name: {}` or
+/// `description: 42`) is discarded as `None` rather than failing the whole
+/// packument. This honors the SPEC guarantee that ignored fields tolerate both
+/// absence and shape mismatch during deserialization (see issue #113). The
+/// target type is the inner `Option<T>` value (not the wrapping `Option`).
+fn ignored_field<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    // First read the value as an opaque JSON value so a type mismatch surfaces
+    // as a recoverable error rather than aborting the surrounding struct.
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    match T::deserialize(value) {
+        Ok(parsed) => Ok(Some(parsed)),
+        Err(_) => Ok(None),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Version {
     // Ignored metadata fields: deserialized for document fidelity when present
-    // but never consumed by an active code path. `#[serde(default)]` keeps a
-    // missing or null value from failing packument parsing (see issue #113).
-    #[serde(default)]
+    // but never consumed by an active code path. `ignored_field` keeps a
+    // missing, null, or wrong-type value from failing packument parsing, in
+    // line with the SPEC tolerance guarantee for ignored fields (issue #113).
+    #[serde(default, deserialize_with = "ignored_field")]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "ignored_field")]
     pub version: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "ignored_field")]
     pub description: Option<String>,
     pub main: Option<String>,
     pub types: Option<String>,
@@ -223,11 +247,12 @@ pub struct Registry {
     pub versions: Option<HashMap<String, Version>>,
     pub time: Option<Time>,
     // Ignored metadata fields: deserialized for document fidelity when present
-    // but never consumed by an active code path. `#[serde(default)]` keeps a
-    // missing or null value from failing packument parsing (see issue #113).
-    #[serde(default)]
+    // but never consumed by an active code path. `ignored_field` keeps a
+    // missing, null, or wrong-type value from failing packument parsing, in
+    // line with the SPEC tolerance guarantee for ignored fields (issue #113).
+    #[serde(default, deserialize_with = "ignored_field")]
     pub maintainers: Option<Vec<Maintainer>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "ignored_field")]
     pub description: Option<String>,
     pub homepage: Option<Url>,
     pub keywords: Option<Vec<String>>,
@@ -1393,5 +1418,87 @@ mod tests {
         );
 
         assert_eq!(registry.select_version("latest").unwrap(), "1.0.0");
+    }
+
+    #[test]
+    fn tolerates_wrong_type_on_ignored_root_and_version_string_fields() {
+        // SPEC: ignored fields tolerate not only absence but also shape
+        // mismatch, so a present-but-wrong-type value (object/number where a
+        // string is expected) must be discarded rather than failing the whole
+        // packument. Covers root `description`, root `maintainers`, and the
+        // per-version `name`, `version`, `description` fields.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "wrong-type",
+              "name": "wrong-type",
+              "description": 42,
+              "maintainers": "not-a-list",
+              "dist-tags": {
+                "latest": "1.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": {},
+                  "version": 7,
+                  "description": false,
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/wrong-type/-/wrong-type-1.0.0.tgz",
+                    "shasum": "fixture-wrong-type"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        // Wrong-type ignored values are discarded: parsing did not fail, and
+        // the fields deserialize to None.
+        assert!(registry.description.is_none());
+        assert!(registry.maintainers.is_none());
+        let version = registry.version_metadata("1.0.0").unwrap();
+        assert_eq!(version.name, None);
+        assert_eq!(version.version, None);
+        assert_eq!(version.description, None);
+        assert_eq!(registry.select_version("latest").unwrap(), "1.0.0");
+        assert_eq!(
+            registry
+                .get_dist_for_version("1.0.0")
+                .unwrap()
+                .shasum
+                .as_deref(),
+            Some("fixture-wrong-type")
+        );
+    }
+
+    #[test]
+    fn preserves_well_typed_ignored_string_fields() {
+        // A correct value must still round-trip into Some(...) — the lenient
+        // deserializer only discards wrong-type values, not valid ones.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "well-typed",
+              "name": "well-typed",
+              "description": "root desc",
+              "maintainers": [{ "name": "ada" }],
+              "dist-tags": { "latest": "1.0.0" },
+              "versions": {
+                "1.0.0": {
+                  "name": "well-typed",
+                  "version": "1.0.0",
+                  "description": "version desc",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/well-typed/-/well-typed-1.0.0.tgz",
+                    "shasum": "fixture-well-typed"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        assert_eq!(registry.description.as_deref(), Some("root desc"));
+        assert_eq!(registry.maintainers.as_ref().map(|m| m.len()), Some(1usize));
+        let version = registry.version_metadata("1.0.0").unwrap();
+        assert_eq!(version.name.as_deref(), Some("well-typed"));
+        assert_eq!(version.version.as_deref(), Some("1.0.0"));
+        assert_eq!(version.description.as_deref(), Some("version desc"));
     }
 }

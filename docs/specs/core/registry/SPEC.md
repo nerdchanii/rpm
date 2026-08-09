@@ -138,19 +138,21 @@ verification:
 
 Ignored means RPM may accept documents that carry these fields, but no active
 behavior depends on them. An ignored field that is invalid or missing must not
-fail resolution or install: ignored fields are deserialized leniently
-(`#[serde(default)]`, `Option<...>`, or an untagged shape-tolerant type) so a
+fail resolution or install: ignored fields are deserialized leniently so a
 packument that omits or malforms them still parses. Specifically, root
-`description`, root `maintainers`, the per-version `name`, `version`, and
-`description` fields, and `bundledDependencies` (accepted as either a map or an
-array, matching npm) tolerate absence and shape mismatch during deserialization.
+`description`, root `maintainers`, and the per-version `name`, `version`, and
+`description` fields tolerate both absence and any wrong-type value: a
+present-but-shape-mismatched value is discarded as absent during deserialization
+rather than failing the packument. `bundledDependencies` is modeled as an
+untagged enum that accepts either a map (package name to range) or an array
+(package names), matching npm, so it tolerates absence and either documented
+shape.
 
-Ignored fields that are present-but-shape-mismatched against one of the
-documented alternative shapes are accepted through an untagged enum
-(`bundledDependencies`, `engines`); a value that matches none of the documented
-shapes for a given ignored field may still fail parsing, because the field is
-not modeled as a free-form `serde_json::Value`. Such a failure reflects an
-unrecognized document shape rather than a consumed-field contract violation.
+A value that matches none of the documented shapes for a field with a fixed
+alternative set (`bundledDependencies`, `engines`) may still fail parsing,
+because those fields are not modeled as a free-form `serde_json::Value`. Such a
+failure reflects an unrecognized document shape rather than a consumed-field
+contract violation.
 
 ### Unsupported metadata behavior
 
