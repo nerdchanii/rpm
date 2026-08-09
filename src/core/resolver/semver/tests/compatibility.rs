@@ -285,42 +285,41 @@ fn selects_highest_and_lowest_satisfying_versions() {
 }
 
 #[test]
-fn breaks_build_metadata_ties_deterministically_regardless_of_input_order() {
-    // `Version::cmp` ignores build metadata, so these three keys share equal
-    // precedence. Before the build-metadata tie-break, `max_satisfying` and
-    // `min_satisfying` kept the first candidate seen, which depended on the
-    // randomized `HashMap` iteration order at the registry boundary. The
-    // tie-break makes the selected raw key repeatable across runs.
-    //
-    // `compare_build_identifiers` compares identifiers lexically, so among
-    // `+one`, `+two`, `+zulu` the order is one < two < zulu.
-    let keys = ["1.0.0+one", "1.0.0+two", "1.0.0+zulu"];
-    let permutations = [
-        ["1.0.0+one", "1.0.0+two", "1.0.0+zulu"],
-        ["1.0.0+one", "1.0.0+zulu", "1.0.0+two"],
-        ["1.0.0+two", "1.0.0+one", "1.0.0+zulu"],
-        ["1.0.0+two", "1.0.0+zulu", "1.0.0+one"],
-        ["1.0.0+zulu", "1.0.0+one", "1.0.0+two"],
-        ["1.0.0+zulu", "1.0.0+two", "1.0.0+one"],
-    ];
-    for order in permutations {
-        assert_eq!(
-            max_satisfying(order, "1.0.0").unwrap(),
-            Some("1.0.0+zulu"),
-            "max_satisfying must select the greatest build metadata for {order:?}",
-        );
-        assert_eq!(
-            min_satisfying(order, "1.0.0").unwrap(),
-            Some("1.0.0+one"),
-            "min_satisfying must select the least build metadata for {order:?}",
-        );
-    }
-    // Confirm the choice is not accidental: with a version that has clear
-    // precedence the build tie-break is never consulted.
-    let _ = keys;
+fn keeps_first_seen_on_equal_precedence_like_node_semver() {
+    // `Version::cmp` ignores build metadata, so keys that differ only in build
+    // metadata share equal precedence. The public semver facade keeps
+    // node-semver's first-matching behavior for such keys: the selected raw key
+    // is whichever satisfying candidate is iterated first, not the
+    // greatest/least build metadata. This guards against reintroducing an
+    // RPM-specific build-metadata tie-break in the facade
+    // (`docs/specs/core/semver/SPEC.md` forbids a permanent RPM-specific semver
+    // dialect). Determinism across the randomized registry `HashMap` is owned
+    // at the registry boundary (`Registry::select_version` sorts the raw keys
+    // before calling `max_satisfying`).
+    assert_eq!(
+        max_satisfying(["1.0.0+zulu", "1.0.0+one"], "1.0.0").unwrap(),
+        Some("1.0.0+zulu"),
+        "max_satisfying must keep the first-seen equal-precedence key",
+    );
+    assert_eq!(
+        max_satisfying(["1.0.0+one", "1.0.0+zulu"], "1.0.0").unwrap(),
+        Some("1.0.0+one"),
+        "max_satisfying must keep the first-seen equal-precedence key",
+    );
+    assert_eq!(
+        min_satisfying(["1.0.0+zulu", "1.0.0+one"], "1.0.0").unwrap(),
+        Some("1.0.0+zulu"),
+        "min_satisfying must keep the first-seen equal-precedence key",
+    );
+    // Clear precedence is never affected by iteration order: the higher (max) /
+    // lower (min) precedence version always wins over build metadata.
     assert_eq!(
         max_satisfying(["1.0.0+zulu", "1.0.1+one"], "^1.0.0").unwrap(),
         Some("1.0.1+one"),
+    );
+    assert_eq!(
+        min_satisfying(["1.0.1+one", "1.0.0+zulu"], "^1.0.0").unwrap(),
+        Some("1.0.0+zulu"),
     );
 }
 

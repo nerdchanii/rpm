@@ -354,7 +354,21 @@ impl Registry {
                     range: requested.to_string(),
                 });
         };
-        let selected = semver::max_satisfying(versions.keys().map(String::as_str), requested)?;
+        // `versions` is deserialized into a randomized `HashMap`, but
+        // `max_satisfying` keeps the first candidate on equal precedence
+        // (`Version::cmp` ignores build metadata, so keys that differ only in
+        // build metadata such as `1.0.0+one` and `1.0.0+two` are equal).
+        // Feeding the keys in `HashMap` order would therefore select whichever
+        // raw key the map happens to yield first, making the lockfile
+        // non-repeatable across runs. Sorting the raw keys before selection
+        // makes the iteration order — and therefore the first-seen-wins choice
+        // — deterministic, while preserving node-semver's public facade
+        // behavior (no RPM-specific semver dialect; see
+        // `docs/specs/core/semver/SPEC.md`). This tie-break is owned at the
+        // registry boundary, not in the semver facade.
+        let mut keys: Vec<&str> = versions.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let selected = semver::max_satisfying(keys, requested)?;
         selected
             .map(str::to_string)
             .ok_or_else(|| SemverError::UnsatisfiedRange {
@@ -1799,5 +1813,93 @@ mod tests {
 
         // A present version key is unaffected.
         assert_eq!(registry.select_version("1.0.0").unwrap(), "1.0.0");
+    }
+
+    #[test]
+    fn select_version_is_deterministic_for_build_metadata_only_keys() {
+        // `Version::cmp` ignores build metadata, so these keys share equal
+        // precedence. `max_satisfying` keeps the first candidate seen
+        // (node-semver behavior); the `versions` map is a randomized `HashMap`,
+        // so without a stable candidate ordering the selected raw key would
+        // vary across process runs and produce a different lockfile. The
+        // registry boundary sorts the raw keys before selection, so
+        // first-seen-wins always lands on the least raw key — here
+        // `1.0.0+one` (`one` < `two` < `zulu` lexicographically).
+        let registry = registry_from_json(
+            r#"{
+              "_id": "build-metadata",
+              "name": "build-metadata",
+              "dist-tags": { "latest": "1.0.0+one" },
+              "versions": {
+                "1.0.0+one": {
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/build-metadata/-/build-metadata-1.0.0+one.tgz",
+                    "shasum": "fixture-one"
+                  }
+                },
+                "1.0.0+two": {
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/build-metadata/-/build-metadata-1.0.0+two.tgz",
+                    "shasum": "fixture-two"
+                  }
+                },
+                "1.0.0+zulu": {
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/build-metadata/-/build-metadata-1.0.0+zulu.tgz",
+                    "shasum": "fixture-zulu"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        // A range matching all three equal-precedence keys selects the least
+        // raw key deterministically, regardless of HashMap iteration order.
+        assert_eq!(
+            registry.select_version("1.0.0").unwrap(),
+            "1.0.0+one",
+            "equal-precedence build-metadata keys must resolve to the least raw key"
+        );
+        // A caret range over the same tuple behaves identically.
+        assert_eq!(registry.select_version("^1.0.0").unwrap(), "1.0.0+one");
+    }
+
+    #[test]
+    fn select_version_sorts_candidates_without_changing_precedence_results() {
+        // Sorting candidates must not change the result when versions differ in
+        // precedence: the highest matching version still wins, regardless of
+        // build metadata or key order. This proves the sort is purely a
+        // tie-break for equal-precedence keys, not a precedence change.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "precedence",
+              "name": "precedence",
+              "dist-tags": { "latest": "1.0.1+zulu" },
+              "versions": {
+                "1.0.0+zulu": {
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/precedence/-/precedence-1.0.0+zulu.tgz",
+                    "shasum": "fixture-100z"
+                  }
+                },
+                "1.0.1+one": {
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/precedence/-/precedence-1.0.1+one.tgz",
+                    "shasum": "fixture-101o"
+                  }
+                },
+                "1.0.1+zulu": {
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/precedence/-/precedence-1.0.1+zulu.tgz",
+                    "shasum": "fixture-101z"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        // `1.0.1` has clear precedence over `1.0.0`, and among the two
+        // `1.0.1+*` equal-precedence keys the least raw key wins.
+        assert_eq!(registry.select_version("^1.0.0").unwrap(), "1.0.1+one");
     }
 }
