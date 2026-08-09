@@ -74,8 +74,8 @@ and performance SPECs.
 
 The 2026-08-07 M4 audit re-checks installer phase side effects after the M4
 measurement and deduplication work (#92 contract and gap audit, #94 graph dedup
-proof, #103 tarball download counter; #93 adds a metadata-read counter, landing
-in #106). M4 adds no
+proof, #103 tarball download counter, #93 metadata-read counter landed via
+#106). M4 adds no
 production install behavior: all measurement instrumentation is `#[cfg(test)]`-only
 recording inside the fake registry API, and the deduplication proofs exercise
 behavior the resolver already had. The audit confirms M3 recovery guarantees are
@@ -85,7 +85,7 @@ not weakened and classifies each phase against its owning SPEC.
 | --- | --- | --- | --- | --- | --- |
 | read manifest | manifest | none | `package.json` read only | manifest parser tests and install fixture copy tests | conforms |
 | resolve graph | resolver, lockfile | none (dedup proven, not added) | in-memory graph; no output writes before resolution | resolver tests; #94 graph proof (`graph.packages().len() == 3`); #103 download proof | conforms |
-| fetch/cache | cache, performance | measurement only (`#[cfg(test)]` counters) | `.rpm/.cache` staged write plus rename; metadata reads side-effect free | registry cache tests; #103 tarball download counter (the #93 metadata-read counter is not yet implemented; landing in #106) | conforms |
+| fetch/cache | cache, performance | measurement only (`#[cfg(test)]` counters) | `.rpm/.cache` staged write plus rename; metadata reads side-effect free | registry cache tests; #103 tarball download counter; #93 metadata-read counter (landed via #106) | conforms |
 | verify (integrity) | performance | none | lockfile metadata and cached tarball bytes; failure blocks extraction | lockfile, registry metadata, and integrity failure fixture tests | conforms |
 | extract | recovery, linker | none | temporary sibling staging directory | linker extract-failure recovery tests | conforms |
 | link | recovery, linker | none | temporary sibling staging directory | linker missing-target recovery tests | conforms |
@@ -98,7 +98,7 @@ Findings:
 - M4 introduces no production side effects. The tarball download counter (#103) is
   `#[cfg(test)]`-only and records inside the `RPM_REGISTRY_FIXTURE_ROOT`-gated
   branch of `get_tarball`; production downloads never reach it. The metadata-read
-  counter (#93), landing in #106, will record inside the corresponding branch of
+  counter (#93, landed via #106) records inside the corresponding branch of
   `get_registry` and is likewise test-only.
 - Failed graph resolution stays side-effect free: `populate_metadata` writes only
   to in-memory `InstallMetadata`, and `resolve_dependency_graph` runs before
