@@ -11,6 +11,7 @@ Current core contracts:
 - `manifest/SPEC.md`
 - `semver/SPEC.md`
 - `resolver/SPEC.md`
+- `registry/SPEC.md`
 - `lockfile/SPEC.md`
 - `install/cache/SPEC.md`
 - `install/recovery/SPEC.md`
