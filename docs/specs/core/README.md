@@ -23,7 +23,8 @@ The 2026-08-07 M4 audit maps each M4 behavior area to its owning SPEC/ADR and
 records whether the contract is explicitly stated. M4 is a measurement and
 deduplication milestone: it must observe duplicate graph nodes and duplicate
 downloads deterministically before expanding npm compatibility or adding
-concurrency.
+concurrency. All follow-up tickets below landed and merged to `main`; M4 is
+complete.
 
 | M4 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
@@ -33,8 +34,8 @@ concurrency.
 | cache behavior | `install/cache/SPEC.md` | staged write plus same-directory rename publication; metadata reads are side-effect free | none |
 | lockfile preservation | `lockfile/SPEC.md` | `<name>@<version>` key; requested range and selected version recorded as separate fields | none |
 | manifest reads | `manifest/SPEC.md` | `package.json` read and save contract | none |
-| recovery behavior | `install/recovery/SPEC.md` | staged `node_modules` replacement, phase labels (`resolve|fetch|extract|link|write`), M3 side-effect audit table | #96 adds the M4 side-effect audit |
-| measurement harness | `install/performance/SPEC.md`, ADR 0005 | harness records metadata fetch and tarball download counts through a fake registry API owned by the install domain | #93 adds the metadata-read counter; the tarball download counter landed in #103 |
+| recovery behavior | `install/recovery/SPEC.md` | staged `node_modules` replacement, phase labels (`resolve|fetch|extract|link|write`), M3 and M4 side-effect audit tables | #96 added the M4 side-effect audit (completed, landed via #107) |
+| measurement harness | `install/performance/SPEC.md`, ADR 0005 | harness records metadata fetch and tarball download counts through a fake registry API owned by the install domain | #93 added the metadata-read counter (completed, landed via #106); the tarball download counter landed in #103 |
 
 Findings:
 
@@ -45,10 +46,10 @@ Findings:
   tracked by #94 (landed via #74). The download-dedup proof is a separate
   install-layer test landed in #103.
 - The performance SPEC states the measurement-harness contract (metadata fetch
-  and tarball download counts via a fake registry). The tarball download
-  counter exists (#103); the metadata-read counter is the remaining
-  implementation gap, tracked by #93.
-- The M4 delivery order is already decomposed into phase-isolated tickets:
-  #93 (measurement harness), #94 (graph dedup proof, completed), #103 (download
-  dedup proof, completed), #96 (phase side-effect audit), and #97 (fixture
-  output convention).
+  and tarball download counts via a fake registry). Both counters are now
+  implemented: the tarball download counter (#103) and the metadata-read
+  counter (#93, landed via #106).
+- The M4 delivery order was decomposed into phase-isolated tickets, all
+  completed: #93 (measurement harness, landed via #106), #94 (graph dedup
+  proof), #103 (download dedup proof), #96 (phase side-effect audit, landed
+  via #107), and #97 (fixture output convention, landed via #108).
