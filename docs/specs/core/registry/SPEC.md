@@ -52,11 +52,13 @@ RPM reads two shapes of registry document:
 
 1. A full packument with a `versions` map keyed by version string plus a
    `dist-tags` map. This is the primary shape; the selected version's
-   `Version` record supplies dependencies and dist metadata.
+   `Version` record supplies dependencies and dist metadata. A version key that
+   is absent from the map is never substituted with root fields — the lookup
+   fails (see "Legacy root fallbacks" and "Unsupported metadata behavior").
 2. A legacy single-version shape that carries a top-level `version`, `dist`,
-   and `dependencies`. RPM consults these root fields as a fallback whenever a
-   per-version lookup misses (including when `versions` is absent). See
-   "Legacy root fallbacks" below for the exact fallback conditions.
+   and `dependencies` and no `versions` map. Root fields are the authoritative
+   record for this shape and are consulted in place of per-version metadata
+   (see "Legacy root fallbacks").
 
 ### Consumed metadata fields
 
@@ -198,7 +200,15 @@ Version selection precedence at the registry boundary:
 
 1. An empty request or `latest` resolves to the root `version` fallback when
    present; otherwise to the `latest` dist-tag when present. (The current
-   implementation checks root `version` before `dist-tags.latest`.)
+   implementation checks root `version` before `dist-tags.latest`.) The resolved
+   target is then subject to the same membership guard as step 2: it is returned
+   only when it exists in the `versions` map, or when no `versions` map is
+   present (legacy single-version shape). When a `versions` map is present but
+   the resolved target is absent from it, the request is rejected as
+   unsatisfiable rather than returning a version key with no per-version
+   metadata. This is what gates a dangling `latest` tag (and bare dependency
+   requests, which are normalized to `latest`) the same way an explicit dist-tag
+   is gated (issue #114).
 2. A request matching any `dist-tags` key resolves to that tag's target version
    string only when the target exists in the `versions` map, or when no
    `versions` map is present (legacy single-version shape). When a `versions`
