@@ -16,6 +16,7 @@ related_issues:
   - 50
   - 110
   - 113
+  - 114
 ---
 
 # Spec: Registry Metadata
@@ -51,11 +52,13 @@ RPM reads two shapes of registry document:
 
 1. A full packument with a `versions` map keyed by version string plus a
    `dist-tags` map. This is the primary shape; the selected version's
-   `Version` record supplies dependencies and dist metadata.
+   `Version` record supplies dependencies and dist metadata. A version key that
+   is absent from the map is never substituted with root fields — the lookup
+   fails (see "Legacy root fallbacks" and "Unsupported metadata behavior").
 2. A legacy single-version shape that carries a top-level `version`, `dist`,
-   and `dependencies`. RPM consults these root fields as a fallback whenever a
-   per-version lookup misses (including when `versions` is absent). See
-   "Legacy root fallbacks" below for the exact fallback conditions.
+   and `dependencies` and no `versions` map. Root fields are the authoritative
+   record for this shape and are consulted in place of per-version metadata
+   (see "Legacy root fallbacks").
 
 ### Consumed metadata fields
 
@@ -71,21 +74,23 @@ Root document (`Registry`):
 - `versions`: map of version string to per-version `Version` record. The keys
   are the candidate version set for semver range selection.
 
-Legacy root fallbacks. RPM consults these root fields whenever a per-version
-lookup misses — that is, when the selected version key is not present in the
-`versions` map (including the case where `versions` is entirely absent):
+Legacy root fallbacks. RPM consults these root fields only for the legacy
+single-version shape — that is, when the `versions` map is entirely absent. When
+a `versions` map is present, a version key missing from the map is never
+silently substituted with root fields; the lookup fails instead (see
+"Unsupported metadata behavior"):
 
 - `version`: the single published version. Used by `latest`/empty selection
   ahead of `dist-tags.latest` (see "Registry Boundary").
-- `dist`: root-level dist metadata used when `get_dist_for_version` misses the
-  `versions` map.
+- `dist`: root-level dist metadata used when `get_dist_for_version` is consulted
+  for the legacy shape (no `versions` map).
 - `dependencies`: root-level dependency map used when
-  `get_dependencies_for_version` misses the `versions` map.
+  `get_dependencies_for_version` is consulted for the legacy shape (no
+  `versions` map).
 
-Note: because a dist-tag target is returned without checking the `versions` map
-(see "Registry Boundary"), a tag pointing at a version absent from the map also
-falls through to these root fields. Tightening this gating is tracked as a
-follow-up (see "Open Questions").
+Because root fallbacks are gated on the absence of the `versions` map, a
+dist-tag target absent from the map is rejected at selection time rather than
+falling through to root `dist`/`dependencies` (see "Registry Boundary").
 
 Per-version record (`Version`):
 
@@ -105,9 +110,9 @@ Distribution record (`Dist`):
 - `tarball`: tarball download URL. `Dist` (and therefore `Version.dist`) is a
   non-optional Serde field, so any `versions` entry that omits `dist` or
   `dist.tarball` fails packument parsing before version selection. The
-  post-selection "no tarball" path is therefore reached only when the selected
-  version key is absent from the `versions` map and no root `dist` fallback is
-  available; the fetch phase then fails before any network request.
+  post-selection "no tarball" path is reached when the selected version key is
+  absent from the `versions` map (root fallback no longer applies once a
+  `versions` map exists); the fetch phase then fails before any network request.
 - `integrity`: Subresource Integrity value. Authoritative when present. The
   supported algorithm is `sha512`. RPM may select any matching `sha512` token
   when the value contains multiple whitespace-separated tokens.
@@ -158,10 +163,17 @@ contract violation.
 
 RPM rejects the following as input errors rather than silently proceeding:
 
+- A dist-tag whose target version string is absent from the `versions` map when
+  a `versions` map is present. The tag is treated as unsatisfiable (a resolver
+  failure) rather than returning a version key with no per-version metadata.
+  This prevents a tag from silently selecting root `dist`/`dependencies` under
+  an unrelated version key (issue #114). When no `versions` map is present
+  (legacy single-version shape), the tag target resolves normally via root
+  fields.
 - A selected version with no `tarball` URL reachable after version selection
-  (i.e. the version key is absent from the `versions` map and no root `dist`
-  fallback exists). The download phase must return an error instead of writing a
-  placeholder cache file (owned with
+  (i.e. the version key is absent from the `versions` map; root `dist` no longer
+  applies once a `versions` map exists). The download phase must return an error
+  instead of writing a placeholder cache file (owned with
   `docs/specs/core/install/cache/SPEC.md`). Note that an entry inside the
   `versions` map with a missing `dist` or `dist.tarball` is rejected earlier,
   during Serde parsing of the packument.
@@ -188,11 +200,22 @@ Version selection precedence at the registry boundary:
 
 1. An empty request or `latest` resolves to the root `version` fallback when
    present; otherwise to the `latest` dist-tag when present. (The current
-   implementation checks root `version` before `dist-tags.latest`.)
+   implementation checks root `version` before `dist-tags.latest`.) The resolved
+   target is then subject to the same membership guard as step 2: it is returned
+   only when it exists in the `versions` map, or when no `versions` map is
+   present (legacy single-version shape). When a `versions` map is present but
+   the resolved target is absent from it, the request is rejected as
+   unsatisfiable rather than returning a version key with no per-version
+   metadata. This is what gates a dangling `latest` tag (and bare dependency
+   requests, which are normalized to `latest`) the same way an explicit dist-tag
+   is gated (issue #114).
 2. A request matching any `dist-tags` key resolves to that tag's target version
-   string, returned without checking that the target exists in the `versions`
-   map. Downstream lookups then fall through to root fields when the target is
-   absent from the map (see "Legacy root fallbacks").
+   string only when the target exists in the `versions` map, or when no
+   `versions` map is present (legacy single-version shape). When a `versions`
+   map is present but the target is absent from it, the tag is rejected as
+   unsatisfiable rather than returning a version key with no per-version
+   metadata. This prevents a tag from silently selecting root `dist`/
+   `dependencies` under an unrelated version key (issue #114).
 3. Any other request is evaluated as a semver range against the `versions` keys
    by the semver facade. `max_satisfying` iterates the `versions` map in
    `HashMap` order and keeps the first candidate on equal precedence; because
@@ -266,9 +289,6 @@ not duplicate the contract text above.
   a peer-aware resolution strategy, platform gating, or `.bin` generation SPEC
   owns the active behavior. The linker SPEC already notes `.bin` generation is
   out of scope.
-- Gating root metadata fallbacks: rejecting dist-tag targets that are absent
-  from the `versions` map rather than silently falling through to root `dist`
-  and root `dependencies`. Tracked in #114.
 - Defining a deterministic tie-break (or stable candidate ordering) for version
   keys that differ only in build metadata, so `max_satisfying` is repeatable
   across runs. Tracked in #115.

@@ -285,15 +285,41 @@ impl Registry {
     }
 
     pub fn get_dist_for_version(&self, version: &str) -> Option<&Dist> {
-        self.version_metadata(version)
-            .map(|metadata| &metadata.dist)
-            .or(self.dist.as_ref())
+        // Root `dist` is a fallback for the legacy single-version shape, where
+        // the entire `versions` map is absent. When a `versions` map is present,
+        // a version key missing from the map must NOT silently fall through to
+        // root `dist` — that would record the root tarball under an unrelated
+        // version key (issue #114).
+        match self.version_metadata(version) {
+            Some(metadata) => Some(&metadata.dist),
+            None if self.versions.is_none() => self.dist.as_ref(),
+            None => None,
+        }
     }
 
     pub fn select_version(&self, requested: &str) -> Result<String, SemverError> {
         if requested.is_empty() || requested == "latest" {
             if let Some(version) = self.get_latest_version() {
-                return Ok(version.to_owned());
+                // `latest`/empty selection resolves to either the root
+                // `version` field or the `latest` dist-tag (see
+                // `get_latest_version`). Either source is a version string that
+                // is subject to the same membership guard as an explicit
+                // dist-tag: a `versions` map is absent (legacy single-version
+                // shape, where root fields are the only record), or the target
+                // exists in the map. When a `versions` map is present but the
+                // resolved target is absent from it, reject as unsatisfiable
+                // instead of returning a version key with no per-version
+                // metadata — otherwise bare dependency requests (which are
+                // normalized to `latest`) would bypass the dist-tag guard and
+                // record the root tarball under an unrelated version key
+                // (issue #114).
+                return if self.versions.is_none() || self.version_metadata(version).is_some() {
+                    Ok(version.to_owned())
+                } else {
+                    Err(SemverError::UnsatisfiedRange {
+                        range: requested.to_string(),
+                    })
+                };
             }
         }
         if let Some(version) = self
@@ -301,7 +327,20 @@ impl Registry {
             .as_ref()
             .and_then(|dist_tags| dist_tags.get(requested))
         {
-            return Ok(version.to_owned());
+            // A dist-tag target is only authoritative when the target version
+            // exists in the `versions` map, or when there is no `versions` map
+            // (legacy single-version shape, where root `dist`/`dependencies`
+            // are the only record). When a `versions` map is present but the
+            // target is absent from it, reject the tag as unsatisfiable instead
+            // of silently returning a version key with no per-version metadata
+            // (issue #114).
+            return if self.versions.is_none() || self.version_metadata(version).is_some() {
+                Ok(version.to_owned())
+            } else {
+                Err(SemverError::UnsatisfiedRange {
+                    range: requested.to_string(),
+                })
+            };
         }
         let Some(versions) = self.versions.as_ref() else {
             return self
@@ -324,16 +363,21 @@ impl Registry {
     }
 
     pub fn get_dependencies_for_version(&self, version: &str) -> Vec<String> {
-        self.version_metadata(version)
-            .map(|metadata| metadata.get_dependencies())
-            .unwrap_or_else(|| {
-                self.dependencies
-                    .as_ref()
-                    .iter()
-                    .flat_map(|x| x.iter())
-                    .map(|(k, v)| format!("{}@{}", k, v))
-                    .collect()
-            })
+        // Root `dependencies` is a fallback for the legacy single-version shape,
+        // where the entire `versions` map is absent. When a `versions` map is
+        // present, a version key missing from the map must NOT silently fall
+        // through to root `dependencies` (issue #114).
+        match self.version_metadata(version) {
+            Some(metadata) => metadata.get_dependencies(),
+            None if self.versions.is_none() => self
+                .dependencies
+                .as_ref()
+                .iter()
+                .flat_map(|x| x.iter())
+                .map(|(k, v)| format!("{}@{}", k, v))
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     pub fn get_tarball_name(&self) -> Option<String> {
@@ -699,6 +743,7 @@ mod tests {
         open_cache_staging_file, save_tarball_to_dir, verify_cached_tarball,
         verify_tarball_integrity, Registry,
     };
+    use crate::core::resolver::semver::SemverError;
     use crate::util::test_support::fixture_path;
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
     use sha1::Sha1;
@@ -1500,5 +1545,259 @@ mod tests {
         assert_eq!(version.name.as_deref(), Some("well-typed"));
         assert_eq!(version.version.as_deref(), Some("1.0.0"));
         assert_eq!(version.description.as_deref(), Some("version desc"));
+    }
+
+    #[test]
+    fn dist_tag_target_absent_from_versions_map_is_rejected() {
+        // Regression for issue #114: a dist-tag pointing at a version absent
+        // from the `versions` map must NOT resolve to that version when a
+        // `versions` map is present. Returning it would let downstream lookups
+        // fall through to root `dist`/`dependencies`, recording the root tarball
+        // under an unrelated version key. The tag is rejected instead.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "dangling-tag",
+              "name": "dangling-tag",
+              "description": "dangling-tag fixture",
+              "maintainers": [],
+              "dist-tags": {
+                "latest": "1.0.0",
+                "beta": "3.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "dangling-tag",
+                  "version": "1.0.0",
+                  "description": "stable",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/dangling-tag/-/dangling-tag-1.0.0.tgz",
+                    "shasum": "fixture-dangling-stable"
+                  }
+                }
+              },
+              "dist": {
+                "tarball": "https://registry.example.invalid/dangling-tag/-/dangling-tag-root.tgz",
+                "shasum": "fixture-dangling-root"
+              },
+              "dependencies": {
+                "left-pad": "^1.0.0"
+              }
+            }"#,
+        );
+
+        // The `beta` tag points at 3.0.0, which is absent from the `versions`
+        // map. Even though root `dist`/`dependencies` exist, the tag must be
+        // rejected so RPM never records the root tarball as version 3.0.0.
+        let error = registry
+            .select_version("beta")
+            .expect_err("dangling dist-tag target should be rejected");
+        assert!(matches!(error, SemverError::UnsatisfiedRange { .. }));
+
+        // `latest` (present in the map) is unaffected.
+        assert_eq!(registry.select_version("latest").unwrap(), "1.0.0");
+        assert_eq!(registry.select_version("1.0.0").unwrap(), "1.0.0");
+    }
+
+    #[test]
+    fn version_absent_from_versions_map_does_not_fall_back_to_root_fields() {
+        // Regression for issue #114: when a `versions` map is present, a version
+        // key missing from the map must not fall through to root `dist` or root
+        // `dependencies`, even if those root fields exist. Root fallbacks are
+        // reserved for the legacy single-version shape (no `versions` map).
+        let registry = registry_from_json(
+            r#"{
+              "_id": "no-fallback",
+              "name": "no-fallback",
+              "description": "no-fallback fixture",
+              "maintainers": [],
+              "dist-tags": { "latest": "1.0.0" },
+              "versions": {
+                "1.0.0": {
+                  "name": "no-fallback",
+                  "version": "1.0.0",
+                  "description": "stable",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/no-fallback/-/no-fallback-1.0.0.tgz",
+                    "shasum": "fixture-no-fallback-stable"
+                  }
+                }
+              },
+              "dist": {
+                "tarball": "https://registry.example.invalid/no-fallback/-/no-fallback-root.tgz",
+                "shasum": "fixture-no-fallback-root"
+              },
+              "dependencies": {
+                "left-pad": "^1.0.0"
+              }
+            }"#,
+        );
+
+        // 9.9.9 is absent from the `versions` map. Root `dist` must NOT be used.
+        assert!(
+            registry.get_dist_for_version("9.9.9").is_none(),
+            "absent version must not fall back to root dist when versions map exists"
+        );
+        // Root `dependencies` must NOT be used for an absent version key.
+        assert!(
+            registry.get_dependencies_for_version("9.9.9").is_empty(),
+            "absent version must not fall back to root dependencies when versions map exists"
+        );
+
+        // A present version key is unaffected and returns its own record.
+        let dist = registry.get_dist_for_version("1.0.0").unwrap();
+        assert_eq!(dist.shasum.as_deref(), Some("fixture-no-fallback-stable"));
+        assert!(registry.get_dependencies_for_version("1.0.0").is_empty());
+    }
+
+    #[test]
+    fn legacy_single_version_shape_still_uses_root_fallbacks() {
+        // The gating change must not break the legacy single-version shape,
+        // where the entire `versions` map is absent and root fields are the
+        // only metadata record. Here dist-tag targets and downstream lookups
+        // legitimately use root `dist`/`dependencies`.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "legacy-single",
+              "name": "legacy-single",
+              "version": "2.0.0",
+              "description": "legacy fixture",
+              "maintainers": [],
+              "dist-tags": { "beta": "2.0.0" },
+              "dist": {
+                "tarball": "https://registry.example.invalid/legacy-single/-/legacy-single-2.0.0.tgz",
+                "shasum": "fixture-legacy-single"
+              },
+              "dependencies": {
+                "left-pad": "^1.0.0"
+              }
+            }"#,
+        );
+
+        // No `versions` map: dist-tag target resolves to root version.
+        assert_eq!(registry.select_version("beta").unwrap(), "2.0.0");
+        assert_eq!(registry.select_version("latest").unwrap(), "2.0.0");
+        assert_eq!(registry.select_version("").unwrap(), "2.0.0");
+
+        // Root `dist`/`dependencies` are the fallback when no versions map.
+        let dist = registry.get_dist_for_version("2.0.0").unwrap();
+        assert_eq!(dist.shasum.as_deref(), Some("fixture-legacy-single"));
+        let deps = registry.get_dependencies_for_version("2.0.0");
+        assert!(deps.contains(&"left-pad@^1.0.0".to_owned()));
+    }
+
+    #[test]
+    fn dangling_latest_tag_is_rejected_via_latest_path() {
+        // Regression for issue #114 via the `latest`/empty selection path: when
+        // a `versions` map is present and `dist-tags.latest` points at a version
+        // absent from the map, `select_version("latest")` and the bare
+        // `select_version("")` request (which is normalized to the latest path)
+        // must reject the tag as unsatisfiable — not bypass the dist-tag
+        // membership guard and return a version key with no per-version
+        // metadata. Returning it would let downstream lookups fall through to
+        // root `dist`/`dependencies`, recording the root tarball under an
+        // unrelated version key.
+        //
+        // Note: there is no root `version` field here, so `get_latest_version`
+        // falls through to `dist-tags.latest`, which is the dangling target.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "dangling-latest",
+              "name": "dangling-latest",
+              "description": "dangling-latest fixture",
+              "maintainers": [],
+              "dist-tags": {
+                "latest": "3.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "dangling-latest",
+                  "version": "1.0.0",
+                  "description": "stable",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/dangling-latest/-/dangling-latest-1.0.0.tgz",
+                    "shasum": "fixture-dangling-latest-stable"
+                  }
+                }
+              },
+              "dist": {
+                "tarball": "https://registry.example.invalid/dangling-latest/-/dangling-latest-root.tgz",
+                "shasum": "fixture-dangling-latest-root"
+              },
+              "dependencies": {
+                "left-pad": "^1.0.0"
+              }
+            }"#,
+        );
+
+        // `latest` resolves to 3.0.0, which is absent from the `versions` map.
+        // It must be rejected rather than returning the dangling 3.0.0.
+        let error = registry
+            .select_version("latest")
+            .expect_err("dangling latest tag should be rejected via the latest path");
+        assert!(matches!(error, SemverError::UnsatisfiedRange { .. }));
+
+        // The bare (empty) request takes the same path and must also be
+        // rejected.
+        let error = registry
+            .select_version("")
+            .expect_err("dangling latest tag should be rejected via the empty path");
+        assert!(matches!(error, SemverError::UnsatisfiedRange { .. }));
+
+        // A present version key is unaffected.
+        assert_eq!(registry.select_version("1.0.0").unwrap(), "1.0.0");
+    }
+
+    #[test]
+    fn dangling_root_version_is_rejected_via_latest_path() {
+        // Companion to `dangling_latest_tag_is_rejected_via_latest_path`: when
+        // a `versions` map is present and the root `version` field names a
+        // version absent from the map, the `latest`/empty path must reject it
+        // too. The implementation checks root `version` before `dist-tags.latest`,
+        // so this exercises the root-version branch of the membership guard.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "dangling-root-version",
+              "name": "dangling-root-version",
+              "description": "dangling-root-version fixture",
+              "maintainers": [],
+              "version": "3.0.0",
+              "dist-tags": {
+                "latest": "3.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "dangling-root-version",
+                  "version": "1.0.0",
+                  "description": "stable",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/dangling-root-version/-/dangling-root-version-1.0.0.tgz",
+                    "shasum": "fixture-dangling-root-version-stable"
+                  }
+                }
+              },
+              "dist": {
+                "tarball": "https://registry.example.invalid/dangling-root-version/-/dangling-root-version-root.tgz",
+                "shasum": "fixture-dangling-root-version-root"
+              },
+              "dependencies": {
+                "left-pad": "^1.0.0"
+              }
+            }"#,
+        );
+
+        // Root `version` is 3.0.0, absent from the `versions` map. The
+        // `latest`/empty path must reject it instead of returning 3.0.0.
+        let error = registry
+            .select_version("latest")
+            .expect_err("dangling root version should be rejected via the latest path");
+        assert!(matches!(error, SemverError::UnsatisfiedRange { .. }));
+
+        let error = registry
+            .select_version("")
+            .expect_err("dangling root version should be rejected via the empty path");
+        assert!(matches!(error, SemverError::UnsatisfiedRange { .. }));
+
+        // A present version key is unaffected.
+        assert_eq!(registry.select_version("1.0.0").unwrap(), "1.0.0");
     }
 }
