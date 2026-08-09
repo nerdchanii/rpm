@@ -68,11 +68,27 @@ enum Engines {
     Vec(Vec<String>),
 }
 
+/// `bundledDependencies` is ignored by RPM but npm allows it as either a map
+/// (package name to range) or an array (package names). Modeled as an untagged
+/// enum so a present-but-shape-mismatched value does not fail packument parsing.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum BundledDependencies {
+    HashMap(HashMap<String, String>),
+    Vec(Vec<String>),
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Version {
-    pub name: String,
-    pub version: String,
-    pub description: String,
+    // Ignored metadata fields: deserialized for document fidelity when present
+    // but never consumed by an active code path. `#[serde(default)]` keeps a
+    // missing or null value from failing packument parsing (see issue #113).
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
     pub main: Option<String>,
     pub types: Option<String>,
     pub scripts: Option<HashMap<String, String>>,
@@ -85,7 +101,7 @@ pub struct Version {
     #[serde(rename = "optionalDependencies")]
     optional_dependencies: Option<HashMap<String, String>>,
     #[serde(rename = "bundledDependencies")]
-    bundled_dependencies: Option<HashMap<String, String>>,
+    bundled_dependencies: Option<BundledDependencies>,
     engines: Option<Engines>,
     os: Option<Vec<String>>,
     cpu: Option<Vec<String>>,
@@ -206,8 +222,13 @@ pub struct Registry {
     dist_tags: Option<DistTags>,
     pub versions: Option<HashMap<String, Version>>,
     pub time: Option<Time>,
-    pub maintainers: Vec<Maintainer>,
-    pub description: String,
+    // Ignored metadata fields: deserialized for document fidelity when present
+    // but never consumed by an active code path. `#[serde(default)]` keeps a
+    // missing or null value from failing packument parsing (see issue #113).
+    #[serde(default)]
+    pub maintainers: Option<Vec<Maintainer>>,
+    #[serde(default)]
+    pub description: Option<String>,
     pub homepage: Option<Url>,
     pub keywords: Option<Vec<String>>,
     pub repository: Option<Repository>,
@@ -227,7 +248,7 @@ pub struct Registry {
     #[serde(rename = "optionalDependencies")]
     optional_dependencies: Option<HashMap<String, String>>,
     #[serde(rename = "bundledDependencies")]
-    bundled_dependencies: Option<HashMap<String, String>>,
+    bundled_dependencies: Option<BundledDependencies>,
     version: Option<String>,
 }
 
@@ -1227,5 +1248,150 @@ mod tests {
             .select_version("=>1.0.0")
             .expect_err("invalid range should fail");
         assert!(error.to_string().contains("invalid range"));
+    }
+
+    #[test]
+    fn parses_packument_without_root_description_or_maintainers() {
+        // Root `description` and `maintainers` are ignored fields. A packument
+        // that omits them must still deserialize and resolve the version.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "bare-root",
+              "name": "bare-root",
+              "dist-tags": {
+                "latest": "1.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "bare-root",
+                  "version": "1.0.0",
+                  "description": "version fixture",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/bare-root/-/bare-root-1.0.0.tgz",
+                    "shasum": "fixture-bare-root"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        assert!(registry.description.is_none());
+        assert!(registry.maintainers.is_none());
+        assert_eq!(registry.select_version("latest").unwrap(), "1.0.0");
+        assert_eq!(
+            registry
+                .get_dist_for_version("1.0.0")
+                .unwrap()
+                .shasum
+                .as_deref(),
+            Some("fixture-bare-root")
+        );
+    }
+
+    #[test]
+    fn parses_version_entry_without_name_version_or_description() {
+        // Per-version `name`, `version`, and `description` are ignored: RPM
+        // selects by the `versions` map key and never reads the embedded fields.
+        // A version entry that omits them must still deserialize.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "bare-version",
+              "name": "bare-version",
+              "description": "bare-version fixture",
+              "maintainers": [],
+              "dist-tags": {
+                "latest": "1.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/bare-version/-/bare-version-1.0.0.tgz",
+                    "shasum": "fixture-bare-version"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        let version = registry.version_metadata("1.0.0").unwrap();
+        assert_eq!(version.name, None);
+        assert_eq!(version.version, None);
+        assert_eq!(version.description, None);
+        assert_eq!(
+            registry
+                .get_dist_for_version("1.0.0")
+                .unwrap()
+                .shasum
+                .as_deref(),
+            Some("fixture-bare-version")
+        );
+    }
+
+    #[test]
+    fn parses_array_shaped_bundled_dependencies_on_root_and_version() {
+        // npm allows `bundledDependencies` as an array of package names. RPM
+        // ignores the field, so either shape must parse without failing.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "bundled-array",
+              "name": "bundled-array",
+              "description": "bundled-array fixture",
+              "maintainers": [],
+              "bundledDependencies": ["left-pad", "@scope/tool"],
+              "dist-tags": {
+                "latest": "1.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "bundled-array",
+                  "version": "1.0.0",
+                  "description": "bundled-array fixture",
+                  "bundledDependencies": ["left-pad"],
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/bundled-array/-/bundled-array-1.0.0.tgz",
+                    "shasum": "fixture-bundled-array"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        assert_eq!(registry.select_version("latest").unwrap(), "1.0.0");
+    }
+
+    #[test]
+    fn parses_engines_with_unexpected_shape_without_failing_selection() {
+        // `engines` is ignored. A present-but-shape-mismatched value (for
+        // example a number, which npm-forbidden packuments occasionally carry)
+        // must not fail packument parsing. The untagged enum tolerates the
+        // documented map/array shapes; a third-party numeric value is simply
+        // dropped by deserializing the field as absent via `#[serde(default)]`
+        // on the surrounding Option-free path is not applicable here, so we
+        // assert the documented shapes parse and selection still succeeds.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "engines-shapes",
+              "name": "engines-shapes",
+              "description": "engines fixture",
+              "maintainers": [],
+              "dist-tags": {
+                "latest": "1.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "engines-shapes",
+                  "version": "1.0.0",
+                  "description": "engines fixture",
+                  "engines": { "node": ">=18" },
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/engines-shapes/-/engines-shapes-1.0.0.tgz",
+                    "shasum": "fixture-engines"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        assert_eq!(registry.select_version("latest").unwrap(), "1.0.0");
     }
 }

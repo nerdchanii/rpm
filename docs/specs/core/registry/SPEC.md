@@ -3,7 +3,7 @@ spec_id: registry_metadata
 title: Registry Metadata
 status: draft
 owner: core/registry
-last_reviewed: 2026-08-09
+last_reviewed: 2026-08-10
 authors:
   - nerdchanii
 deciders:
@@ -15,13 +15,14 @@ related_adrs:
 related_issues:
   - 50
   - 110
+  - 113
 ---
 
 # Spec: Registry Metadata
 
 Status: Draft
 Owner: core/registry
-Last reviewed: 2026-08-09
+Last reviewed: 2026-08-10
 
 ## Purpose
 
@@ -136,17 +137,20 @@ verification:
   linking, lockfile, or manifest output.
 
 Ignored means RPM may accept documents that carry these fields, but no active
-behavior depends on them. The intent is that an ignored field that is invalid or
-missing must not fail resolution or install.
+behavior depends on them. An ignored field that is invalid or missing must not
+fail resolution or install: ignored fields are deserialized leniently
+(`#[serde(default)]`, `Option<...>`, or an untagged shape-tolerant type) so a
+packument that omits or malforms them still parses. Specifically, root
+`description`, root `maintainers`, the per-version `name`, `version`, and
+`description` fields, and `bundledDependencies` (accepted as either a map or an
+array, matching npm) tolerate absence and shape mismatch during deserialization.
 
-Known gap (current behavior): several fields classified as ignored above are
-still modeled as non-optional in `src/lib/registry/mod.rs` and therefore can
-fail packument parsing if they are absent or malformed. Today this affects at
-least root `description`, root `maintainers`, and the per-version `name`,
-`version`, and `description` fields. Making the ignored-field classification
-tolerant during deserialization is tracked as a follow-up (see "Open
-Questions"). Until then, "ignored" describes the absence of downstream
-behavior, not a guarantee that a malformed ignored field cannot fail parsing.
+Ignored fields that are present-but-shape-mismatched against one of the
+documented alternative shapes are accepted through an untagged enum
+(`bundledDependencies`, `engines`); a value that matches none of the documented
+shapes for a given ignored field may still fail parsing, because the field is
+not modeled as a free-form `serde_json::Value`. Such a failure reflects an
+unrecognized document shape rather than a consumed-field contract violation.
 
 ### Unsupported metadata behavior
 
@@ -260,10 +264,6 @@ not duplicate the contract text above.
   a peer-aware resolution strategy, platform gating, or `.bin` generation SPEC
   owns the active behavior. The linker SPEC already notes `.bin` generation is
   out of scope.
-- Making the ignored-field classification tolerant during deserialization. Today
-  several ignored fields (root `description`, root `maintainers`, per-version
-  `name`/`version`/`description`) are non-optional and can fail packument
-  parsing. Tracked in #113.
 - Gating root metadata fallbacks: rejecting dist-tag targets that are absent
   from the `versions` map rather than silently falling through to root `dist`
   and root `dependencies`. Tracked in #114.
