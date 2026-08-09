@@ -149,6 +149,8 @@ docs/specs/
       SPEC.md
     resolver/
       SPEC.md
+    registry/
+      SPEC.md
     lockfile/
       SPEC.md
     install/
@@ -266,6 +268,8 @@ M1 should start from:
 - `docs/specs/core/manifest/SPEC.md`: `package.json` interpretation
 - `docs/specs/core/semver/SPEC.md`: npm-compatible semver selection baseline
 - `docs/specs/core/resolver/SPEC.md`: dependency graph resolution boundary
+- `docs/specs/core/registry/SPEC.md`: npm registry metadata fields consumed by
+  RPM
 - `docs/specs/core/lockfile/SPEC.md`: `rpm.lock` v1 contract
 - `docs/specs/core/install/cache/SPEC.md`: install tarball cache filename and
   registry tarball write boundary
