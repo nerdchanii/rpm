@@ -3,7 +3,7 @@ spec_id: resolver_boundary
 title: Resolver Strategy Boundary
 status: draft
 owner: core/resolver
-last_reviewed: 2026-06-18
+last_reviewed: 2026-08-10
 authors:
   - nerdchanii
 deciders:
@@ -22,7 +22,7 @@ related_issues:
 
 Status: Draft
 Owner: core/resolver
-Last reviewed: 2026-06-18
+Last reviewed: 2026-08-10
 
 ## Purpose
 
@@ -86,6 +86,15 @@ requirement metadata on resolved package records or metadata records. They are
 not direct dependency requests, transitive dependency requests, manifest update
 inputs, or `node_modules` link targets by themselves. A non-peer-aware strategy
 must not silently enqueue peer dependencies as ordinary dependencies.
+
+Before an optional-aware strategy exists, optional dependencies are read and
+preserved on the manifest and on registry metadata but are not direct dependency
+requests, transitive dependency requests, or `node_modules` link targets. A
+non-optional-aware strategy must not silently enqueue optional dependencies as
+ordinary dependencies. The read-and-preserve baseline is owned by
+`docs/specs/core/manifest/SPEC.md`; per-version optional dependencies on
+registry packuments remain ignored at the registry boundary
+(`docs/specs/core/registry/SPEC.md`).
 
 The installer performance baseline in
 `docs/specs/core/install/performance/SPEC.md`

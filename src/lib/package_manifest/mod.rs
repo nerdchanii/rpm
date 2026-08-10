@@ -43,6 +43,15 @@ pub struct PackageManifest {
     pub dependencies: HashMap<String, VersionString>,
     #[serde(rename = "devDependencies", skip_serializing_if = "Option::is_none")]
     pub dev_dependecies: Option<HashMap<String, VersionString>>,
+    // Read and preserved only; not enqueued as dependency requests until an
+    // optional-aware strategy owns resolve/install/skip behavior. See
+    // docs/specs/core/manifest/SPEC.md.
+    #[serde(
+        rename = "optionalDependencies",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub optional_dependencies: Option<HashMap<String, VersionString>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bin: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,6 +180,16 @@ impl PackageManifest {
         deps
     }
 
+    pub fn get_optional_dependencies(&self) -> Vec<(String, String)> {
+        let mut deps = Vec::new();
+        if let Some(optional_deps) = &self.optional_dependencies {
+            for (key, version) in optional_deps {
+                deps.push((key.to_owned(), version.0.to_owned()))
+            }
+        }
+        deps
+    }
+
     pub fn get_scripts(&self) -> HashMap<String, String> {
         self.scripts.clone().unwrap_or_default()
     }
@@ -212,6 +231,38 @@ mod package_json_test {
         assert!(dependencies.contains(&("vite".to_owned(), "~5.2.0".to_owned())));
         assert!(dev_dependencies.contains(&("typescript".to_owned(), "^5.4.0".to_owned())));
         assert_eq!(scripts.get("test").map(String::as_str), Some("cargo test"));
+    }
+
+    #[test]
+    fn read_file_preserves_optional_dependencies() {
+        let fixture = fixture_path(&["package_manifest", "manifest-with-optional-deps.json"]);
+        let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
+
+        let optional_dependencies = package.get_optional_dependencies();
+        assert_eq!(package.name.as_deref(), Some("optional-app"));
+        assert!(optional_dependencies.contains(&("fsevents".to_owned(), "^2.3.3".to_owned())));
+        // Optional deps are preserved but must not leak into ordinary deps.
+        assert!(!package
+            .get_dependencies()
+            .contains(&("fsevents".to_owned(), "^2.3.3".to_owned())));
+    }
+
+    #[test]
+    fn optional_dependencies_round_trip_through_save() {
+        let temp_project = TempProject::new("package-manifest-optional").unwrap();
+        let temp_manifest_path = temp_project
+            .copy_fixture(
+                fixture_path(&["package_manifest", "manifest-with-optional-deps.json"]),
+                "package.json",
+            )
+            .unwrap();
+
+        let package = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
+        package.save_to_path(&temp_manifest_path).unwrap();
+
+        let saved = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
+        let optional_dependencies = saved.get_optional_dependencies();
+        assert!(optional_dependencies.contains(&("fsevents".to_owned(), "^2.3.3".to_owned())));
     }
 
     #[test]
@@ -282,6 +333,7 @@ mod package_json_test {
         assert_eq!(package.get_bin(), None);
         assert!(package.get_dependencies().is_empty());
         assert!(package.get_dev_dependencies().is_empty());
+        assert!(package.get_optional_dependencies().is_empty());
         assert!(package.get_scripts().is_empty());
     }
 

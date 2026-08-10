@@ -3,7 +3,7 @@ spec_id: package_manifest
 title: Package Manifest
 status: draft
 owner: core/manifest
-last_reviewed: 2026-05-29
+last_reviewed: 2026-08-10
 authors:
   - nerdchanii
 deciders:
@@ -20,7 +20,7 @@ related_issues:
 
 Status: Draft
 Owner: core/manifest
-Last reviewed: 2026-05-29
+Last reviewed: 2026-08-10
 
 ## Purpose
 
@@ -42,6 +42,25 @@ errors must be returned to callers with the manifest path.
 
 The full npm `package.json` schema is intentionally out of scope for this
 contract today.
+
+### Optional dependencies
+
+RPM reads and preserves the root `optionalDependencies` map (`package name` to
+`range`) when it is present. Preserved entries are not consumed by install, add,
+or resolution today: they are not enqueued as dependency requests, they do not
+influence version selection, and they do not appear in the resolved graph,
+lockfile, or linked `node_modules`. A manifest that omits
+`optionalDependencies` behaves identically to one without it.
+
+This read-and-preserve baseline makes RPM honest about a field it accepts today.
+The full optional-aware behavior (resolve the entry as an ordinary dependency,
+attempt install, skip on failure, and report the outcome) is intentionally
+deferred until an optional-aware strategy SPEC owns it. Until then, a
+non-optional-aware strategy must not silently enqueue optional dependencies as
+ordinary dependencies; that non-enqueue guard is owned by
+`docs/specs/core/resolver/SPEC.md`. Per-version
+`optionalDependencies` on registry packuments remain ignored at the registry
+boundary (`docs/specs/core/registry/SPEC.md`).
 
 ## Error Cases
 

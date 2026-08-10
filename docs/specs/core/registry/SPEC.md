@@ -129,10 +129,15 @@ verification:
 
 - `devDependencies`, `peerDependencies`, `optionalDependencies`, and
   `bundledDependencies` on both the root document and per-version records. RPM
-  does not enqueue these as dependency requests in the current non-peer-aware
-  strategy. Peer dependencies are represented as peer requirement metadata on
-  resolved package records per `docs/specs/core/resolver/SPEC.md`; they must not
-  be silently enqueued as ordinary dependencies.
+  does not enqueue these as dependency requests in the current non-peer-aware,
+  non-optional-aware strategy. Peer dependencies are represented as peer
+  requirement metadata on resolved package records per
+  `docs/specs/core/resolver/SPEC.md`; they must not be silently enqueued as
+  ordinary dependencies. Optional dependencies follow the same non-enqueue
+  guard: the root manifest field is read and preserved per
+  `docs/specs/core/manifest/SPEC.md`, and per-version optional dependencies on
+  registry packuments remain ignored here until an optional-aware strategy
+  consumes them.
 - `engines`, `os`, and `cpu`. RPM does not perform engine, OS, or CPU filtering.
   Platform incompatibility is not a resolver or install failure today.
 - `main`, `types`, `scripts`, `bin`/package bin metadata, `private`,
@@ -293,7 +298,11 @@ not duplicate the contract text above.
 ## Open Questions
 
 - When and how RPM begins consuming `peerDependencies`, `optionalDependencies`,
-  `engines`, `os`, `cpu`, and package `bin` metadata. These remain ignored until
-  a peer-aware resolution strategy, platform gating, or `.bin` generation SPEC
-  owns the active behavior. The linker SPEC already notes `.bin` generation is
-  out of scope.
+  `engines`, `os`, `cpu`, and package `bin` metadata as active behavior. These
+  remain ignored at the registry boundary until a peer-aware resolution
+  strategy, an optional-aware strategy, platform gating, or `.bin` generation
+  SPEC owns the active behavior. The linker SPEC already notes `.bin` generation
+  is out of scope. The root manifest `optionalDependencies` read-and-preserve
+  baseline is now owned by `docs/specs/core/manifest/SPEC.md`; per-version
+  `optionalDependencies` on registry packuments remain ignored here until an
+  optional-aware strategy consumes them as dependency edges.
