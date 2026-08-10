@@ -18,6 +18,7 @@ related_issues:
   - 58
   - 130
   - 133
+  - 135
   - 136
 ---
 
@@ -141,6 +142,57 @@ metadata is observable only as preserved metadata, not as install output.
 This is an intentional deferral, not an absence of policy: callers must not
 infer that an install succeeded without peer warnings means the peer set is
 satisfied.
+
+### Peer-requirement diagnostics ownership
+
+Peer-requirement diagnostics are owned by this SPEC (the resolver boundary) so
+that the future human-readable output for peer requirements and conflicts does
+not have to be re-derived by, and cannot silently diverge across, the CLI, the
+registry boundary, the manifest reader, or the lockfile writer. The ownership
+is over the *shape* of the diagnostics, not over an active emitter today: under
+the non-peer-aware strategy no peer diagnostic is emitted at all (see the
+non-emission policy above). The first peer-aware strategy SPEC that consumes
+`peerDependencies` as enforced edges owns the active emission — which command
+phases emit, how often, and in what order — and must follow the shape defined
+here.
+
+Peer-requirement diagnostics must keep two cases distinguishable in the
+information they carry, regardless of output format:
+
+- **Missing peer** — a declared `peerDependencies` entry whose target package is
+  absent from the resolved graph (no version selected, no install record).
+- **Incompatible peer range** — a declared `peerDependencies` entry whose target
+  package *is* present in the resolved graph, but at a version that does not
+  satisfy the peer's requested range.
+
+A diagnostic for either case must name the declaring package, the peer target
+package, and the peer's requested range; an incompatible-range diagnostic must
+additionally name the resolved version that failed to satisfy it. The two cases
+must not collapse into a single generic "peer problem" message: a missing peer
+and an incompatible peer range imply different user actions (install the peer
+vs change the peer's version), so the diagnostic shape must preserve the
+distinction even when the human-readable wording is later stabilized.
+
+Only human-readable diagnostics are in scope for the peer-aware strategy's first
+output. A diagnostic line is a single line of UTF-8 text on stderr, addressed to
+a human reader; it is not a stable API. Stable exit codes, structured
+machine-readable output (JSON or otherwise), stdout/stderr channel ownership
+beyond "diagnostics go to stderr", and a stable diagnostic envelope/category
+taxonomy are owned by the M8 diagnostics contract (issues #150 and #151) and
+must not be introduced through the peer-aware strategy SPEC. In particular: a
+peer-requirement diagnostic must not be exposed as a stable non-zero exit code,
+and no field name, key, or JSON shape emitted for peer diagnostics may be
+treated as a public contract, until the owning diagnostics SPEC exists.
+
+The human-readable wording itself is intentionally not frozen. A golden-output
+fixture for peer diagnostics must assert only the distinguishable information
+above (declaring package, peer target, requested range, and — for the
+incompatible case — the resolved version) plus that the output is a single line
+on stderr; it must not assert the exact prose, punctuation, or ordering of
+fields, so the diagnostics contract can still stabilize wording later without
+breaking peer-aware coverage. Once the M8 diagnostics contract stabilizes a
+diagnostic envelope, the peer-aware strategy SPEC must adopt it and this
+wording-not-frozen allowance is superseded for any field the envelope covers.
 
 Before an optional-aware strategy exists, optional dependencies are read and
 preserved on the manifest and on registry metadata but are not direct dependency
@@ -268,6 +320,30 @@ implementation that follows the failure policy in
   exists): the entry is skipped silently and the lockfile omits it.
 - Deterministic skip: the same metadata, registry state, and platform inputs
   produce the same skip decision across repeated installs.
+
+### Planned peer-requirement diagnostic fixtures (for implementation follow-up)
+
+The scenarios below are listed for the first peer-aware strategy that emits
+peer-requirement diagnostics. They are not part of the current non-peer-aware
+test set (which emits no peer diagnostic at all); each must be paired with an
+owning peer-aware implementation that follows the shape in "Peer-requirement
+diagnostics ownership":
+
+- Missing peer: a package declares a `peerDependencies` entry whose target is
+  absent from the resolved graph; the diagnostic names the declaring package,
+  the missing peer target, and the requested range, and the case is
+  distinguishable from an incompatible range.
+- Incompatible peer range: a package declares a `peerDependencies` entry whose
+  target is present in the resolved graph at a version that does not satisfy
+  the requested range; the diagnostic additionally names the resolved version.
+- Deferred / unsupported peer-aware resolution: under the current
+  non-peer-aware strategy, the same inputs produce no peer diagnostic at all,
+  proving that peer-requirement diagnostics are gated on a peer-aware strategy
+  and do not leak out of the non-peer-aware path.
+
+A golden-output assertion for any of the above must follow the
+wording-not-frozen policy: assert only the distinguishable information and that
+the output is a single line on stderr, not exact prose.
 
 ## Resolved Follow-Up
 

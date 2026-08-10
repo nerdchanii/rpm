@@ -83,9 +83,11 @@ The full peer-aware behavior (peer-requirement resolution, peer-set enforcement,
 and peer-conflict diagnostics) is intentionally deferred until a peer-aware
 strategy SPEC owns it. Until then, a non-peer-aware strategy must not silently
 enqueue peer dependencies as ordinary dependencies; that non-enqueue guard is
-owned by `docs/specs/core/resolver/SPEC.md`. Per-version
-`peerDependencies` on registry packuments remain ignored at the registry
-boundary (`docs/specs/core/registry/SPEC.md`).
+owned by `docs/specs/core/resolver/SPEC.md`, which also owns the *shape* of
+peer-requirement diagnostics (issue #135) — the active emission remains gated
+on a peer-aware strategy. Per-version `peerDependencies` on registry packuments
+remain ignored at the registry boundary
+(`docs/specs/core/registry/SPEC.md`).
 
 ### Engines, OS, and CPU metadata
 
