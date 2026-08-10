@@ -494,6 +494,61 @@ mod tests {
     }
 
     #[test]
+    fn peer_dependency_metadata_is_preserved_without_enqueue_or_install_failure() {
+        let root = fixture_path(&["registry", "peer-preserve", "metadata"]);
+        let provider = FixtureMetadataProvider::from_fixture_root(&root);
+
+        // Request only the peer consumer. Its only edge is a peerDependencies
+        // entry; the peer target is never requested directly.
+        let graph = resolve_dependency_graph(
+            vec![DependencyRequest::new(
+                "@rpm-fixture/peer-consumer",
+                "^1.0.0",
+                DependencyRequestKind::DirectProduction,
+            )],
+            &provider,
+        )
+        .expect(
+            "unmet peer requirement must not fail resolution under the non-peer-aware strategy",
+        );
+
+        let expected = fs::read_to_string(fixture_path(&[
+            "registry",
+            "peer-preserve",
+            "expected",
+            "resolved-packages.txt",
+        ]))
+        .expect("expected resolved package list should be readable");
+        let resolved = graph
+            .packages()
+            .iter()
+            .map(|package| {
+                format!(
+                    "{}@{} requested {}",
+                    package.package_name, package.version, package.requests[0].requested
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(format!("{resolved}\n"), expected);
+
+        // The peer target must NOT be enqueued as an ordinary dependency: the
+        // graph contains only the consumer.
+        assert_eq!(graph.packages().len(), 1);
+        let consumer = graph
+            .package("@rpm-fixture/peer-consumer", "1.0.0")
+            .expect("peer consumer resolves to a graph node");
+        assert!(
+            consumer.dependencies.is_empty(),
+            "peerDependencies must not become ordinary dependency edges"
+        );
+        assert!(
+            graph.package("@rpm-fixture/peer-target", "1.0.0").is_none(),
+            "peer target must not appear in the resolved graph before a peer-aware strategy exists"
+        );
+    }
+
+    #[test]
     fn failed_version_selection_stops_before_reading_dependency_metadata() {
         let provider = FailingSelectionProvider {
             dependency_reads: Cell::new(0),
