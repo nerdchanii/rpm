@@ -75,7 +75,7 @@ RPM does not treat unsupported metadata as successful compatibility.
 | engines, os, cpu | `registry/SPEC.md` (ignored list), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with an explicit no-filtering/warning/rejection contract decision; root manifest reads and preserves npm-accurate `engines`/`os`/`cpu` without consuming them; active platform gating deferred | delivered: #127 |
 | package bin metadata | `linker/SPEC.md` (out of scope) | `.bin` generation is explicitly out of scope; `bin` is not modeled on registry types | M6 linker contract owns this |
 | scoped package names | `registry/SPEC.md`, `linker/SPEC.md`, `lockfile/SPEC.md` | scoped names are owned throughout: registry consumes the scoped `name`, linker preserves the scope directory in the link path, and lockfile records `name` including scope | none |
-| npm aliases | (no owning SPEC) | npm alias syntax (`npm:<name>@<version>`) is unrepresented in SPECs and source | draft: compat alias contract |
+| npm aliases | `registry/SPEC.md` (Unsupported metadata behavior) | npm alias declarations (`npm:<name>@<version>` range values) are classified as rejected input errors and actively rejected at the dependency-declaration boundary for both root-manifest and transitive paths, with a typed error naming the offending package and alias target | delivered: #125 landed via #129 |
 
 Findings:
 
@@ -87,12 +87,13 @@ Findings:
   `registry/SPEC.md` and `semver/SPEC.md`; the build-metadata deterministic
   tie-break closes the last selection-repeatability gap (#115 / #117).
 - The remaining M5 frontier is per-field classification: package bin metadata
-  and npm aliases each need an active-behavior contract (or an explicit deferred
-  decision) before implementation. Each is represented by a compat draft task in
-  Project #7. Optional dependencies (#124), peer dependencies (#130), and
-  engines, OS, and CPU metadata (#127) now have explicit deferred policies: the
-  registry boundary classifies them as ignored, and the root manifest reads and
-  preserves them without consuming them.
+  and optional dependencies each need an active-behavior contract (or an
+  explicit deferred decision) before implementation. Each is represented by a
+  compat draft task in Project #7. Peer dependencies (#130) and engines, OS,
+  and CPU metadata (#127) now have explicit deferred policies: the registry
+  boundary classifies them as ignored, and the root manifest reads and preserves
+  them without consuming them. npm aliases (#125) now have both the
+  classification and the active rejection landed (via #129).
 - Package `bin` metadata is intentionally deferred to the M6 linker milestone,
   where `.bin` generation is owned; it is listed here so the boundary is
   explicit, not so M5 implements it.

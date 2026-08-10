@@ -182,23 +182,26 @@ packument parsing. Well-typed values still round-trip into `Some(...)`.
 
 RPM rejects the following as input errors rather than silently proceeding:
 
-- A dependency map value whose range text begins with the literal prefix `npm:`
-  (an npm alias declaration, for example `"foo": "npm:bar@1.2.3"`). RPM does not
-  resolve aliases today: without rejection it would assemble `"foo@npm:bar@1.2.3"`,
-  split it on the last `@`, and look up a nonexistent package `"foo@npm:bar"`,
-  hiding the real cause behind a misleading fetch failure. The alias is rejected
-  as a resolver input error at the dependency-declaration boundary — when an
-  install/add entry point turns a root-manifest entry into a direct resolver
-  request, and when the resolver reads registry metadata to build a transitive
-  dependency declaration — with a message that identifies the offending package
-  and the alias target. Root-direct alias detection happens before any registry
-  fetch; transitive alias detection happens during resolution (registry metadata
-  read), so the root registries may already be fetched by the time a transitive
-  alias is rejected. In both paths the alias is rejected before any tarball
-  download, lockfile write, or install side effect. Detection is a prefix test on
-  the range text, so a range that merely contains `npm:` at a non-prefix position
-  is not rejected. Active alias consumption (resolving `npm:<name>@<version>` to
-  a different registry package) remains an Open Question (issue #125).
+- A dependency map value whose range text begins with the `npm:` scheme, matched
+  ASCII case-insensitively (an npm alias declaration, for example
+  `"foo": "npm:bar@1.2.3"` or `"foo": "NPM:bar@1.2.3"`). The case-insensitive
+  scheme match mirrors npm's own `npm-package-arg`, which tests
+  `spec.toLowerCase().startsWith('npm:')`. RPM does not resolve aliases today:
+  without rejection it would assemble `"foo@npm:bar@1.2.3"`, split it on the
+  last `@`, and look up a nonexistent package `"foo@npm:bar"`, hiding the real
+  cause behind a misleading fetch failure. The alias is rejected as a resolver
+  input error at the dependency-declaration boundary — when an install/add entry
+  point turns a root-manifest entry into a direct resolver request, and when the
+  resolver reads registry metadata to build a transitive dependency declaration
+  — with a message that identifies the offending package and the alias target.
+  Root-direct alias detection happens before any registry fetch; transitive
+  alias detection happens during resolution (registry metadata read), so the
+  root registries may already be fetched by the time a transitive alias is
+  rejected. In both paths the alias is rejected before any tarball download,
+  lockfile write, or install side effect. Detection is a prefix test on the
+  range text, so a range that merely contains `npm:` at a non-prefix position
+  is not rejected. Active alias consumption (resolving `npm:<name>@<version>`
+  to a different registry package) remains an Open Question (issue #125).
 - A dist-tag whose target version string is absent from the `versions` map when
   a `versions` map is present. The tag is treated as unsatisfiable (a resolver
   failure) rather than returning a version key with no per-version metadata.
@@ -326,7 +329,8 @@ Fixture expectations are defined by the owning scenario and documented in
   the dependency-declaration boundary for both root-manifest and transitive
   paths, with a clear message naming the offending package and alias target,
   while a range that only contains `npm:` at a non-prefix position is not
-  rejected (issue #125)
+  rejected; the `npm:` scheme is matched ASCII case-insensitively, so mixed-case
+  prefixes such as `NPM:` and `Npm:` are rejected too (issue #125)
 
 New fixtures should cover dist metadata, dist-tags, dependencies, optional
 dependencies, peer dependencies, engines, OS/CPU, aliases, scoped packages, and
