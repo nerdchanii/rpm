@@ -73,7 +73,7 @@ RPM does not treat unsupported metadata as successful compatibility.
 | optionalDependencies | `registry/SPEC.md` (ignored list), `resolver/SPEC.md` (non-enqueue guard and deferred optional-aware policy), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with the non-optional-aware non-enqueue guard; root manifest reads and preserves `optionalDependencies` without consuming them; the deferred optional-aware strategy policy (skip-and-warn on resolution/download/install failure, skip-silently on platform mismatch, record only successful installs) is now owned by the resolver and lockfile SPECs; active optional-aware resolution and reporting remain deferred | delivered: #133 |
 | peerDependencies | `resolver/SPEC.md`, `registry/SPEC.md` (ignored list), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with the non-peer-aware non-enqueue guard; root manifest reads and preserves `peerDependencies` without consuming them; active peer-aware resolution and active diagnostic emission are deferred, but the *shape* of peer-requirement diagnostics (missing-peer vs incompatible-range distinguishability, human-readable-only, exit codes / machine-readable output deferred to M8) is now owned by the resolver SPEC | delivered: #130 (read/preserve + non-enqueue); #135 (diagnostic shape) |
 | engines, os, cpu | `registry/SPEC.md` (ignored list), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with an explicit no-filtering/warning/rejection contract decision; root manifest reads and preserves npm-accurate `engines`/`os`/`cpu` without consuming them; active platform gating deferred | delivered: #127 |
-| package bin metadata | `linker/SPEC.md` (out of scope) | `.bin` generation is explicitly out of scope; `bin` is not modeled on registry types | M6 linker contract owns this |
+| package bin metadata | `manifest/SPEC.md`, `registry/SPEC.md`, `linker/SPEC.md` | `.bin` generation and `bin` field interpretation (string vs object) are now owned by the linker, manifest, and registry SPECs; per-version `bin` is read and preserved for `.bin` generation | delivered: #139 |
 | scoped package names | `resolver/SPEC.md`, `registry/SPEC.md`, `lockfile/SPEC.md`, `install/cache/SPEC.md`, `linker/SPEC.md` | scoped names are owned throughout: resolver splits `@scope/name` on the scope separator, registry consumes the scoped `name` and must percent-encode `/` as `%2F` only in the lookup path, lockfile and linker keep the raw scoped name, and the cache filename is the only place `/` is rewritten (to `-`); the `%2F` lookup-path code fix is tracked by a follow-up issue | delivered: #136 (contract); `%2F` code fix follow-up |
 | npm aliases | `registry/SPEC.md` (Unsupported metadata behavior) | npm alias declarations (`npm:<name>@<version>` range values) are classified as rejected input errors and actively rejected at the dependency-declaration boundary for both root-manifest and transitive paths, with a typed error naming the offending package and alias target | delivered: #125 landed via #129 |
 
@@ -102,9 +102,9 @@ Findings:
   lookup path that must percent-encode `/` as `%2F`, and the cache filename that
   rewrites `/` to `-`; the `%2F` lookup-path code fix is tracked by a follow-up
   issue.
-- Package `bin` metadata is intentionally deferred to the M6 linker milestone,
-  where `.bin` generation is owned; it is listed here so the boundary is
-  explicit, not so M5 implements it.
+- Package `bin` metadata was deferred to the M6 linker milestone, where `.bin`
+  generation is now owned; the M6 `.bin` and `bin` field contract landed in
+  #139. It is listed here so the boundary is explicit.
 
 ## M6 Ownership and Gap Audit
 
@@ -121,11 +121,11 @@ criteria.
 | M6 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
 | package-local dependency links | `linker/SPEC.md` | unscoped and scoped (`@scope/name`) dependency symlinks are defined; raw scoped name is reused verbatim; filesystem failures are returned as errors | none |
-| `.bin` generation | `linker/SPEC.md` (Out Of Scope) | explicitly deferred: `.bin` generation is not defined by the current linker contract and must be specified and implemented separately | #139 |
-| `bin` field interpretation (string vs object form) | `manifest/SPEC.md`, `registry/SPEC.md` | not modeled in any SPEC; the manifest mentions `scripts` only in its Purpose, and `bin` is on the registry ignored list; the string form (`{ "bin": "./cli.js" }`) is not covered | #139 |
-| scoped vs unscoped binary links in `.bin` | `linker/SPEC.md` (deferred) | no SPEC names binary-name mapping from scoped packages (e.g. `@scope/name` exposing which binary names) | #139 |
-| executable shims / symlinks in `.bin` | none | no SPEC mentions shim or symlink generation; `shim` appears zero times under `docs/specs/` | #139 |
-| platform considerations (`.cmd`, shebang) | none | no SPEC covers Windows `.cmd` wrappers, shebang interpretation, or the executable bit | #139 (deferred decision expected) |
+| `.bin` generation | `linker/SPEC.md` | link layout is defined: one `node_modules/.bin/<name>` entry per exposed binary, pointing at the target file inside the installed package directory; lifecycle scripts are kept separate | delivered: #139 |
+| `bin` field interpretation (string vs object form) | `manifest/SPEC.md`, `registry/SPEC.md` | both forms read and preserved: string form exposes one binary (unscoped = package name, scoped = unscoped name); object form uses map keys verbatim; wrong-type values discarded as absent | delivered: #139 |
+| scoped vs unscoped binary links in `.bin` | `linker/SPEC.md` | binary-name mapping is defined: scoped string form drops the scope prefix, object form uses keys verbatim | delivered: #139 |
+| executable shims / symlinks in `.bin` | `linker/SPEC.md` | `.bin` entries are symlinks on every platform; RPM does not synthesize or rewrite shebangs | delivered: #139 |
+| platform considerations (`.cmd`, shebang) | `linker/SPEC.md` | explicitly deferred inside #139: the link layout is defined; Windows `.cmd`/`.ps1` shim generation, executable-bit handling, and permission normalization are deferred until a platform-packaging strategy SPEC (M10 / #163) owns them | delivered: #139 (active layout); deferred to M10 (platform shims) |
 | `rpm run` PATH prepend | `cli/run/SPEC.md` | `rpm run` prepends the project `node_modules/.bin` to `PATH` and propagates the child exit code; running a script must not reinstall or mutate install output | none |
 | missing `.bin` directory behavior in `rpm run` | `cli/run/SPEC.md` | the run SPEC assumes `.bin` is populated and does not own how it is populated (that is linker work), but it already owns the absent-binary case: a binary that is missing from `PATH` (including when `node_modules/.bin` is absent) must surface the shell's readable error and non-zero status (`cli/run/SPEC.md` Error Cases); #143 proves project-local binaries are reachable without mutating install output rather than redefining that existing behavior | #143 |
 | lifecycle script fields (`preinstall`, `install`, `postinstall`, `prepare`, ...) | `registry/SPEC.md` (ignored per-version), `manifest/SPEC.md` (root field) | the registry SPEC already classifies per-version `scripts` as ignored metadata and requires no install behavior to depend on it, including tolerant wrong-type handling; what is unowned is active lifecycle execution — there is no field contract for which hook names run, in what order, with what environment — so #141 must explicitly update the registry contract (including its tolerant wrong-type behavior) before #142 consumes transitive scripts, rather than treating the field as absent from every SPEC | #141 |
@@ -135,19 +135,19 @@ criteria.
 
 Findings:
 
-- Runtime linking is split into an owned core and an explicitly deferred
-  frontier. Package-local dependency links (unscoped and scoped) are already
-  owned by `linker/SPEC.md` and need no M6 contract change. `.bin` generation is
-  the deferred frontier: it is named in the linker SPEC's Out Of Scope section
-  and in the M5 audit row above as owned by the M6 linker contract, so #139
-  brings it under contract.
-- The `.bin` cluster carries five related gaps (`.bin` generation, `bin` field
+- Runtime linking is split into an owned core and a now-contracted `.bin`
+  frontier. Package-local dependency links (unscoped and scoped) are owned by
+  `linker/SPEC.md` and needed no M6 contract change. `.bin` generation was the
+  deferred frontier named in the linker SPEC's Out Of Scope section and in the
+  M5 audit row above; #139 has now brought it under contract.
+- The `.bin` cluster carried five related gaps (`.bin` generation, `bin` field
   interpretation, scoped vs unscoped binary links, shims/symlinks, platform
-  considerations). #139 owns the `.bin` and `bin` contract as one unit so the
-  link layout, the manifest field form, and the binary-name mapping are decided
-  together before any linker implementation in #140. Platform-specific shim or
-  `.cmd` behavior may be explicitly deferred inside #139 rather than implemented
-  in M6.
+  considerations). #139 owned the `.bin` and `bin` contract as one unit so the
+  link layout, the manifest field form, and the binary-name mapping were decided
+  together before any linker implementation in #140. The symlink link layout is
+  defined for every platform; platform-specific shim or `.cmd` behavior is
+  explicitly deferred inside #139 until M10 / #163 owns a platform-packaging
+  strategy.
 - Lifecycle scripts are the larger ownership gap: they are not covered by an
   active execution SPEC. Per-version `scripts` are already classified as ignored
   registry metadata (`registry/SPEC.md`) and the manifest SPEC names `scripts` in

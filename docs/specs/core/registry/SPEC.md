@@ -23,6 +23,7 @@ related_issues:
   - 130
   - 133
   - 136
+  - 139
   - 170
 ---
 
@@ -129,6 +130,20 @@ Distribution record (`Dist`):
   absent or empty. Used for tarball verification when no supported SRI value
   exists.
 
+Package bin metadata. Per-version `bin` is read and preserved in both npm
+forms — string (`"bin": "./cli.js"`) and object
+(`"bin": { "name": "./target" }`) — so the linker can generate
+`node_modules/.bin` entries for resolved packages. The binary name mapping
+(unscoped string form uses the package name; scoped string form uses the
+unscoped name; object form uses the keys verbatim) and the link layout are
+owned by `docs/specs/core/linker/SPEC.md`. The registry boundary owns only
+reading and preserving `bin`; it does not influence version selection,
+dependency edges, cache writes, or integrity verification. A
+present-but-wrong-type `bin` value is discarded as absent during deserialization
+rather than failing the packument, consistent with the lenient handling of
+other preserved fields. A version that omits `bin` simply contributes no
+`.bin` entries.
+
 ### Ignored metadata fields
 
 The following fields are deserialized for document fidelity but are not consumed
@@ -161,11 +176,13 @@ verification:
   for `engines`/`os`/`cpu` is owned by
   `docs/specs/core/manifest/SPEC.md`; per-version values on registry packuments
   remain ignored here until that strategy consumes them.
-- `main`, `types`, `scripts`, `bin`/package bin metadata, `private`,
+- `main`, `types`, `scripts`, `private`,
   `repository`, `description`, `maintainers`, `author`, `homepage`, `keywords`,
   `license`, `readme`, `readmeFilename`, `time`, `_id`, `_rev`, and `sequence`.
   These do not influence resolution, download, verification, extraction,
-  linking, lockfile, or manifest output.
+  linking, lockfile, or manifest output. Package `bin` metadata was previously
+  listed here; it is now read for `.bin` generation (see "Package bin metadata"
+  under Consumed metadata fields).
 
 Ignored means RPM may accept documents that carry these fields, but no active
 behavior depends on them. An ignored field that is invalid or missing must not
@@ -374,11 +391,12 @@ not duplicate the contract text above.
 ## Open Questions
 
 - When and how RPM begins consuming `peerDependencies`, `optionalDependencies`,
-  `engines`, `os`, `cpu`, and package `bin` metadata as active behavior. These
-  remain ignored at the registry boundary until a peer-aware resolution
-  strategy, an optional-aware strategy, platform gating, or `.bin` generation
-  SPEC owns the active behavior. The linker SPEC already notes `.bin` generation
-  is out of scope. The root manifest `optionalDependencies` read-and-preserve
+  `engines`, `os`, and `cpu` as active behavior. These remain ignored at the
+  registry boundary until a peer-aware resolution strategy, an optional-aware
+  strategy, or platform gating owns the active behavior. Package `bin` metadata
+  is now consumed for `.bin` generation
+  (`docs/specs/core/linker/SPEC.md`, #139) and is no longer an open question.
+  The root manifest `optionalDependencies` read-and-preserve
   baseline is now owned by `docs/specs/core/manifest/SPEC.md`; per-version
   `optionalDependencies` on registry packuments remain ignored here until an
   optional-aware strategy consumes them as dependency edges. The reserved
