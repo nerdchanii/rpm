@@ -1138,16 +1138,31 @@ mod tests {
             "peer target has no ordinary dependencies"
         );
 
-        // Round-trip the consumer through serde to prove peer metadata survives
-        // deserialization rather than being dropped at the registry boundary.
-        let raw =
-            fs::read_to_string(root.join(registry_fixture_file_name("@rpm-fixture/peer-consumer")))
-                .expect("peer-consumer fixture should be readable");
-        let reparsed: serde_json::Value =
-            serde_json::from_str(&raw).expect("peer-consumer fixture should parse as JSON");
+        // Inspect the peer metadata on the deserialized object directly. Reading
+        // the fixture JSON back and re-parsing it as a serde_json::Value would
+        // only prove the fixture file is well-formed, not that the registry
+        // deserializer preserves `peerDependencies` per
+        // `docs/specs/core/registry/SPEC.md`; the `ignored_field` deserializer
+        // could drop the field (or a future rename) and that round-trip would
+        // still pass. The fields are private but this test lives in the same
+        // module, so it can assert on them directly.
+        let consumer_peer = consumer
+            .version_metadata("1.0.0")
+            .expect("consumer carries the requested version")
+            .peer_dependencies
+            .as_ref();
         assert_eq!(
-            reparsed["versions"]["1.0.0"]["peerDependencies"]["@rpm-fixture/peer-target"], "^1.0.0",
-            "peer dependency metadata must be preserved on the packument"
+            consumer_peer.and_then(|map| map.get("@rpm-fixture/peer-target")),
+            Some(&"^1.0.0".to_string()),
+            "peer dependency metadata must survive deserialization on the packument"
+        );
+        assert!(
+            target
+                .version_metadata("1.0.0")
+                .expect("target carries the requested version")
+                .peer_dependencies
+                .is_none(),
+            "peer target carries no peer dependency metadata"
         );
     }
 
