@@ -17,6 +17,7 @@ related_issues:
   - 110
   - 113
   - 114
+  - 120
 ---
 
 # Spec: Registry Metadata

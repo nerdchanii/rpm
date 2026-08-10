@@ -54,3 +54,41 @@ Findings:
   completed: #93 (measurement harness, landed via #106), #94 (graph dedup
   proof), #103 (download dedup proof), #96 (phase side-effect audit, landed
   via #107), and #97 (fixture output convention, landed via #108).
+
+## M5 Ownership and Gap Audit
+
+The M5 audit maps each npm metadata compatibility area to its owning SPEC/ADR
+and records whether the contract is explicitly stated. M5 is an npm metadata
+compatibility milestone: it must classify every registry metadata category as
+consumed, ignored, or rejected before any category gains active behavior, so
+RPM does not treat unsupported metadata as successful compatibility.
+
+| M5 compatibility area | Owning SPEC / ADR | Contract status | Follow-up |
+| --- | --- | --- | --- |
+| registry metadata fields consumed by RPM | `registry/SPEC.md` | consumed / ignored / rejected classification is explicit (root `name`, `dist-tags`, `versions`; per-version `dependencies`, `dist`; `dist.tarball`, `dist.integrity`, `dist.shasum`) | delivered: #110 landed via #112 |
+| ignored-field tolerant deserialization | `registry/SPEC.md` | ignored fields deserialize leniently; root `description`, root `maintainers`, and per-version `name` / `version` / `description` tolerate absence and wrong-type values; `bundledDependencies` accepts map or array | delivered: #113 landed via #116 |
+| dist-tag and root metadata fallback gating | `registry/SPEC.md` | a dist-tag target absent from `versions` is rejected; root `dist` / `dependencies` fallback only applies to the legacy single-version shape | delivered: #114 landed via #118 |
+| dist-tags / `latest` / semver range selection boundary | `registry/SPEC.md`, `semver/SPEC.md` | dist-tags are registry selectors, not semver ranges; `latest` and tag precedence over ranges is defined | none |
+| build-metadata deterministic selection | `registry/SPEC.md` (Registry Boundary, precedence step 3) | registry-owned raw-key sort before `max_satisfying` makes selection repeatable across `HashMap` seedings | #115 / #117 (awaiting-merge) |
+| optionalDependencies | `registry/SPEC.md` (ignored list) | classified as ignored (not enqueued); no active read / resolve / install / skip / report contract exists yet | draft: compat optionalDependencies contract |
+| peerDependencies | `resolver/SPEC.md`, `registry/SPEC.md` (ignored list) | non-peer-aware strategy must not enqueue peer deps as ordinary dependencies; no peer-requirement field is implemented (spec-only) | draft: compat peerDependencies preservation and diagnostics |
+| engines, os, cpu | `registry/SPEC.md` (ignored list) | classified as ignored; no engine, OS, or CPU filtering, warning, or rejection policy exists | draft: compat engines/os/cpu metadata policy |
+| package bin metadata | `linker/SPEC.md` (out of scope) | `.bin` generation is explicitly out of scope; `bin` is not modeled on registry types | M6 linker contract owns this |
+| npm aliases and scoped package edge cases | (no owning SPEC) | npm alias syntax (`npm:<name>@<version>`) and scoped package edge cases are unrepresented in SPECs and source | draft: compat alias and scoped package contract |
+
+Findings:
+
+- Ownership exists for the registry metadata boundary. The consumed / ignored /
+  rejected classification landed in #112, and the deserialization behavior that
+  the classification implies was made tolerant in #116 and gated against stale
+  root fallbacks in #118.
+- The dist-tag and semver range selection boundary is fully owned across
+  `registry/SPEC.md` and `semver/SPEC.md`; the build-metadata deterministic
+  tie-break closes the last selection-repeatability gap (#115 / #117).
+- The remaining M5 frontier is per-field classification: optional dependencies,
+  peer dependencies, engines/os/cpu, package bin metadata, and npm aliases each
+  need an active-behavior contract (or an explicit deferred decision) before
+  implementation. Each is represented by a compat draft task in Project #7.
+- Package `bin` metadata is intentionally deferred to the M6 linker milestone,
+  where `.bin` generation is owned; it is listed here so the boundary is
+  explicit, not so M5 implements it.
