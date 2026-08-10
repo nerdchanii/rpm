@@ -3,7 +3,7 @@ spec_id: lockfile_v1
 title: Lockfile v1
 status: draft
 owner: core/lockfile
-last_reviewed: 2026-05-29
+last_reviewed: 2026-08-11
 authors:
   - nerdchanii
 deciders:
@@ -14,13 +14,15 @@ related_adrs:
   - 0002-single-crate-cli-core-boundary
 related_issues:
   - 50
+  - 133
+  - 136
 ---
 
 # Spec: Lockfile v1
 
 Status: Draft
 Owner: core/lockfile
-Last reviewed: 2026-05-29
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -53,9 +55,29 @@ integrity = "sha512-..."
 dependencies = ["loose-envify@^1.1.0"]
 ```
 
+A scoped package keeps its `@scope/name` form verbatim in both the entry key and
+the `name` field; neither the scope separator `/` nor the leading `@` is
+escaped or sanitized. `["@scope/lib@1.0.0"]` is the entry key for
+`@scope/lib` at `1.0.0`, and readers split the key on the last `@` so the
+scoped name is recovered whole.
+
+```toml
+["@scope/lib@1.0.0"]
+name = "@scope/lib"
+requested = "^1.0.0"
+version = "1.0.0"
+relationship = "direct"
+tarball = "https://registry.npmjs.org/@scope/lib/-/lib-1.0.0.tgz"
+integrity = "sha512-..."
+dependencies = []
+```
+
 Package entries record:
 
-- `name`: package name, including scope when present.
+- `name`: package name, including scope when present. Scoped names are
+  preserved verbatim; only the cache filename sanitizes the `/`
+  (`docs/specs/core/install/cache/SPEC.md`) and only the registry lookup path
+  percent-encodes it (`docs/specs/core/registry/SPEC.md`).
 - `requested`: the range or tag requested by the parent manifest or package.
 - `version`: resolved package version.
 - `relationship`: one of `direct`, `dev`, or `transitive`.
@@ -75,6 +97,17 @@ phase consumes. Peer and optional metadata remain preserved on the manifest
 representation of unmet peer or optional requirements, must be added by the
 peer-aware or optional-aware strategy SPEC that first consumes them; lockfile
 v1 does not reserve those values.
+
+The reserved lockfile policy for the first optional-aware strategy is:
+optional dependencies that are installed successfully are recorded with the
+same shape as ordinary dependencies (requested range and resolved version kept
+distinct), and optional dependencies that are skipped at any lifecycle stage
+are not recorded. This keeps `rpm.lock` a record of the actually installed
+graph rather than the requested optional set, so a later install reproduces the
+same skip deterministically instead of re-attempting an entry known to be
+uninstallable on this platform. Whether the skipped set is summarized in a
+separate lockfile section is an open question for that strategy SPEC; lockfile
+v1 records nothing about optional edges either way.
 
 ### Loading
 

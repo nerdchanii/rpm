@@ -1,0 +1,5 @@
+{
+  "name": "wrong-type-bin-app",
+  "version": "0.1.0",
+  "bin": 42
+}

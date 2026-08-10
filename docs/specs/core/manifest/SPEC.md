@@ -16,13 +16,15 @@ related_issues:
   - 50
   - 127
   - 130
+  - 133
+  - 139
 ---
 
 # Spec: Package Manifest
 
 Status: Draft
 Owner: core/manifest
-Last reviewed: 2026-08-10
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -57,7 +59,11 @@ lockfile, or linked `node_modules`. A manifest that omits
 This read-and-preserve baseline makes RPM honest about a field it accepts today.
 The full optional-aware behavior (resolve the entry as an ordinary dependency,
 attempt install, skip on failure, and report the outcome) is intentionally
-deferred until an optional-aware strategy SPEC owns it. Until then, a
+deferred until an optional-aware strategy SPEC owns it. The reserved failure
+policy for that future strategy — skip-and-warn on resolution, download, and
+install failures, skip-silently on platform mismatch, record only successful
+installs — is owned by `docs/specs/core/resolver/SPEC.md`, with the lockfile
+recording policy owned by `docs/specs/core/lockfile/SPEC.md`. Until then, a
 non-optional-aware strategy must not silently enqueue optional dependencies as
 ordinary dependencies; that non-enqueue guard is owned by
 `docs/specs/core/resolver/SPEC.md`. Per-version
@@ -78,9 +84,11 @@ The full peer-aware behavior (peer-requirement resolution, peer-set enforcement,
 and peer-conflict diagnostics) is intentionally deferred until a peer-aware
 strategy SPEC owns it. Until then, a non-peer-aware strategy must not silently
 enqueue peer dependencies as ordinary dependencies; that non-enqueue guard is
-owned by `docs/specs/core/resolver/SPEC.md`. Per-version
-`peerDependencies` on registry packuments remain ignored at the registry
-boundary (`docs/specs/core/registry/SPEC.md`).
+owned by `docs/specs/core/resolver/SPEC.md`, which also owns the *shape* of
+peer-requirement diagnostics (issue #135) — the active emission remains gated
+on a peer-aware strategy. Per-version `peerDependencies` on registry packuments
+remain ignored at the registry boundary
+(`docs/specs/core/registry/SPEC.md`).
 
 ### Engines, OS, and CPU metadata
 
@@ -102,6 +110,46 @@ a non-failure: platform metadata must not block resolution, download,
 verification, extraction, linking, lockfile, or manifest output. Per-version
 `engines`, `os`, and `cpu` on registry packuments remain ignored at the registry
 boundary (`docs/specs/core/registry/SPEC.md`).
+
+### Bin field
+
+RPM reads the root `bin` field when it is present and accepts both npm-defined
+forms:
+
+- **String form:** `"bin": "./cli.js"` exposes a single binary. For an unscoped
+  package the binary name is the package `name`; for a scoped package
+  (`@scope/name`) the binary name is the unscoped name (`name`).
+- **Object form:** `"bin": { "<name>": "<target>", ... }` exposes one binary
+  per map key. The keys are used verbatim as binary names; the scope prefix is
+  neither added nor stripped from object-form keys.
+
+A present-but-wrong-type `bin` value (for example a number or an array) is
+discarded as absent during deserialization rather than failing the manifest,
+mirroring the lenient handling used for other preserved fields. A well-typed
+value round-trips into `Some(...)`.
+
+The read `bin` entries do not influence resolution, version selection, the
+resolved graph, or the lockfile. They are consumed by exactly one downstream
+behavior: the linker's `node_modules/.bin` generation
+(`docs/specs/core/linker/SPEC.md`). Until that generation runs, a `bin` entry
+has no install side effect. A manifest that omits `bin` behaves identically to
+one without it: no `.bin` entries are produced for that package.
+
+The root package `bin` field is preservation-only at this boundary: the root
+package is not a resolved package and has no installed directory under
+`node_modules/`, so the linker does not generate a `.bin` link for the root
+project itself. The linker consumes `bin` only from resolved (installed)
+packages. Reaching the root project's own declared binaries at runtime is owned
+by `rpm run` and its PATH policy (`docs/specs/cli/run/SPEC.md`, issue #143),
+not by `.bin` generation.
+
+A `bin` target that names a path outside the package directory (after symlink
+and `..` normalization) is rejected as a link input error by the linker, not
+silently followed. This keeps `.bin` generation from becoming a traversal
+vector; the traversal guard is owned by the linker contract. An object-form
+`bin` key that is not a single path component (absolute, separator-containing,
+parent-referencing, or empty) is likewise rejected by the linker before any
+`.bin` entry is written; see `docs/specs/core/linker/SPEC.md`.
 
 ## Error Cases
 

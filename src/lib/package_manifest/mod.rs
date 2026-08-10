@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{from_str, to_writer_pretty};
 use std::{
     collections::HashMap,
@@ -6,6 +6,58 @@ use std::{
     io::{BufWriter, Error, ErrorKind},
     path::Path,
 };
+
+/// `package.json` `bin` field, accepting both npm-defined forms:
+/// string form (`"bin": "./cli.js"`) and object form
+/// (`"bin": { "<name>": "<target>" }`). The binary name for the string form is
+/// resolved by the linker from the package `name`, not at parse time; see
+/// `docs/specs/core/manifest/SPEC.md` and `docs/specs/core/linker/SPEC.md`.
+///
+/// A present-but-wrong-type value (for example a number or an array) is
+/// discarded as absent during deserialization rather than failing the manifest,
+/// mirroring the lenient handling used for other preserved fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BinField {
+    String(String),
+    Object(HashMap<String, String>),
+}
+
+impl BinField {
+    /// Returns the object-form map by value, or `None` for the string form.
+    /// The linker resolves the string form into a single entry keyed by the
+    /// package name; that resolution cannot happen at the manifest boundary
+    /// because the manifest parser does not know which package name to use.
+    pub fn into_object(self) -> Option<HashMap<String, String>> {
+        match self {
+            BinField::Object(map) => Some(map),
+            BinField::String(_) => None,
+        }
+    }
+
+    /// Returns the string-form target by reference, or `None` for the object
+    /// form.
+    pub fn as_string(&self) -> Option<&str> {
+        match self {
+            BinField::String(target) => Some(target),
+            BinField::Object(_) => None,
+        }
+    }
+}
+
+fn deserialize_bin_field<'de, D>(deserializer: D) -> Result<Option<BinField>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    match BinField::deserialize(value) {
+        Ok(parsed) => Ok(Some(parsed)),
+        Err(_) => Ok(None),
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct VersionString(String);
@@ -61,8 +113,12 @@ pub struct PackageManifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub peer_dependencies: Option<HashMap<String, VersionString>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bin: Option<HashMap<String, String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_bin_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub bin: Option<BinField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,8 +181,13 @@ impl PackageManifest {
             .unwrap_or_default()
     }
 
-    pub fn get_bin(&self) -> Option<HashMap<String, String>> {
-        self.bin.as_ref().map(|bin| bin.to_owned())
+    /// Returns the raw `bin` field, preserving string-form vs object-form
+    /// distinction. The linker resolves the string form into a binary name
+    /// derived from the package name; the manifest boundary returns the raw
+    /// value rather than guessing the package name. Returns `None` when the
+    /// field is absent or was discarded as a wrong-type value.
+    pub fn get_bin(&self) -> Option<&BinField> {
+        self.bin.as_ref()
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -281,6 +342,77 @@ mod package_json_test {
         assert!(dependencies.contains(&("vite".to_owned(), "~5.2.0".to_owned())));
         assert!(dev_dependencies.contains(&("typescript".to_owned(), "^5.4.0".to_owned())));
         assert_eq!(scripts.get("test").map(String::as_str), Some("cargo test"));
+    }
+
+    #[test]
+    fn read_file_preserves_bin_string_form() {
+        let fixture = fixture_path(&["package_manifest", "manifest-with-bin-string.json"]);
+        let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
+
+        // String-form `bin` is preserved verbatim. The linker resolves the
+        // binary name from the package name; the manifest boundary does not.
+        let bin = package
+            .get_bin()
+            .expect("string-form bin must be preserved");
+        assert_eq!(bin.as_string(), Some("./cli.js"));
+        assert_eq!(bin.clone().into_object(), None);
+    }
+
+    #[test]
+    fn read_file_preserves_bin_object_form() {
+        let fixture = fixture_path(&["package_manifest", "manifest-with-bin-object.json"]);
+        let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
+
+        let bin = package
+            .get_bin()
+            .expect("object-form bin must be preserved");
+        let map = bin
+            .clone()
+            .into_object()
+            .expect("object-form bin must expose a map");
+        assert_eq!(map.get("my-cli").map(String::as_str), Some("./cli.js"));
+        assert_eq!(
+            map.get("helper").map(String::as_str),
+            Some("./bin/helper.js")
+        );
+    }
+
+    #[test]
+    fn read_file_discards_wrong_type_bin_as_absent() {
+        let fixture = fixture_path(&["package_manifest", "manifest-with-bin-wrong-type.json"]);
+        let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
+
+        // A present-but-wrong-type `bin` value is discarded as absent rather
+        // than failing the manifest, mirroring other preserved fields.
+        assert_eq!(package.name.as_deref(), Some("wrong-type-bin-app"));
+        assert_eq!(package.get_bin(), None);
+    }
+
+    #[test]
+    fn bin_field_round_trips_through_save() {
+        let temp_project = TempProject::new("package-manifest-bin-round-trip").unwrap();
+        let temp_manifest_path = temp_project
+            .copy_fixture(
+                fixture_path(&["package_manifest", "manifest-with-bin-object.json"]),
+                "package.json",
+            )
+            .unwrap();
+
+        let package = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
+        package.save_to_path(&temp_manifest_path).unwrap();
+
+        let saved = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
+        let map = saved
+            .get_bin()
+            .expect("bin must survive round-trip")
+            .clone()
+            .into_object()
+            .expect("object-form bin must survive round-trip");
+        assert_eq!(map.get("my-cli").map(String::as_str), Some("./cli.js"));
+        assert_eq!(
+            map.get("helper").map(String::as_str),
+            Some("./bin/helper.js")
+        );
     }
 
     #[test]

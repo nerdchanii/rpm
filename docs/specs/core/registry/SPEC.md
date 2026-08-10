@@ -3,7 +3,7 @@ spec_id: registry_metadata
 title: Registry Metadata
 status: draft
 owner: core/registry
-last_reviewed: 2026-08-10
+last_reviewed: 2026-08-11
 authors:
   - nerdchanii
 deciders:
@@ -21,13 +21,17 @@ related_issues:
   - 125
   - 127
   - 130
+  - 133
+  - 136
+  - 139
+  - 170
 ---
 
 # Spec: Registry Metadata
 
 Status: Draft
 Owner: core/registry
-Last reviewed: 2026-08-10
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -71,7 +75,9 @@ RPM consumes the following fields. Fields are grouped by where they are read.
 Root document (`Registry`):
 
 - `name`: package name, including scope. Used as the cache filename base and the
-  resolver package key.
+  resolver package key. Scoped names (`@scope/name`) are preserved verbatim as
+  the package identity; only the registry lookup path encodes the name (see
+  "Scoped package registry paths").
 - `dist-tags`: map of tag name to version string. Tag resolution happens at the
   registry boundary before semver range evaluation. `latest` and any other
   published tag (for example `next`, `beta`) resolve to their target version.
@@ -124,6 +130,20 @@ Distribution record (`Dist`):
   absent or empty. Used for tarball verification when no supported SRI value
   exists.
 
+Package bin metadata. Per-version `bin` is read and preserved in both npm
+forms — string (`"bin": "./cli.js"`) and object
+(`"bin": { "name": "./target" }`) — so the linker can generate
+`node_modules/.bin` entries for resolved packages. The binary name mapping
+(unscoped string form uses the package name; scoped string form uses the
+unscoped name; object form uses the keys verbatim) and the link layout are
+owned by `docs/specs/core/linker/SPEC.md`. The registry boundary owns only
+reading and preserving `bin`; it does not influence version selection,
+dependency edges, cache writes, or integrity verification. A
+present-but-wrong-type `bin` value is discarded as absent during deserialization
+rather than failing the packument, consistent with the lenient handling of
+other preserved fields. A version that omits `bin` simply contributes no
+`.bin` entries.
+
 ### Ignored metadata fields
 
 The following fields are deserialized for document fidelity but are not consumed
@@ -156,11 +176,13 @@ verification:
   for `engines`/`os`/`cpu` is owned by
   `docs/specs/core/manifest/SPEC.md`; per-version values on registry packuments
   remain ignored here until that strategy consumes them.
-- `main`, `types`, `scripts`, `bin`/package bin metadata, `private`,
+- `main`, `types`, `scripts`, `private`,
   `repository`, `description`, `maintainers`, `author`, `homepage`, `keywords`,
   `license`, `readme`, `readmeFilename`, `time`, `_id`, `_rev`, and `sequence`.
   These do not influence resolution, download, verification, extraction,
-  linking, lockfile, or manifest output.
+  linking, lockfile, or manifest output. Package `bin` metadata was previously
+  listed here; it is now read for `.bin` generation (see "Package bin metadata"
+  under Consumed metadata fields).
 
 Ignored means RPM may accept documents that carry these fields, but no active
 behavior depends on them. An ignored field that is invalid or missing must not
@@ -274,6 +296,29 @@ Only requests that are not registry dist-tags are evaluated as semver ranges.
 This keeps version selection centralized and keeps dist-tag interpretation out of
 semver code.
 
+### Scoped package registry paths
+
+A scoped package name (`@scope/name`) identifies one registry document, so the
+registry lookup path must encode the name as a single path segment. npm's
+registry serves a scoped packument at `/<percent-encoded-name>` where every `/`
+in the scoped name is encoded as `%2F`; `@babel/core` is fetched from
+`/@babel%2Fcore`. The version segment, when present, is a separate path
+component following the encoded name.
+
+The package identity stays verbatim everywhere except this one registry path:
+the resolver package key, lockfile key, cache filename base, and linker path all
+use the raw scoped name (`@scope/name`), and only the registry lookup path
+percent-encodes it. This keeps one encoding rule at one boundary instead of
+duplicating it across lockfile, cache, and linking.
+
+The production registry client (`src/lib/api/mod.rs`) percent-encodes `/` as
+`%2F` in the name segment via `registry_lookup_url` before the network request
+(issue #170). Offline fixture resolution is unaffected: it routes
+`@scope/name` to a local `@scope__name.json` file and never reaches the
+production URL builder, so the fixture-backed test suite exercises the fixture
+mapping rather than the encoded path. The encoded-path derivation itself is
+covered by a focused unit test on `registry_lookup_url`.
+
 ## Error Cases
 
 Registry metadata interpretation must not panic on user- or registry-controlled
@@ -331,6 +376,12 @@ Fixture expectations are defined by the owning scenario and documented in
   while a range that only contains `npm:` at a non-prefix position is not
   rejected; the `npm:` scheme is matched ASCII case-insensitively, so mixed-case
   prefixes such as `NPM:` and `Npm:` are rejected too (issue #125)
+- `optionalDependencies` is preserved on the deserialized packument (root and
+  per-version) but is not exposed as an ordinary dependency edge, mirroring the
+  `peerDependencies` non-enqueue guard; the `registry/optional-preserve` fixture
+  covers the current non-optional-aware contract (issue #133). The
+  `peerDependencies` non-enqueue guard is covered by the
+  `registry/peer-preserve` fixture (issue #130).
 
 New fixtures should cover dist metadata, dist-tags, dependencies, optional
 dependencies, peer dependencies, engines, OS/CPU, aliases, scoped packages, and
@@ -340,16 +391,23 @@ not duplicate the contract text above.
 ## Open Questions
 
 - When and how RPM begins consuming `peerDependencies`, `optionalDependencies`,
-  `engines`, `os`, `cpu`, and package `bin` metadata as active behavior. These
-  remain ignored at the registry boundary until a peer-aware resolution
-  strategy, an optional-aware strategy, platform gating, or `.bin` generation
-  SPEC owns the active behavior. The linker SPEC already notes `.bin` generation
-  is out of scope. The root manifest `optionalDependencies` read-and-preserve
+  `engines`, `os`, and `cpu` as active behavior. These remain ignored at the
+  registry boundary until a peer-aware resolution strategy, an optional-aware
+  strategy, or platform gating owns the active behavior. Package `bin` metadata
+  is now consumed for `.bin` generation
+  (`docs/specs/core/linker/SPEC.md`, #139) and is no longer an open question.
+  The root manifest `optionalDependencies` read-and-preserve
   baseline is now owned by `docs/specs/core/manifest/SPEC.md`; per-version
   `optionalDependencies` on registry packuments remain ignored here until an
-  optional-aware strategy consumes them as dependency edges. The root manifest
-  `engines`/`os`/`cpu` read-and-preserve baseline is now owned by
-  `docs/specs/core/manifest/SPEC.md` (#127); per-version `engines`/`os`/`cpu`
+  optional-aware strategy consumes them as dependency edges. The reserved
+  failure policy for that future optional-aware strategy (skip-and-warn on
+  resolution/download/install failure, skip-silently on platform mismatch,
+  record only successful installs) is owned by
+  `docs/specs/core/resolver/SPEC.md` and `docs/specs/core/lockfile/SPEC.md`
+  (#133); until that strategy exists, per-version optional dependencies on
+  registry packuments stay ignored here regardless of the root-manifest entry.
+  The root manifest `engines`/`os`/`cpu` read-and-preserve baseline is now owned
+  by `docs/specs/core/manifest/SPEC.md` (#127); per-version `engines`/`os`/`cpu`
   on registry packuments remain ignored here until a platform-gating strategy
   consumes them.
 - When and how RPM begins actively consuming npm alias declarations (resolving

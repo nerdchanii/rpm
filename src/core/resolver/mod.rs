@@ -564,6 +564,50 @@ mod tests {
     }
 
     #[test]
+    fn optional_dependency_metadata_is_preserved_without_enqueue_or_install_failure() {
+        let root = fixture_path(&["registry", "optional-preserve", "metadata"]);
+        let provider = FixtureMetadataProvider::from_fixture_root(&root);
+
+        // Request only the optional consumer. Its only edge is an
+        // `optionalDependencies` entry; the optional target is never requested
+        // directly. This is the non-optional-aware contract: a package whose
+        // only edge is optional must still resolve normally, and the optional
+        // entry must not be enqueued as an ordinary dependency. Mirrors the peer
+        // non-enqueue guard above; owned by
+        // `docs/specs/core/resolver/SPEC.md` (issue #133).
+        let graph = resolve_dependency_graph(
+            vec![DependencyRequest::new(
+                "@rpm-fixture/optional-consumer",
+                "^1.0.0",
+                DependencyRequestKind::DirectProduction,
+            )],
+            &provider,
+        )
+        .expect(
+            "uninstalled optional dependency must not fail resolution under the \
+             non-optional-aware strategy",
+        );
+
+        // The optional target must NOT be enqueued as an ordinary dependency:
+        // the graph contains only the consumer.
+        assert_eq!(graph.packages().len(), 1);
+        let consumer = graph
+            .package("@rpm-fixture/optional-consumer", "1.0.0")
+            .expect("optional consumer resolves to a graph node");
+        assert!(
+            consumer.dependencies.is_empty(),
+            "optionalDependencies must not become ordinary dependency edges"
+        );
+        assert!(
+            graph
+                .package("@rpm-fixture/optional-target", "1.0.0")
+                .is_none(),
+            "optional target must not appear in the resolved graph before an \
+             optional-aware strategy exists"
+        );
+    }
+
+    #[test]
     fn failed_version_selection_stops_before_reading_dependency_metadata() {
         let provider = FailingSelectionProvider {
             dependency_reads: Cell::new(0),

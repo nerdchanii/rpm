@@ -3,7 +3,7 @@ spec_id: resolver_boundary
 title: Resolver Strategy Boundary
 status: draft
 owner: core/resolver
-last_reviewed: 2026-08-10
+last_reviewed: 2026-08-11
 authors:
   - nerdchanii
 deciders:
@@ -17,13 +17,16 @@ related_issues:
   - 50
   - 58
   - 130
+  - 133
+  - 135
+  - 136
 ---
 
 # Spec: Resolver Strategy Boundary
 
 Status: Draft
 Owner: core/resolver
-Last reviewed: 2026-08-10
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -61,6 +64,40 @@ Version and range satisfaction rules are owned by
 `docs/specs/core/semver/SPEC.md`. Resolver strategies call the version
 selection abstraction and record its selected version; they must not duplicate
 range parsing policy in the traversal implementation.
+
+### Package name parsing
+
+A dependency request splits a single spec string into a package name and a
+range. The split rule is the contract between CLI/manifest input, registry
+lookup, lockfile keys, cache filenames, and linker paths, so each of those
+consumers receives the same package name text.
+
+- An unscoped spec splits on the last `@`. `socket-store@^1.0.0` yields the name
+  `socket-store` and the range `^1.0.0`. A spec with no `@` yields the whole
+  string as the name and an empty range.
+- A scoped spec (`@scope/name`) splits on the first `@` that follows the scope
+  separator `/`. `@scope/name@1.2.3` yields the name `@scope/name` and the range
+  `1.2.3`; `@scope/name` with no trailing `@` yields the whole string as the
+  name and an empty range. The leading `@` is part of the name, never the
+  version separator, so scoped names round-trip through parsing unchanged.
+
+The resolver boundary rejects npm alias declarations before it parses a spec as
+an ordinary name/range request. A range that begins with the literal `npm:`
+prefix (`foo@npm:bar@1.2.3`, including the scoped form
+`@scope/foo@npm:bar@1.2.3`) is rejected as an input error with a typed error
+naming the offending package and alias target, rather than being split into a
+misleading request for a nonexistent package. This rejection contract and its
+detection points are owned by
+`docs/specs/core/registry/SPEC.md` ("Unsupported metadata behavior"). Active
+alias consumption remains an Open Question there.
+
+RPM does not today enforce full npm package-name syntax (length, allowed
+characters, lowercase rule, scope/name balance). Parsing is structural: any
+non-empty name that splits cleanly is accepted as a package name. Stricter name
+validation is intentionally deferred until a name-validation contract owns the
+accepted-form set and its error reporting; until then, parsing must not invent
+ad hoc rejection rules that diverge across CLI, manifest, and registry
+boundaries.
 
 Traversal policy is behind a replaceable `ResolutionStrategy` boundary, or an
 equivalent internal abstraction, owned by the `src/core/resolver` root module.
@@ -106,6 +143,57 @@ This is an intentional deferral, not an absence of policy: callers must not
 infer that an install succeeded without peer warnings means the peer set is
 satisfied.
 
+### Peer-requirement diagnostics ownership
+
+Peer-requirement diagnostics are owned by this SPEC (the resolver boundary) so
+that the future human-readable output for peer requirements and conflicts does
+not have to be re-derived by, and cannot silently diverge across, the CLI, the
+registry boundary, the manifest reader, or the lockfile writer. The ownership
+is over the *shape* of the diagnostics, not over an active emitter today: under
+the non-peer-aware strategy no peer diagnostic is emitted at all (see the
+non-emission policy above). The first peer-aware strategy SPEC that consumes
+`peerDependencies` as enforced edges owns the active emission — which command
+phases emit, how often, and in what order — and must follow the shape defined
+here.
+
+Peer-requirement diagnostics must keep two cases distinguishable in the
+information they carry, regardless of output format:
+
+- **Missing peer** — a declared `peerDependencies` entry whose target package is
+  absent from the resolved graph (no version selected, no install record).
+- **Incompatible peer range** — a declared `peerDependencies` entry whose target
+  package *is* present in the resolved graph, but at a version that does not
+  satisfy the peer's requested range.
+
+A diagnostic for either case must name the declaring package, the peer target
+package, and the peer's requested range; an incompatible-range diagnostic must
+additionally name the resolved version that failed to satisfy it. The two cases
+must not collapse into a single generic "peer problem" message: a missing peer
+and an incompatible peer range imply different user actions (install the peer
+vs change the peer's version), so the diagnostic shape must preserve the
+distinction even when the human-readable wording is later stabilized.
+
+Only human-readable diagnostics are in scope for the peer-aware strategy's first
+output. A diagnostic line is a single line of UTF-8 text on stderr, addressed to
+a human reader; it is not a stable API. Stable exit codes, structured
+machine-readable output (JSON or otherwise), stdout/stderr channel ownership
+beyond "diagnostics go to stderr", and a stable diagnostic envelope/category
+taxonomy are owned by the M8 diagnostics contract (issues #150 and #151) and
+must not be introduced through the peer-aware strategy SPEC. In particular: a
+peer-requirement diagnostic must not be exposed as a stable non-zero exit code,
+and no field name, key, or JSON shape emitted for peer diagnostics may be
+treated as a public contract, until the owning diagnostics SPEC exists.
+
+The human-readable wording itself is intentionally not frozen. A golden-output
+fixture for peer diagnostics must assert only the distinguishable information
+above (declaring package, peer target, requested range, and — for the
+incompatible case — the resolved version) plus that the output is a single line
+on stderr; it must not assert the exact prose, punctuation, or ordering of
+fields, so the diagnostics contract can still stabilize wording later without
+breaking peer-aware coverage. Once the M8 diagnostics contract stabilizes a
+diagnostic envelope, the peer-aware strategy SPEC must adopt it and this
+wording-not-frozen allowance is superseded for any field the envelope covers.
+
 Before an optional-aware strategy exists, optional dependencies are read and
 preserved on the manifest and on registry metadata but are not direct dependency
 requests, transitive dependency requests, or `node_modules` link targets. A
@@ -114,6 +202,61 @@ ordinary dependencies. The read-and-preserve baseline is owned by
 `docs/specs/core/manifest/SPEC.md`; per-version optional dependencies on
 registry packuments remain ignored at the registry boundary
 (`docs/specs/core/registry/SPEC.md`).
+
+The presence of an unsatisfiable or uninstalled optional dependency is not a
+resolution or install failure under the non-optional-aware strategy. RPM
+performs no optional-aware enqueueing, install attempt, skip, or reporting
+today: a package whose `optionalDependencies` entry is absent, the wrong
+version, or otherwise unsatisfiable still selects, downloads, verifies, and
+links normally, and the resolved graph contains only the package's ordinary
+dependencies. Optional dependencies do not appear in the lockfile
+(`docs/specs/core/lockfile/SPEC.md`). This is an intentional deferral, not an
+absence of policy: callers must not infer that an install succeeded without
+optional-dependency warnings means the optional set is satisfied.
+
+### Optional-aware strategy policy (deferred)
+
+The contract below is reserved for the first optional-aware strategy SPEC that
+consumes `optionalDependencies` as installable edges. It records the failure
+mode for each optional-dependency lifecycle stage so a future optional-aware
+resolver and installer do not have to re-derive the policy and cannot silently
+choose a different one. Until that strategy exists, the non-optional-aware
+behavior above is authoritative and this subsection imposes no new active
+behavior.
+
+| Optional dependency lifecycle stage | Failure policy |
+| --- | --- |
+| Resolution failure (unsatisfiable range, missing metadata, alias rejection) | Skip the optional entry and warn; the install must not fail |
+| Download or integrity failure (network error, unsupported integrity, digest mismatch) | Skip the optional entry and warn; the install must not fail |
+| Extract or link failure for the optional package | Skip the optional entry and warn; the install must not fail |
+| Platform skip (engines/os/cpu mismatch when a platform-gating strategy owns it) | Skip the optional entry silently; platform-incompatible optional dependencies are expected and must not warn |
+
+An optional dependency that succeeds through every reached stage is recorded in
+the resolved graph and lockfile exactly like an ordinary dependency, with its
+requested range and resolved version kept distinct
+(`docs/specs/core/lockfile/SPEC.md`). A skipped optional dependency is not
+recorded: the lockfile reflects the actually installed graph, not the requested
+optional set, so a later install reproduces the same skip rather than re-attempting
+an entry that was known to be uninstallable on this platform.
+
+The determinism requirement below applies only to skip decisions driven by
+deterministic inputs: a skip from an unsatisfiable range, missing metadata,
+alias rejection, unsupported integrity, or platform mismatch must be reproducible
+given the same metadata, registry state, and platform inputs, and must not
+depend on iteration order or an uncontrolled clock. A skip from a transient
+download or integrity failure (network error, digest mismatch) is a different
+case: it must produce the same skip outcome and warn at the time of the failure,
+but it is explicitly not required to be reproducible on the next install, because
+the triggering input (registry availability, network state) is itself
+non-deterministic. A later install must therefore be free to re-attempt an entry
+that skipped only because of a transient failure; only entries that skipped for a
+deterministic reason are expected to reproduce the skip.
+
+Optional-dependency warnings and exit behavior are deferred to a diagnostics
+SPEC (`docs/specs/core/lockfile/SPEC.md` records the lockfile deferral and
+issue #151 tracks diagnostics ownership): a warning must not be exposed as
+stable stderr or as a non-zero exit code until the owning diagnostics SPEC
+exists.
 
 The installer performance baseline in
 `docs/specs/core/install/performance/SPEC.md`
@@ -147,6 +290,60 @@ resolver fixtures should not mutate the repository root, `.rpm`, `rpm.lock`, or
 The semver baseline fixtures are defined by
 `docs/specs/core/semver/SPEC.md` and must be used before installer flow relies
 on semver range behavior.
+
+### Optional-dependency non-enqueue guard fixture
+
+The `registry/optional-preserve` fixture proves the current non-optional-aware
+contract: a package whose only edge is an `optionalDependencies` entry resolves
+without enqueueing the optional target and without failing resolution. It
+mirrors the `registry/peer-preserve` fixture used for the peer non-enqueue
+guard. This is current-behavior coverage, not optional-aware implementation.
+
+### Planned optional-aware fixtures (for implementation follow-up)
+
+The scenarios below are listed for the optional-aware strategy that first
+consumes `optionalDependencies` as installable edges. They are not part of the
+current non-optional-aware test set; each must be paired with an owning
+implementation that follows the failure policy in
+"Optional-aware strategy policy (deferred)":
+
+- Successful optional dependency: the entry resolves, downloads, verifies, and
+  links, and the lockfile records it like an ordinary dependency.
+- Unavailable optional dependency (missing metadata or unsatisfiable range):
+  resolution skips the entry and warns, the install succeeds, and the lockfile
+  omits the skipped entry.
+- Optional dependency download or integrity failure: the install skips the
+  entry and warns, and the lockfile omits it.
+- Optional dependency extract or link failure: the install skips the entry and
+  warns, the rest of the install completes, and the lockfile omits it.
+- Platform-incompatible optional dependency (once a platform-gating strategy
+  exists): the entry is skipped silently and the lockfile omits it.
+- Deterministic skip: the same metadata, registry state, and platform inputs
+  produce the same skip decision across repeated installs.
+
+### Planned peer-requirement diagnostic fixtures (for implementation follow-up)
+
+The scenarios below are listed for the first peer-aware strategy that emits
+peer-requirement diagnostics. They are not part of the current non-peer-aware
+test set (which emits no peer diagnostic at all); each must be paired with an
+owning peer-aware implementation that follows the shape in "Peer-requirement
+diagnostics ownership":
+
+- Missing peer: a package declares a `peerDependencies` entry whose target is
+  absent from the resolved graph; the diagnostic names the declaring package,
+  the missing peer target, and the requested range, and the case is
+  distinguishable from an incompatible range.
+- Incompatible peer range: a package declares a `peerDependencies` entry whose
+  target is present in the resolved graph at a version that does not satisfy
+  the requested range; the diagnostic additionally names the resolved version.
+- Deferred / unsupported peer-aware resolution: under the current
+  non-peer-aware strategy, the same inputs produce no peer diagnostic at all,
+  proving that peer-requirement diagnostics are gated on a peer-aware strategy
+  and do not leak out of the non-peer-aware path.
+
+A golden-output assertion for any of the above must follow the
+wording-not-frozen policy: assert only the distinguishable information and that
+the output is a single line on stderr, not exact prose.
 
 ## Resolved Follow-Up
 
