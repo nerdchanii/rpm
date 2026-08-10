@@ -127,9 +127,9 @@ criteria.
 | executable shims / symlinks in `.bin` | none | no SPEC mentions shim or symlink generation; `shim` appears zero times under `docs/specs/` | #139 |
 | platform considerations (`.cmd`, shebang) | none | no SPEC covers Windows `.cmd` wrappers, shebang interpretation, or the executable bit | #139 (deferred decision expected) |
 | `rpm run` PATH prepend | `cli/run/SPEC.md` | `rpm run` prepends the project `node_modules/.bin` to `PATH` and propagates the child exit code; running a script must not reinstall or mutate install output | none |
-| missing `.bin` directory behavior in `rpm run` | `cli/run/SPEC.md` | the run SPEC assumes `.bin` is populated but does not own how it is populated or behavior when it is absent | #143 |
-| lifecycle script fields (`preinstall`, `install`, `postinstall`, `prepare`, ...) | none | not covered by any SPEC; not even marked as deferred; the manifest Purpose names `scripts` but defines no field contract | #141 |
-| script command parsing | none | no SPEC defines whether script values are strings-only, arrays, or how command parsing and shell invocation behave | #141 |
+| missing `.bin` directory behavior in `rpm run` | `cli/run/SPEC.md` | the run SPEC assumes `.bin` is populated and does not own how it is populated (that is linker work), but it already owns the absent-binary case: a binary that is missing from `PATH` (including when `node_modules/.bin` is absent) must surface the shell's readable error and non-zero status (`cli/run/SPEC.md` Error Cases); #143 proves project-local binaries are reachable without mutating install output rather than redefining that existing behavior | #143 |
+| lifecycle script fields (`preinstall`, `install`, `postinstall`, `prepare`, ...) | `registry/SPEC.md` (ignored per-version), `manifest/SPEC.md` (root field) | the registry SPEC already classifies per-version `scripts` as ignored metadata and requires no install behavior to depend on it, including tolerant wrong-type handling; what is unowned is active lifecycle execution — there is no field contract for which hook names run, in what order, with what environment — so #141 must explicitly update the registry contract (including its tolerant wrong-type behavior) before #142 consumes transitive scripts, rather than treating the field as absent from every SPEC | #141 |
+| script command parsing | `cli/run/SPEC.md` (shell invocation only) | shell invocation is already owned for `rpm run`: scripts execute through the platform shell so command chaining, quoting, and environment assignment follow normal package-script semantics; what is unowned is the lifecycle-specific part — whether hook values are strings-only or arrays, and whether lifecycle hooks reuse the `rpm run` shell model or define a departure — so #141 must share or explicitly diverge from the existing run SPEC rather than create a second script-execution contract | #141 |
 | lifecycle execution as an install phase | `install/recovery/SPEC.md` | absent from the phase pipeline: the recovery contract enforces `resolve`, `fetch`, `extract`, `link`, `write` labels and has no `scripts` phase | #141 |
 | lifecycle script failure preserving install state | `install/recovery/SPEC.md` | no contract for rollback or partial-success prevention when a lifecycle script fails mid-install; the M3/M4 side-effect audit tables have no lifecycle row | #141 |
 
@@ -148,14 +148,17 @@ Findings:
   together before any linker implementation in #140. Platform-specific shim or
   `.cmd` behavior may be explicitly deferred inside #139 rather than implemented
   in M6.
-- Lifecycle scripts are the larger ownership gap: they are not covered by any
-  SPEC and are not even marked as deferred anywhere. The manifest SPEC names
-  `scripts` in its Purpose but defines no field contract, the recovery SPEC's
-  phase pipeline has no `scripts` phase, and the M3/M4 side-effect audits have no
-  lifecycle row. #141 owns the whole lifecycle cluster: supported phases,
-  ordering, environment, PATH, failure behavior, and rollback expectations, plus
-  the recovery SPEC update that adds a `scripts` phase and the invariant that a
-  failed script phase cannot publish partial successful install state.
+- Lifecycle scripts are the larger ownership gap: they are not covered by an
+  active execution SPEC. Per-version `scripts` are already classified as ignored
+  registry metadata (`registry/SPEC.md`) and the manifest SPEC names `scripts` in
+  its Purpose but defines no field contract, the recovery SPEC's phase pipeline
+  has no `scripts` phase, and the M3/M4 side-effect audits have no lifecycle row.
+  #141 owns the whole lifecycle cluster: supported phases, ordering, environment,
+  PATH, failure behavior, and rollback expectations, plus the registry SPEC
+  update that moves `scripts` from ignored to consumed (including its tolerant
+  wrong-type behavior) before #142 consumes transitive scripts, and the recovery
+  SPEC update that adds a `scripts` phase and the invariant that a failed script
+  phase cannot publish partial successful install state.
 - `rpm run` integration is mostly owned: `cli/run/SPEC.md` already prepends
   `node_modules/.bin` to PATH and propagates exit codes without reinstalling. The
   one remaining gap — behavior when `.bin` is absent — is owned by #143, which
