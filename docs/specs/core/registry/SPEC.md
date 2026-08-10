@@ -18,6 +18,7 @@ related_issues:
   - 113
   - 114
   - 120
+  - 127
 ---
 
 # Spec: Registry Metadata
@@ -139,8 +140,19 @@ verification:
   `docs/specs/core/manifest/SPEC.md`, and per-version optional dependencies on
   registry packuments remain ignored here until an optional-aware strategy
   consumes them.
-- `engines`, `os`, and `cpu`. RPM does not perform engine, OS, or CPU filtering.
-  Platform incompatibility is not a resolver or install failure today.
+- `engines`, `os`, and `cpu`. RPM deserializes these with npm-accurate types
+  (`engines` as a map of engine name to range; `os` and `cpu` as arrays whose
+  entries may be negated, for example `!win32`) but does not consume them.
+  **There is no engine, OS, or CPU filtering, warning, skip, or rejection
+  policy at the registry boundary.** Platform incompatibility is not a
+  resolver or install failure today: a version whose `engines`/`os`/`cpu`
+  declare an incompatible platform still selects, downloads, verifies, and
+  links normally. This is an intentional deferred decision, not an absent one;
+  active platform gating is deferred until a platform-gating strategy SPEC owns
+  filter/warn/skip/fail behavior. The root-manifest read-and-preserve baseline
+  for `engines`/`os`/`cpu` is owned by
+  `docs/specs/core/manifest/SPEC.md`; per-version values on registry packuments
+  remain ignored here until that strategy consumes them.
 - `main`, `types`, `scripts`, `bin`/package bin metadata, `private`,
   `repository`, `description`, `maintainers`, `author`, `homepage`, `keywords`,
   `license`, `readme`, `readmeFilename`, `time`, `_id`, `_rev`, and `sequence`.
@@ -306,4 +318,8 @@ not duplicate the contract text above.
   is out of scope. The root manifest `optionalDependencies` read-and-preserve
   baseline is now owned by `docs/specs/core/manifest/SPEC.md`; per-version
   `optionalDependencies` on registry packuments remain ignored here until an
-  optional-aware strategy consumes them as dependency edges.
+  optional-aware strategy consumes them as dependency edges. The root manifest
+  `engines`/`os`/`cpu` read-and-preserve baseline is now owned by
+  `docs/specs/core/manifest/SPEC.md` (#127); per-version `engines`/`os`/`cpu`
+  on registry packuments remain ignored here until a platform-gating strategy
+  consumes them.

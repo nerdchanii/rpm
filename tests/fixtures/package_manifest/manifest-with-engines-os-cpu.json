@@ -1,0 +1,20 @@
+{
+  "name": "platform-app",
+  "version": "0.3.0",
+  "dependencies": {
+    "react": "^18.2.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "os": [
+    "linux",
+    "darwin",
+    "!win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64",
+    "!ia32"
+  ]
+}

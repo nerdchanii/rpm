@@ -14,6 +14,7 @@ related_adrs:
   - 0002-single-crate-cli-core-boundary
 related_issues:
   - 50
+  - 127
 ---
 
 # Spec: Package Manifest
@@ -60,6 +61,27 @@ non-optional-aware strategy must not silently enqueue optional dependencies as
 ordinary dependencies; that non-enqueue guard is owned by
 `docs/specs/core/resolver/SPEC.md`. Per-version
 `optionalDependencies` on registry packuments remain ignored at the registry
+boundary (`docs/specs/core/registry/SPEC.md`).
+
+### Engines, OS, and CPU metadata
+
+RPM reads and preserves the root `engines`, `os`, and `cpu` fields when they
+are present, using npm-accurate types (`engines` as a `name -> range` map;
+`os` and `cpu` as arrays whose entries may be negated, for example `!win32`).
+Preserved values are not consumed by install, add, or resolution today: RPM
+performs no engine, OS, or CPU filtering, warning, skip, or failure. They do
+not influence version selection, the resolved graph, the lockfile, or linked
+`node_modules`. A manifest that omits any of these fields behaves identically to
+one without it.
+
+This read-and-preserve baseline makes RPM honest about fields it accepts today
+and keeps a real npm-shaped manifest from failing parsing. The full
+platform-gating behavior (filter candidates, warn on mismatch, skip install, or
+fail) is intentionally deferred until a platform-gating strategy SPEC owns it.
+Until then, a non-platform-aware strategy must treat platform incompatibility as
+a non-failure: platform metadata must not block resolution, download,
+verification, extraction, linking, lockfile, or manifest output. Per-version
+`engines`, `os`, and `cpu` on registry packuments remain ignored at the registry
 boundary (`docs/specs/core/registry/SPEC.md`).
 
 ## Error Cases
