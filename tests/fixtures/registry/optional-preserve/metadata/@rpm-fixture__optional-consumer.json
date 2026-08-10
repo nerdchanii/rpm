@@ -1,0 +1,24 @@
+{
+  "_id": "@rpm-fixture/optional-consumer",
+  "name": "@rpm-fixture/optional-consumer",
+  "description": "Fixture package declaring an optional dependency that must be preserved, not enqueued",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/optional-consumer",
+      "version": "1.0.0",
+      "description": "Fixture package declaring an optional dependency that must be preserved, not enqueued",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/optional-consumer/-/optional-consumer-1.0.0.tgz",
+        "shasum": "fixture-optional-consumer-1.0.0",
+        "integrity": "sha512-fixture-optional-consumer-1.0.0"
+      },
+      "optionalDependencies": {
+        "@rpm-fixture/optional-target": "^1.0.0"
+      }
+    }
+  }
+}

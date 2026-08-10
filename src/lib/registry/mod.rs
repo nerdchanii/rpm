@@ -1064,6 +1064,7 @@ mod tests {
         let fixture_roots = [
             "tests/fixtures/registry/shared-transitive/metadata",
             "tests/fixtures/registry/peer-preserve/metadata",
+            "tests/fixtures/registry/optional-preserve/metadata",
             "tests/fixtures/install-projects/lockfile-reproducible/registry",
             "tests/fixtures/install-projects/integrity-mismatch/registry",
             "tests/fixtures/install-projects/output-failure-after-resolution/registry",
@@ -1163,6 +1164,58 @@ mod tests {
                 .peer_dependencies
                 .is_none(),
             "peer target carries no peer dependency metadata"
+        );
+    }
+
+    #[test]
+    fn optional_dependencies_are_preserved_without_appearing_as_dependency_edges() {
+        let root = fixture_path(&["registry", "optional-preserve", "metadata"]);
+
+        let consumer = load_registry_fixture(&root, "@rpm-fixture/optional-consumer", "1.0.0");
+        let target = load_registry_fixture(&root, "@rpm-fixture/optional-target", "1.0.0");
+
+        // Optional metadata is preserved on the packument (the fixture carries
+        // it and deserialization succeeds, proven by load_registry_fixture), but
+        // it is not exposed as an ordinary dependency edge. The consumer has no
+        // `dependencies`, only `optionalDependencies`; the target is never
+        // requested. This mirrors the peerDependencies non-enqueue guard
+        // (`peer_dependencies_are_preserved_without_appearing_as_dependency_edges`)
+        // and is the current non-optional-aware contract owned by
+        // `docs/specs/core/registry/SPEC.md` (issue #133).
+        assert!(
+            consumer.get_dependencies_for_version("1.0.0").is_empty(),
+            "optional dependency must not surface as an ordinary dependency edge"
+        );
+        assert!(
+            target.get_dependencies_for_version("1.0.0").is_empty(),
+            "optional target has no ordinary dependencies"
+        );
+
+        // Inspect the optional metadata on the deserialized object directly.
+        // Reading the fixture JSON back and re-parsing it as a serde_json::Value
+        // would only prove the fixture file is well-formed, not that the
+        // registry deserializer preserves `optionalDependencies` per
+        // `docs/specs/core/registry/SPEC.md`; the `ignored_field` deserializer
+        // could drop the field (or a future rename) and that round-trip would
+        // still pass. The fields are private but this test lives in the same
+        // module, so it can assert on them directly.
+        let consumer_optional = consumer
+            .version_metadata("1.0.0")
+            .expect("consumer carries the requested version")
+            .optional_dependencies
+            .as_ref();
+        assert_eq!(
+            consumer_optional.and_then(|map| map.get("@rpm-fixture/optional-target")),
+            Some(&"^1.0.0".to_string()),
+            "optional dependency metadata must survive deserialization on the packument"
+        );
+        assert!(
+            target
+                .version_metadata("1.0.0")
+                .expect("target carries the requested version")
+                .optional_dependencies
+                .is_none(),
+            "optional target carries no optional dependency metadata"
         );
     }
 

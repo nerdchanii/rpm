@@ -1,0 +1,21 @@
+{
+  "_id": "@rpm-fixture/optional-target",
+  "name": "@rpm-fixture/optional-target",
+  "description": "Fixture package that is an optional dependency target, intentionally not requested",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/optional-target",
+      "version": "1.0.0",
+      "description": "Fixture package that is an optional dependency target, intentionally not requested",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/optional-target/-/optional-target-1.0.0.tgz",
+        "shasum": "fixture-optional-target-1.0.0",
+        "integrity": "sha512-fixture-optional-target-1.0.0"
+      }
+    }
+  }
+}
