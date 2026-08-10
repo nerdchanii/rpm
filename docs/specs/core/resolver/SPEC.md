@@ -185,10 +185,20 @@ requested range and resolved version kept distinct
 (`docs/specs/core/lockfile/SPEC.md`). A skipped optional dependency is not
 recorded: the lockfile reflects the actually installed graph, not the requested
 optional set, so a later install reproduces the same skip rather than re-attempting
-an entry that was known to be uninstallable on this platform. The skip decision
-itself must remain deterministic given the same metadata, registry state, and
-platform inputs; it must not depend on iteration order, network timing, or an
-uncontrolled clock.
+an entry that was known to be uninstallable on this platform.
+
+The determinism requirement below applies only to skip decisions driven by
+deterministic inputs: a skip from an unsatisfiable range, missing metadata,
+alias rejection, unsupported integrity, or platform mismatch must be reproducible
+given the same metadata, registry state, and platform inputs, and must not
+depend on iteration order or an uncontrolled clock. A skip from a transient
+download or integrity failure (network error, digest mismatch) is a different
+case: it must produce the same skip outcome and warn at the time of the failure,
+but it is explicitly not required to be reproducible on the next install, because
+the triggering input (registry availability, network state) is itself
+non-deterministic. A later install must therefore be free to re-attempt an entry
+that skipped only because of a transient failure; only entries that skipped for a
+deterministic reason are expected to reproduce the skip.
 
 Optional-dependency warnings and exit behavior are deferred to a diagnostics
 SPEC (`docs/specs/core/lockfile/SPEC.md` records the lockfile deferral and
