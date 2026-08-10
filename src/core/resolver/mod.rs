@@ -39,6 +39,7 @@ impl DependencyRequest {
         kind: DependencyRequestKind,
     ) -> Result<Self, ResolutionError> {
         let dependency = dependency.into();
+        reject_npm_alias(&dependency)?;
         let (package_name, requested) = parse_library_name(dependency.clone());
         if package_name.trim().is_empty() {
             return Err(ResolutionError::InvalidDependencyDeclaration {
@@ -65,6 +66,7 @@ impl DependencyDeclaration {
 
     pub fn from_spec(dependency: impl Into<String>) -> Result<Self, ResolutionError> {
         let dependency = dependency.into();
+        reject_npm_alias(&dependency)?;
         let (package_name, requested) = parse_library_name(dependency.clone());
         if package_name.trim().is_empty() {
             return Err(ResolutionError::InvalidDependencyDeclaration {
@@ -251,6 +253,13 @@ pub enum ResolutionError {
     InvalidDependencyDeclaration { declaration: String },
     #[error("resolved parent package {package_key} is missing from graph")]
     ParentPackageMissing { package_key: String },
+    #[error(
+        "npm alias dependency declarations are not supported: {package_key} maps to alias {alias_target}"
+    )]
+    NpmAliasNotSupported {
+        package_key: String,
+        alias_target: String,
+    },
 }
 
 impl ResolutionError {
@@ -283,6 +292,36 @@ fn normalize_requested(requested: String) -> String {
 
 fn package_key(package_name: &str, version: &str) -> String {
     format!("{package_name}@{version}")
+}
+
+/// Reject npm alias dependency declarations (issue #125).
+///
+/// An npm alias is a dependency map value whose range text begins with the
+/// literal prefix `npm:` (for example `"foo": "npm:bar@1.2.3"`). RPM does not
+/// resolve aliases today, so it must reject them as input errors at the
+/// declaration boundary — before any network fetch, lockfile write, or install
+/// side effect — instead of silently misinterpreting `"foo@npm:bar@1.2.3"` as
+/// a lookup for a nonexistent package.
+///
+/// Detection runs on the combined `name@range` declaration *before*
+/// `parse_library_name` splits it. `parse_library_name` splits on the *last*
+/// `@`, so for `"foo@npm:bar@1.2.3"` it would yield `foo@npm:bar` / `1.2.3`
+/// and hide the alias prefix in the package name. A well-formed non-alias
+/// declaration — either `name@range` or `@scope/name@range` — can never
+/// contain the literal `@npm:`, because `npm:` is not a valid version-range
+/// prefix, so finding `@npm:` in the combined declaration identifies an alias
+/// unambiguously without over-matching a range that merely contains `npm:` at
+/// a non-prefix position. `package_key` is the original combined declaration
+/// and names the offending package; `alias_target` is the alias range text.
+fn reject_npm_alias(dependency: &str) -> Result<(), ResolutionError> {
+    if let Some(alias_start) = dependency.find("@npm:") {
+        let alias_target = dependency[alias_start + 1..].to_string();
+        return Err(ResolutionError::NpmAliasNotSupported {
+            package_key: dependency.to_string(),
+            alias_target,
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -472,5 +511,70 @@ mod tests {
 
         assert!(matches!(error, ResolutionError::VersionSelection { .. }));
         assert_eq!(provider.dependency_reads.get(), 0);
+    }
+
+    // An npm alias declaration (a dependency map value whose range text begins
+    // with `npm:`, for example `"foo": "npm:bar@1.2.3"`) is rejected as an
+    // input error before resolution, rather than being silently misread as a
+    // lookup for a nonexistent package (issue #125).
+
+    #[test]
+    fn direct_request_rejects_root_manifest_npm_alias() {
+        let error = DependencyRequest::from_spec(
+            "foo@npm:bar@1.2.3",
+            DependencyRequestKind::DirectProduction,
+        )
+        .expect_err("root-manifest npm alias should be rejected");
+
+        assert!(matches!(
+            error,
+            ResolutionError::NpmAliasNotSupported {
+                ref package_key,
+                ref alias_target,
+            } if package_key == "foo@npm:bar@1.2.3"
+                && alias_target == "npm:bar@1.2.3"
+        ));
+        let message = error.to_string();
+        assert!(
+            message.contains("npm alias"),
+            "error should name the alias syntax, got {message:?}"
+        );
+        assert!(
+            message.contains("foo@npm:bar@1.2.3"),
+            "error should identify the offending package, got {message:?}"
+        );
+    }
+
+    #[test]
+    fn declaration_rejects_transitive_npm_alias() {
+        // Transitive registry dependency edges flow through the same
+        // `from_spec` boundary after being assembled as `name@range`; an alias
+        // value must be rejected here too, before any fetch or lockfile write.
+        let error = DependencyDeclaration::from_spec("transitive-dep@npm:other@^2.0.0")
+            .expect_err("transitive npm alias should be rejected");
+
+        assert!(matches!(
+            error,
+            ResolutionError::NpmAliasNotSupported {
+                ref package_key,
+                ref alias_target,
+            } if package_key == "transitive-dep@npm:other@^2.0.0"
+                && alias_target == "npm:other@^2.0.0"
+        ));
+    }
+
+    #[test]
+    fn non_prefix_npm_substring_is_not_rejected() {
+        // A range that merely contains `npm:` at a non-prefix position must
+        // flow through normally; only a value that *starts with* `npm:` is an
+        // alias. `1.2.3` is not a real range, but it reaches `from_spec`
+        // intact and must not trip the alias guard.
+        let request = DependencyRequest::from_spec(
+            "not-alias@1.2.3",
+            DependencyRequestKind::DirectProduction,
+        )
+        .expect("non-prefix npm substring must not be rejected");
+        assert_eq!(request.package_name, "not-alias");
+        assert_eq!(request.requested, "1.2.3");
     }
 }

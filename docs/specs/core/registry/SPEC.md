@@ -18,6 +18,7 @@ related_issues:
   - 113
   - 114
   - 120
+  - 125
   - 127
 ---
 
@@ -179,6 +180,19 @@ packument parsing. Well-typed values still round-trip into `Some(...)`.
 
 RPM rejects the following as input errors rather than silently proceeding:
 
+- A dependency map value whose range text begins with the literal prefix `npm:`
+  (an npm alias declaration, for example `"foo": "npm:bar@1.2.3"`). RPM does not
+  resolve aliases today: without rejection it would assemble `"foo@npm:bar@1.2.3"`,
+  split it on the last `@`, and look up a nonexistent package `"foo@npm:bar"`,
+  hiding the real cause behind a misleading fetch failure. The alias is rejected
+  as a resolver input error at the dependency-declaration boundary — the manifest
+  read for root entries and the registry metadata parse for transitive entries —
+  with a message that identifies the offending package and the alias target,
+  before any network fetch, lockfile write, or install side effect. Detection is
+  a prefix test on the range text, so a range that merely contains `npm:` at a
+  non-prefix position is not rejected. Active alias consumption (resolving
+  `npm:<name>@<version>` to a different registry package) remains an Open
+  Question (issue #125).
 - A dist-tag whose target version string is absent from the `versions` map when
   a `versions` map is present. The tag is treated as unsatisfiable (a resolver
   failure) rather than returning a version key with no per-version metadata.
@@ -302,6 +316,11 @@ Fixture expectations are defined by the owning scenario and documented in
 - wrong-type values on every ignored metadata field are discarded as absent
   rather than failing the packument (issue #113), while well-typed values
   round-trip into `Some(...)`
+- npm alias dependency declarations are rejected as resolver input errors at
+  the dependency-declaration boundary for both root-manifest and transitive
+  paths, with a clear message naming the offending package and alias target,
+  while a range that only contains `npm:` at a non-prefix position is not
+  rejected (issue #125)
 
 New fixtures should cover dist metadata, dist-tags, dependencies, optional
 dependencies, peer dependencies, engines, OS/CPU, aliases, scoped packages, and
@@ -323,3 +342,8 @@ not duplicate the contract text above.
   `docs/specs/core/manifest/SPEC.md` (#127); per-version `engines`/`os`/`cpu`
   on registry packuments remain ignored here until a platform-gating strategy
   consumes them.
+- When and how RPM begins actively consuming npm alias declarations (resolving
+  `npm:<name>@<version>` to a different registry package). npm aliases are
+  currently rejected as input errors (issue #125); active consumption would
+  require its own milestone, a lockfile record shape distinguishing install
+  name from resolved name, and resolver changes, and is therefore deferred.
