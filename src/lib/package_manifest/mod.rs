@@ -66,12 +66,17 @@ pub struct PackageManifest {
     pub bugs: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contributors: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub engines: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub os: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cpu: Option<String>,
+    // Read and preserved only; not consumed for platform gating until a
+    // platform-gating strategy owns filter/warn/skip/fail behavior. The field
+    // types follow npm's schema (`engines` as a map, `os`/`cpu` as arrays) so a
+    // real npm-shaped manifest parses instead of failing deserialization. See
+    // docs/specs/core/manifest/SPEC.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engines: Option<HashMap<String, VersionString>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private: Option<String>,
     // other fields implement soon.
@@ -190,6 +195,30 @@ impl PackageManifest {
         deps
     }
 
+    /// Preserved `engines` map (engine name to range, for example
+    /// `node -> >=14`). Read-only: RPM does not perform engine filtering today.
+    pub fn get_engines(&self) -> Vec<(String, String)> {
+        let mut engines = Vec::new();
+        if let Some(map) = &self.engines {
+            for (key, version) in map {
+                engines.push((key.to_owned(), version.0.to_owned()))
+            }
+        }
+        engines
+    }
+
+    /// Preserved `os` allowlist/denylist (entries may be negated, for example
+    /// `!win32`). Read-only: RPM does not perform OS filtering today.
+    pub fn get_os(&self) -> Vec<String> {
+        self.os.clone().unwrap_or_default()
+    }
+
+    /// Preserved `cpu` allowlist/denylist (entries may be negated, for example
+    /// `!arm64`). Read-only: RPM does not perform CPU filtering today.
+    pub fn get_cpu(&self) -> Vec<String> {
+        self.cpu.clone().unwrap_or_default()
+    }
+
     pub fn get_scripts(&self) -> HashMap<String, String> {
         self.scripts.clone().unwrap_or_default()
     }
@@ -266,6 +295,56 @@ mod package_json_test {
     }
 
     #[test]
+    fn read_file_preserves_engines_os_and_cpu() {
+        let fixture = fixture_path(&["package_manifest", "manifest-with-engines-os-cpu.json"]);
+        let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
+
+        // Preserved with npm-accurate types, but not consumed by install today.
+        let engines = package.get_engines();
+        assert_eq!(package.name.as_deref(), Some("platform-app"));
+        assert!(engines.contains(&("node".to_owned(), ">=14.0.0".to_owned())));
+        assert_eq!(
+            package.get_os(),
+            vec!["linux".to_owned(), "darwin".to_owned(), "!win32".to_owned()]
+        );
+        assert_eq!(
+            package.get_cpu(),
+            vec!["x64".to_owned(), "arm64".to_owned(), "!ia32".to_owned()]
+        );
+        // Platform metadata must not leak into ordinary dependency edges.
+        assert!(!package
+            .get_dependencies()
+            .contains(&("node".to_owned(), ">=14.0.0".to_owned())));
+    }
+
+    #[test]
+    fn engines_os_and_cpu_round_trip_through_save() {
+        let temp_project = TempProject::new("package-manifest-platform").unwrap();
+        let temp_manifest_path = temp_project
+            .copy_fixture(
+                fixture_path(&["package_manifest", "manifest-with-engines-os-cpu.json"]),
+                "package.json",
+            )
+            .unwrap();
+
+        let package = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
+        package.save_to_path(&temp_manifest_path).unwrap();
+
+        let saved = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
+        assert!(saved
+            .get_engines()
+            .contains(&("node".to_owned(), ">=14.0.0".to_owned())));
+        assert_eq!(
+            saved.get_os(),
+            vec!["linux".to_owned(), "darwin".to_owned(), "!win32".to_owned()]
+        );
+        assert_eq!(
+            saved.get_cpu(),
+            vec!["x64".to_owned(), "arm64".to_owned(), "!ia32".to_owned()]
+        );
+    }
+
+    #[test]
     fn read_file_handles_missing_optional_fields() {
         let fixture = fixture_path(&["package_manifest", "manifest-minimal.json"]);
         let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
@@ -273,6 +352,9 @@ mod package_json_test {
         assert_eq!(package.name.as_deref(), Some("minimal-app"));
         assert!(package.get_dependencies().is_empty());
         assert!(package.get_dev_dependencies().is_empty());
+        assert!(package.get_engines().is_empty());
+        assert!(package.get_os().is_empty());
+        assert!(package.get_cpu().is_empty());
         assert!(package.get_scripts().is_empty());
     }
 
@@ -334,6 +416,9 @@ mod package_json_test {
         assert!(package.get_dependencies().is_empty());
         assert!(package.get_dev_dependencies().is_empty());
         assert!(package.get_optional_dependencies().is_empty());
+        assert!(package.get_engines().is_empty());
+        assert!(package.get_os().is_empty());
+        assert!(package.get_cpu().is_empty());
         assert!(package.get_scripts().is_empty());
     }
 
