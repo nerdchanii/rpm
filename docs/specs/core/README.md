@@ -70,7 +70,7 @@ RPM does not treat unsupported metadata as successful compatibility.
 | dist-tag and root metadata fallback gating | `registry/SPEC.md` | a dist-tag target absent from `versions` is rejected; root `dist` / `dependencies` fallback only applies to the legacy single-version shape | delivered: #114 landed via #118 |
 | dist-tags / `latest` / semver range selection boundary | `registry/SPEC.md`, `semver/SPEC.md` | dist-tags are registry selectors, not semver ranges; `latest` and tag precedence over ranges is defined | none |
 | build-metadata deterministic selection | `registry/SPEC.md` (Registry Boundary, precedence step 3) | registry-owned raw-key sort before `max_satisfying` makes selection repeatable across `HashMap` seedings | delivered: #115 / #117 landed |
-| optionalDependencies | `registry/SPEC.md` (ignored list) | classified as ignored (not enqueued); no active read / resolve / install / skip / report contract exists yet | draft: compat optionalDependencies contract |
+| optionalDependencies | `registry/SPEC.md` (ignored list), `resolver/SPEC.md` (non-enqueue guard and deferred optional-aware policy), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with the non-optional-aware non-enqueue guard; root manifest reads and preserves `optionalDependencies` without consuming them; the deferred optional-aware strategy policy (skip-and-warn on resolution/download/install failure, skip-silently on platform mismatch, record only successful installs) is now owned by the resolver and lockfile SPECs; active optional-aware resolution and reporting remain deferred | delivered: #133 |
 | peerDependencies | `resolver/SPEC.md`, `registry/SPEC.md` (ignored list), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with the non-peer-aware non-enqueue guard; root manifest reads and preserves `peerDependencies` without consuming them; active peer-aware resolution and diagnostics deferred | delivered: #130 |
 | engines, os, cpu | `registry/SPEC.md` (ignored list), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with an explicit no-filtering/warning/rejection contract decision; root manifest reads and preserves npm-accurate `engines`/`os`/`cpu` without consuming them; active platform gating deferred | delivered: #127 |
 | package bin metadata | `linker/SPEC.md` (out of scope) | `.bin` generation is explicitly out of scope; `bin` is not modeled on registry types | M6 linker contract owns this |
@@ -87,18 +87,21 @@ Findings:
   `registry/SPEC.md` and `semver/SPEC.md`; the build-metadata deterministic
   tie-break closes the last selection-repeatability gap (#115 / #117).
 - The remaining M5 frontier is per-field classification: package bin metadata
-  and optional dependencies each need an active-behavior contract (or an
-  explicit deferred decision) before implementation. Each is represented by a
-  compat draft task in Project #7. Peer dependencies (#130) and engines, OS,
-  and CPU metadata (#127) now have explicit deferred policies: the registry
-  boundary classifies them as ignored, and the root manifest reads and preserves
-  them without consuming them. npm aliases (#125) now have both the
-  classification and the active rejection landed (via #129). Scoped package and
-  npm alias edge-case contracts (#136) are now explicit across resolver,
-  registry, lockfile, cache, and linker ownership: scoped names split and
-  round-trip verbatim everywhere except the one registry lookup path that must
-  percent-encode `/` as `%2F`, and the cache filename that rewrites `/` to `-`;
-  the `%2F` lookup-path code fix is tracked by a follow-up issue.
+  still needs an active-behavior contract (or an explicit deferred decision)
+  before implementation; it is represented by a compat draft task in Project #7.
+  Optional dependencies (#133) now join peer dependencies (#130) and engines,
+  OS, and CPU metadata (#127) with explicit deferred policies: the registry
+  boundary classifies `optionalDependencies` as ignored with the
+  non-optional-aware non-enqueue guard, the root manifest reads and preserves
+  them without consuming them, and the resolver and lockfile SPECs own the
+  reserved failure policy for a future optional-aware strategy. npm aliases
+  (#125) now have both the classification and the active rejection landed (via
+  #129). Scoped package and npm alias edge-case contracts (#136) are now
+  explicit across resolver, registry, lockfile, cache, and linker ownership:
+  scoped names split and round-trip verbatim everywhere except the one registry
+  lookup path that must percent-encode `/` as `%2F`, and the cache filename that
+  rewrites `/` to `-`; the `%2F` lookup-path code fix is tracked by a follow-up
+  issue.
 - Package `bin` metadata is intentionally deferred to the M6 linker milestone,
   where `.bin` generation is owned; it is listed here so the boundary is
   explicit, not so M5 implements it.

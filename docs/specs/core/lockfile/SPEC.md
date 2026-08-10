@@ -14,6 +14,7 @@ related_adrs:
   - 0002-single-crate-cli-core-boundary
 related_issues:
   - 50
+  - 133
   - 136
 ---
 
@@ -96,6 +97,17 @@ phase consumes. Peer and optional metadata remain preserved on the manifest
 representation of unmet peer or optional requirements, must be added by the
 peer-aware or optional-aware strategy SPEC that first consumes them; lockfile
 v1 does not reserve those values.
+
+The reserved lockfile policy for the first optional-aware strategy is:
+optional dependencies that are installed successfully are recorded with the
+same shape as ordinary dependencies (requested range and resolved version kept
+distinct), and optional dependencies that are skipped at any lifecycle stage
+are not recorded. This keeps `rpm.lock` a record of the actually installed
+graph rather than the requested optional set, so a later install reproduces the
+same skip deterministically instead of re-attempting an entry known to be
+uninstallable on this platform. Whether the skipped set is summarized in a
+separate lockfile section is an open question for that strategy SPEC; lockfile
+v1 records nothing about optional edges either way.
 
 ### Loading
 
