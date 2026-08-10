@@ -65,6 +65,17 @@ Package entries record:
   provides a shasum.
 - `dependencies`: dependency edges as requested package references.
 
+`peerDependencies` and `optionalDependencies` are not recorded in lockfile v1.
+The current non-peer-aware, non-optional-aware strategy neither resolves nor
+links these edges, so recording them would freeze metadata that no install
+phase consumes. Peer and optional metadata remain preserved on the manifest
+(`docs/specs/core/manifest/SPEC.md`) and on registry packuments
+(`docs/specs/core/registry/SPEC.md`) without appearing in `rpm.lock`. A
+`relationship` value for peer or optional edges, and any lockfile
+representation of unmet peer or optional requirements, must be added by the
+peer-aware or optional-aware strategy SPEC that first consumes them; lockfile
+v1 does not reserve those values.
+
 ### Loading
 
 An absent or empty lockfile initializes as an empty v1 lockfile. Empty loading

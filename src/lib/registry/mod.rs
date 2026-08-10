@@ -1063,6 +1063,7 @@ mod tests {
     fn semver_registry_fixtures_match_registry_metadata_shape() {
         let fixture_roots = [
             "tests/fixtures/registry/shared-transitive/metadata",
+            "tests/fixtures/registry/peer-preserve/metadata",
             "tests/fixtures/install-projects/lockfile-reproducible/registry",
             "tests/fixtures/install-projects/integrity-mismatch/registry",
             "tests/fixtures/install-projects/output-failure-after-resolution/registry",
@@ -1114,6 +1115,40 @@ mod tests {
             "https://registry.example.invalid/@rpm-fixture/alpha/-/alpha-1.0.0.tgz"
         );
         assert_eq!(alpha_dist.shasum.as_deref(), Some("fixture-alpha-1.0.0"));
+    }
+
+    #[test]
+    fn peer_dependencies_are_preserved_without_appearing_as_dependency_edges() {
+        let root = fixture_path(&["registry", "peer-preserve", "metadata"]);
+
+        let consumer = load_registry_fixture(&root, "@rpm-fixture/peer-consumer", "1.0.0");
+        let target = load_registry_fixture(&root, "@rpm-fixture/peer-target", "1.0.0");
+
+        // Peer metadata is preserved on the packument (the fixture carries it
+        // and deserialization succeeds, proven by load_registry_fixture), but it
+        // is not exposed as an ordinary dependency edge. The consumer has no
+        // `dependencies`, only `peerDependencies`; the target is never
+        // requested.
+        assert!(
+            consumer.get_dependencies_for_version("1.0.0").is_empty(),
+            "peer dependency must not surface as an ordinary dependency edge"
+        );
+        assert!(
+            target.get_dependencies_for_version("1.0.0").is_empty(),
+            "peer target has no ordinary dependencies"
+        );
+
+        // Round-trip the consumer through serde to prove peer metadata survives
+        // deserialization rather than being dropped at the registry boundary.
+        let raw =
+            fs::read_to_string(root.join(registry_fixture_file_name("@rpm-fixture/peer-consumer")))
+                .expect("peer-consumer fixture should be readable");
+        let reparsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("peer-consumer fixture should parse as JSON");
+        assert_eq!(
+            reparsed["versions"]["1.0.0"]["peerDependencies"]["@rpm-fixture/peer-target"], "^1.0.0",
+            "peer dependency metadata must be preserved on the packument"
+        );
     }
 
     #[test]

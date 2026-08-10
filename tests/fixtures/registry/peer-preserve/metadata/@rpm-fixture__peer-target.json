@@ -1,0 +1,21 @@
+{
+  "_id": "@rpm-fixture/peer-target",
+  "name": "@rpm-fixture/peer-target",
+  "description": "Fixture package that is a peer requirement target, intentionally not requested",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/peer-target",
+      "version": "1.0.0",
+      "description": "Fixture package that is a peer requirement target, intentionally not requested",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/peer-target/-/peer-target-1.0.0.tgz",
+        "shasum": "fixture-peer-target-1.0.0",
+        "integrity": "sha512-fixture-peer-target-1.0.0"
+      }
+    }
+  }
+}

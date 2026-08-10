@@ -92,6 +92,20 @@ root-manifest read-and-preserve baseline for `peerDependencies` is owned by
 packuments remain ignored at the registry boundary
 (`docs/specs/core/registry/SPEC.md`).
 
+The presence of an unmet peer requirement is not a resolution or install
+failure under the non-peer-aware strategy. RPM performs no peer-set
+enforcement, peer placement, or peer-conflict detection today: a package whose
+`peerDependencies` target is absent, the wrong version, or otherwise
+unsatisfied still selects, downloads, verifies, and links normally, and the
+resolved graph contains only the package's ordinary dependencies. Peer
+requirements do not appear in the lockfile
+(`docs/specs/core/lockfile/SPEC.md`). Warnings or errors for unmet peer
+requirements are deferred to a peer-aware strategy SPEC; until then, peer
+metadata is observable only as preserved metadata, not as install output.
+This is an intentional deferral, not an absence of policy: callers must not
+infer that an install succeeded without peer warnings means the peer set is
+satisfied.
+
 Before an optional-aware strategy exists, optional dependencies are read and
 preserved on the manifest and on registry metadata but are not direct dependency
 requests, transitive dependency requests, or `node_modules` link targets. A
