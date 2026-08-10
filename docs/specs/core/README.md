@@ -105,3 +105,65 @@ Findings:
 - Package `bin` metadata is intentionally deferred to the M6 linker milestone,
   where `.bin` generation is owned; it is listed here so the boundary is
   explicit, not so M5 implements it.
+
+## M6 Ownership and Gap Audit
+
+The M6 audit maps each runtime-linking and lifecycle-script behavior area to its
+owning SPEC/ADR and records whether the contract is explicitly stated. M6 is a
+runtime usability milestone: it must make installed packages runnable in normal
+Node workflows while keeping linker behavior separate from lifecycle/script
+execution behavior. It must not fold resolver, cache, or npm metadata
+compatibility expansion into runtime usability work. Every gap below is assigned
+an owning SPEC and a follow-up ticket so `.bin` generation and lifecycle
+behavior become SPEC-owned *before* implementation, satisfying the M6 exit
+criteria.
+
+| M6 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
+| --- | --- | --- | --- |
+| package-local dependency links | `linker/SPEC.md` | unscoped and scoped (`@scope/name`) dependency symlinks are defined; raw scoped name is reused verbatim; filesystem failures are returned as errors | none |
+| `.bin` generation | `linker/SPEC.md` (Out Of Scope) | explicitly deferred: `.bin` generation is not defined by the current linker contract and must be specified and implemented separately | #139 |
+| `bin` field interpretation (string vs object form) | `manifest/SPEC.md`, `registry/SPEC.md` | not modeled in any SPEC; the manifest mentions `scripts` only in its Purpose, and `bin` is on the registry ignored list; the string form (`{ "bin": "./cli.js" }`) is not covered | #139 |
+| scoped vs unscoped binary links in `.bin` | `linker/SPEC.md` (deferred) | no SPEC names binary-name mapping from scoped packages (e.g. `@scope/name` exposing which binary names) | #139 |
+| executable shims / symlinks in `.bin` | none | no SPEC mentions shim or symlink generation; `shim` appears zero times under `docs/specs/` | #139 |
+| platform considerations (`.cmd`, shebang) | none | no SPEC covers Windows `.cmd` wrappers, shebang interpretation, or the executable bit | #139 (deferred decision expected) |
+| `rpm run` PATH prepend | `cli/run/SPEC.md` | `rpm run` prepends the project `node_modules/.bin` to `PATH` and propagates the child exit code; running a script must not reinstall or mutate install output | none |
+| missing `.bin` directory behavior in `rpm run` | `cli/run/SPEC.md` | the run SPEC assumes `.bin` is populated but does not own how it is populated or behavior when it is absent | #143 |
+| lifecycle script fields (`preinstall`, `install`, `postinstall`, `prepare`, ...) | none | not covered by any SPEC; not even marked as deferred; the manifest Purpose names `scripts` but defines no field contract | #141 |
+| script command parsing | none | no SPEC defines whether script values are strings-only, arrays, or how command parsing and shell invocation behave | #141 |
+| lifecycle execution as an install phase | `install/recovery/SPEC.md` | absent from the phase pipeline: the recovery contract enforces `resolve`, `fetch`, `extract`, `link`, `write` labels and has no `scripts` phase | #141 |
+| lifecycle script failure preserving install state | `install/recovery/SPEC.md` | no contract for rollback or partial-success prevention when a lifecycle script fails mid-install; the M3/M4 side-effect audit tables have no lifecycle row | #141 |
+
+Findings:
+
+- Runtime linking is split into an owned core and an explicitly deferred
+  frontier. Package-local dependency links (unscoped and scoped) are already
+  owned by `linker/SPEC.md` and need no M6 contract change. `.bin` generation is
+  the deferred frontier: it is named in the linker SPEC's Out Of Scope section
+  and in the M5 audit row above as owned by the M6 linker contract, so #139
+  brings it under contract.
+- The `.bin` cluster carries five related gaps (`.bin` generation, `bin` field
+  interpretation, scoped vs unscoped binary links, shims/symlinks, platform
+  considerations). #139 owns the `.bin` and `bin` contract as one unit so the
+  link layout, the manifest field form, and the binary-name mapping are decided
+  together before any linker implementation in #140. Platform-specific shim or
+  `.cmd` behavior may be explicitly deferred inside #139 rather than implemented
+  in M6.
+- Lifecycle scripts are the larger ownership gap: they are not covered by any
+  SPEC and are not even marked as deferred anywhere. The manifest SPEC names
+  `scripts` in its Purpose but defines no field contract, the recovery SPEC's
+  phase pipeline has no `scripts` phase, and the M3/M4 side-effect audits have no
+  lifecycle row. #141 owns the whole lifecycle cluster: supported phases,
+  ordering, environment, PATH, failure behavior, and rollback expectations, plus
+  the recovery SPEC update that adds a `scripts` phase and the invariant that a
+  failed script phase cannot publish partial successful install state.
+- `rpm run` integration is mostly owned: `cli/run/SPEC.md` already prepends
+  `node_modules/.bin` to PATH and propagates exit codes without reinstalling. The
+  one remaining gap — behavior when `.bin` is absent — is owned by #143, which
+  proves project-local binaries are reachable through `rpm run` without mutating
+  install output.
+- The delivery order follows the issue: (1) this contract and gap audit, (2) #139
+  `.bin` and `bin` contract, (3) `.bin` fixture coverage, (4) #140 first `.bin`
+  link forms, (5) #141 lifecycle policy, (6) #142 first lifecycle phase with
+  failure-safe install state, (7) #143 `rpm run` PATH verification. Lifecycle
+  behavior is kept separable from linker behavior throughout so #139/#140 can
+  land without forcing #141/#142, and vice versa.
