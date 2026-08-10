@@ -143,21 +143,19 @@ verification:
 
 Ignored means RPM may accept documents that carry these fields, but no active
 behavior depends on them. An ignored field that is invalid or missing must not
-fail resolution or install: ignored fields are deserialized leniently so a
-packument that omits or malforms them still parses. Specifically, root
-`description`, root `maintainers`, and the per-version `name`, `version`, and
-`description` fields tolerate both absence and any wrong-type value: a
-present-but-shape-mismatched value is discarded as absent during deserialization
-rather than failing the packument. `bundledDependencies` is modeled as an
-untagged enum that accepts either a map (package name to range) or an array
-(package names), matching npm, so it tolerates absence and either documented
-shape.
-
-A value that matches none of the documented shapes for a field with a fixed
-alternative set (`bundledDependencies`, `engines`) may still fail parsing,
-because those fields are not modeled as a free-form `serde_json::Value`. Such a
-failure reflects an unrecognized document shape rather than a consumed-field
-contract violation.
+fail resolution or install: every ignored field is deserialized leniently so a
+packument that omits or malforms any of them still parses. A
+present-but-wrong-type value is discarded as absent during deserialization
+rather than failing the packument, regardless of the field's expected shape.
+This applies uniformly to all ignored fields: string fields such as `main`,
+`license`, `readme`, and `readmeFilename`; map fields such as `scripts`,
+`devDependencies`, `peerDependencies`, and `optionalDependencies`; array fields
+such as `os`, `cpu`, and `keywords`; scalar fields such as `private` and
+`sequence`; and the untagged-enum fields `repository`, `author`,
+`bundledDependencies`, `engines`, `time`, `_rev`, and `homepage`. A wrong-type
+value for any of these (for example a SPDX object-form `license`, a numeric
+`engines`, or a string `scripts`) is dropped to its absence without aborting
+packument parsing. Well-typed values still round-trip into `Some(...)`.
 
 ### Unsupported metadata behavior
 
@@ -276,6 +274,9 @@ Fixture expectations are defined by the owning scenario and documented in
 - dist-tag resolution before semver range evaluation
 - missing dist rejected before fetch
 - integrity verification of supported, mismatched, invalid, and absent variants
+- wrong-type values on every ignored metadata field are discarded as absent
+  rather than failing the packument (issue #113), while well-typed values
+  round-trip into `Some(...)`
 
 New fixtures should cover dist metadata, dist-tags, dependencies, optional
 dependencies, peer dependencies, engines, OS/CPU, aliases, scoped packages, and

@@ -113,22 +113,52 @@ pub struct Version {
     pub version: Option<String>,
     #[serde(default, deserialize_with = "ignored_field")]
     pub description: Option<String>,
+    // The remaining ignored metadata fields use the same lenient deserializer
+    // so a present-but-wrong-type value (for example `license: { type, url }`
+    // or `engines: 42`) is discarded as absent rather than failing the whole
+    // packument. This honors the SPEC tolerance guarantee for ignored fields
+    // (issue #113) uniformly across every ignored field, not only the string
+    // fields above.
+    #[serde(default, deserialize_with = "ignored_field")]
     pub main: Option<String>,
+    #[serde(default, deserialize_with = "ignored_field")]
     pub types: Option<String>,
+    #[serde(default, deserialize_with = "ignored_field")]
     pub scripts: Option<HashMap<String, String>>,
+    #[serde(default, deserialize_with = "ignored_field")]
     pub repository: Option<Repository>,
     pub dependencies: Option<HashMap<String, String>>,
-    #[serde(rename = "devDependencies")]
+    #[serde(
+        rename = "devDependencies",
+        default,
+        deserialize_with = "ignored_field"
+    )]
     dev_dependencies: Option<HashMap<String, String>>,
-    #[serde(rename = "peerDependencies")]
+    #[serde(
+        rename = "peerDependencies",
+        default,
+        deserialize_with = "ignored_field"
+    )]
     peer_dependencies: Option<HashMap<String, String>>,
-    #[serde(rename = "optionalDependencies")]
+    #[serde(
+        rename = "optionalDependencies",
+        default,
+        deserialize_with = "ignored_field"
+    )]
     optional_dependencies: Option<HashMap<String, String>>,
-    #[serde(rename = "bundledDependencies")]
+    #[serde(
+        rename = "bundledDependencies",
+        default,
+        deserialize_with = "ignored_field"
+    )]
     bundled_dependencies: Option<BundledDependencies>,
+    #[serde(default, deserialize_with = "ignored_field")]
     engines: Option<Engines>,
+    #[serde(default, deserialize_with = "ignored_field")]
     os: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "ignored_field")]
     cpu: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "ignored_field")]
     private: Option<bool>,
     pub dist: Dist,
     // publishConfig: HashMap<String, String>,
@@ -239,12 +269,13 @@ pub enum AuthorType {
 pub struct Registry {
     #[serde(rename = "_id")]
     pub id: String,
-    #[serde(rename = "_rev")]
+    #[serde(rename = "_rev", default, deserialize_with = "ignored_field")]
     pub rev: Option<String>,
     pub name: String,
     #[serde(rename = "dist-tags")]
     dist_tags: Option<DistTags>,
     pub versions: Option<HashMap<String, Version>>,
+    #[serde(default, deserialize_with = "ignored_field")]
     pub time: Option<Time>,
     // Ignored metadata fields: deserialized for document fidelity when present
     // but never consumed by an active code path. `ignored_field` keeps a
@@ -254,25 +285,48 @@ pub struct Registry {
     pub maintainers: Option<Vec<Maintainer>>,
     #[serde(default, deserialize_with = "ignored_field")]
     pub description: Option<String>,
+    #[serde(default, deserialize_with = "ignored_field")]
     pub homepage: Option<Url>,
+    #[serde(default, deserialize_with = "ignored_field")]
     pub keywords: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "ignored_field")]
     pub repository: Option<Repository>,
+    #[serde(default, deserialize_with = "ignored_field")]
     pub author: Option<AuthorType>,
     // pub bugs: Option<Bugs>,
+    #[serde(default, deserialize_with = "ignored_field")]
     pub license: Option<String>,
+    #[serde(default, deserialize_with = "ignored_field")]
     pub readme: Option<String>,
-    #[serde(rename = "readmeFilename")]
+    #[serde(rename = "readmeFilename", default, deserialize_with = "ignored_field")]
     pub readme_file_name: Option<String>,
     pub dist: Option<Dist>,
+    #[serde(default, deserialize_with = "ignored_field")]
     sequence: Option<i32>,
     pub dependencies: Option<HashMap<String, String>>,
-    #[serde(rename = "devDependencies")]
+    #[serde(
+        rename = "devDependencies",
+        default,
+        deserialize_with = "ignored_field"
+    )]
     dev_dependencies: Option<HashMap<String, String>>,
-    #[serde(rename = "peerDependencies")]
+    #[serde(
+        rename = "peerDependencies",
+        default,
+        deserialize_with = "ignored_field"
+    )]
     peer_dependencies: Option<HashMap<String, String>>,
-    #[serde(rename = "optionalDependencies")]
+    #[serde(
+        rename = "optionalDependencies",
+        default,
+        deserialize_with = "ignored_field"
+    )]
     optional_dependencies: Option<HashMap<String, String>>,
-    #[serde(rename = "bundledDependencies")]
+    #[serde(
+        rename = "bundledDependencies",
+        default,
+        deserialize_with = "ignored_field"
+    )]
     bundled_dependencies: Option<BundledDependencies>,
     version: Option<String>,
 }
@@ -1432,12 +1486,10 @@ mod tests {
     #[test]
     fn parses_engines_with_unexpected_shape_without_failing_selection() {
         // `engines` is ignored. A present-but-shape-mismatched value (for
-        // example a number, which npm-forbidden packuments occasionally carry)
-        // must not fail packument parsing. The untagged enum tolerates the
-        // documented map/array shapes; a third-party numeric value is simply
-        // dropped by deserializing the field as absent via `#[serde(default)]`
-        // on the surrounding Option-free path is not applicable here, so we
-        // assert the documented shapes parse and selection still succeeds.
+        // example a number, which malformed packuments occasionally carry) must
+        // not fail packument parsing: it is discarded as absent by the lenient
+        // `ignored_field` deserializer. The documented map/array shapes still
+        // deserialize to Some(...).
         let registry = registry_from_json(
             r#"{
               "_id": "engines-shapes",
@@ -1463,6 +1515,170 @@ mod tests {
         );
 
         assert_eq!(registry.select_version("latest").unwrap(), "1.0.0");
+    }
+
+    #[test]
+    fn tolerates_wrong_type_on_all_ignored_metadata_fields() {
+        // SPEC: every ignored metadata field tolerates not only absence but
+        // also shape mismatch, so a present-but-wrong-type value is discarded
+        // as absent rather than failing the whole packument (issue #113). This
+        // regression covers the fields that previously used a plain `Option<T>`
+        // and would abort packument parsing on a wrong-type value. The shapes
+        // here mirror real-world npm variation: SPDX object-form `license`,
+        // numeric `engines`, string `scripts`, numeric `repository`, object
+        // `os`/`cpu`, string `private`, object `keywords`, number `homepage`,
+        // number `readme`/`readmeFilename`, object `_rev`, array `author`,
+        // number `time`, string `sequence`, and wrong-type dependency maps.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "wrong-type-ignored",
+              "_rev": 42,
+              "name": "wrong-type-ignored",
+              "description": "wrong-type ignored fields",
+              "maintainers": [{ "name": "ada" }],
+              "time": 1700000000,
+              "homepage": 7,
+              "keywords": "not-a-list",
+              "repository": 404,
+              "author": ["not", "an", "object", "or", "string"],
+              "license": { "type": "MIT", "url": "https://example.invalid/mit" },
+              "readme": false,
+              "readmeFilename": {},
+              "sequence": "not-a-number",
+              "devDependencies": "not-a-map",
+              "peerDependencies": 3,
+              "optionalDependencies": false,
+              "bundledDependencies": 99,
+              "dist-tags": {
+                "latest": "1.0.0"
+              },
+              "versions": {
+                "1.0.0": {
+                  "name": "wrong-type-ignored",
+                  "version": "1.0.0",
+                  "description": "version desc",
+                  "main": {},
+                  "types": 5,
+                  "scripts": "not-a-map",
+                  "repository": 1,
+                  "devDependencies": "no",
+                  "peerDependencies": 2,
+                  "optionalDependencies": true,
+                  "bundledDependencies": 12,
+                  "engines": 404,
+                  "os": "linux",
+                  "cpu": "x64",
+                  "private": "yes",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/wrong-type-ignored/-/wrong-type-ignored-1.0.0.tgz",
+                    "shasum": "fixture-wrong-type-ignored"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        // Wrong-type ignored values are discarded to None on the root.
+        assert_eq!(registry.rev, None);
+        assert!(registry.time.is_none());
+        assert!(registry.homepage.is_none());
+        assert!(registry.keywords.is_none());
+        assert!(registry.repository.is_none());
+        assert!(registry.author.is_none());
+        assert_eq!(registry.license, None);
+        assert_eq!(registry.readme, None);
+        assert_eq!(registry.readme_file_name, None);
+        assert_eq!(registry.sequence, None);
+        assert!(registry.dev_dependencies.is_none());
+        assert!(registry.peer_dependencies.is_none());
+        assert!(registry.optional_dependencies.is_none());
+        assert!(registry.bundled_dependencies.is_none());
+
+        // Well-typed ignored values on the root still round-trip.
+        assert_eq!(
+            registry.description.as_deref(),
+            Some("wrong-type ignored fields")
+        );
+        assert_eq!(registry.maintainers.as_ref().map(|m| m.len()), Some(1usize));
+
+        let version = registry.version_metadata("1.0.0").unwrap();
+        assert_eq!(version.main, None);
+        assert_eq!(version.types, None);
+        assert!(version.scripts.is_none());
+        assert!(version.repository.is_none());
+        assert!(version.dev_dependencies.is_none());
+        assert!(version.peer_dependencies.is_none());
+        assert!(version.optional_dependencies.is_none());
+        assert!(version.bundled_dependencies.is_none());
+        assert!(version.engines.is_none());
+        assert!(version.os.is_none());
+        assert!(version.cpu.is_none());
+        assert_eq!(version.private, None);
+
+        // Selection and dist lookup still work end-to-end.
+        assert_eq!(registry.select_version("latest").unwrap(), "1.0.0");
+        assert_eq!(
+            registry
+                .get_dist_for_version("1.0.0")
+                .unwrap()
+                .shasum
+                .as_deref(),
+            Some("fixture-wrong-type-ignored")
+        );
+    }
+
+    #[test]
+    fn preserves_well_typed_ignored_non_string_fields() {
+        // The lenient deserializer only discards wrong-type values; a correct
+        // value still round-trips into Some(...). Guards against the lenient
+        // path silently dropping every value for the newly-protected fields.
+        let registry = registry_from_json(
+            r#"{
+              "_id": "well-typed-non-string",
+              "_rev": "1-abc",
+              "name": "well-typed-non-string",
+              "description": "root desc",
+              "maintainers": [],
+              "keywords": ["a", "b"],
+              "repository": { "type": "git", "url": "https://example.invalid/r.git" },
+              "author": "Ada <ada@example.invalid>",
+              "license": "MIT",
+              "sequence": 9,
+              "dist-tags": { "latest": "1.0.0" },
+              "versions": {
+                "1.0.0": {
+                  "name": "well-typed-non-string",
+                  "version": "1.0.0",
+                  "description": "version desc",
+                  "main": "lib/index.js",
+                  "scripts": { "test": "echo ok" },
+                  "repository": "https://example.invalid/r.git",
+                  "engines": { "node": ">=18" },
+                  "os": ["linux"],
+                  "cpu": ["x64"],
+                  "private": true,
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/well-typed-non-string/-/well-typed-non-string-1.0.0.tgz",
+                    "shasum": "fixture-well-typed-non-string"
+                  }
+                }
+              }
+            }"#,
+        );
+
+        assert_eq!(registry.rev.as_deref(), Some("1-abc"));
+        assert_eq!(registry.keywords.as_ref().map(|k| k.len()), Some(2usize));
+        assert_eq!(registry.license.as_deref(), Some("MIT"));
+        assert_eq!(registry.sequence, Some(9));
+        let version = registry.version_metadata("1.0.0").unwrap();
+        assert_eq!(version.main.as_deref(), Some("lib/index.js"));
+        assert_eq!(version.scripts.as_ref().map(|s| s.len()), Some(1usize));
+        assert_eq!(version.os.as_ref().map(|o| o.len()), Some(1usize));
+        assert_eq!(version.cpu.as_ref().map(|c| c.len()), Some(1usize));
+        assert_eq!(version.private, Some(true));
+        // Repository round-trips through its untagged enum; assert presence via
+        // is_some rather than PartialEq (the enum does not derive it).
+        assert!(version.repository.is_some());
     }
 
     #[test]
