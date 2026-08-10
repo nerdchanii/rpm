@@ -3,7 +3,7 @@ spec_id: registry_metadata
 title: Registry Metadata
 status: draft
 owner: core/registry
-last_reviewed: 2026-08-10
+last_reviewed: 2026-08-11
 authors:
   - nerdchanii
 deciders:
@@ -21,13 +21,14 @@ related_issues:
   - 125
   - 127
   - 130
+  - 136
 ---
 
 # Spec: Registry Metadata
 
 Status: Draft
 Owner: core/registry
-Last reviewed: 2026-08-10
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -71,7 +72,9 @@ RPM consumes the following fields. Fields are grouped by where they are read.
 Root document (`Registry`):
 
 - `name`: package name, including scope. Used as the cache filename base and the
-  resolver package key.
+  resolver package key. Scoped names (`@scope/name`) are preserved verbatim as
+  the package identity; only the registry lookup path encodes the name (see
+  "Scoped package registry paths").
 - `dist-tags`: map of tag name to version string. Tag resolution happens at the
   registry boundary before semver range evaluation. `latest` and any other
   published tag (for example `next`, `beta`) resolve to their target version.
@@ -182,23 +185,26 @@ packument parsing. Well-typed values still round-trip into `Some(...)`.
 
 RPM rejects the following as input errors rather than silently proceeding:
 
-- A dependency map value whose range text begins with the literal prefix `npm:`
-  (an npm alias declaration, for example `"foo": "npm:bar@1.2.3"`). RPM does not
-  resolve aliases today: without rejection it would assemble `"foo@npm:bar@1.2.3"`,
-  split it on the last `@`, and look up a nonexistent package `"foo@npm:bar"`,
-  hiding the real cause behind a misleading fetch failure. The alias is rejected
-  as a resolver input error at the dependency-declaration boundary — when an
-  install/add entry point turns a root-manifest entry into a direct resolver
-  request, and when the resolver reads registry metadata to build a transitive
-  dependency declaration — with a message that identifies the offending package
-  and the alias target. Root-direct alias detection happens before any registry
-  fetch; transitive alias detection happens during resolution (registry metadata
-  read), so the root registries may already be fetched by the time a transitive
-  alias is rejected. In both paths the alias is rejected before any tarball
-  download, lockfile write, or install side effect. Detection is a prefix test on
-  the range text, so a range that merely contains `npm:` at a non-prefix position
-  is not rejected. Active alias consumption (resolving `npm:<name>@<version>` to
-  a different registry package) remains an Open Question (issue #125).
+- A dependency map value whose range text begins with the `npm:` scheme, matched
+  ASCII case-insensitively (an npm alias declaration, for example
+  `"foo": "npm:bar@1.2.3"` or `"foo": "NPM:bar@1.2.3"`). The case-insensitive
+  scheme match mirrors npm's own `npm-package-arg`, which tests
+  `spec.toLowerCase().startsWith('npm:')`. RPM does not resolve aliases today:
+  without rejection it would assemble `"foo@npm:bar@1.2.3"`, split it on the
+  last `@`, and look up a nonexistent package `"foo@npm:bar"`, hiding the real
+  cause behind a misleading fetch failure. The alias is rejected as a resolver
+  input error at the dependency-declaration boundary — when an install/add entry
+  point turns a root-manifest entry into a direct resolver request, and when the
+  resolver reads registry metadata to build a transitive dependency declaration
+  — with a message that identifies the offending package and the alias target.
+  Root-direct alias detection happens before any registry fetch; transitive
+  alias detection happens during resolution (registry metadata read), so the
+  root registries may already be fetched by the time a transitive alias is
+  rejected. In both paths the alias is rejected before any tarball download,
+  lockfile write, or install side effect. Detection is a prefix test on the
+  range text, so a range that merely contains `npm:` at a non-prefix position
+  is not rejected. Active alias consumption (resolving `npm:<name>@<version>`
+  to a different registry package) remains an Open Question (issue #125).
 - A dist-tag whose target version string is absent from the `versions` map when
   a `versions` map is present. The tag is treated as unsatisfiable (a resolver
   failure) rather than returning a version key with no per-version metadata.
@@ -271,6 +277,28 @@ Only requests that are not registry dist-tags are evaluated as semver ranges.
 This keeps version selection centralized and keeps dist-tag interpretation out of
 semver code.
 
+### Scoped package registry paths
+
+A scoped package name (`@scope/name`) identifies one registry document, so the
+registry lookup path must encode the name as a single path segment. npm's
+registry serves a scoped packument at `/<percent-encoded-name>` where every `/`
+in the scoped name is encoded as `%2F`; `@babel/core` is fetched from
+`/@babel%2Fcore`. The version segment, when present, is a separate path
+component following the encoded name.
+
+The package identity stays verbatim everywhere except this one registry path:
+the resolver package key, lockfile key, cache filename base, and linker path all
+use the raw scoped name (`@scope/name`), and only the registry lookup path
+percent-encodes it. This keeps one encoding rule at one boundary instead of
+duplicating it across lockfile, cache, and linking.
+
+The current production registry client (`src/lib/api/mod.rs`) assembles the
+lookup URL from the raw scoped name without percent-encoding the `/`. Offline
+fixture resolution routes `@scope/name` to a local `@scope__name.json` file, so
+this gap is not exercised by the fixture-backed test suite. A correct registry
+client must percent-encode `/` as `%2F` in the name segment before the network
+request; the code fix is tracked by a follow-up issue (see "Open Questions").
+
 ## Error Cases
 
 Registry metadata interpretation must not panic on user- or registry-controlled
@@ -326,7 +354,8 @@ Fixture expectations are defined by the owning scenario and documented in
   the dependency-declaration boundary for both root-manifest and transitive
   paths, with a clear message naming the offending package and alias target,
   while a range that only contains `npm:` at a non-prefix position is not
-  rejected (issue #125)
+  rejected; the `npm:` scheme is matched ASCII case-insensitively, so mixed-case
+  prefixes such as `NPM:` and `Npm:` are rejected too (issue #125)
 
 New fixtures should cover dist metadata, dist-tags, dependencies, optional
 dependencies, peer dependencies, engines, OS/CPU, aliases, scoped packages, and
@@ -353,3 +382,9 @@ not duplicate the contract text above.
   currently rejected as input errors (issue #125); active consumption would
   require its own milestone, a lockfile record shape distinguishing install
   name from resolved name, and resolver changes, and is therefore deferred.
+- Percent-encoding `/` as `%2F` in the scoped-name segment of the registry
+  lookup path (see "Scoped package registry paths"). The contract is stated
+  here; the production registry client in `src/lib/api/mod.rs` does not yet
+  encode the name segment, and the offline fixture harness routes scoped names
+  to local files so the gap is unobserved by the fixture suite. The code fix is
+  tracked by #170.

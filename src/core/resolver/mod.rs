@@ -297,11 +297,13 @@ fn package_key(package_name: &str, version: &str) -> String {
 /// Reject npm alias dependency declarations (issue #125).
 ///
 /// An npm alias is a dependency map value whose range text begins with the
-/// literal prefix `npm:` (for example `"foo": "npm:bar@1.2.3"`). RPM does not
-/// resolve aliases today, so it must reject them as input errors at the
-/// declaration boundary — before any network fetch, lockfile write, or install
-/// side effect — instead of silently misinterpreting `"foo@npm:bar@1.2.3"` as
-/// a lookup for a nonexistent package.
+/// `npm:` scheme, matched ASCII case-insensitively (for example
+/// `"foo": "npm:bar@1.2.3"` or `"foo": "NPM:bar@1.2.3"`). RPM does not resolve
+/// aliases today, so it must reject them as input errors at the declaration
+/// boundary — before any network fetch, lockfile write, or install side effect
+/// — instead of silently misinterpreting `"foo@npm:bar@1.2.3"` as a lookup for
+/// a nonexistent package. The case-insensitive scheme match mirrors npm's own
+/// `npm-package-arg`, which tests `spec.toLowerCase().startsWith('npm:')`.
 ///
 /// Detection runs on the combined `name@range` declaration *before*
 /// `parse_library_name` splits it. `parse_library_name` splits on the *last*
@@ -314,7 +316,7 @@ fn package_key(package_name: &str, version: &str) -> String {
 /// a non-prefix position. `package_key` is the original combined declaration
 /// and names the offending package; `alias_target` is the alias range text.
 fn reject_npm_alias(dependency: &str) -> Result<(), ResolutionError> {
-    if let Some(alias_start) = dependency.find("@npm:") {
+    if let Some(alias_start) = find_alias_marker(dependency) {
         let alias_target = dependency[alias_start + 1..].to_string();
         return Err(ResolutionError::NpmAliasNotSupported {
             package_key: dependency.to_string(),
@@ -322,6 +324,19 @@ fn reject_npm_alias(dependency: &str) -> Result<(), ResolutionError> {
         });
     }
     Ok(())
+}
+
+/// The `@npm:` marker that identifies an alias in an assembled declaration.
+const NPM_ALIAS_MARKER: &str = "@npm:";
+
+/// Find the first `@npm:` marker in `dependency`, matching ASCII
+/// case-insensitively so `@NPM:`/`@Npm:` aliases are detected too. Returns the
+/// byte offset of the leading `@` of the marker, mirroring `str::find`.
+fn find_alias_marker(dependency: &str) -> Option<usize> {
+    dependency
+        .as_bytes()
+        .windows(NPM_ALIAS_MARKER.len())
+        .position(|window| window.eq_ignore_ascii_case(NPM_ALIAS_MARKER.as_bytes()))
 }
 
 #[cfg(test)]
@@ -631,5 +646,44 @@ mod tests {
         .expect("non-prefix npm substring must not be rejected");
         assert_eq!(request.package_name, "not-alias");
         assert_eq!(request.requested, "1.2.3");
+    }
+
+    #[test]
+    fn npm_alias_marker_is_matched_case_insensitively() {
+        // npm's own `npm-package-arg` tests `spec.toLowerCase().startsWith("npm:")`,
+        // so `NPM:` and `Npm:` are aliases too. Detection must not require an
+        // exact-case `npm:` marker, otherwise the declaration degrades to the
+        // misleading MissingMetadata failure that rejection is meant to replace.
+        for &mixed_case_marker in &["@NPM:", "@Npm:", "@nPm:"] {
+            let spec = format!("foo{mixed_case_marker}bar@1.2.3");
+            let expected_alias = format!("{}bar@1.2.3", &mixed_case_marker[1..]);
+
+            let error =
+                DependencyRequest::from_spec(&spec, DependencyRequestKind::DirectProduction)
+                    .expect_err("mixed-case root-manifest alias must be rejected");
+            assert!(
+                matches!(
+                    error,
+                    ResolutionError::NpmAliasNotSupported {
+                        ref package_key,
+                        ref alias_target,
+                    } if package_key == &spec && alias_target == &expected_alias
+                ),
+                "for {spec:?}: expected NpmAliasNotSupported, got {error:?}"
+            );
+
+            let error = DependencyDeclaration::from_spec(&spec)
+                .expect_err("mixed-case transitive alias must be rejected");
+            assert!(
+                matches!(
+                    error,
+                    ResolutionError::NpmAliasNotSupported {
+                        ref package_key,
+                        ref alias_target,
+                    } if package_key == &spec && alias_target == &expected_alias
+                ),
+                "for {spec:?}: expected NpmAliasNotSupported, got {error:?}"
+            );
+        }
     }
 }

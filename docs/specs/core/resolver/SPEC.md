@@ -3,7 +3,7 @@ spec_id: resolver_boundary
 title: Resolver Strategy Boundary
 status: draft
 owner: core/resolver
-last_reviewed: 2026-08-10
+last_reviewed: 2026-08-11
 authors:
   - nerdchanii
 deciders:
@@ -17,13 +17,14 @@ related_issues:
   - 50
   - 58
   - 130
+  - 136
 ---
 
 # Spec: Resolver Strategy Boundary
 
 Status: Draft
 Owner: core/resolver
-Last reviewed: 2026-08-10
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -61,6 +62,40 @@ Version and range satisfaction rules are owned by
 `docs/specs/core/semver/SPEC.md`. Resolver strategies call the version
 selection abstraction and record its selected version; they must not duplicate
 range parsing policy in the traversal implementation.
+
+### Package name parsing
+
+A dependency request splits a single spec string into a package name and a
+range. The split rule is the contract between CLI/manifest input, registry
+lookup, lockfile keys, cache filenames, and linker paths, so each of those
+consumers receives the same package name text.
+
+- An unscoped spec splits on the last `@`. `socket-store@^1.0.0` yields the name
+  `socket-store` and the range `^1.0.0`. A spec with no `@` yields the whole
+  string as the name and an empty range.
+- A scoped spec (`@scope/name`) splits on the first `@` that follows the scope
+  separator `/`. `@scope/name@1.2.3` yields the name `@scope/name` and the range
+  `1.2.3`; `@scope/name` with no trailing `@` yields the whole string as the
+  name and an empty range. The leading `@` is part of the name, never the
+  version separator, so scoped names round-trip through parsing unchanged.
+
+The resolver boundary rejects npm alias declarations before it parses a spec as
+an ordinary name/range request. A range that begins with the literal `npm:`
+prefix (`foo@npm:bar@1.2.3`, including the scoped form
+`@scope/foo@npm:bar@1.2.3`) is rejected as an input error with a typed error
+naming the offending package and alias target, rather than being split into a
+misleading request for a nonexistent package. This rejection contract and its
+detection points are owned by
+`docs/specs/core/registry/SPEC.md` ("Unsupported metadata behavior"). Active
+alias consumption remains an Open Question there.
+
+RPM does not today enforce full npm package-name syntax (length, allowed
+characters, lowercase rule, scope/name balance). Parsing is structural: any
+non-empty name that splits cleanly is accepted as a package name. Stricter name
+validation is intentionally deferred until a name-validation contract owns the
+accepted-form set and its error reporting; until then, parsing must not invent
+ad hoc rejection rules that diverge across CLI, manifest, and registry
+boundaries.
 
 Traversal policy is behind a replaceable `ResolutionStrategy` boundary, or an
 equivalent internal abstraction, owned by the `src/core/resolver` root module.
