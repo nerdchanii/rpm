@@ -16,6 +16,7 @@ related_issues:
   - 50
   - 127
   - 130
+  - 133
 ---
 
 # Spec: Package Manifest
@@ -57,7 +58,11 @@ lockfile, or linked `node_modules`. A manifest that omits
 This read-and-preserve baseline makes RPM honest about a field it accepts today.
 The full optional-aware behavior (resolve the entry as an ordinary dependency,
 attempt install, skip on failure, and report the outcome) is intentionally
-deferred until an optional-aware strategy SPEC owns it. Until then, a
+deferred until an optional-aware strategy SPEC owns it. The reserved failure
+policy for that future strategy — skip-and-warn on resolution, download, and
+install failures, skip-silently on platform mismatch, record only successful
+installs — is owned by `docs/specs/core/resolver/SPEC.md`, with the lockfile
+recording policy owned by `docs/specs/core/lockfile/SPEC.md`. Until then, a
 non-optional-aware strategy must not silently enqueue optional dependencies as
 ordinary dependencies; that non-enqueue guard is owned by
 `docs/specs/core/resolver/SPEC.md`. Per-version

@@ -17,6 +17,7 @@ related_issues:
   - 50
   - 58
   - 130
+  - 133
   - 136
 ---
 
@@ -150,6 +151,51 @@ ordinary dependencies. The read-and-preserve baseline is owned by
 registry packuments remain ignored at the registry boundary
 (`docs/specs/core/registry/SPEC.md`).
 
+The presence of an unsatisfiable or uninstalled optional dependency is not a
+resolution or install failure under the non-optional-aware strategy. RPM
+performs no optional-aware enqueueing, install attempt, skip, or reporting
+today: a package whose `optionalDependencies` entry is absent, the wrong
+version, or otherwise unsatisfiable still selects, downloads, verifies, and
+links normally, and the resolved graph contains only the package's ordinary
+dependencies. Optional dependencies do not appear in the lockfile
+(`docs/specs/core/lockfile/SPEC.md`). This is an intentional deferral, not an
+absence of policy: callers must not infer that an install succeeded without
+optional-dependency warnings means the optional set is satisfied.
+
+### Optional-aware strategy policy (deferred)
+
+The contract below is reserved for the first optional-aware strategy SPEC that
+consumes `optionalDependencies` as installable edges. It records the failure
+mode for each optional-dependency lifecycle stage so a future optional-aware
+resolver and installer do not have to re-derive the policy and cannot silently
+choose a different one. Until that strategy exists, the non-optional-aware
+behavior above is authoritative and this subsection imposes no new active
+behavior.
+
+| Optional dependency lifecycle stage | Failure policy |
+| --- | --- |
+| Resolution failure (unsatisfiable range, missing metadata, alias rejection) | Skip the optional entry and warn; the install must not fail |
+| Download or integrity failure (network error, unsupported integrity, digest mismatch) | Skip the optional entry and warn; the install must not fail |
+| Extract or link failure for the optional package | Skip the optional entry and warn; the install must not fail |
+| Platform skip (engines/os/cpu mismatch when a platform-gating strategy owns it) | Skip the optional entry silently; platform-incompatible optional dependencies are expected and must not warn |
+
+An optional dependency that succeeds through every reached stage is recorded in
+the resolved graph and lockfile exactly like an ordinary dependency, with its
+requested range and resolved version kept distinct
+(`docs/specs/core/lockfile/SPEC.md`). A skipped optional dependency is not
+recorded: the lockfile reflects the actually installed graph, not the requested
+optional set, so a later install reproduces the same skip rather than re-attempting
+an entry that was known to be uninstallable on this platform. The skip decision
+itself must remain deterministic given the same metadata, registry state, and
+platform inputs; it must not depend on iteration order, network timing, or an
+uncontrolled clock.
+
+Optional-dependency warnings and exit behavior are deferred to a diagnostics
+SPEC (`docs/specs/core/lockfile/SPEC.md` records the lockfile deferral and
+issue #151 tracks diagnostics ownership): a warning must not be exposed as
+stable stderr or as a non-zero exit code until the owning diagnostics SPEC
+exists.
+
 The installer performance baseline in
 `docs/specs/core/install/performance/SPEC.md`
 documents the current recursive bottleneck and the measurement fixture for
@@ -182,6 +228,36 @@ resolver fixtures should not mutate the repository root, `.rpm`, `rpm.lock`, or
 The semver baseline fixtures are defined by
 `docs/specs/core/semver/SPEC.md` and must be used before installer flow relies
 on semver range behavior.
+
+### Optional-dependency non-enqueue guard fixture
+
+The `registry/optional-preserve` fixture proves the current non-optional-aware
+contract: a package whose only edge is an `optionalDependencies` entry resolves
+without enqueueing the optional target and without failing resolution. It
+mirrors the `registry/peer-preserve` fixture used for the peer non-enqueue
+guard. This is current-behavior coverage, not optional-aware implementation.
+
+### Planned optional-aware fixtures (for implementation follow-up)
+
+The scenarios below are listed for the optional-aware strategy that first
+consumes `optionalDependencies` as installable edges. They are not part of the
+current non-optional-aware test set; each must be paired with an owning
+implementation that follows the failure policy in
+"Optional-aware strategy policy (deferred)":
+
+- Successful optional dependency: the entry resolves, downloads, verifies, and
+  links, and the lockfile records it like an ordinary dependency.
+- Unavailable optional dependency (missing metadata or unsatisfiable range):
+  resolution skips the entry and warns, the install succeeds, and the lockfile
+  omits the skipped entry.
+- Optional dependency download or integrity failure: the install skips the
+  entry and warns, and the lockfile omits it.
+- Optional dependency extract or link failure: the install skips the entry and
+  warns, the rest of the install completes, and the lockfile omits it.
+- Platform-incompatible optional dependency (once a platform-gating strategy
+  exists): the entry is skipped silently and the lockfile omits it.
+- Deterministic skip: the same metadata, registry state, and platform inputs
+  produce the same skip decision across repeated installs.
 
 ## Resolved Follow-Up
 

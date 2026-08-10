@@ -21,6 +21,7 @@ related_issues:
   - 125
   - 127
   - 130
+  - 133
   - 136
   - 170
 ---
@@ -358,6 +359,12 @@ Fixture expectations are defined by the owning scenario and documented in
   while a range that only contains `npm:` at a non-prefix position is not
   rejected; the `npm:` scheme is matched ASCII case-insensitively, so mixed-case
   prefixes such as `NPM:` and `Npm:` are rejected too (issue #125)
+- `optionalDependencies` is preserved on the deserialized packument (root and
+  per-version) but is not exposed as an ordinary dependency edge, mirroring the
+  `peerDependencies` non-enqueue guard; the `registry/optional-preserve` fixture
+  covers the current non-optional-aware contract (issue #133). The
+  `peerDependencies` non-enqueue guard is covered by the
+  `registry/peer-preserve` fixture (issue #130).
 
 New fixtures should cover dist metadata, dist-tags, dependencies, optional
 dependencies, peer dependencies, engines, OS/CPU, aliases, scoped packages, and
@@ -374,9 +381,15 @@ not duplicate the contract text above.
   is out of scope. The root manifest `optionalDependencies` read-and-preserve
   baseline is now owned by `docs/specs/core/manifest/SPEC.md`; per-version
   `optionalDependencies` on registry packuments remain ignored here until an
-  optional-aware strategy consumes them as dependency edges. The root manifest
-  `engines`/`os`/`cpu` read-and-preserve baseline is now owned by
-  `docs/specs/core/manifest/SPEC.md` (#127); per-version `engines`/`os`/`cpu`
+  optional-aware strategy consumes them as dependency edges. The reserved
+  failure policy for that future optional-aware strategy (skip-and-warn on
+  resolution/download/install failure, skip-silently on platform mismatch,
+  record only successful installs) is owned by
+  `docs/specs/core/resolver/SPEC.md` and `docs/specs/core/lockfile/SPEC.md`
+  (#133); until that strategy exists, per-version optional dependencies on
+  registry packuments stay ignored here regardless of the root-manifest entry.
+  The root manifest `engines`/`os`/`cpu` read-and-preserve baseline is now owned
+  by `docs/specs/core/manifest/SPEC.md` (#127); per-version `engines`/`os`/`cpu`
   on registry packuments remain ignored here until a platform-gating strategy
   consumes them.
 - When and how RPM begins actively consuming npm alias declarations (resolving
