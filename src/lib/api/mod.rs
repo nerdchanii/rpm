@@ -14,7 +14,7 @@ pub async fn get_registry(lib_name: &str, version: &str) -> std::io::Result<Regi
         return Ok(registry);
     }
 
-    let request_url = format!("{}/{}/{}", REGISTRY_PATH, lib_name, version);
+    let request_url = registry_lookup_url(lib_name, version);
     let registry = reqwest::get(&request_url)
         .await
         .map_err(|error| Error::other(format!("failed to fetch registry {request_url}: {error}")))?
@@ -45,13 +45,26 @@ pub async fn get_tarball(tarball_url: &str) -> std::io::Result<Vec<u8>> {
 }
 
 pub async fn get_registry_text(lib_name: &str, version: &str) -> std::io::Result<String> {
-    let request_url = format!("{}/{}/{}", REGISTRY_PATH, lib_name, version);
+    let request_url = registry_lookup_url(lib_name, version);
     reqwest::get(&request_url)
         .await
         .map_err(|error| Error::other(format!("failed to fetch registry {request_url}: {error}")))?
         .text()
         .await
         .map_err(|error| Error::other(format!("failed to read registry {request_url}: {error}")))
+}
+
+/// Assemble the registry lookup URL for a package name and version segment.
+///
+/// npm serves a scoped packument at a single path segment, so the scoped name
+/// (`@scope/name`) must be percent-encoded with `/` as `%2F` (for example
+/// `@babel/core` → `/@babel%2Fcore`). Unscoped names carry no `/` and remain
+/// byte-identical. The version segment stays a separate path component. The
+/// package identity stays verbatim everywhere else; only this registry lookup
+/// path encodes the name (see `docs/specs/core/registry/SPEC.md`).
+fn registry_lookup_url(lib_name: &str, version: &str) -> String {
+    let encoded_name = lib_name.replace('/', "%2F");
+    format!("{}/{encoded_name}/{version}", REGISTRY_PATH)
 }
 
 #[cfg(test)]
@@ -446,5 +459,19 @@ mod tests {
         assert!(error
             .to_string()
             .contains("invalid fixture tarball URL path"));
+    }
+
+    #[test]
+    fn registry_lookup_url_percent_encodes_scoped_name_segment() {
+        let url = registry_lookup_url("@babel/core", "2.3.1");
+        assert_eq!(url, "https://registry.npmjs.org/@babel%2Fcore/2.3.1");
+        assert!(url.contains("%2F"));
+    }
+
+    #[test]
+    fn registry_lookup_url_leaves_unscoped_name_unchanged() {
+        let url = registry_lookup_url("express", "4.18.2");
+        assert_eq!(url, "https://registry.npmjs.org/express/4.18.2");
+        assert!(!url.contains("%2F"));
     }
 }
