@@ -22,6 +22,7 @@ related_issues:
   - 127
   - 130
   - 136
+  - 170
 ---
 
 # Spec: Registry Metadata
@@ -292,12 +293,13 @@ use the raw scoped name (`@scope/name`), and only the registry lookup path
 percent-encodes it. This keeps one encoding rule at one boundary instead of
 duplicating it across lockfile, cache, and linking.
 
-The current production registry client (`src/lib/api/mod.rs`) assembles the
-lookup URL from the raw scoped name without percent-encoding the `/`. Offline
-fixture resolution routes `@scope/name` to a local `@scope__name.json` file, so
-this gap is not exercised by the fixture-backed test suite. A correct registry
-client must percent-encode `/` as `%2F` in the name segment before the network
-request; the code fix is tracked by a follow-up issue (see "Open Questions").
+The production registry client (`src/lib/api/mod.rs`) percent-encodes `/` as
+`%2F` in the name segment via `registry_lookup_url` before the network request
+(issue #170). Offline fixture resolution is unaffected: it routes
+`@scope/name` to a local `@scope__name.json` file and never reaches the
+production URL builder, so the fixture-backed test suite exercises the fixture
+mapping rather than the encoded path. The encoded-path derivation itself is
+covered by a focused unit test on `registry_lookup_url`.
 
 ## Error Cases
 
@@ -382,9 +384,3 @@ not duplicate the contract text above.
   currently rejected as input errors (issue #125); active consumption would
   require its own milestone, a lockfile record shape distinguishing install
   name from resolved name, and resolver changes, and is therefore deferred.
-- Percent-encoding `/` as `%2F` in the scoped-name segment of the registry
-  lookup path (see "Scoped package registry paths"). The contract is stated
-  here; the production registry client in `src/lib/api/mod.rs` does not yet
-  encode the name segment, and the offline fixture harness routes scoped names
-  to local files so the gap is unobserved by the fixture suite. The code fix is
-  tracked by #170.
