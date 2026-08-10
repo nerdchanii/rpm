@@ -1,0 +1,33 @@
+{
+  "_id": "@rpm-fixture/prerelease",
+  "name": "@rpm-fixture/prerelease",
+  "description": "Fixture package mixing a stable release and a prerelease to exercise node-semver prerelease exclusion",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/prerelease",
+      "version": "1.0.0",
+      "description": "Fixture package mixing a stable release and a prerelease to exercise node-semver prerelease exclusion",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/prerelease/-/prerelease-1.0.0.tgz",
+        "shasum": "fixture-prerelease-1.0.0",
+        "integrity": "sha512-fixture-prerelease-1.0.0"
+      }
+    },
+    "1.1.0-beta.1": {
+      "name": "@rpm-fixture/prerelease",
+      "version": "1.1.0-beta.1",
+      "description": "Fixture package mixing a stable release and a prerelease to exercise node-semver prerelease exclusion",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/prerelease/-/prerelease-1.1.0-beta.1.tgz",
+        "shasum": "fixture-prerelease-1.1.0-beta.1",
+        "integrity": "sha512-fixture-prerelease-1.1.0-beta.1"
+      }
+    }
+  }
+}

@@ -1,0 +1,2 @@
+@rpm-fixture/tag-consumer@1.0.0 requested ^1.0.0
+@rpm-fixture/tagged@1.0.0 requested legacy

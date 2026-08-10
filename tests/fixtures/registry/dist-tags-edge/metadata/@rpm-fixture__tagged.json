@@ -1,0 +1,46 @@
+{
+  "_id": "@rpm-fixture/tagged",
+  "name": "@rpm-fixture/tagged",
+  "description": "Fixture package with multiple dist-tags covering latest, stable, and legacy tag resolution",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.2.0",
+    "stable": "1.2.0",
+    "legacy": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/tagged",
+      "version": "1.0.0",
+      "description": "Fixture package with multiple dist-tags covering latest, stable, and legacy tag resolution",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/tagged/-/tagged-1.0.0.tgz",
+        "shasum": "fixture-tagged-1.0.0",
+        "integrity": "sha512-fixture-tagged-1.0.0"
+      }
+    },
+    "1.1.0": {
+      "name": "@rpm-fixture/tagged",
+      "version": "1.1.0",
+      "description": "Fixture package with multiple dist-tags covering latest, stable, and legacy tag resolution",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/tagged/-/tagged-1.1.0.tgz",
+        "shasum": "fixture-tagged-1.1.0",
+        "integrity": "sha512-fixture-tagged-1.1.0"
+      }
+    },
+    "1.2.0": {
+      "name": "@rpm-fixture/tagged",
+      "version": "1.2.0",
+      "description": "Fixture package with multiple dist-tags covering latest, stable, and legacy tag resolution",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/tagged/-/tagged-1.2.0.tgz",
+        "shasum": "fixture-tagged-1.2.0",
+        "integrity": "sha512-fixture-tagged-1.2.0"
+      }
+    }
+  }
+}
