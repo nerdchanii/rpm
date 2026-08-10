@@ -267,8 +267,13 @@ pub enum AuthorType {
 /// When Request to registry, return this struct json data
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Registry {
-    #[serde(rename = "_id")]
-    pub id: String,
+    // `_id` is an ignored field per SPEC (docs/specs/core/registry/SPEC.md): it
+    // is deserialized for document fidelity but never consumed by an active
+    // code path. The lenient deserializer keeps a missing, null, or wrong-type
+    // value from failing packument parsing, in line with the SPEC tolerance
+    // guarantee that applies uniformly to every ignored field (issue #113).
+    #[serde(rename = "_id", default, deserialize_with = "ignored_field")]
+    pub id: Option<String>,
     #[serde(rename = "_rev", default, deserialize_with = "ignored_field")]
     pub rev: Option<String>,
     pub name: String,
@@ -1679,6 +1684,75 @@ mod tests {
         // Repository round-trips through its untagged enum; assert presence via
         // is_some rather than PartialEq (the enum does not derive it).
         assert!(version.repository.is_some());
+    }
+
+    #[test]
+    fn tolerates_missing_and_wrong_type_on_ignored_id_field() {
+        // SPEC lists `_id` as an ignored field (docs/specs/core/registry/SPEC.md
+        // "Ignored metadata fields"). Per the SPEC's uniform tolerance guarantee,
+        // a packument that omits `_id` or carries a wrong-type `_id` must still
+        // parse rather than failing before version selection. Regression for the
+        // gap surfaced in PR #122 review: `Registry.id` was a required `String`,
+        // so a missing or wrong-type `_id` aborted deserialization even though
+        // no active code path reads `id`. The lenient `ignored_field` deserializer
+        // drops these to `None` while a well-typed value still round-trips.
+        let missing = registry_from_json(
+            r#"{
+              "name": "no-id",
+              "dist-tags": { "latest": "1.0.0" },
+              "versions": {
+                "1.0.0": {
+                  "name": "no-id",
+                  "version": "1.0.0",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/no-id/-/no-id-1.0.0.tgz",
+                    "shasum": "fixture-no-id"
+                  }
+                }
+              }
+            }"#,
+        );
+        assert_eq!(missing.id, None);
+        assert_eq!(missing.select_version("latest").unwrap(), "1.0.0");
+
+        let wrong_type = registry_from_json(
+            r#"{
+              "_id": 42,
+              "name": "num-id",
+              "dist-tags": { "latest": "1.0.0" },
+              "versions": {
+                "1.0.0": {
+                  "name": "num-id",
+                  "version": "1.0.0",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/num-id/-/num-id-1.0.0.tgz",
+                    "shasum": "fixture-num-id"
+                  }
+                }
+              }
+            }"#,
+        );
+        assert_eq!(wrong_type.id, None);
+        assert_eq!(wrong_type.select_version("latest").unwrap(), "1.0.0");
+
+        let well_typed = registry_from_json(
+            r#"{
+              "_id": "well-typed-id",
+              "name": "well-typed-id",
+              "dist-tags": { "latest": "1.0.0" },
+              "versions": {
+                "1.0.0": {
+                  "name": "well-typed-id",
+                  "version": "1.0.0",
+                  "dist": {
+                    "tarball": "https://registry.example.invalid/well-typed-id/-/well-typed-id-1.0.0.tgz",
+                    "shasum": "fixture-well-typed-id"
+                  }
+                }
+              }
+            }"#,
+        );
+        assert_eq!(well_typed.id.as_deref(), Some("well-typed-id"));
     }
 
     #[test]
