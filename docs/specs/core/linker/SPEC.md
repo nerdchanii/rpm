@@ -68,10 +68,17 @@ packages from the root package set.
 ### Executable bin links (`node_modules/.bin`)
 
 After dependency links are created, RPM generates executable links for every
-package that declares a `bin` field. The `bin` field source and shape are owned
-by `docs/specs/core/manifest/SPEC.md` (root package) and
+resolved package that declares a `bin` field. The `bin` field source and shape
+are owned by `docs/specs/core/manifest/SPEC.md` (root package) and
 `docs/specs/core/registry/SPEC.md` (per-version packument entry); the linker
 owns only the link layout those entries produce.
+
+Only resolved packages with an installed directory under `node_modules/`
+receive `.bin` links. The root project manifest is a `bin` source for
+preservation only: it has no installed directory and the linker does not create
+a `.bin` link for the root package itself. Reaching the root project's own
+binaries through `rpm run` is handled by the run contract and the PATH prepend
+(`docs/specs/cli/run/SPEC.md`, issue #143), not by `.bin` generation.
 
 For each resolved package that declares `bin`, RPM creates one link per exposed
 binary name under the project `node_modules/.bin/` directory. The link points
@@ -84,6 +91,17 @@ node_modules/.bin/<binary-name> -> ../<package-dir>/<target-file>
 Where `<package-dir>` is the package's installed directory (the same directory
 the dependency-link step uses) and `<target-file>` is the path the `bin` entry
 names, relative to the package root.
+
+Binary name confinement. The binary name must be a single path component: it
+must not be empty, must not contain a path separator (`/` or `\`), must not be
+absolute, and must not contain a parent-reference (`..`) component. An
+object-form `bin` key that violates any of these (for example
+`{"../../outside": "./cli.js"}`, `{"": "./cli.js"}`, or `{"a/b": "./cli.js"}`)
+is rejected as a link input error before any `.bin` link is created; it is not
+written verbatim into `node_modules/.bin`. Package-controlled metadata must not
+be able to place a `.bin` entry outside the `node_modules/.bin/` directory. The
+package name used for string-form binaries is already a single component by the
+resolver name contract, so this guard primarily constrains object-form keys.
 
 Binary name mapping follows npm semantics:
 
@@ -145,6 +163,10 @@ The linker must not create a `.bin` link that points at a missing target. A
 `node_modules/.bin` directory that cannot be created or written is a link
 failure.
 
+A `bin` binary name that violates the single-component confinement guard
+(absolute, separator-containing, parent-referencing, or empty) is a link input
+error, not a successful install; no `.bin` link is created for that entry.
+
 A package that declares no `bin` field contributes no `.bin` entries; this is
 normal and not an error.
 
@@ -161,7 +183,15 @@ destination-directory and symlink-creation failures.
 - scoped package, object-form `bin`, binary names used verbatim;
 - package with no `bin` field producing no `.bin` entries;
 - a `bin` target file that is absent from the extracted package producing a
-  link failure rather than a dangling link.
+  link failure rather than a dangling link;
+- a `bin` target that traverses outside the extracted package directory after
+  symlink and `..` normalization (for example a `target` of `../outside.js` or
+  an in-package symlink that resolves outside the package root) producing a
+  link failure rather than an escaping link;
+- an object-form `bin` key that is not a single path component (absolute,
+  separator-containing, parent-referencing, or empty, for example
+  `{"../../etc/foo": "./cli.js"}`) producing a link input error rather than a
+  link written outside `node_modules/.bin/`.
 
 Fixtures must copy install projects to temporary directories before mutation
 and must not use live npm.

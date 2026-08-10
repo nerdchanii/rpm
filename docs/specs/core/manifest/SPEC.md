@@ -135,10 +135,21 @@ behavior: the linker's `node_modules/.bin` generation
 has no install side effect. A manifest that omits `bin` behaves identically to
 one without it: no `.bin` entries are produced for that package.
 
+The root package `bin` field is preservation-only at this boundary: the root
+package is not a resolved package and has no installed directory under
+`node_modules/`, so the linker does not generate a `.bin` link for the root
+project itself. The linker consumes `bin` only from resolved (installed)
+packages. Reaching the root project's own declared binaries at runtime is owned
+by `rpm run` and its PATH policy (`docs/specs/cli/run/SPEC.md`, issue #143),
+not by `.bin` generation.
+
 A `bin` target that names a path outside the package directory (after symlink
 and `..` normalization) is rejected as a link input error by the linker, not
 silently followed. This keeps `.bin` generation from becoming a traversal
-vector; the traversal guard is owned by the linker contract.
+vector; the traversal guard is owned by the linker contract. An object-form
+`bin` key that is not a single path component (absolute, separator-containing,
+parent-referencing, or empty) is likewise rejected by the linker before any
+`.bin` entry is written; see `docs/specs/core/linker/SPEC.md`.
 
 ## Error Cases
 
