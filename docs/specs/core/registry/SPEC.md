@@ -215,12 +215,19 @@ Version selection precedence at the registry boundary:
    metadata. This prevents a tag from silently selecting root `dist`/
    `dependencies` under an unrelated version key (issue #114).
 3. Any other request is evaluated as a semver range against the `versions` keys
-   by the semver facade. `max_satisfying` iterates the `versions` map in
-   `HashMap` order and keeps the first candidate on equal precedence; because
-   `Version::cmp` ignores build metadata, ranges that match keys differing only
-   in build metadata (for example `1.0.0+one` and `1.0.0+two`) can select a
-   different raw key across runs. A deterministic tie-break is tracked as a
-   follow-up (see "Open Questions").
+   by the semver facade. `max_satisfying` keeps the first candidate on equal
+   precedence; `Version::cmp` ignores build metadata, so keys that differ only
+   in build metadata (for example `1.0.0+one` and `1.0.0+two`) are equal. The
+   `versions` map is deserialized into a randomized `HashMap`, so feeding its
+   keys in iteration order would make the first-seen-wins choice — and therefore
+   the selected raw key — depend on HashMap seeding, producing a different
+   lockfile across runs. The registry boundary removes this nondeterminism by
+   sorting the raw keys before calling the semver facade, so first-seen-wins
+   always lands on the same least raw key. The semver facade itself is not
+   modified: it preserves `node-semver` first-matching behavior, and no
+   RPM-specific semver dialect is introduced (owned by
+   `docs/specs/core/semver/SPEC.md`). This keeps determinism at the registry
+   boundary, where the randomized map lives, rather than in shared semver code.
 
 Only requests that are not registry dist-tags are evaluated as semver ranges.
 This keeps version selection centralized and keeps dist-tag interpretation out of
@@ -290,6 +297,3 @@ not duplicate the contract text above.
   a peer-aware resolution strategy, platform gating, or `.bin` generation SPEC
   owns the active behavior. The linker SPEC already notes `.bin` generation is
   out of scope.
-- Defining a deterministic tie-break (or stable candidate ordering) for version
-  keys that differ only in build metadata, so `max_satisfying` is repeatable
-  across runs. Tracked in #115.

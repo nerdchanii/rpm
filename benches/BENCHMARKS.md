@@ -1,16 +1,16 @@
 ---
-benchmark_data: benches/histories/2026-06-22-003/benchmarks.json
-benchmark_chart: benches/histories/2026-06-22-003/benchmark.svg
-history_directory: benches/histories/2026-06-22-003
-generated_at: 2026-06-22T10:07:58.941Z
+benchmark_data: benches/histories/2026-08-10-000/benchmarks.json
+benchmark_chart: benches/histories/2026-08-10-000/benchmark.svg
+history_directory: benches/histories/2026-08-10-000
+generated_at: 2026-08-10T02:28:30.884Z
 status: "Representative suite"
 ---
 
 # Semver Benchmark Checkpoint
 
 Status: Representative suite
-Date: 2026-06-22
-History directory: `benches/histories/2026-06-22-003`
+Date: 2026-08-10
+History directory: `benches/histories/2026-08-10-000`
 
 ## Command
 
@@ -21,9 +21,9 @@ node scripts/benchmark-semver.mjs
 ## Environment
 
 - Host: darwin arm64
-- Rust: `rustc 1.96.0 (ac68faa20 2026-05-25)`
-- Node: `v22.22.3`
-- npm: `10.9.8`
+- Rust: `rustc 1.97.1 (8bab26f4f 2026-07-14)`
+- Node: `v24.18.0`
+- npm: `11.16.0`
 - node-semver: `7.8.2`
 
 ## Inputs
@@ -38,14 +38,14 @@ node scripts/benchmark-semver.mjs
 
 | Operation | RPM Rust mean ns/iter | node-semver mean ns/iter | Rust speedup |
 | --- | ---: | ---: | ---: |
-| version_parse | 2,167.8 | 5,589.4 | 2.58x |
-| valid_canonical | 4,077.6 | 5,805.4 | 1.42x |
-| invalid_version | 532.4 | 28,893.2 | 54.27x |
-| range_parse | 5,640.4 | 5,077.2 | 0.90x |
-| invalid_range | 1,738 | 59,550.8 | 34.26x |
-| satisfies | 4,947 | 6,512.4 | 1.32x |
-| max_satisfying | 6,777 | 33,920.8 | 5.01x |
-| min_satisfying | 6,307.8 | 25,238.8 | 4.00x |
+| version_parse | 2,863 | 6,613.6 | 2.31x |
+| valid_canonical | 8,125.2 | 7,215.6 | 0.89x |
+| invalid_version | 814 | 35,983.6 | 44.21x |
+| range_parse | 8,639.4 | 5,775.2 | 0.67x |
+| invalid_range | 2,691.4 | 67,463.4 | 25.07x |
+| satisfies | 6,959.4 | 6,063.6 | 0.87x |
+| max_satisfying | 6,730 | 30,049.6 | 4.47x |
+| min_satisfying | 7,215.4 | 25,823.8 | 3.58x |
 
 ## Notes
 
