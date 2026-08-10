@@ -71,7 +71,7 @@ RPM does not treat unsupported metadata as successful compatibility.
 | dist-tags / `latest` / semver range selection boundary | `registry/SPEC.md`, `semver/SPEC.md` | dist-tags are registry selectors, not semver ranges; `latest` and tag precedence over ranges is defined | none |
 | build-metadata deterministic selection | `registry/SPEC.md` (Registry Boundary, precedence step 3) | registry-owned raw-key sort before `max_satisfying` makes selection repeatable across `HashMap` seedings | delivered: #115 / #117 landed |
 | optionalDependencies | `registry/SPEC.md` (ignored list) | classified as ignored (not enqueued); no active read / resolve / install / skip / report contract exists yet | draft: compat optionalDependencies contract |
-| peerDependencies | `resolver/SPEC.md`, `registry/SPEC.md` (ignored list) | non-peer-aware strategy must not enqueue peer deps as ordinary dependencies; no peer-requirement field is implemented (spec-only) | draft: compat peerDependencies preservation and diagnostics |
+| peerDependencies | `resolver/SPEC.md`, `registry/SPEC.md` (ignored list), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with the non-peer-aware non-enqueue guard; root manifest reads and preserves `peerDependencies` without consuming them; active peer-aware resolution and diagnostics deferred | delivered: #130 |
 | engines, os, cpu | `registry/SPEC.md` (ignored list), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with an explicit no-filtering/warning/rejection contract decision; root manifest reads and preserves npm-accurate `engines`/`os`/`cpu` without consuming them; active platform gating deferred | delivered: #127 |
 | package bin metadata | `linker/SPEC.md` (out of scope) | `.bin` generation is explicitly out of scope; `bin` is not modeled on registry types | M6 linker contract owns this |
 | scoped package names | `registry/SPEC.md`, `linker/SPEC.md`, `lockfile/SPEC.md` | scoped names are owned throughout: registry consumes the scoped `name`, linker preserves the scope directory in the link path, and lockfile records `name` including scope | none |
@@ -86,14 +86,13 @@ Findings:
 - The dist-tag and semver range selection boundary is fully owned across
   `registry/SPEC.md` and `semver/SPEC.md`; the build-metadata deterministic
   tie-break closes the last selection-repeatability gap (#115 / #117).
-- The remaining M5 frontier is per-field classification: optional dependencies,
-  peer dependencies, package bin metadata, and npm aliases each need an
-  active-behavior contract (or an explicit deferred decision) before
-  implementation. Each is represented by a compat draft task in Project #7.
-  Engines, OS, and CPU metadata now have an explicit deferred policy: the
-  registry boundary classifies them as ignored with a no-filtering contract
-  decision, and the root manifest reads and preserves them without consuming
-  them (#127).
+- The remaining M5 frontier is per-field classification: package bin metadata
+  and npm aliases each need an active-behavior contract (or an explicit deferred
+  decision) before implementation. Each is represented by a compat draft task in
+  Project #7. Optional dependencies (#124), peer dependencies (#130), and
+  engines, OS, and CPU metadata (#127) now have explicit deferred policies: the
+  registry boundary classifies them as ignored, and the root manifest reads and
+  preserves them without consuming them.
 - Package `bin` metadata is intentionally deferred to the M6 linker milestone,
   where `.bin` generation is owned; it is listed here so the boundary is
   explicit, not so M5 implements it.

@@ -16,6 +16,7 @@ related_adrs:
 related_issues:
   - 50
   - 58
+  - 130
 ---
 
 # Spec: Resolver Strategy Boundary
@@ -85,7 +86,11 @@ Before a peer-aware strategy exists, peer dependencies are represented as peer
 requirement metadata on resolved package records or metadata records. They are
 not direct dependency requests, transitive dependency requests, manifest update
 inputs, or `node_modules` link targets by themselves. A non-peer-aware strategy
-must not silently enqueue peer dependencies as ordinary dependencies.
+must not silently enqueue peer dependencies as ordinary dependencies. The
+root-manifest read-and-preserve baseline for `peerDependencies` is owned by
+`docs/specs/core/manifest/SPEC.md`; per-version peer dependencies on registry
+packuments remain ignored at the registry boundary
+(`docs/specs/core/registry/SPEC.md`).
 
 Before an optional-aware strategy exists, optional dependencies are read and
 preserved on the manifest and on registry metadata but are not direct dependency

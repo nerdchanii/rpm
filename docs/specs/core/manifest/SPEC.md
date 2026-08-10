@@ -15,6 +15,7 @@ related_adrs:
 related_issues:
   - 50
   - 127
+  - 130
 ---
 
 # Spec: Package Manifest
@@ -61,6 +62,24 @@ non-optional-aware strategy must not silently enqueue optional dependencies as
 ordinary dependencies; that non-enqueue guard is owned by
 `docs/specs/core/resolver/SPEC.md`. Per-version
 `optionalDependencies` on registry packuments remain ignored at the registry
+boundary (`docs/specs/core/registry/SPEC.md`).
+
+### Peer dependencies
+
+RPM reads and preserves the root `peerDependencies` map (`package name` to
+`range`) when it is present. Preserved entries are not consumed by install, add,
+or resolution today: they are not enqueued as dependency requests, they do not
+influence version selection, and they do not appear in the resolved graph,
+lockfile, or linked `node_modules`. A manifest that omits `peerDependencies`
+behaves identically to one without it.
+
+This read-and-preserve baseline makes RPM honest about a field it accepts today.
+The full peer-aware behavior (peer-requirement resolution, peer-set enforcement,
+and peer-conflict diagnostics) is intentionally deferred until a peer-aware
+strategy SPEC owns it. Until then, a non-peer-aware strategy must not silently
+enqueue peer dependencies as ordinary dependencies; that non-enqueue guard is
+owned by `docs/specs/core/resolver/SPEC.md`. Per-version
+`peerDependencies` on registry packuments remain ignored at the registry
 boundary (`docs/specs/core/registry/SPEC.md`).
 
 ### Engines, OS, and CPU metadata
