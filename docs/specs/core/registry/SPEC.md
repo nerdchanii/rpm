@@ -20,6 +20,7 @@ related_issues:
   - 120
   - 125
   - 127
+  - 130
 ---
 
 # Spec: Registry Metadata
@@ -136,8 +137,9 @@ verification:
   non-optional-aware strategy. Peer dependencies are represented as peer
   requirement metadata on resolved package records per
   `docs/specs/core/resolver/SPEC.md`; they must not be silently enqueued as
-  ordinary dependencies. Optional dependencies follow the same non-enqueue
-  guard: the root manifest field is read and preserved per
+  ordinary dependencies. The root manifest field is read and preserved per
+  `docs/specs/core/manifest/SPEC.md`. Optional dependencies follow the same
+  non-enqueue guard: the root manifest field is read and preserved per
   `docs/specs/core/manifest/SPEC.md`, and per-version optional dependencies on
   registry packuments remain ignored here until an optional-aware strategy
   consumes them.

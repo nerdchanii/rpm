@@ -52,6 +52,15 @@ pub struct PackageManifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub optional_dependencies: Option<HashMap<String, VersionString>>,
+    // Read and preserved only; not enqueued as ordinary dependency requests
+    // until a peer-aware strategy owns peer-requirement resolution and
+    // diagnostics. See docs/specs/core/manifest/SPEC.md.
+    #[serde(
+        rename = "peerDependencies",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub peer_dependencies: Option<HashMap<String, VersionString>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bin: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -195,6 +204,18 @@ impl PackageManifest {
         deps
     }
 
+    /// Preserved `peerDependencies` map (package name to range). Read-only: RPM
+    /// does not enqueue peer dependencies as ordinary dependencies today.
+    pub fn get_peer_dependencies(&self) -> Vec<(String, String)> {
+        let mut deps = Vec::new();
+        if let Some(peer_deps) = &self.peer_dependencies {
+            for (key, version) in peer_deps {
+                deps.push((key.to_owned(), version.0.to_owned()))
+            }
+        }
+        deps
+    }
+
     /// Preserved `engines` map (engine name to range, for example
     /// `node -> >=14`). Read-only: RPM does not perform engine filtering today.
     pub fn get_engines(&self) -> Vec<(String, String)> {
@@ -295,6 +316,38 @@ mod package_json_test {
     }
 
     #[test]
+    fn read_file_preserves_peer_dependencies() {
+        let fixture = fixture_path(&["package_manifest", "manifest-with-peer-deps.json"]);
+        let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
+
+        let peer_dependencies = package.get_peer_dependencies();
+        assert_eq!(package.name.as_deref(), Some("peer-app"));
+        assert!(peer_dependencies.contains(&("react".to_owned(), "^18.0.0".to_owned())));
+        // Peer deps are preserved but must not leak into ordinary deps.
+        assert!(!package
+            .get_dependencies()
+            .contains(&("react".to_owned(), "^18.0.0".to_owned())));
+    }
+
+    #[test]
+    fn peer_dependencies_round_trip_through_save() {
+        let temp_project = TempProject::new("package-manifest-peer").unwrap();
+        let temp_manifest_path = temp_project
+            .copy_fixture(
+                fixture_path(&["package_manifest", "manifest-with-peer-deps.json"]),
+                "package.json",
+            )
+            .unwrap();
+
+        let package = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
+        package.save_to_path(&temp_manifest_path).unwrap();
+
+        let saved = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
+        let peer_dependencies = saved.get_peer_dependencies();
+        assert!(peer_dependencies.contains(&("react".to_owned(), "^18.0.0".to_owned())));
+    }
+
+    #[test]
     fn read_file_preserves_engines_os_and_cpu() {
         let fixture = fixture_path(&["package_manifest", "manifest-with-engines-os-cpu.json"]);
         let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
@@ -352,6 +405,7 @@ mod package_json_test {
         assert_eq!(package.name.as_deref(), Some("minimal-app"));
         assert!(package.get_dependencies().is_empty());
         assert!(package.get_dev_dependencies().is_empty());
+        assert!(package.get_peer_dependencies().is_empty());
         assert!(package.get_engines().is_empty());
         assert!(package.get_os().is_empty());
         assert!(package.get_cpu().is_empty());
@@ -416,6 +470,7 @@ mod package_json_test {
         assert!(package.get_dependencies().is_empty());
         assert!(package.get_dev_dependencies().is_empty());
         assert!(package.get_optional_dependencies().is_empty());
+        assert!(package.get_peer_dependencies().is_empty());
         assert!(package.get_engines().is_empty());
         assert!(package.get_os().is_empty());
         assert!(package.get_cpu().is_empty());

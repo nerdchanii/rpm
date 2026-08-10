@@ -1,0 +1,10 @@
+{
+  "name": "peer-app",
+  "version": "0.2.0",
+  "dependencies": {
+    "react": "^18.2.0"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0"
+  }
+}
