@@ -1,0 +1,4 @@
+interface:
+  display_name: "PR Resolution Loop"
+  short_description: "30-minute loop: select an open PR, resolve review feedback via a five-subagent pipeline, comment, and merge."
+  default_prompt: "Use $pr-resolution-loop to run the scheduled PR review resolution pipeline: select PR, collect context, route fixes through subagents, comment, and gate-checked merge."
