@@ -1,5 +1,6 @@
 use crate::core::resolver::semver::options::version_options_from_range;
 use crate::core::resolver::semver::range::Range;
+// Tie-break helper for build-metadata-only equal-precedence version keys (issue #115).
 use crate::core::resolver::semver::version::compare::compare_build_versions;
 use crate::core::resolver::semver::version::Version;
 use crate::core::resolver::semver::{RangeOptions, SemverError, VersionOptions};
