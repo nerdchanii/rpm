@@ -3,7 +3,7 @@ spec_id: install_cache
 title: Install Cache
 status: draft
 owner: core/install/cache
-last_reviewed: 2026-06-21
+last_reviewed: 2026-08-11
 authors:
   - nerdchanii
 deciders:
@@ -20,7 +20,7 @@ related_issues:
 
 Status: Draft
 Owner: core/install/cache
-Last reviewed: 2026-06-21
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -45,6 +45,16 @@ The sanitized package name is the npm package name with every `/` replaced by
 axios@0.21.1.tgz
 @babel-core@2.3.1.tgz
 ```
+
+This sanitization is the only place RPM rewrites the `/` in a scoped name. It
+applies to the cache filename only; the resolver package key, the lockfile
+`name` and entry key, and the linker path all keep the raw `@scope/name`
+(`docs/specs/core/resolver/SPEC.md`, `docs/specs/core/lockfile/SPEC.md`,
+`docs/specs/core/linker/SPEC.md`), and only the registry lookup path
+percent-encodes it (`docs/specs/core/registry/SPEC.md`). A single
+`/` → `-` rule covers every `/` in the name, so a scoped name with one scope
+separator and any future unscoped name containing a `/` both sanitize the same
+way.
 
 The cache filename is derived from the selected package name and resolved
 version. It is not derived from the registry tarball URL basename, because

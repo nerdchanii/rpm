@@ -3,7 +3,7 @@ spec_id: registry_metadata
 title: Registry Metadata
 status: draft
 owner: core/registry
-last_reviewed: 2026-08-10
+last_reviewed: 2026-08-11
 authors:
   - nerdchanii
 deciders:
@@ -21,13 +21,14 @@ related_issues:
   - 125
   - 127
   - 130
+  - 136
 ---
 
 # Spec: Registry Metadata
 
 Status: Draft
 Owner: core/registry
-Last reviewed: 2026-08-10
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -71,7 +72,9 @@ RPM consumes the following fields. Fields are grouped by where they are read.
 Root document (`Registry`):
 
 - `name`: package name, including scope. Used as the cache filename base and the
-  resolver package key.
+  resolver package key. Scoped names (`@scope/name`) are preserved verbatim as
+  the package identity; only the registry lookup path encodes the name (see
+  "Scoped package registry paths").
 - `dist-tags`: map of tag name to version string. Tag resolution happens at the
   registry boundary before semver range evaluation. `latest` and any other
   published tag (for example `next`, `beta`) resolve to their target version.
@@ -274,6 +277,28 @@ Only requests that are not registry dist-tags are evaluated as semver ranges.
 This keeps version selection centralized and keeps dist-tag interpretation out of
 semver code.
 
+### Scoped package registry paths
+
+A scoped package name (`@scope/name`) identifies one registry document, so the
+registry lookup path must encode the name as a single path segment. npm's
+registry serves a scoped packument at `/<percent-encoded-name>` where every `/`
+in the scoped name is encoded as `%2F`; `@babel/core` is fetched from
+`/@babel%2Fcore`. The version segment, when present, is a separate path
+component following the encoded name.
+
+The package identity stays verbatim everywhere except this one registry path:
+the resolver package key, lockfile key, cache filename base, and linker path all
+use the raw scoped name (`@scope/name`), and only the registry lookup path
+percent-encodes it. This keeps one encoding rule at one boundary instead of
+duplicating it across lockfile, cache, and linking.
+
+The current production registry client (`src/lib/api/mod.rs`) assembles the
+lookup URL from the raw scoped name without percent-encoding the `/`. Offline
+fixture resolution routes `@scope/name` to a local `@scope__name.json` file, so
+this gap is not exercised by the fixture-backed test suite. A correct registry
+client must percent-encode `/` as `%2F` in the name segment before the network
+request; the code fix is tracked by a follow-up issue (see "Open Questions").
+
 ## Error Cases
 
 Registry metadata interpretation must not panic on user- or registry-controlled
@@ -357,3 +382,9 @@ not duplicate the contract text above.
   currently rejected as input errors (issue #125); active consumption would
   require its own milestone, a lockfile record shape distinguishing install
   name from resolved name, and resolver changes, and is therefore deferred.
+- Percent-encoding `/` as `%2F` in the scoped-name segment of the registry
+  lookup path (see "Scoped package registry paths"). The contract is stated
+  here; the production registry client in `src/lib/api/mod.rs` does not yet
+  encode the name segment, and the offline fixture harness routes scoped names
+  to local files so the gap is unobserved by the fixture suite. The code fix is
+  tracked by #170.

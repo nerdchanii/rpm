@@ -3,7 +3,7 @@ spec_id: node_modules_linker
 title: Node Modules Linker
 status: draft
 owner: core/linker
-last_reviewed: 2026-05-29
+last_reviewed: 2026-08-11
 authors:
   - nerdchanii
 deciders:
@@ -20,7 +20,7 @@ related_issues:
 
 Status: Draft
 Owner: core/linker
-Last reviewed: 2026-05-29
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -47,6 +47,15 @@ Scoped package names keep their scope directory. If package `a` declares
 ```text
 node_modules/a/node_modules/@scope/b -> node_modules/@scope/b
 ```
+
+The link path uses the raw scoped name (`@scope/name`) verbatim: the leading
+`@`, the scope label, and the `/` all become path components, so a scoped
+dependency is linked under a real `@scope/` directory the same way an unscoped
+dependency is linked under its bare name. The linker reuses the resolver
+package name and the lockfile key without re-encoding or sanitizing it; only
+the registry lookup path percent-encodes the scoped name
+(`docs/specs/core/registry/SPEC.md`) and only the cache filename replaces `/`
+with `-` (`docs/specs/core/install/cache/SPEC.md`).
 
 Filesystem operations are part of the contract. Directory creation and symlink
 creation failures must be returned as errors rather than ignored.

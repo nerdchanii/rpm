@@ -74,7 +74,7 @@ RPM does not treat unsupported metadata as successful compatibility.
 | peerDependencies | `resolver/SPEC.md`, `registry/SPEC.md` (ignored list), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with the non-peer-aware non-enqueue guard; root manifest reads and preserves `peerDependencies` without consuming them; active peer-aware resolution and diagnostics deferred | delivered: #130 |
 | engines, os, cpu | `registry/SPEC.md` (ignored list), `manifest/SPEC.md` (root read/preserve) | classified as ignored at the registry boundary with an explicit no-filtering/warning/rejection contract decision; root manifest reads and preserves npm-accurate `engines`/`os`/`cpu` without consuming them; active platform gating deferred | delivered: #127 |
 | package bin metadata | `linker/SPEC.md` (out of scope) | `.bin` generation is explicitly out of scope; `bin` is not modeled on registry types | M6 linker contract owns this |
-| scoped package names | `registry/SPEC.md`, `linker/SPEC.md`, `lockfile/SPEC.md` | scoped names are owned throughout: registry consumes the scoped `name`, linker preserves the scope directory in the link path, and lockfile records `name` including scope | none |
+| scoped package names | `resolver/SPEC.md`, `registry/SPEC.md`, `lockfile/SPEC.md`, `install/cache/SPEC.md`, `linker/SPEC.md` | scoped names are owned throughout: resolver splits `@scope/name` on the scope separator, registry consumes the scoped `name` and must percent-encode `/` as `%2F` only in the lookup path, lockfile and linker keep the raw scoped name, and the cache filename is the only place `/` is rewritten (to `-`); the `%2F` lookup-path code fix is tracked by a follow-up issue | delivered: #136 (contract); `%2F` code fix follow-up |
 | npm aliases | `registry/SPEC.md` (Unsupported metadata behavior) | npm alias declarations (`npm:<name>@<version>` range values) are classified as rejected input errors and actively rejected at the dependency-declaration boundary for both root-manifest and transitive paths, with a typed error naming the offending package and alias target | delivered: #125 landed via #129 |
 
 Findings:
@@ -93,7 +93,12 @@ Findings:
   and CPU metadata (#127) now have explicit deferred policies: the registry
   boundary classifies them as ignored, and the root manifest reads and preserves
   them without consuming them. npm aliases (#125) now have both the
-  classification and the active rejection landed (via #129).
+  classification and the active rejection landed (via #129). Scoped package and
+  npm alias edge-case contracts (#136) are now explicit across resolver,
+  registry, lockfile, cache, and linker ownership: scoped names split and
+  round-trip verbatim everywhere except the one registry lookup path that must
+  percent-encode `/` as `%2F`, and the cache filename that rewrites `/` to `-`;
+  the `%2F` lookup-path code fix is tracked by a follow-up issue.
 - Package `bin` metadata is intentionally deferred to the M6 linker milestone,
   where `.bin` generation is owned; it is listed here so the boundary is
   explicit, not so M5 implements it.
