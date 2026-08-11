@@ -59,6 +59,29 @@ where
     }
 }
 
+/// Tolerantly deserialize the root `scripts` map. A missing or null value yields
+/// `None`, and a present-but-wrong-type value (for example a string, an array,
+/// or a map whose values are not strings) is discarded as `None` rather than
+/// failing the whole manifest. A single non-string value drops the entire map,
+/// not just the offending entry, mirroring the per-version registry boundary
+/// (`src/lib/registry/mod.rs::ignored_field`) and the manifest SPEC
+/// (`docs/specs/core/manifest/SPEC.md`, "Scripts field"). See issue #182.
+fn deserialize_scripts_field<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    match HashMap::<String, String>::deserialize(value) {
+        Ok(parsed) => Ok(Some(parsed)),
+        Err(_) => Ok(None),
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct VersionString(String);
 
@@ -89,7 +112,11 @@ pub struct PackageManifest {
     pub author: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_scripts_field",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub scripts: Option<HashMap<String, String>>,
     #[serde(default = "HashMap::new")]
     pub dependencies: HashMap<String, VersionString>,
@@ -412,6 +439,55 @@ mod package_json_test {
         assert_eq!(
             map.get("helper").map(String::as_str),
             Some("./bin/helper.js")
+        );
+    }
+
+    #[test]
+    fn read_file_discards_wrong_type_scripts_as_absent() {
+        let fixture = fixture_path(&["package_manifest", "manifest-with-scripts-wrong-type.json"]);
+        let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
+
+        // A present-but-wrong-type `scripts` value is discarded as absent rather
+        // than failing the manifest, mirroring the registry boundary and the
+        // manifest SPEC. The rest of the manifest still parses.
+        assert_eq!(package.name.as_deref(), Some("wrong-type-scripts-app"));
+        assert_eq!(package.scripts, None);
+        assert!(package.get_scripts().is_empty());
+    }
+
+    #[test]
+    fn read_file_discards_mixed_type_scripts_map_as_absent() {
+        // A single non-string value drops the entire `scripts` map, not just the
+        // offending entry, matching the registry boundary's whole-map drop.
+        let fixture = fixture_path(&[
+            "package_manifest",
+            "manifest-with-scripts-mixed-values.json",
+        ]);
+        let package = PackageManifest::read_file(fixture.to_str().unwrap()).unwrap();
+
+        assert_eq!(package.name.as_deref(), Some("mixed-scripts-app"));
+        assert_eq!(package.scripts, None);
+        assert!(package.get_scripts().is_empty());
+    }
+
+    #[test]
+    fn scripts_field_round_trips_through_save() {
+        let temp_project = TempProject::new("package-manifest-scripts-round-trip").unwrap();
+        let temp_manifest_path = temp_project
+            .copy_fixture(
+                fixture_path(&["package_manifest", "manifest-with-fields.json"]),
+                "package.json",
+            )
+            .unwrap();
+
+        let package = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
+        package.save_to_path(&temp_manifest_path).unwrap();
+
+        let saved = PackageManifest::read_file(temp_manifest_path.to_str().unwrap()).unwrap();
+        // A well-typed `scripts` map round-trips unchanged.
+        assert_eq!(
+            saved.get_scripts().get("test").map(String::as_str),
+            Some("cargo test")
         );
     }
 

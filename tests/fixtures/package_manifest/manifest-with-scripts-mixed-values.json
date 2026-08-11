@@ -1,0 +1,8 @@
+{
+  "name": "mixed-scripts-app",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "tsc",
+    "broken": 42
+  }
+}
