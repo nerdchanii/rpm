@@ -160,6 +160,8 @@ docs/specs/
         SPEC.md
       performance/
         SPEC.md
+      scripts/
+        SPEC.md
     linker/
       SPEC.md
 ```
@@ -277,4 +279,6 @@ M1 should start from:
   recovery
 - `docs/specs/core/install/performance/SPEC.md`: installer bottleneck and
   measurement baseline
+- `docs/specs/core/install/scripts/SPEC.md`: install lifecycle script execution
+  contract
 - `docs/specs/core/linker/SPEC.md`: `node_modules` linking contract

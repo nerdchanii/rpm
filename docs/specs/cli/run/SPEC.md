@@ -14,13 +14,14 @@ related_adrs:
   - 0002-single-crate-cli-core-boundary
 related_issues:
   - 50
+  - 141
 ---
 
 # Spec: Run Scripts
 
 Status: Draft
 Owner: cli/run
-Last reviewed: 2026-05-29
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -39,6 +40,18 @@ project's `node_modules/.bin` directory to `PATH` for the child process.
 The CLI returns the child process exit code when the script starts and exits
 normally. If the script process cannot be spawned, RPM returns a readable run
 error.
+
+`rpm run` is the **user-invoked** script execution path. It is distinct from
+install lifecycle execution: lifecycle hooks (`preinstall`, `install`,
+`postinstall`, `prepare`) run as an install phase and are owned by
+`docs/specs/core/install/scripts/SPEC.md` (#141). The two paths share one shell
+invocation model — both execute script text through the platform shell and
+prepend the project `node_modules/.bin` to `PATH` — so there is a single
+script-execution contract rather than two. `rpm run` reads only the root
+manifest's `scripts` map; lifecycle execution reads recognized hooks from both
+the root manifest and resolved-package registry metadata. Running a script
+through `rpm run` must never trigger lifecycle execution, and lifecycle
+execution must never trigger `rpm run`.
 
 ## Error Cases
 

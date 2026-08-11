@@ -18,6 +18,8 @@ related_issues:
   - 130
   - 133
   - 139
+  - 141
+  - 142
 ---
 
 # Spec: Package Manifest
@@ -150,6 +152,40 @@ vector; the traversal guard is owned by the linker contract. An object-form
 `bin` key that is not a single path component (absolute, separator-containing,
 parent-referencing, or empty) is likewise rejected by the linker before any
 `.bin` entry is written; see `docs/specs/core/linker/SPEC.md`.
+
+### Scripts field
+
+RPM reads and preserves the root `scripts` map when it is present, using
+npm-accurate type (`string -> string`). Values are preserved verbatim; RPM does
+not rewrite, validate, or canonicalize script text. A present-but-wrong-type
+`scripts` value (for example a string, an array, or a map whose values are not
+strings) is discarded as absent during deserialization rather than failing the
+manifest, mirroring the lenient handling used for other preserved fields. A
+well-typed value round-trips into `Some(...)`. A manifest that omits `scripts`
+behaves identically to one without it.
+
+The manifest boundary owns reading and preserving `scripts` only. The read
+entries do not influence resolution, version selection, the resolved graph, or
+the lockfile. They are consumed by two distinct downstream behaviors, each with
+its own contract:
+
+- **`rpm run`** reads the root manifest's `scripts` map to execute a
+  user-named script on demand. Running a script must not reinstall or mutate
+  install output (`docs/specs/cli/run/SPEC.md`). Any script name is reachable
+  through `rpm run`, not only the lifecycle names below.
+- **Install lifecycle execution** reads the recognized lifecycle hooks from the
+  `scripts` map and runs them as an install phase. The supported install
+  lifecycle hook names are exactly `preinstall`, `install`, `postinstall`, and
+  `prepare`. Every other `scripts` entry is preserved but never invoked during
+  install. The active lifecycle execution contract — ordering, environment,
+  PATH, failure behavior, and the invariant that a failed script phase cannot
+  publish partial successful install state — is owned by
+  `docs/specs/core/install/scripts/SPEC.md` (#141).
+
+Per-version `scripts` on registry packuments are read and preserved at the
+registry boundary (`docs/specs/core/registry/SPEC.md`) under the same
+`string -> string` shape and the same wrong-type tolerance, and feed the same
+lifecycle execution contract for resolved packages.
 
 ## Error Cases
 

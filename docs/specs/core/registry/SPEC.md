@@ -24,6 +24,8 @@ related_issues:
   - 133
   - 136
   - 139
+  - 141
+  - 142
   - 170
 ---
 
@@ -144,6 +146,23 @@ rather than failing the packument, consistent with the lenient handling of
 other preserved fields. A version that omits `bin` simply contributes no
 `.bin` entries.
 
+Lifecycle script fields. Per-version `scripts` is read and preserved as a
+`string -> string` map so the install lifecycle phase can execute recognized
+lifecycle hooks (`preinstall`, `install`, `postinstall`, `prepare`). The
+registry boundary owns only reading and preserving `scripts`; it does not
+influence version selection, dependency edges, cache writes, or integrity
+verification, and the registry boundary does not execute scripts. The active
+lifecycle execution contract — which hook names run, in what order, with what
+environment and PATH, and how their failure preserves install state — is owned
+by `docs/specs/core/install/scripts/SPEC.md` (#141). A present-but-wrong-type
+`scripts` value (for example a string or array) is discarded as absent during
+deserialization rather than failing the packument, consistent with the lenient
+handling of other preserved fields; the lifecycle phase then sees no hooks for
+that package and proceeds. A version that omits `scripts` simply contributes no
+lifecycle hooks. Non-lifecycle `scripts` entries (for example `test`, `build`,
+`start`) are preserved but are not invoked during install; they remain
+reachable only through `rpm run` (`docs/specs/cli/run/SPEC.md`).
+
 ### Ignored metadata fields
 
 The following fields are deserialized for document fidelity but are not consumed
@@ -176,13 +195,15 @@ verification:
   for `engines`/`os`/`cpu` is owned by
   `docs/specs/core/manifest/SPEC.md`; per-version values on registry packuments
   remain ignored here until that strategy consumes them.
-- `main`, `types`, `scripts`, `private`,
+- `main`, `types`, `private`,
   `repository`, `description`, `maintainers`, `author`, `homepage`, `keywords`,
   `license`, `readme`, `readmeFilename`, `time`, `_id`, `_rev`, and `sequence`.
   These do not influence resolution, download, verification, extraction,
   linking, lockfile, or manifest output. Package `bin` metadata was previously
   listed here; it is now read for `.bin` generation (see "Package bin metadata"
-  under Consumed metadata fields).
+  under Consumed metadata fields). Per-version `scripts` was previously listed
+  here; it is now read and preserved for lifecycle execution (see "Lifecycle
+  script fields" under Consumed metadata fields).
 
 Ignored means RPM may accept documents that carry these fields, but no active
 behavior depends on them. An ignored field that is invalid or missing must not
@@ -191,14 +212,19 @@ packument that omits or malforms any of them still parses. A
 present-but-wrong-type value is discarded as absent during deserialization
 rather than failing the packument, regardless of the field's expected shape.
 This applies uniformly to all ignored fields: string fields such as `main`,
-`license`, `readme`, and `readmeFilename`; map fields such as `scripts`,
+`license`, `readme`, and `readmeFilename`; map fields such as
 `devDependencies`, `peerDependencies`, and `optionalDependencies`; array fields
 such as `os`, `cpu`, and `keywords`; scalar fields such as `private` and
 `sequence`; and the untagged-enum fields `repository`, `author`,
 `bundledDependencies`, `engines`, `time`, `_rev`, and `homepage`. A wrong-type
 value for any of these (for example a SPDX object-form `license`, a numeric
-`engines`, or a string `scripts`) is dropped to its absence without aborting
-packument parsing. Well-typed values still round-trip into `Some(...)`.
+`engines`) is dropped to its absence without aborting packument parsing.
+Well-typed values still round-trip into `Some(...)`. The same lenient
+deserialization applies to preserved fields that are consumed downstream
+(`bin`, `scripts`): a present-but-wrong-type `bin` or `scripts` value (for
+example a string `scripts`) is discarded as absent without failing the
+packument, while a well-typed value round-trips into `Some(...)` for the
+downstream owner to consume.
 
 ### Unsupported metadata behavior
 
@@ -396,6 +422,10 @@ not duplicate the contract text above.
   strategy, or platform gating owns the active behavior. Package `bin` metadata
   is now consumed for `.bin` generation
   (`docs/specs/core/linker/SPEC.md`, #139) and is no longer an open question.
+  Per-version `scripts` is now read and preserved for lifecycle execution
+  (`docs/specs/core/install/scripts/SPEC.md`, #141) and is no longer an open
+  question at this boundary; active execution of the first phase is tracked by
+  #142.
   The root manifest `optionalDependencies` read-and-preserve
   baseline is now owned by `docs/specs/core/manifest/SPEC.md`; per-version
   `optionalDependencies` on registry packuments remain ignored here until an

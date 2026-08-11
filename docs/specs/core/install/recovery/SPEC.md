@@ -3,7 +3,7 @@ spec_id: install_recovery
 title: Install Recovery
 status: draft
 owner: core/install/recovery
-last_reviewed: 2026-06-22
+last_reviewed: 2026-08-11
 authors:
   - nerdchanii
 deciders:
@@ -16,13 +16,15 @@ related_issues:
   - 50
   - 79
   - 81
+  - 141
+  - 142
 ---
 
 # Spec: Install Recovery
 
 Status: Draft
 Owner: core/install/recovery
-Last reviewed: 2026-06-22
+Last reviewed: 2026-08-11
 
 ## Purpose
 
@@ -41,16 +43,30 @@ complete successfully. If replacement itself fails, RPM attempts to restore the
 previous directory before returning the write failure.
 
 Failures must include the failed phase in the returned error message for cached
-package installation. This contract currently enforces `resolve`, `fetch`,
-`extract`, `link`, and `write` labels for cached package installation. Registry
-fetch and cache-write failures must be returned to callers instead of being
-ignored or reported as successful downloads.
+package installation. This contract enforces `resolve`, `fetch`, `extract`,
+`link`, `scripts`, and `write` labels for cached package installation. The
+`scripts` phase runs between `link` and `write` and is owned by
+`docs/specs/core/install/scripts/SPEC.md` (#141); its execution is deferred
+until #142, but the phase label and its position in the pipeline are part of
+this recovery contract now so that implementation does not have to re-derive
+where lifecycle hooks attach. Registry fetch and cache-write failures must be
+returned to callers instead of being ignored or reported as successful
+downloads.
 
 ## Error Cases
 
 A failed resolve, fetch, extract, or link phase must leave the previous
 `node_modules` directory untouched. A failed write phase must not be reported as
 a successful install.
+
+A failed `scripts` phase must leave the previous `node_modules` directory
+untouched, must not write or rewrite `rpm.lock` or `package.json` (those writes
+belong to the `write` phase, which has not run), and must not be reported as a
+successful install. Because the `scripts` phase runs between `link` and
+`write`, a lifecycle hook failure occurs while the staged replacement has been
+linked but not yet renamed into place; the staged tree is discarded, so the
+published install never reflects a partial lifecycle run. This invariant is
+owned jointly with `docs/specs/core/install/scripts/SPEC.md` (#141).
 
 ## M3 Side-Effect Audit
 
@@ -113,8 +129,38 @@ Findings:
 - No phase is stale, no contract is changed by M4, and no phase lacks SPEC
   ownership. No new follow-up issue is required from this audit.
 
+## M6 Lifecycle Phase Audit
+
+The 2026-08-11 M6 audit adds the `scripts` phase to the recovery pipeline
+between `link` and `write`, so lifecycle hook execution has a contracted home
+before any execution lands in #142. The phase label and its position are part
+of this recovery contract now; the active execution is owned by
+`docs/specs/core/install/scripts/SPEC.md` (#141).
+
+| Phase | Owning SPEC(s) | M6 change | Side-effect status | Current tests | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| scripts (lifecycle hooks) | recovery, install/scripts | phase label and position contracted (#141); execution deferred to #142 | not yet executed in production; when implemented, a failed `scripts` phase discards the staged tree and leaves `node_modules`, `rpm.lock`, and `package.json` unchanged | none yet; #142 will add success, failure, missing-command, wrong-type, and environment/PATH fixtures | conforms (contracted, not yet implemented) |
+
+Findings:
+
+- The `scripts` phase is the only M6 addition to the recovery pipeline. It
+  inherits the existing staged-replacement guarantee: a hook failure occurs
+  while the staged replacement is linked but not yet published, so the previous
+  `node_modules` stays in place and no lockfile or manifest write has run.
+- The within-package lifecycle ordering (`preinstall`, `install`,
+  `postinstall`, `prepare`) and the failure invariant (a failed `scripts` phase
+  cannot publish partial successful install state) are owned by
+  `docs/specs/core/install/scripts/SPEC.md`. This recovery SPEC owns only the
+  phase label, its position, and the staged-tree discard guarantee.
+- No existing M3 or M4 phase is changed by adding the `scripts` phase. The
+  `resolve`, `fetch`, `extract`, `link`, and `write` labels and their
+  side-effect classifications stand unchanged.
+
 ## Test Fixtures
 
 Recovery verification should cover staged replacement success plus resolve,
-fetch, extract, link, and write failures that leave the previous `node_modules`
-contents intact.
+fetch, extract, link, scripts, and write failures that leave the previous
+`node_modules` contents intact. Scripts-phase fixtures are planned by
+`docs/specs/core/install/scripts/SPEC.md` (#141) and land with #142; they must
+prove that a failed lifecycle hook leaves `node_modules`, `rpm.lock`, and
+`package.json` unchanged.
