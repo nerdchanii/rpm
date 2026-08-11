@@ -57,10 +57,13 @@ per-version registry metadata:
 All other `scripts` entries (for example `prepublish`, `prestart`, `start`,
 `poststart`, `prestop`, `stop`, `poststop`, `test`, `build`, and any custom
 name) are **not lifecycle hooks**. RPM preserves them on the manifest and the
-per-version registry record but never invokes them during install. They remain
-reachable as user-invoked scripts through `rpm run`
-(`docs/specs/cli/run/SPEC.md`), which is a separate execution path and is not an
-install side effect.
+per-version registry record but never invokes them during install. Root-manifest
+`scripts` entries remain reachable as user-invoked scripts through `rpm run`
+(`docs/specs/cli/run/SPEC.md`), which reads only the root manifest's `scripts`
+map and is a separate execution path that is not an install side effect.
+Per-version (registry) `scripts` entries are preserved but are not reachable
+through `rpm run`; only lifecycle execution reads them, and only the four
+lifecycle hook names above ever run.
 
 The set of supported install lifecycle hooks is exactly the four listed above.
 Adding, removing, or reordering a hook is a contract change to this SPEC, not an
@@ -81,11 +84,24 @@ is ignored, not an error.
 ### Hook value type
 
 Lifecycle hook values are **strings only**. RPM reads the `scripts` map as
-`string -> string`. A hook whose value is not a string is discarded as absent
-during deserialization, consistent with the tolerant wrong-type handling for
-preserved fields (`docs/specs/core/manifest/SPEC.md`,
-`docs/specs/core/registry/SPEC.md`). An array-valued or object-valued hook does
-not run and does not fail the install.
+`string -> string`. The two reading boundaries currently differ in how they
+treat a present-but-wrong-type `scripts` value, and this contract records that
+asymmetry rather than papering over it:
+
+- **Per-version registry metadata** (`docs/specs/core/registry/SPEC.md`)
+  deserializes the field with a tolerant wrapper that discards any value whose
+  shape is not `string -> string`. Because the map is read as one
+  `HashMap<String, String>`, a single non-string value drops the entire
+  `scripts` map for that packument, not just the offending entry: a mixed
+  valid/invalid map yields no hooks for that source, and the install is not
+  failed.
+- **Root package manifest** (`docs/specs/core/manifest/SPEC.md`) promises the
+  same tolerant discard for a wrong-type `scripts` value, but the manifest
+  boundary does not yet apply a tolerant deserializer to the field, so a
+  wrong-type value currently fails manifest parsing outright instead of being
+  discarded. Closing that gap (so the manifest boundary matches its SPEC and
+  the registry boundary) is tracked as a separate manifest-boundary fix and is
+  a prerequisite for the lifecycle implementation in #142.
 
 Lifecycle hooks do not introduce a second script-execution model. They reuse
 the `rpm run` shell invocation model (`docs/specs/cli/run/SPEC.md`): each hook
@@ -195,10 +211,14 @@ invocation and PATH prepend so there is one script-execution contract, not two.
 
 ## Error Cases
 
-- A lifecycle hook value that is not a string is discarded as absent; the hook
-  does not run and the install is not failed. This is the tolerant wrong-type
-  handling shared with `docs/specs/core/manifest/SPEC.md` and
-  `docs/specs/core/registry/SPEC.md`.
+- A per-version registry `scripts` map whose overall shape is not
+  `string -> string` is discarded as absent during deserialization; the whole
+  map yields no hooks for that source (a single non-string value drops the
+  entire map) and the install is not failed. This whole-map tolerant wrong-type
+  handling is shared with `docs/specs/core/registry/SPEC.md`. The root manifest
+  boundary (`docs/specs/core/manifest/SPEC.md`) promises the same discard but
+  does not yet implement it; until that gap is closed, a wrong-type root
+  `scripts` value fails manifest parsing rather than being tolerated.
 - A supported lifecycle hook that exits non-zero fails the `scripts` phase with
   that exit status. The phase label `scripts` must appear in the error.
 - A supported lifecycle hook that cannot be spawned surfaces a readable run
