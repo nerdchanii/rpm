@@ -13,7 +13,7 @@ pub async fn run(script_key: String) -> Result<i32, std::io::Error> {
     run_script(&script_key, &package, Path::new("."))
 }
 
-fn run_script(
+pub(super) fn run_script(
     script_key: &str,
     package: &PackageManifest,
     project_root: &Path,

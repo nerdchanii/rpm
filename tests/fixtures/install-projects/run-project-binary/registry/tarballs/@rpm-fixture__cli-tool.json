@@ -1,0 +1,10 @@
+{
+  "bin": "./cli.sh",
+  "files": [
+    {
+      "path": "cli.sh",
+      "contents": "#!/bin/sh\necho hello-from-rpm-fixture-cli-tool\n",
+      "mode": 493
+    }
+  ]
+}

@@ -205,6 +205,7 @@ fn remove_path(path: &Path) -> io::Result<()> {
 mod tests {
     use super::install_in;
     use crate::{
+        command::working_process::run::run_script,
         lockfile::{LockFile, Relationship},
         package_manifest::PackageManifest,
         util::test_support::{fixture_path, TempProject},
@@ -439,6 +440,90 @@ mod tests {
             fs::read_to_string(&existing_file).unwrap(),
             "existing node_modules content"
         );
+    }
+
+    // Issue #143: prove the install pipeline produces a `node_modules/.bin`
+    // link for a resolved package binary and that `rpm run` reaches it through
+    // the PATH prepend owned by the run contract. The fixture declares a single
+    // dependency whose synthetic tarball carries a string-form `bin` field and
+    // the executable target; without the tarball spec, no `.bin` link is
+    // produced and `run_script` cannot find the binary.
+
+    #[tokio::test]
+    async fn install_creates_bin_link_and_run_script_reaches_it() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root_before = root_fingerprints(&repo_root).unwrap();
+        let fixture_root = fixture_path(&["install-projects", "run-project-binary"]);
+        let project = TempProject::new("run-project-binary-install").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        install_in(project_root).await.unwrap();
+
+        let lock_path = project_root.join("rpm.lock");
+        let lock = LockFile::load_from_path(&lock_path).unwrap();
+        let expected = fs::read_to_string(fixture_root.join("expected/resolved-packages.txt"))
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(resolved_packages(&lock), expected);
+
+        let node_modules = project_root.join("node_modules");
+        // The resolved package is installed and carries the declared target.
+        assert!(node_modules
+            .join("@rpm-fixture")
+            .join("cli-tool")
+            .join("cli.sh")
+            .is_file());
+        // install generated a `.bin` symlink pointing at the target file.
+        // The package is scoped (`@rpm-fixture/cli-tool`) with string-form
+        // `bin`, so the binary name drops the scope prefix (linker SPEC).
+        let bin_link = node_modules.join(".bin").join("cli-tool");
+        assert!(
+            bin_link.is_symlink(),
+            "expected .bin link for the resolved binary, got {}",
+            bin_link.display()
+        );
+        assert_eq!(
+            fs::read_link(&bin_link).unwrap(),
+            PathBuf::from("../@rpm-fixture/cli-tool/cli.sh")
+        );
+
+        // `rpm run` reaches the installed binary through the PATH prepend
+        // without reinstalling or mutating install output.
+        let package = PackageManifest::read_from_path(&package_path).unwrap();
+        let status = run_script("greet", &package, project_root).unwrap();
+        assert_eq!(status, 0);
+
+        // Running the script must not change the install output.
+        assert_eq!(root_fingerprints(&repo_root).unwrap(), root_before);
+    }
+
+    #[tokio::test]
+    async fn run_script_reports_missing_binary_after_install() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "run-project-binary"]);
+        let project = TempProject::new("run-project-binary-missing").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        install_in(project_root).await.unwrap();
+
+        // A binary the installed packages do not expose must remain a readable
+        // non-zero status, not a reinstall or a silent success.
+        let script = r#"{"scripts": {"missing": "definitely-not-an-rpm-fixture-binary"}}"#;
+        fs::write(&package_path, script).unwrap();
+        let package = PackageManifest::read_from_path(&package_path).unwrap();
+        let status = run_script("missing", &package, project_root).unwrap();
+        assert_ne!(status, 0);
     }
 
     fn assert_expected_error(fixture_root: &Path, error: &io::Error) {
