@@ -452,8 +452,6 @@ mod tests {
     #[tokio::test]
     async fn install_creates_bin_link_and_run_script_reaches_it() {
         let _guard = TestEnvLock::acquire().unwrap();
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let root_before = root_fingerprints(&repo_root).unwrap();
         let fixture_root = fixture_path(&["install-projects", "run-project-binary"]);
         let project = TempProject::new("run-project-binary-install").unwrap();
         let package_path = project
@@ -463,6 +461,13 @@ mod tests {
 
         let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
         install_in(project_root).await.unwrap();
+
+        // Fingerprint the install output (the project's `node_modules`, lockfile,
+        // and cache) instead of the repository root so the non-mutation contract
+        // has actual regression coverage: a regression that reinstalled or
+        // mutated `project_root` would be caught here, while the repo root is
+        // never touched by `run_script` and would mask such a regression.
+        let project_before = project_fingerprints(project_root);
 
         let lock_path = project_root.join("rpm.lock");
         let lock = LockFile::load_from_path(&lock_path).unwrap();
@@ -501,7 +506,7 @@ mod tests {
         assert_eq!(status, 0);
 
         // Running the script must not change the install output.
-        assert_eq!(root_fingerprints(&repo_root).unwrap(), root_before);
+        assert_eq!(project_fingerprints(project_root), project_before);
     }
 
     #[tokio::test]
@@ -623,6 +628,23 @@ mod tests {
             fingerprints.insert(path.to_string(), fingerprint_path(&repo_root.join(path))?);
         }
         Ok(fingerprints)
+    }
+
+    /// Fingerprint the install output of a project: its `rpm.lock`, `.rpm`
+    /// cache, and `node_modules` tree. Used to prove a step (such as
+    /// `run_script`) does not reinstall or mutate install output. Unlike
+    /// `root_fingerprints`, this scopes the snapshot to the project whose
+    /// install output is under test, so a regression that mutated the project
+    /// would be caught rather than masked by an unrelated root.
+    fn project_fingerprints(project_root: &Path) -> BTreeMap<String, PathFingerprint> {
+        let mut fingerprints = BTreeMap::new();
+        for path in ["rpm.lock", ".rpm", "node_modules"] {
+            fingerprints.insert(
+                path.to_string(),
+                fingerprint_path(&project_root.join(path)).unwrap(),
+            );
+        }
+        fingerprints
     }
 
     fn fingerprint_path(path: &Path) -> io::Result<PathFingerprint> {
