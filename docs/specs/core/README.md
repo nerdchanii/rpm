@@ -197,30 +197,32 @@ Today the public diagnostics surface is an ad hoc convention, not a contract.
 `rpm` exits through `std::process::ExitCode`: RPM-generated command outcomes
 currently collapse to `0`/`1`, while `rpm run` preserves the child process
 status through `std::process::exit(status)`; StructOpt owns parser-generated
-help, version, and argument-error exits and their output channels. Runtime
-output remains unstructured: progress and timing are emitted by
-`src/lib/command/working_process/add.rs`, `src/lib/node_linker/mod.rs`, and
-`src/lib/package_manifest/mod.rs`, while command errors are printed by
-`src/main.rs`. Failure classes are typed internally — `ResolutionError`
+help, version, and argument-error exits and their output channels. ADR 0002
+assigns terminal presentation and exit-code mapping to the CLI and requires
+resolver/core code to remain callable without terminal I/O. Core progress paths
+include `src/lib/command/working_process/add.rs`, `src/lib/node_linker/mod.rs`,
+and `src/lib/package_manifest/mod.rs`; `src/lib/command/working_process/run.rs`
+prints `Running script`, while `src/main.rs` emits install/timing output and
+errors at the CLI boundary. Failure classes are typed internally — `ResolutionError`
 distinguishes missing metadata, version selection, invalid declarations,
 missing parents, and npm alias rejection (`docs/specs/core/resolver/SPEC.md`) —
 but installer phase failures are formatted `io::Error` prose from `phase_error`,
 not a typed enum (`src/lib/command/working_process/add.rs`,
-`src/lib/node_linker/mod.rs`). No ADR currently inventories the CLI
-presentation mismatch. No contract maps these classes to stable diagnostic
-categories or channel ownership; this audit records that absence as
+`src/lib/node_linker/mod.rs`). The direct core/library output is an existing
+ADR 0002 boundary violation. No contract maps these classes to stable
+diagnostic categories or channel ownership; this audit records that absence as
 intentional deferral and assigns each gap an owner rather than treating it as
 implicit scope.
 
 | M8 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
-| diagnostic envelope and category taxonomy | none today; `cli/run/SPEC.md` owns only `rpm run` output; resolver owns typed internal failure classes while recovery owns phase labels | absent: there is no cross-command diagnostic envelope, category taxonomy, or stable human-output shape; `ResolutionError` variants are typed, while installer phase failures remain formatted `io::Error` prose | #151 |
-| exit-code matrix | `src/main.rs` owns RPM-generated `0`/`1` outcomes and `rpm run` child-status passthrough; StructOpt owns parser help/version/error exits and channels | absent: no SPEC maps resolver failure classes or installer phase failures (including `integrity`) to stable non-zero exit codes beyond the current binary outcomes | #151 |
-| stdout/stderr channel ownership | code conventions and parser behavior only: runtime emitters are in `working_process/add.rs`, `node_linker/mod.rs`, and `package_manifest/mod.rs`; command errors are printed in `src/main.rs`; StructOpt owns parser output channels | absent as a cross-command contract: no SPEC states which human output belongs on stdout, which diagnostics go to stderr, or how machine-readable output is separated; no ADR currently inventories the mismatch | #151 |
+| diagnostic envelope and category taxonomy | ADR 0002 (CLI/core presentation boundary); `cli/run/SPEC.md` owns only `rpm run` output; resolver owns typed internal failure classes while recovery owns phase labels | absent: there is no cross-command diagnostic envelope, category taxonomy, or stable human-output shape; `ResolutionError` variants are typed, while installer phase failures remain formatted `io::Error` prose | #151 |
+| exit-code matrix | ADR 0002 and `src/main.rs` own CLI presentation: RPM-generated `0`/`1` outcomes and `rpm run` child-status passthrough; StructOpt owns parser help/version/error exits and channels | absent: no SPEC maps resolver failure classes or installer phase failures (including `integrity`) to stable non-zero exit codes beyond the current binary outcomes | #151 |
+| stdout/stderr channel ownership | ADR 0002 owns the CLI/core boundary; core progress paths are `working_process/add.rs`, `node_linker/mod.rs`, and `package_manifest/mod.rs`; `working_process/run.rs` prints `Running script`; `src/main.rs` emits install/timing and errors; StructOpt owns parser output channels | absent as a cross-command contract: no SPEC states which human output belongs on stdout, which diagnostics go to stderr, or how machine-readable output is separated; direct core/library output is an existing ADR 0002 boundary violation | #151 |
 | golden output fixture policy | none today; resolver and recovery SPECs list offline fixtures for behavior but not output wording | absent: no SPEC states how golden stdout/stderr snapshots are pinned (full-text vs information-only assertions), so future stabilization risks freezing unstable prose; the resolver peer-diagnostic "wording-not-frozen" policy is the only precedent and is explicitly superseded once this exists | #151 |
 | machine-readable output (JSON or otherwise) | none today | explicitly deferred: no SPEC owns whether/when machine-readable output is added; resolver and peer-diagnostic contracts gate all structured output on "an owning diagnostics SPEC" existing first, so this audit records the dependency rather than introducing a shape | #151 |
 | resolver failure diagnostics | `resolver/SPEC.md` (typed internal classes), `cli/run/SPEC.md` (run only) | partially owned internally: `ResolutionError` already distinguishes missing metadata, version selection, invalid declarations, missing parents, and npm alias rejection, and the SPEC requires failures stay typed enough to distinguish them; what is unowned is the stable human-readable mapping and exit code for each | #151 (envelope), then #152 (implementation) |
-| installer phase failure diagnostics | `install/recovery/SPEC.md` (phase labels `resolve|fetch|extract|link|scripts|write`), `install/cache/SPEC.md` (cache write/read failure context) | partially owned internally: the recovery contract enforces the contracted phase labels, including `scripts`; `integrity` is a separate diagnostic mismatch currently surfaced through formatted `io::Error` prose rather than a recovery phase; what is unowned is the stable human-readable mapping and exit code for each | #151 (envelope), then #154 (structured error implementation) |
+| installer phase failure diagnostics | `install/recovery/SPEC.md` (phase labels and side effects `resolve|fetch|extract|link|scripts|write`), `install/performance/SPEC.md` and `registry/SPEC.md` (integrity verification/error behavior), `install/cache/SPEC.md` (cache failure context) | partially owned internally: recovery contracts the phase labels and side effects, while performance and registry contracts own integrity verification/error behavior; what is unowned is the stable diagnostic envelope and exit-code mapping, with #154 assigned the structured installer error implementation | #151 (envelope), then #154 (structured error implementation) |
 | config file discovery | none today; no config file is read by any command | absent: no SPEC owns whether RPM reads a config file, where it is discovered (project-local, user-global), or how discovery interacts with the manifest and lockfile; `manifest/SPEC.md` owns `package.json` but declares no RPM config field | #153 |
 | environment variable precedence | none today; the only `RPM_*` variable is `RPM_REGISTRY_FIXTURE_ROOT`, which is test-only (`#[cfg(test)]`-gated in the fake registry API) and is not a public config surface | absent: no SPEC owns which environment variables are public, how they rank against a config file and command-line flags, or how invalid values fail; the test-only fixture root is explicitly not a config contract | #153 |
 | supported config keys and invalid-value behavior | none today | absent: no SPEC lists supported config keys or defines whether unsupported keys and invalid values fail or warn; config must not be added before each key has owning behavior in install/cache/recovery/diagnostics SPECs | #153 |
@@ -238,8 +240,8 @@ Findings:
   (`SUCCESS`/`FAILURE`) while `rpm run` passes through its child status, and
   output is unstructured prose on whichever stream the emitters reach. No SPEC
   owns categories, an envelope, or golden-output policy. `ResolutionError` is
-  typed; installer phase failures, including the separate `integrity` mismatch,
-  remain formatted `io::Error` prose, so #151 defines the envelope and #154
+  typed; installer phase failures remain formatted `io::Error` prose even where
+  integrity behavior is contract-owned, so #151 defines the envelope and #154
   owns the structured installer error implementation.
 - The diagnostics envelope is the M8 foundation: #152 (resolver failure
   diagnostics) and #154 (installer phase diagnostics) both depend on #151, and
