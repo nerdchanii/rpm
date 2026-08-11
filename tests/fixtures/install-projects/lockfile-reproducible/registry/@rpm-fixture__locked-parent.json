@@ -15,6 +15,9 @@
         "integrity": "sha512-locked-parent-100",
         "shasum": "fixture-locked-parent-1-0-0"
       },
+      "scripts": {
+        "preinstall": "echo legacy-preinstall-ran > legacy-preinstall-proof.txt"
+      },
       "description": "@rpm-fixture/locked-parent 1.0.0 fixture"
     },
     "1.1.0": {

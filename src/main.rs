@@ -26,7 +26,13 @@ async fn run(opt: Opt) -> std::io::Result<MainOutcome> {
         Command::Install => {
             println!("installing...");
             let time = std::time::Instant::now();
-            working_process::install().await?;
+            if let Err(error) = working_process::install().await {
+                if let Some(status) = rpm::node_linker::lifecycle_exit_status(&error) {
+                    eprintln!("rpm failed: {error}");
+                    return Ok(MainOutcome::ChildStatus(status));
+                }
+                return Err(error);
+            }
             println!("time: {:.2}s", time.elapsed().as_secs_f32());
             Ok(MainOutcome::ExitCode(ExitCode::SUCCESS))
         }
@@ -72,13 +78,51 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{child_status, MainOutcome};
+    use super::{child_status, run, MainOutcome};
+    use rpm::command::Command;
+    use std::{
+        env, fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn child_status_preserves_values_outside_u8() {
         match child_status(300) {
             MainOutcome::ChildStatus(status) => assert_eq!(status, 300),
             MainOutcome::ExitCode(_) => panic!("expected child status outcome"),
+        }
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    #[tokio::test]
+    async fn install_maps_lifecycle_failure_to_child_status() {
+        let root = env::temp_dir().join(format!(
+            "rpm-main-install-status-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"main-status","version":"0.0.0","scripts":{"preinstall":"exit 9"}}"#,
+        )
+        .unwrap();
+        fs::write(root.join("rpm.lock"), "").unwrap();
+        let previous = env::current_dir().unwrap();
+        env::set_current_dir(&root).unwrap();
+        let result = run(rpm::opt::Opt {
+            cmd: Command::Install,
+        })
+        .await
+        .unwrap();
+        env::set_current_dir(previous).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        match result {
+            MainOutcome::ChildStatus(status) => assert_eq!(status, 9),
+            MainOutcome::ExitCode(_) => panic!("expected lifecycle child status"),
         }
     }
 }

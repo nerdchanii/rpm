@@ -21,7 +21,7 @@ use crate::{
     script_runner::{script_path_for_modules_dir, shell_command},
 };
 
-use super::package_name_from_lock_key;
+use super::{package_name_from_lock_key, LifecycleExitStatus};
 
 /// The lifecycle hooks RPM recognizes, in within-package order. Only
 /// `preinstall` is executed today; the rest are listed so the ordering and
@@ -55,6 +55,13 @@ pub(crate) fn run_lifecycle_scripts(
     run_root_lifecycle_hooks(project_root, staging_dir, root_manifest)?;
     run_package_lifecycle_hooks(staging_dir, packages)?;
     Ok(())
+}
+
+pub(crate) fn run_package_lifecycle_scripts(
+    staging_dir: &Path,
+    packages: &[(&String, &Dependency)],
+) -> Result<(), std::io::Error> {
+    run_package_lifecycle_hooks(staging_dir, packages)
 }
 
 /// Run the recognized lifecycle hooks declared by the root manifest. The root
@@ -123,9 +130,8 @@ fn run_hook(
     })?;
     if !status.success() {
         let code = status.code().unwrap_or(1);
-        return Err(Error::other(format!(
-            "scripts failed: {label} exited {code}"
-        )));
+        let message = format!("scripts failed: {label} exited {code}");
+        return Err(Error::other(LifecycleExitStatus { code, message }));
     }
     Ok(())
 }
@@ -224,6 +230,7 @@ mod tests {
 
         assert!(error.to_string().contains("scripts failed"));
         assert!(error.to_string().contains("root:preinstall exited 9"));
+        assert_eq!(crate::node_linker::lifecycle_exit_status(&error), Some(9));
     }
 
     #[test]

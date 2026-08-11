@@ -1,3 +1,4 @@
+use std::fmt;
 use std::{
     fs::{self, File},
     io::{Error, ErrorKind, Write},
@@ -27,6 +28,27 @@ pub struct NodeModules {
 pub(crate) struct PreparedNodeModules {
     target: PathBuf,
     staging: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct LifecycleExitStatus {
+    code: i32,
+    message: String,
+}
+
+impl fmt::Display for LifecycleExitStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LifecycleExitStatus {}
+
+pub fn lifecycle_exit_status(error: &std::io::Error) -> Option<i32> {
+    error
+        .get_ref()?
+        .downcast_ref::<LifecycleExitStatus>()
+        .map(|status| status.code)
 }
 
 impl PreparedNodeModules {
@@ -114,6 +136,45 @@ impl NodeModules {
         P: AsRef<Path>,
         R: AsRef<Path>,
     {
+        Self::prepare_from_lockfile_with_root_lifecycle(
+            node_modules_path,
+            lock_file,
+            cache_dir,
+            root_manifest,
+            true,
+        )
+    }
+
+    pub(crate) fn prepare_from_lockfile_without_root_lifecycle<P, R>(
+        node_modules_path: P,
+        lock_file: &LockFile,
+        cache_dir: R,
+        root_manifest: &PackageManifest,
+    ) -> Result<PreparedNodeModules, std::io::Error>
+    where
+        P: AsRef<Path>,
+        R: AsRef<Path>,
+    {
+        Self::prepare_from_lockfile_with_root_lifecycle(
+            node_modules_path,
+            lock_file,
+            cache_dir,
+            root_manifest,
+            false,
+        )
+    }
+
+    fn prepare_from_lockfile_with_root_lifecycle<P, R>(
+        node_modules_path: P,
+        lock_file: &LockFile,
+        cache_dir: R,
+        root_manifest: &PackageManifest,
+        run_root_lifecycle: bool,
+    ) -> Result<PreparedNodeModules, std::io::Error>
+    where
+        P: AsRef<Path>,
+        R: AsRef<Path>,
+    {
         let dir = node_modules_path.as_ref();
         let staging_dir = staging_path(dir);
         if staging_dir.exists() {
@@ -133,11 +194,12 @@ impl NodeModules {
         // tree is discarded below and the previous `node_modules` stays in
         // place, preserving the recovery contract.
         let result = if packages.is_empty() {
-            let result = scripts::run_lifecycle_scripts(
+            let result = Self::run_scripts(
                 project_root,
                 &staging_dir,
                 &packages,
                 root_manifest,
+                run_root_lifecycle,
             )
             .map_err(|error| phase_error("scripts", error));
             if result.is_ok() {
@@ -150,11 +212,12 @@ impl NodeModules {
         } else {
             Self::build_staged(&staging_dir, lock_file, cache_dir)
                 .and_then(|_| {
-                    scripts::run_lifecycle_scripts(
+                    Self::run_scripts(
                         project_root,
                         &staging_dir,
                         &packages,
                         root_manifest,
+                        run_root_lifecycle,
                     )
                     .map_err(|error| phase_error("scripts", error))
                 })
@@ -169,6 +232,20 @@ impl NodeModules {
             target: dir.to_path_buf(),
             staging,
         })
+    }
+
+    fn run_scripts(
+        project_root: &Path,
+        staging_dir: &Path,
+        packages: &[(&String, &Dependency)],
+        root_manifest: &PackageManifest,
+        run_root_lifecycle: bool,
+    ) -> Result<(), std::io::Error> {
+        if run_root_lifecycle {
+            scripts::run_lifecycle_scripts(project_root, staging_dir, packages, root_manifest)
+        } else {
+            scripts::run_package_lifecycle_scripts(staging_dir, packages)
+        }
     }
 
     fn build_staged<P, R>(
@@ -289,6 +366,18 @@ impl NodeModules {
 }
 
 fn phase_error(phase: &str, error: std::io::Error) -> std::io::Error {
+    if let Some(status) = error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<LifecycleExitStatus>())
+    {
+        return Error::new(
+            error.kind(),
+            LifecycleExitStatus {
+                code: status.code,
+                message: format!("{phase} failed: {error}"),
+            },
+        );
+    }
     Error::new(error.kind(), format!("{phase} failed: {error}"))
 }
 

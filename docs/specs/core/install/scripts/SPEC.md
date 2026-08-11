@@ -166,6 +166,15 @@ There is no force-continue or skip-on-failure policy for lifecycle hooks today.
 A failed hook fails the install for the whole transaction. A future issue may
 own an opt-in skip policy; until then, any hook failure is fatal to the install.
 
+When a successful root `preinstall` hook changes `package.json` or `rpm.lock`,
+RPM reloads those files before the install write. The hook-written state is
+authoritative for existing fields and entries; generated package entries that
+are absent from a hook-written lockfile are merged so the published lockfile
+still records the installed graph. RPM rebuilds the staged install from the
+reloaded state before publishing, and does not repeat the root hook during that
+rebuild. If the scripts phase fails, the pre-hook state is restored for both
+files, including their original permissions.
+
 A hook that mutates files inside or outside the workspace is still subject to
 the user-controlled filesystem safety rules: RPM confines its own writes to
 approved roots and validates inputs before mutation. Lifecycle hooks execute
