@@ -162,10 +162,12 @@ async fn apply_resolved_graph(
             }
             let scripts = match &locked_package.scripts {
                 Some(scripts) => Some(scripts.clone()),
-                None => metadata
-                    .registry_io(&package.package_name)
-                    .ok()
-                    .and_then(|registry| registry.get_scripts_for_version(&locked_package.version)),
+                None => Some(
+                    metadata
+                        .registry_io(&package.package_name)?
+                        .get_scripts_for_version(&locked_package.version)
+                        .unwrap_or_default(),
+                ),
             };
             lockfile.add_dependency_entry(
                 &locked_package.key,
@@ -1003,6 +1005,10 @@ mod tests {
                 .and_then(|scripts| scripts.get("preinstall").cloned()),
             Some("echo legacy-preinstall-ran > legacy-preinstall-proof.txt".to_string())
         );
+        assert!(lockfile
+            .get_dependency("@rpm-fixture/locked-child@1.0.0")
+            .and_then(|dependency| dependency.get_scripts())
+            .is_some_and(|scripts| scripts.is_empty()));
     }
 
     #[test]

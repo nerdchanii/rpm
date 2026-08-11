@@ -57,6 +57,14 @@ pub(crate) fn run_lifecycle_scripts(
     Ok(())
 }
 
+pub(crate) fn run_root_lifecycle_scripts(
+    project_root: &Path,
+    staging_dir: &Path,
+    root_manifest: &PackageManifest,
+) -> Result<(), std::io::Error> {
+    run_root_lifecycle_hooks(project_root, staging_dir, root_manifest)
+}
+
 pub(crate) fn run_package_lifecycle_scripts(
     staging_dir: &Path,
     packages: &[(&String, &Dependency)],

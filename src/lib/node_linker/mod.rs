@@ -51,7 +51,28 @@ pub fn lifecycle_exit_status(error: &std::io::Error) -> Option<i32> {
         .map(|status| status.code)
 }
 
+pub(crate) fn lifecycle_error_with_message(
+    error: &std::io::Error,
+    message: String,
+) -> std::io::Error {
+    if let Some(code) = lifecycle_exit_status(error) {
+        return Error::new(error.kind(), LifecycleExitStatus { code, message });
+    }
+    Error::new(error.kind(), message)
+}
+
 impl PreparedNodeModules {
+    pub(crate) fn run_package_lifecycle_scripts(
+        &mut self,
+        lock_file: &LockFile,
+    ) -> Result<(), std::io::Error> {
+        let Some(staging) = &self.staging else {
+            return Ok(());
+        };
+        scripts::run_package_lifecycle_scripts(staging, &lock_file.get_packages())
+            .map_err(|error| phase_error("scripts", error))
+    }
+
     pub(crate) fn publish(mut self) -> Result<NodeModules, std::io::Error> {
         let Some(staging) = self.staging.take() else {
             return Ok(NodeModules::new(self.target.clone()));
@@ -142,10 +163,11 @@ impl NodeModules {
             cache_dir,
             root_manifest,
             true,
+            true,
         )
     }
 
-    pub(crate) fn prepare_from_lockfile_without_root_lifecycle<P, R>(
+    pub(crate) fn prepare_from_lockfile_without_lifecycle<P, R>(
         node_modules_path: P,
         lock_file: &LockFile,
         cache_dir: R,
@@ -161,6 +183,27 @@ impl NodeModules {
             cache_dir,
             root_manifest,
             false,
+            false,
+        )
+    }
+
+    pub(crate) fn prepare_from_lockfile_root_lifecycle_only<P, R>(
+        node_modules_path: P,
+        lock_file: &LockFile,
+        cache_dir: R,
+        root_manifest: &PackageManifest,
+    ) -> Result<PreparedNodeModules, std::io::Error>
+    where
+        P: AsRef<Path>,
+        R: AsRef<Path>,
+    {
+        Self::prepare_from_lockfile_with_root_lifecycle(
+            node_modules_path,
+            lock_file,
+            cache_dir,
+            root_manifest,
+            true,
+            false,
         )
     }
 
@@ -170,6 +213,7 @@ impl NodeModules {
         cache_dir: R,
         root_manifest: &PackageManifest,
         run_root_lifecycle: bool,
+        run_package_lifecycle: bool,
     ) -> Result<PreparedNodeModules, std::io::Error>
     where
         P: AsRef<Path>,
@@ -200,6 +244,7 @@ impl NodeModules {
                 &packages,
                 root_manifest,
                 run_root_lifecycle,
+                run_package_lifecycle,
             )
             .map_err(|error| phase_error("scripts", error));
             if result.is_ok() {
@@ -218,6 +263,7 @@ impl NodeModules {
                         &packages,
                         root_manifest,
                         run_root_lifecycle,
+                        run_package_lifecycle,
                     )
                     .map_err(|error| phase_error("scripts", error))
                 })
@@ -240,11 +286,17 @@ impl NodeModules {
         packages: &[(&String, &Dependency)],
         root_manifest: &PackageManifest,
         run_root_lifecycle: bool,
+        run_package_lifecycle: bool,
     ) -> Result<(), std::io::Error> {
-        if run_root_lifecycle {
-            scripts::run_lifecycle_scripts(project_root, staging_dir, packages, root_manifest)
-        } else {
-            scripts::run_package_lifecycle_scripts(staging_dir, packages)
+        match (run_root_lifecycle, run_package_lifecycle) {
+            (true, true) => {
+                scripts::run_lifecycle_scripts(project_root, staging_dir, packages, root_manifest)
+            }
+            (true, false) => {
+                scripts::run_root_lifecycle_scripts(project_root, staging_dir, root_manifest)
+            }
+            (false, true) => scripts::run_package_lifecycle_scripts(staging_dir, packages),
+            (false, false) => Ok(()),
         }
     }
 

@@ -171,9 +171,12 @@ RPM reloads those files before the install write. The hook-written state is
 authoritative for existing fields and entries; generated package entries that
 are absent from a hook-written lockfile are merged so the published lockfile
 still records the installed graph. RPM rebuilds the staged install from the
-reloaded state before publishing, and does not repeat the root hook during that
-rebuild. If the scripts phase fails, the pre-hook state is restored for both
-files, including their original permissions.
+reloaded lockfile graph before publishing, and does not re-resolve dependency
+declarations or repeat the root hook during that rebuild. Dependency
+declarations changed by a root hook therefore take effect on a subsequent
+install. Resolved-package hooks run after this reconciliation and run once
+against the final staged tree. If the scripts phase fails, the pre-hook state
+is restored for both files, including their original permissions.
 
 A hook that mutates files inside or outside the workspace is still subject to
 the user-controlled filesystem safety rules: RPM confines its own writes to
