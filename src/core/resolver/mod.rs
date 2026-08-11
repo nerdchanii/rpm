@@ -803,7 +803,13 @@ mod tests {
         )
         .expect_err("a dist-tag pointing at an absent version must fail resolution");
 
-        assert!(matches!(error, ResolutionError::VersionSelection { .. }));
+        assert!(matches!(
+            error,
+            ResolutionError::VersionSelection {
+                source: crate::core::resolver::semver::SemverError::UnsatisfiedRange { range },
+                ..
+            } if range == "latest"
+        ));
     }
 
     #[test]
@@ -900,7 +906,7 @@ mod tests {
         assert_eq!(format!("{resolved}\n"), expected);
 
         // The platform-strict package must still be selected despite declaring
-        // `node >=99.0.0`, `os: ["!win32","!darwin"]`, and `cpu: ["x64"]`.
+        // `node >=99.0.0`, `os: ["plan9"]`, and `cpu: ["ia64"]`.
         graph
             .package("@rpm-fixture/platform-strict", "1.0.0")
             .expect("platform-restrictive version must still resolve");

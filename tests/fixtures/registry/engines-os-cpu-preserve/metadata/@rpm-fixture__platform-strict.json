@@ -16,11 +16,10 @@
         "node": ">=99.0.0"
       },
       "os": [
-        "!win32",
-        "!darwin"
+        "plan9"
       ],
       "cpu": [
-        "x64"
+        "ia64"
       ],
       "dist": {
         "tarball": "https://registry.example.invalid/@rpm-fixture/platform-strict/-/platform-strict-1.0.0.tgz",
