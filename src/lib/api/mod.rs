@@ -101,17 +101,107 @@ fn fixture_tarball(tarball_url: &str) -> std::io::Result<Vec<u8>> {
     use tar::{Builder, Header};
 
     let package_name = package_name_from_tarball_url(tarball_url)?;
-    let package_json = format!(r#"{{"name":"{package_name}"}}"#);
+    let spec = read_fixture_tarball_spec(&package_name);
+    let package_json = build_fixture_package_json(&package_name, spec.as_ref());
+    let extra_files = spec
+        .as_ref()
+        .map(|spec| spec.files.as_slice())
+        .unwrap_or(&[]);
+
     let encoder = GzEncoder::new(Vec::new(), Compression::default());
     let mut builder = Builder::new(encoder);
+
     let mut header = Header::new_gnu();
     header.set_size(package_json.len() as u64);
     header.set_cksum();
     builder.append_data(&mut header, "package/package.json", package_json.as_bytes())?;
+
+    // When a fixture tarball spec declares extra files (for example a binary
+    // target reachable through a `bin` field), append each one under the
+    // `package/` prefix so the install extraction step strips the prefix and
+    // lands them at `node_modules/<package>/<file>`, where `link_bins` expects
+    // them. A missing spec keeps the legacy minimal archive unchanged.
+    for file in extra_files {
+        let archive_path = format!("package/{}", file.path);
+        let mut header = Header::new_gnu();
+        header.set_size(file.contents.len() as u64);
+        header.set_mode(file.mode);
+        header.set_cksum();
+        builder.append_data(&mut header, &archive_path, file.contents.as_bytes())?;
+    }
+
     builder.finish()?;
     let mut encoder = builder.into_inner()?;
     encoder.flush()?;
     encoder.finish()
+}
+
+/// Optional fixture-side description of a synthetic tarball's contents.
+///
+/// The legacy path serves a minimal `package/package.json` with only a `name`
+/// field. Specs live at `<fixture-root>/tarballs/<package-name>.json` so a
+/// fixture can declare a `bin` field and the binary target files the install
+/// pipeline must extract alongside the manifest. Only tests that need `.bin`
+/// linking or other non-trivial tarball contents provide a spec; every other
+/// fixture stays on the minimal default.
+#[cfg(test)]
+#[derive(Debug, serde::Deserialize)]
+struct FixtureTarballSpec {
+    #[serde(default)]
+    bin: Option<serde_json::Value>,
+    #[serde(default)]
+    files: Vec<FixtureTarballFile>,
+}
+
+#[cfg(test)]
+#[derive(Debug, serde::Deserialize)]
+struct FixtureTarballFile {
+    path: String,
+    contents: String,
+    #[serde(default = "default_fixture_file_mode")]
+    mode: u32,
+}
+
+#[cfg(test)]
+fn default_fixture_file_mode() -> u32 {
+    0o644
+}
+
+/// Read the optional tarball spec for `package_name` from the fixture registry
+/// root. Returns `None` when the root is unset or no spec file exists, so the
+/// minimal-archive default path stays intact for every fixture that does not
+/// opt in.
+#[cfg(test)]
+fn read_fixture_tarball_spec(package_name: &str) -> Option<FixtureTarballSpec> {
+    let root = std::env::var_os("RPM_REGISTRY_FIXTURE_ROOT")?;
+    let file_name = format!("{}.json", package_name.replace('/', "__"));
+    let path = PathBuf::from(root).join("tarballs").join(file_name);
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == ErrorKind::NotFound => return None,
+        Err(error) => panic!("{} did not deserialize: {error}", path.display()),
+    };
+    serde_json::from_str(&contents)
+        .unwrap_or_else(|error| panic!("{} should be valid JSON: {error}", path.display()))
+}
+
+/// Build the `package/package.json` body for a fixture tarball. Without a spec
+/// it is the legacy minimal `{"name":"..."}` object; with a spec the declared
+/// `bin` field is merged in so `link_bins` reads it after extraction.
+#[cfg(test)]
+fn build_fixture_package_json(package_name: &str, spec: Option<&FixtureTarballSpec>) -> String {
+    let Some(spec) = spec else {
+        return format!(r#"{{"name":"{package_name}"}}"#);
+    };
+    let mut root = serde_json::Map::new();
+    root.insert(
+        "name".to_string(),
+        serde_json::Value::String(package_name.to_string()),
+    );
+    if let Some(bin) = &spec.bin {
+        root.insert("bin".to_string(), bin.clone());
+    }
+    serde_json::Value::Object(root).to_string()
 }
 
 #[cfg(test)]
