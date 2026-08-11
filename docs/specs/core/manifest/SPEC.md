@@ -161,8 +161,11 @@ not rewrite, validate, or canonicalize script text. A present-but-wrong-type
 `scripts` value (for example a string, an array, or a map whose values are not
 strings) is discarded as absent during deserialization rather than failing the
 manifest, mirroring the lenient handling used for other preserved fields. A
-well-typed value round-trips into `Some(...)`. A manifest that omits `scripts`
-behaves identically to one without it.
+single non-string value drops the entire `scripts` map, not just the offending
+entry, matching the per-version registry boundary's whole-map drop semantics
+(`docs/specs/core/registry/SPEC.md`). A well-typed value round-trips into
+`Some(...)`. A manifest that omits `scripts` behaves identically to one without
+it.
 
 The manifest boundary owns reading and preserving `scripts` only. The read
 entries do not influence resolution, version selection, the resolved graph, or

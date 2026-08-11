@@ -1,0 +1,5 @@
+{
+  "name": "wrong-type-scripts-app",
+  "version": "0.1.0",
+  "scripts": "not-a-map"
+}
