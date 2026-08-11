@@ -16,6 +16,7 @@ Current core contracts:
 - `install/cache/SPEC.md`
 - `install/recovery/SPEC.md`
 - `install/performance/SPEC.md`
+- `install/scripts/SPEC.md`
 - `linker/SPEC.md`
 
 ## M4 Ownership and Gap Audit
@@ -128,10 +129,10 @@ criteria.
 | platform considerations (`.cmd`, shebang) | `linker/SPEC.md` | explicitly deferred inside #139: the link layout is defined; Windows `.cmd`/`.ps1` shim generation, executable-bit handling, and permission normalization are deferred until a platform-packaging strategy SPEC (M10 / #163) owns them | delivered: #139 (active layout); deferred to M10 (platform shims) |
 | `rpm run` PATH prepend | `cli/run/SPEC.md` | `rpm run` prepends the project `node_modules/.bin` to `PATH` and propagates the child exit code; running a script must not reinstall or mutate install output | none |
 | missing `.bin` directory behavior in `rpm run` | `cli/run/SPEC.md` | the run SPEC assumes `.bin` is populated and does not own how it is populated (that is linker work), but it already owns the absent-binary case: a binary that is missing from `PATH` (including when `node_modules/.bin` is absent) must surface the shell's readable error and non-zero status (`cli/run/SPEC.md` Error Cases); #143 proves project-local binaries are reachable without mutating install output rather than redefining that existing behavior | #143 |
-| lifecycle script fields (`preinstall`, `install`, `postinstall`, `prepare`, ...) | `registry/SPEC.md` (ignored per-version), `manifest/SPEC.md` (root field) | the registry SPEC already classifies per-version `scripts` as ignored metadata and requires no install behavior to depend on it, including tolerant wrong-type handling; what is unowned is active lifecycle execution — there is no field contract for which hook names run, in what order, with what environment — so #141 must explicitly update the registry contract (including its tolerant wrong-type behavior) before #142 consumes transitive scripts, rather than treating the field as absent from every SPEC | #141 |
-| script command parsing | `cli/run/SPEC.md` (shell invocation only) | shell invocation is already owned for `rpm run`: scripts execute through the platform shell so command chaining, quoting, and environment assignment follow normal package-script semantics; what is unowned is the lifecycle-specific part — whether hook values are strings-only or arrays, and whether lifecycle hooks reuse the `rpm run` shell model or define a departure — so #141 must share or explicitly diverge from the existing run SPEC rather than create a second script-execution contract | #141 |
-| lifecycle execution as an install phase | `install/recovery/SPEC.md` | absent from the phase pipeline: the recovery contract enforces `resolve`, `fetch`, `extract`, `link`, `write` labels and has no `scripts` phase | #141 |
-| lifecycle script failure preserving install state | `install/recovery/SPEC.md` | no contract for rollback or partial-success prevention when a lifecycle script fails mid-install; the M3/M4 side-effect audit tables have no lifecycle row | #141 |
+| lifecycle script fields (`preinstall`, `install`, `postinstall`, `prepare`, ...) | `registry/SPEC.md` (per-version read/preserve), `manifest/SPEC.md` (root read/preserve), `install/scripts/SPEC.md` (active execution) | per-version `scripts` is now read and preserved as a `string -> string` map at the registry boundary (moved out of the ignored list, with tolerant wrong-type handling kept) and the root `scripts` map is read and preserved by the manifest SPEC; active lifecycle execution is owned by `install/scripts/SPEC.md`, which fixes the supported hook names (`preinstall`, `install`, `postinstall`, `prepare`), the `string -> string` value type, and the working-directory and PATH policy | delivered: #141 |
+| script command parsing | `cli/run/SPEC.md` (shell invocation model), `install/scripts/SPEC.md` (lifecycle reuse) | lifecycle hook values are strings-only and reuse the `rpm run` shell invocation model (`/bin/sh -c` on Unix, `cmd /C` on Windows) and the same `node_modules/.bin` PATH prepend, so there is a single script-execution contract rather than two; the relationship is made explicit in both `cli/run/SPEC.md` and `install/scripts/SPEC.md` | delivered: #141 |
+| lifecycle execution as an install phase | `install/recovery/SPEC.md`, `install/scripts/SPEC.md` | the recovery phase pipeline now includes a `scripts` phase between `link` and `write`, with the phase label and position contracted in `install/recovery/SPEC.md`; the within-package ordering (`preinstall`, `install`, `postinstall`, `prepare`) is owned by `install/scripts/SPEC.md`; active execution is deferred to #142 | delivered: #141 (contract); #142 (execution) |
+| lifecycle script failure preserving install state | `install/recovery/SPEC.md`, `install/scripts/SPEC.md` | a failed `scripts` phase cannot publish partial successful install state: it runs between `link` and `write`, so the staged tree is discarded and the previous `node_modules`, `rpm.lock`, and `package.json` remain unchanged; the invariant is stated in both SPECs and an M6 lifecycle row is added to the recovery side-effect audit | delivered: #141 |
 
 Findings:
 
@@ -148,17 +149,23 @@ Findings:
   defined for every platform; platform-specific shim or `.cmd` behavior is
   explicitly deferred inside #139 until M10 / #163 owns a platform-packaging
   strategy.
-- Lifecycle scripts are the larger ownership gap: they are not covered by an
-  active execution SPEC. Per-version `scripts` are already classified as ignored
-  registry metadata (`registry/SPEC.md`) and the manifest SPEC names `scripts` in
-  its Purpose but defines no field contract, the recovery SPEC's phase pipeline
-  has no `scripts` phase, and the M3/M4 side-effect audits have no lifecycle row.
-  #141 owns the whole lifecycle cluster: supported phases, ordering, environment,
-  PATH, failure behavior, and rollback expectations, plus the registry SPEC
-  update that moves `scripts` from ignored to consumed (including its tolerant
-  wrong-type behavior) before #142 consumes transitive scripts, and the recovery
-  SPEC update that adds a `scripts` phase and the invariant that a failed script
-  phase cannot publish partial successful install state.
+- Lifecycle scripts are now under contract. Per-version `scripts` was previously
+  classified as ignored registry metadata and the manifest SPEC named `scripts`
+  in its Purpose but defined no field contract; the recovery phase pipeline had
+  no `scripts` phase, and the M3/M4 side-effect audits had no lifecycle row.
+  #141 has delivered the whole lifecycle cluster: supported phases (`preinstall`,
+  `install`, `postinstall`, `prepare`), within-package ordering, the
+  `string -> string` value type, working-directory and PATH policy, failure
+  behavior, and the rollback invariant that a failed `scripts` phase cannot
+  publish partial successful install state. The registry SPEC moves per-version
+  `scripts` out of the ignored list to read-and-preserve (with tolerant
+  wrong-type handling kept), the recovery SPEC adds a `scripts` phase between
+  `link` and `write` plus an M6 lifecycle side-effect row, and the run SPEC
+  records that lifecycle execution reuses the `rpm run` shell invocation model
+  rather than defining a second one. Active execution of the first phase is
+  tracked by #142; cross-package ordering, npm-specific environment variables,
+  and any opt-in skip-on-failure policy remain Open Questions in
+  `install/scripts/SPEC.md`.
 - `rpm run` integration is mostly owned: `cli/run/SPEC.md` already prepends
   `node_modules/.bin` to PATH and propagates exit codes without reinstalling. The
   one remaining gap — behavior when `.bin` is absent — is owned by #143, which
@@ -166,7 +173,7 @@ Findings:
   install output.
 - The delivery order follows the issue: (1) this contract and gap audit, (2) #139
   `.bin` and `bin` contract, (3) `.bin` fixture coverage, (4) #140 first `.bin`
-  link forms, (5) #141 lifecycle policy, (6) #142 first lifecycle phase with
-  failure-safe install state, (7) #143 `rpm run` PATH verification. Lifecycle
-  behavior is kept separable from linker behavior throughout so #139/#140 can
-  land without forcing #141/#142, and vice versa.
+  link forms, (5) #141 lifecycle policy (delivered), (6) #142 first lifecycle
+  phase with failure-safe install state, (7) #143 `rpm run` PATH verification.
+  Lifecycle behavior is kept separable from linker behavior throughout so
+  #139/#140 can land without forcing #141/#142, and vice versa.
