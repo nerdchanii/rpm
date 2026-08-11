@@ -50,3 +50,8 @@ status. Script failures must preserve the child process status.
 
 Run-script verification should cover missing-script errors, child exit-code
 preservation, and PATH setup for project-local binaries.
+
+A package binary produced by the install transaction (the `.bin` link owned by
+`docs/specs/core/linker/SPEC.md`) must be reachable through `rpm run` without
+reinstalling or mutating install output. A missing binary must keep a readable
+non-zero status (issue #143).

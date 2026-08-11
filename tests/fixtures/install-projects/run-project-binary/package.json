@@ -1,0 +1,10 @@
+{
+  "name": "run-project-binary-app",
+  "version": "0.0.0",
+  "scripts": {
+    "greet": "cli-tool"
+  },
+  "dependencies": {
+    "@rpm-fixture/cli-tool": "1.0.0"
+  }
+}

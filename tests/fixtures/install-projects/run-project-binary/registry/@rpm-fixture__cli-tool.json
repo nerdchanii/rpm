@@ -1,0 +1,21 @@
+{
+  "_id": "@rpm-fixture/cli-tool",
+  "name": "@rpm-fixture/cli-tool",
+  "description": "Fixture package that exposes a bin entry",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/cli-tool",
+      "version": "1.0.0",
+      "description": "Fixture package that exposes a bin entry",
+      "bin": "./cli.sh",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/cli-tool/-/cli-tool-1.0.0.tgz",
+        "shasum": "fixture-cli-tool-1.0.0"
+      }
+    }
+  }
+}
