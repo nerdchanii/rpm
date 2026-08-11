@@ -187,7 +187,7 @@ fn read_fixture_tarball_spec(package_name: &str) -> Option<FixtureTarballSpec> {
 
 /// Build the `package/package.json` body for a fixture tarball. Without a spec
 /// it is the legacy minimal `{"name":"..."}` object; with a spec the declared
-/// `bin` field is merged in so `link_bins` reads it after extraction.
+/// `bin` fields are merged in so `link_bins` reads them after extraction.
 #[cfg(test)]
 fn build_fixture_package_json(package_name: &str, spec: Option<&FixtureTarballSpec>) -> String {
     let Some(spec) = spec else {

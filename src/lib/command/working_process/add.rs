@@ -28,6 +28,7 @@ struct LockedInstallPackage {
     tarball: Option<String>,
     integrity: Option<String>,
     shasum: Option<String>,
+    scripts: Option<HashMap<String, String>>,
     dependencies: Vec<String>,
 }
 
@@ -166,6 +167,7 @@ async fn apply_resolved_graph(
                 locked_package.tarball.clone(),
                 locked_package.integrity.clone(),
                 locked_package.shasum.clone(),
+                locked_package.scripts.clone(),
                 &locked_package.dependencies,
             );
         } else {
@@ -192,6 +194,7 @@ async fn apply_resolved_graph(
                 dist.map(|dist| dist.tarball.clone()),
                 dist.and_then(|dist| dist.integrity.clone()),
                 dist.and_then(|dist| dist.shasum.clone()),
+                registry.get_scripts_for_version(&package.version),
                 &dependencies,
             );
         }
@@ -326,6 +329,7 @@ impl InstallMetadata {
                 tarball: dependency.get_tarball(),
                 integrity: dependency.get_integrity(),
                 shasum: dependency.get_shasum(),
+                scripts: dependency.get_scripts(),
                 dependencies: dependency.get_dependencies(),
             };
             metadata.locked_by_request.insert(
@@ -869,6 +873,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &[],
         );
         let metadata = InstallMetadata::from_lockfile(&lockfile);
@@ -892,6 +897,7 @@ mod tests {
             requested,
             "1.0.0".to_string(),
             relationship_for_package(&package),
+            None,
             None,
             None,
             None,

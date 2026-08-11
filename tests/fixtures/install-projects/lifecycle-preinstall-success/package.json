@@ -1,0 +1,7 @@
+{
+  "name": "lifecycle-preinstall-success",
+  "version": "0.1.0",
+  "dependencies": {
+    "@rpm-fixture/lifecycle-preinstall-success": "1.0.0"
+  }
+}

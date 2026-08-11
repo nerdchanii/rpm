@@ -1,0 +1,25 @@
+{
+  "_id": "@rpm-fixture/lifecycle-preinstall-wrong-type",
+  "name": "@rpm-fixture/lifecycle-preinstall-wrong-type",
+  "description": "Fixture package lifecycle-preinstall-wrong-type",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/lifecycle-preinstall-wrong-type",
+      "version": "1.0.0",
+      "description": "Fixture package lifecycle-preinstall-wrong-type",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/lifecycle-preinstall-wrong-type/-/lifecycle-preinstall-wrong-type-1.0.0.tgz",
+        "shasum": "fixture-lifecycle-preinstall-wrong-type-1.0.0"
+      },
+      "scripts": [
+        "preinstall",
+        "this-array-value-is-not-a-valid-scripts-map"
+      ],
+      "dependencies": {}
+    }
+  }
+}

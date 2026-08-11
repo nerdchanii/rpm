@@ -1,0 +1,24 @@
+{
+  "_id": "@rpm-fixture/lifecycle-preinstall-failure",
+  "name": "@rpm-fixture/lifecycle-preinstall-failure",
+  "description": "Fixture package lifecycle-preinstall-failure",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/lifecycle-preinstall-failure",
+      "version": "1.0.0",
+      "description": "Fixture package lifecycle-preinstall-failure",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/lifecycle-preinstall-failure/-/lifecycle-preinstall-failure-1.0.0.tgz",
+        "shasum": "fixture-lifecycle-preinstall-failure-1.0.0"
+      },
+      "scripts": {
+        "preinstall": "exit 1"
+      },
+      "dependencies": {}
+    }
+  }
+}

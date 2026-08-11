@@ -46,12 +46,10 @@ Failures must include the failed phase in the returned error message for cached
 package installation. This contract enforces `resolve`, `fetch`, `extract`,
 `link`, `scripts`, and `write` labels for cached package installation. The
 `scripts` phase runs between `link` and `write` and is owned by
-`docs/specs/core/install/scripts/SPEC.md` (#141); its execution is deferred
-until #142, but the phase label and its position in the pipeline are part of
-this recovery contract now so that implementation does not have to re-derive
-where lifecycle hooks attach. Registry fetch and cache-write failures must be
-returned to callers instead of being ignored or reported as successful
-downloads.
+`docs/specs/core/install/scripts/SPEC.md` (#141); `preinstall` execution landed
+via #142, while later hooks remain deferred. Registry fetch and cache-write
+failures must be returned to callers instead of being ignored or reported as
+successful downloads.
 
 ## Error Cases
 
@@ -132,14 +130,14 @@ Findings:
 ## M6 Lifecycle Phase Audit
 
 The 2026-08-11 M6 audit adds the `scripts` phase to the recovery pipeline
-between `link` and `write`, so lifecycle hook execution has a contracted home
-before any execution lands in #142. The phase label and its position are part
-of this recovery contract now; the active execution is owned by
-`docs/specs/core/install/scripts/SPEC.md` (#141).
+between `link` and `write`, so lifecycle hook execution has a contracted home.
+The phase label and its position are part of this recovery contract; the
+active execution is owned by `docs/specs/core/install/scripts/SPEC.md` (#141),
+and the `preinstall` hook landed via #142.
 
 | Phase | Owning SPEC(s) | M6 change | Side-effect status | Current tests | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| scripts (lifecycle hooks) | recovery, install/scripts | phase label and position contracted (#141); execution deferred to #142 | not yet executed in production; when implemented, a failed `scripts` phase discards the staged tree and leaves `node_modules`, `rpm.lock`, and `package.json` unchanged | none yet; #142 will add success, failure, missing-command, wrong-type, and environment/PATH fixtures | conforms (contracted, not yet implemented) |
+| scripts (lifecycle hooks) | recovery, install/scripts | phase label and position contracted (#141); `preinstall` execution landed via #142 | `preinstall` runs between `link` and `write`; a failed `scripts` phase discards the staged tree and leaves `node_modules`, `rpm.lock`, and `package.json` unchanged | #142 added success, failure, missing-command, wrong-type, and root `preinstall` fixtures under `tests/fixtures/install-projects/` | conforms |
 
 Findings:
 
@@ -160,7 +158,7 @@ Findings:
 
 Recovery verification should cover staged replacement success plus resolve,
 fetch, extract, link, scripts, and write failures that leave the previous
-`node_modules` contents intact. Scripts-phase fixtures are planned by
-`docs/specs/core/install/scripts/SPEC.md` (#141) and land with #142; they must
+`node_modules` contents intact. Scripts-phase fixtures are owned by
+`docs/specs/core/install/scripts/SPEC.md` (#141) and landed with #142; they
 prove that a failed lifecycle hook leaves `node_modules`, `rpm.lock`, and
 `package.json` unchanged.

@@ -1,0 +1,24 @@
+{
+  "_id": "@rpm-fixture/lifecycle-preinstall-success",
+  "name": "@rpm-fixture/lifecycle-preinstall-success",
+  "description": "Fixture package lifecycle-preinstall-success",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/lifecycle-preinstall-success",
+      "version": "1.0.0",
+      "description": "Fixture package lifecycle-preinstall-success",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/lifecycle-preinstall-success/-/lifecycle-preinstall-success-1.0.0.tgz",
+        "shasum": "fixture-lifecycle-preinstall-success-1.0.0"
+      },
+      "scripts": {
+        "preinstall": "echo preinstall-ran > preinstall-proof.txt"
+      },
+      "dependencies": {}
+    }
+  }
+}

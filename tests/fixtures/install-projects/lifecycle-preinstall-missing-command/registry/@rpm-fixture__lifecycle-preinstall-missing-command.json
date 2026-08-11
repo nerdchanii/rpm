@@ -1,0 +1,24 @@
+{
+  "_id": "@rpm-fixture/lifecycle-preinstall-missing-command",
+  "name": "@rpm-fixture/lifecycle-preinstall-missing-command",
+  "description": "Fixture package lifecycle-preinstall-missing-command",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/lifecycle-preinstall-missing-command",
+      "version": "1.0.0",
+      "description": "Fixture package lifecycle-preinstall-missing-command",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/lifecycle-preinstall-missing-command/-/lifecycle-preinstall-missing-command-1.0.0.tgz",
+        "shasum": "fixture-lifecycle-preinstall-missing-command-1.0.0"
+      },
+      "scripts": {
+        "preinstall": "definitely-not-a-real-rpm-fixture-binary"
+      },
+      "dependencies": {}
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "lifecycle-preinstall-wrong-type",
+  "version": "0.1.0",
+  "dependencies": {
+    "@rpm-fixture/lifecycle-preinstall-wrong-type": "1.0.0"
+  }
+}

@@ -51,6 +51,12 @@ async fn install_in(project_root: &Path) -> std::io::Result<()> {
     )
     .await?;
 
+    let prepared = NodeModules::prepare_from_lockfile(
+        &node_modules_path,
+        &lockfile,
+        &cache_dir,
+        &package_manifest,
+    )?;
     let mut backups = backup_install_state(&[&lockfile_path, &package_path])?;
     if let Err(error) = lockfile.save_to_path(&lockfile_path) {
         return Err(restore_after(&mut backups, error));
@@ -61,11 +67,7 @@ async fn install_in(project_root: &Path) -> std::io::Result<()> {
     if let Err(error) = restore_state_permissions(&backups) {
         return Err(restore_after(&mut backups, error));
     }
-    let output_result = if lockfile.get_packages().is_empty() {
-        Ok(())
-    } else {
-        NodeModules::init_from_lockfile(&node_modules_path, &lockfile, &cache_dir).map(|_| ())
-    };
+    let output_result = prepared.publish().map(|_| ());
 
     if let Err(error) = output_result {
         return Err(restore_after(&mut backups, error));
@@ -529,6 +531,167 @@ mod tests {
         let package = PackageManifest::read_from_path(&package_path).unwrap();
         let status = run_script("missing", &package, project_root).unwrap();
         assert_ne!(status, 0);
+    }
+
+    // Issue #142: lifecycle `scripts` phase. The install pipeline runs the
+    // `preinstall` hook between `link` and `write`. A successful hook runs in
+    // the resolved package directory; a failing hook fails the `scripts` phase
+    // with a labeled error, discards the staged tree, and leaves the previous
+    // `node_modules`, `rpm.lock`, and `package.json` unchanged.
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_runs_for_resolved_package() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-success"]);
+        let project = TempProject::new("lifecycle-preinstall-success").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        install_in(project_root).await.unwrap();
+
+        // The resolved package's `preinstall` hook wrote a proof file inside
+        // its installed package directory during the `scripts` phase.
+        let proof = project_root
+            .join("node_modules")
+            .join("@rpm-fixture")
+            .join("lifecycle-preinstall-success")
+            .join("preinstall-proof.txt");
+        assert_eq!(
+            fs::read_to_string(&proof)
+                .unwrap_or_else(|error| panic!("preinstall proof should exist: {error}")),
+            "preinstall-ran\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_runs_for_root_without_dependencies() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-root"]);
+        let project = TempProject::new("lifecycle-preinstall-root-only").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        fs::write(
+            &package_path,
+            r#"{"name":"root-only","version":"0.0.0","scripts":{"preinstall":"echo root-only-ran > root-only-proof.txt"}}"#,
+        )
+        .unwrap();
+
+        install_in(project_root).await.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(project_root.join("root-only-proof.txt")).unwrap(),
+            "root-only-ran\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_failure_preserves_existing_install_state() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-failure"]);
+        let project = TempProject::new("lifecycle-preinstall-failure").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let existing_file = project_root.join("node_modules").join("keep.txt");
+        fs::create_dir_all(existing_file.parent().unwrap()).unwrap();
+        fs::write(&existing_file, "existing node_modules content").unwrap();
+        let original_package = fs::read(&package_path).unwrap();
+        let lock_path = project_root.join("rpm.lock");
+        fs::write(
+            &lock_path,
+            "lockfile_version = 1\nname = \"previous\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let original_lock = fs::read(&lock_path).unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        let error = install_in(project_root).await.unwrap_err();
+
+        assert_expected_error(&fixture_root, &error);
+        // A failed `scripts` phase must not publish partial install state: the
+        // previous `node_modules` and the root manifest stay unchanged.
+        assert_eq!(fs::read(&package_path).unwrap(), original_package);
+        assert_eq!(fs::read(&lock_path).unwrap(), original_lock);
+        assert_eq!(
+            fs::read_to_string(&existing_file).unwrap(),
+            "existing node_modules content"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_missing_command_fails_scripts_phase() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root =
+            fixture_path(&["install-projects", "lifecycle-preinstall-missing-command"]);
+        let project = TempProject::new("lifecycle-preinstall-missing-command").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let existing_file = project_root.join("node_modules").join("keep.txt");
+        fs::create_dir_all(existing_file.parent().unwrap()).unwrap();
+        fs::write(&existing_file, "existing node_modules content").unwrap();
+        let original_package = fs::read(&package_path).unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        let error = install_in(project_root).await.unwrap_err();
+
+        assert_expected_error(&fixture_root, &error);
+        assert_eq!(fs::read(&package_path).unwrap(), original_package);
+        assert_eq!(
+            fs::read_to_string(&existing_file).unwrap(),
+            "existing node_modules content"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_wrong_type_does_not_fail_install() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-wrong-type"]);
+        let project = TempProject::new("lifecycle-preinstall-wrong-type").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        // A wrong-type `scripts` value is discarded as absent by the manifest
+        // deserializer, so the install completes normally.
+        install_in(project_root).await.unwrap();
+
+        let node_modules = project_root.join("node_modules");
+        assert!(node_modules
+            .join("@rpm-fixture")
+            .join("lifecycle-preinstall-wrong-type")
+            .join("package.json")
+            .is_file());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_runs_for_root_manifest() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-root"]);
+        let project = TempProject::new("lifecycle-preinstall-root").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        install_in(project_root).await.unwrap();
+
+        // The root manifest's `preinstall` hook ran with the project root as
+        // its working directory.
+        assert_eq!(
+            fs::read_to_string(project_root.join("root-preinstall-proof.txt")).unwrap(),
+            "root-preinstall-ran\n"
+        );
     }
 
     fn assert_expected_error(fixture_root: &Path, error: &io::Error) {

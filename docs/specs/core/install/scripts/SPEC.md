@@ -33,11 +33,9 @@ install, the environment they execute in, how their failure is reported, and the
 invariant that a failed script phase cannot publish partial successful install
 state.
 
-This contract is the M6 lifecycle policy named by issue #141. It owns the whole
-lifecycle cluster before any execution lands in #142. It is intentionally a
-policy contract only: #142 implements the first phase selected here, and the
-remaining phases stay deferred under this contract until a later issue claims
-them.
+This contract is the M6 lifecycle policy named by issue #141. Issue #142
+implements the first phase selected here, and the remaining phases stay
+deferred under this contract until a later issue claims them.
 
 ## Contract
 
@@ -49,7 +47,7 @@ per-version registry metadata:
 
 | Hook | Phase owner | Scope | Status |
 | --- | --- | --- | --- |
-| `preinstall` | `install/scripts` | root and resolved packages | the first phase to implement (#142) |
+| `preinstall` | `install/scripts` | root and resolved packages | implemented (#142) |
 | `install` | `install/scripts` | root and resolved packages | deferred under this contract |
 | `postinstall` | `install/scripts` | root and resolved packages | deferred under this contract |
 | `prepare` | `install/scripts` | root and resolved packages | deferred under this contract |
@@ -125,16 +123,17 @@ npm's. This contract defines only what RPM guarantees today:
 
 - **Working directory.** A root lifecycle hook runs with the project root as its
   working directory. A resolved-package lifecycle hook runs with that package's
-  installed directory under `node_modules/` as its working directory. This
-  matches the install phase that owns the hook: root hooks are owned by the
-  project install, package hooks by the installed package directory.
+  directory in the staged replacement tree, which becomes the corresponding
+  directory under `node_modules/` after the `write` phase. This gives hooks the
+  package-local working directory they will have after publication while keeping
+  the previous install untouched during failure handling.
 - **PATH.** Lifecycle hooks receive the same PATH prepend policy as `rpm run`:
-  the project `node_modules/.bin` is prepended to the inherited `PATH`. For
-  resolved-package hooks, `.bin` generation
+  the staged replacement tree's `.bin` directory is prepended to the inherited
+  `PATH`. For resolved-package hooks, `.bin` generation
   (`docs/specs/core/linker/SPEC.md`) has already run in the preceding `link`
-  phase, so the project `node_modules/.bin` is populated before any hook runs.
-  `.bin` generation and lifecycle execution remain independent phases; this
-  contract only fixes the PATH ordering, not a dependency between them.
+  phase, so the staged project `.bin` is populated before any hook runs. Root
+  hooks use the same staged directory; the published layout is equivalent after
+  a successful `write` phase.
 - **Child status propagation.** The child process exit status is propagated per
   `docs/specs/cli/run/SPEC.md`: a hook that exits non-zero fails the phase with
   that status; a hook that cannot be spawned surfaces a readable run error.
@@ -211,26 +210,31 @@ invocation and PATH prepend so there is one script-execution contract, not two.
 
 ## Test Fixtures
 
-No lifecycle fixtures exist yet. This is a policy-only contract; implementation
-lands in #142. The following fixture scenarios are planned for #142 and any
-later lifecycle phase, and must follow `docs/conventions/install_fixture_outputs.md`
-and stay offline and deterministic:
+The first lifecycle phase (`preinstall`) landed via #142. The following fixture
+scenarios live under `tests/fixtures/install-projects/` and follow
+`docs/conventions/install_fixture_outputs.md`; they stay offline and
+deterministic:
 
-- a successful lifecycle hook that runs during install and observes the
-  contracted working directory and PATH;
-- a failing lifecycle hook that exits non-zero and fails the `scripts` phase
-  with the `scripts` label, while the previous `node_modules` and the
-  `rpm.lock`/`package.json` remain unchanged;
-- a hook whose command is missing, surfacing a readable run error and non-zero
-  status without publishing install state;
-- a wrong-type hook value (array or object) that is discarded as absent so the
-  install proceeds;
-- environment and PATH behavior verification (project `node_modules/.bin`
-  prepended; no `npm_*` variables set).
+- `lifecycle-preinstall-success`: a successful resolved-package `preinstall`
+  hook that runs during install and writes a proof file inside its installed
+  package directory;
+- `lifecycle-preinstall-failure`: a resolved-package `preinstall` hook that
+  exits non-zero and fails the `scripts` phase with the `scripts` label, while
+  the previous `node_modules` and the root `package.json` remain unchanged;
+- `lifecycle-preinstall-missing-command`: a hook whose command is missing,
+  surfacing the shell's readable error and a `scripts failed` label without
+  publishing install state;
+- `lifecycle-preinstall-wrong-type`: a wrong-type hook value (array) that is
+  discarded as absent by the manifest deserializer so the install proceeds
+  normally;
+- `lifecycle-preinstall-root`: the root manifest's `preinstall` hook runs with
+  the project root as its working directory.
 
-Each scenario must be a single deterministic fixture under
+Each scenario is a single deterministic fixture under
 `tests/fixtures/install-projects/`, scaffolded by `scripts/new-install-fixture.sh`
-or `just fixture <name>`, and must not assert behavior outside this contract.
+or `just fixture <name>`, and does not assert behavior outside this contract.
+Later lifecycle phases (`install`, `postinstall`, `prepare`) will add their own
+fixtures when a follow-up issue claims them; until then they stay deferred.
 
 ## Open Questions
 

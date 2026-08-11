@@ -1,0 +1,1 @@
+@rpm-fixture/lifecycle-preinstall-success@1.0.0 requested 1.0.0

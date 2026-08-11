@@ -453,6 +453,11 @@ impl Registry {
         }
     }
 
+    pub fn get_scripts_for_version(&self, version: &str) -> Option<HashMap<String, String>> {
+        self.version_metadata(version)
+            .and_then(|metadata| metadata.scripts.clone())
+    }
+
     pub fn get_tarball_name(&self) -> Option<String> {
         self.get_latest_version()
             .map(|version| tarball_cache_file_name(&self.name, version))

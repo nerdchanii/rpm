@@ -1,0 +1,7 @@
+{
+  "name": "lifecycle-preinstall-missing-command",
+  "version": "0.1.0",
+  "dependencies": {
+    "@rpm-fixture/lifecycle-preinstall-missing-command": "1.0.0"
+  }
+}

@@ -1,11 +1,7 @@
-use crate::package_manifest::PackageManifest;
+use crate::{package_manifest::PackageManifest, script_runner::script_path};
 use std::{
-    env,
-    ffi::OsString,
-    fs,
     io::{Error, ErrorKind},
     path::Path,
-    process::Command,
 };
 
 pub async fn run(script_key: String) -> Result<i32, std::io::Error> {
@@ -28,7 +24,7 @@ pub(super) fn run_script(
 
     println!("Running script: {}", script);
 
-    let mut command = shell_command(script);
+    let mut command = crate::script_runner::shell_command(script);
     command.current_dir(project_root);
     command.env("PATH", script_path(project_root)?);
     let status = command.status().map_err(|error| {
@@ -41,36 +37,11 @@ pub(super) fn run_script(
     Ok(status.code().unwrap_or(1))
 }
 
-#[cfg(unix)]
-fn shell_command(script: &str) -> Command {
-    let mut command = Command::new("/bin/sh");
-    command.arg("-c").arg(script);
-    command
-}
-
-#[cfg(windows)]
-fn shell_command(script: &str) -> Command {
-    let mut command = Command::new("cmd");
-    command.arg("/C").arg(script);
-    command
-}
-
-fn script_path(project_root: &Path) -> Result<OsString, std::io::Error> {
-    let mut paths = vec![fs::canonicalize(project_root)?
-        .join("node_modules")
-        .join(".bin")];
-    if let Some(path) = env::var_os("PATH") {
-        paths.extend(env::split_paths(&path));
-    }
-
-    env::join_paths(paths).map_err(|error| Error::new(ErrorKind::InvalidInput, error))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::{
-        fs,
+        env, fs,
         os::unix::fs::PermissionsExt,
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},

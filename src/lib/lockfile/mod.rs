@@ -39,6 +39,8 @@ pub struct Dependency {
     integrity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shasum: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scripts: Option<HashMap<String, String>>,
     #[serde(default)]
     dependencies: HashSet<String>,
 }
@@ -53,6 +55,7 @@ impl Dependency {
             tarball: None,
             integrity: None,
             shasum: None,
+            scripts: None,
             dependencies: dependencies.unwrap_or_default(),
         }
     }
@@ -94,6 +97,15 @@ impl Dependency {
 
     pub fn get_shasum(&self) -> Option<String> {
         self.shasum.clone()
+    }
+
+    pub fn get_scripts(&self) -> Option<HashMap<String, String>> {
+        self.scripts.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_scripts(&mut self, scripts: Option<HashMap<String, String>>) {
+        self.scripts = scripts;
     }
 }
 
@@ -208,6 +220,7 @@ impl LockFile {
             None,
             None,
             None,
+            None,
             dependencies,
         );
     }
@@ -223,6 +236,7 @@ impl LockFile {
         tarball: Option<String>,
         integrity: Option<String>,
         shasum: Option<String>,
+        scripts: Option<HashMap<String, String>>,
         dependencies: &[String],
     ) {
         if let Some(dep) = self.dependencies.get_mut(key) {
@@ -236,6 +250,7 @@ impl LockFile {
             dep.tarball = tarball;
             dep.integrity = integrity;
             dep.shasum = shasum;
+            dep.scripts = scripts;
             dependencies.iter().for_each(|value| {
                 dep.dependencies.insert(value.clone());
             });
@@ -250,6 +265,7 @@ impl LockFile {
                     tarball,
                     integrity,
                     shasum,
+                    scripts,
                     dependencies: HashSet::from_iter(dependencies.iter().cloned()),
                 },
             );
@@ -400,6 +416,7 @@ mod lock_file_test {
             None,
             None,
             None,
+            None,
             &[],
         );
         lock.add_dependency_entry(
@@ -408,6 +425,7 @@ mod lock_file_test {
             "1.0.0".to_string(),
             "1.0.0".to_string(),
             Relationship::Transitive,
+            None,
             None,
             None,
             None,
