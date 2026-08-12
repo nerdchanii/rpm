@@ -286,7 +286,7 @@ The M7 audit maps each npm workspace behavior area to its owning SPEC/ADR and
 records whether the contract is explicitly stated. M7 is a workspace support
 milestone: it must add multi-package repository support without weakening root
 safety rules, lockfile reproducibility, or the strict per-package dependency
-visibility that `linker/SPEC.md` already enforces. It must not fold resolver
+visibility contract owned by `linker/SPEC.md`. It must not fold resolver
 strategy changes, cache behavior, npm metadata compatibility, or runtime
 linking changes into workspace work. Every gap below is assigned an owning SPEC
 and a follow-up ticket so workspace behavior becomes SPEC-owned *before*
@@ -311,6 +311,7 @@ treating it as implicit scope.
 | workspace-to-external linking | `linker/SPEC.md` | code and SPEC currently diverge on strict per-package dependency visibility; #147 must reconcile the implementation first, then extend the strict contract to workspace members so a member's `node_modules` exposes only that member's declared dependencies, with regression coverage | #147 |
 | missing workspace link target | `linker/SPEC.md` | absent: the linker already fails when a registry dependency target is not extracted, but there is no contract for a workspace dependency whose declared local path does not exist or does not contain the expected package | #147 |
 | workspace member writes and recovery | `install/recovery/SPEC.md`, `linker/SPEC.md` | absent: member-local writes are independent of root staging today; #147 must define one root-staged transaction, rollback of every member-local write on failure, and preservation of the prior install state, with recovery regression coverage | #147 |
+| package-name and dependency-name root confinement | `resolver/SPEC.md`, `linker/SPEC.md` | existing package metadata and lockfile names are not fully confined before extraction and dependency linking; names such as `../../outside` can escape the staged tree, so the resolver/linker boundary must reject traversal and verify canonical destinations before any write; #147 must include this regression coverage for workspace and external edges | #147 |
 | workspace member binary links | `linker/SPEC.md` | absent: the existing `.bin` contract does not state whether a workspace member's `bin` field is exposed; #147 must decide the link layout and cover it in the minimal workspace fixture (#149) | #147; #149 |
 | workspace command targeting (`--workspace`, `--all`, root) | `cli/run/SPEC.md` and future CLI command SPECs | absent: no command targeting contract exists; `rpm run` reads only the root manifest, and there is no rule for root-only, all-workspace, or selected-workspace command scope | #148 |
 | partial workspace failure and exit behavior | `cli/run/SPEC.md` (deferred to M8 for stable exit codes) | absent: no contract for how a command behaves when one workspace member fails and others succeed; stable exit codes and stdout/stderr ownership for this are owned by the M8 diagnostics contract (#150, #151) before they become public | #148 (targeting); M8 (exit-code stability) |
@@ -348,10 +349,12 @@ Findings:
   explicitly aligned to M8 (#150, #151): this audit does not introduce stable
   exit codes or stdout/stderr ownership for workspace commands, because that
   ownership belongs to the diagnostics contract.
-- Root safety rules are preserved as an explicit constraint, not a behavior
-  area: the M3/M4 staged-replacement and side-effect audit guarantees
-  (`install/recovery/SPEC.md`) apply unchanged to a workspace install. A
-  workspace install is still a single staged `node_modules` transaction; the
+- Root safety rules remain an explicit constraint and include existing package
+  metadata and dependency-name traversal risks. The M3/M4 staged-replacement
+  and side-effect audit guarantees (`install/recovery/SPEC.md`) apply to a
+  workspace install, while the current resolver/linker escape paths require
+  follow-up hardening before that guarantee is complete. A workspace install
+  is still intended to be a single staged `node_modules` transaction; the
   added risks are member-controlled local paths reaching the linker and
   member-local writes escaping root staging, which #145/#147 must confine and
   roll back.
