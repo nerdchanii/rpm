@@ -1,0 +1,24 @@
+{
+  "_id": "@rpm-fixture/platform-consumer",
+  "name": "@rpm-fixture/platform-consumer",
+  "description": "Fixture consumer that requests a package declaring incompatible engines, os, and cpu without failing resolution",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/platform-consumer",
+      "version": "1.0.0",
+      "description": "Fixture consumer that requests a package declaring incompatible engines, os, and cpu without failing resolution",
+      "dependencies": {
+        "@rpm-fixture/platform-strict": "^1.0.0"
+      },
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/platform-consumer/-/platform-consumer-1.0.0.tgz",
+        "shasum": "fixture-platform-consumer-1.0.0",
+        "integrity": "sha512-fixture-platform-consumer-1.0.0"
+      }
+    }
+  }
+}

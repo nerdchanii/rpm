@@ -1,0 +1,24 @@
+{
+  "_id": "@rpm-fixture/prerelease-consumer",
+  "name": "@rpm-fixture/prerelease-consumer",
+  "description": "Fixture consumer that requests @rpm-fixture/prerelease with a range excluding prereleases",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/prerelease-consumer",
+      "version": "1.0.0",
+      "description": "Fixture consumer that requests @rpm-fixture/prerelease with a range excluding prereleases",
+      "dependencies": {
+        "@rpm-fixture/prerelease": "^1.0.0"
+      },
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/prerelease-consumer/-/prerelease-consumer-1.0.0.tgz",
+        "shasum": "fixture-prerelease-consumer-1.0.0",
+        "integrity": "sha512-fixture-prerelease-consumer-1.0.0"
+      }
+    }
+  }
+}

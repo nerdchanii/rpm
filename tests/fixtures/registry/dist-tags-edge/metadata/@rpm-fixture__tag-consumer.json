@@ -1,0 +1,24 @@
+{
+  "_id": "@rpm-fixture/tag-consumer",
+  "name": "@rpm-fixture/tag-consumer",
+  "description": "Fixture consumer that requests @rpm-fixture/tagged through dist-tag specs (latest, stable, legacy)",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/tag-consumer",
+      "version": "1.0.0",
+      "description": "Fixture consumer that requests @rpm-fixture/tagged through dist-tag specs (latest, stable, legacy)",
+      "dependencies": {
+        "@rpm-fixture/tagged": "legacy"
+      },
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/tag-consumer/-/tag-consumer-1.0.0.tgz",
+        "shasum": "fixture-tag-consumer-1.0.0",
+        "integrity": "sha512-fixture-tag-consumer-1.0.0"
+      }
+    }
+  }
+}

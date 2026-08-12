@@ -730,4 +730,185 @@ mod tests {
             );
         }
     }
+
+    // M5 compatibility fixtures (issue #137). These cover the scenarios not
+    // already exercised by the peer-preserve (#134/#135) and optional-preserve
+    // (#133) fixtures above: dist-tag edge cases, prerelease exclusion, and
+    // engines/os/cpu preservation without filtering. Each scenario follows the
+    // same offline-registry + expected-list contract.
+
+    #[test]
+    fn dist_tag_spec_resolves_to_tagged_version() {
+        // A dependency request whose range text names a dist-tag (other than
+        // `latest`) resolves to that tag's target version. Owned by
+        // `docs/specs/core/registry/SPEC.md`: only requests that are not
+        // registry dist-tags are evaluated as semver ranges.
+        let root = fixture_path(&["registry", "dist-tags-edge", "metadata"]);
+        let provider = FixtureMetadataProvider::from_fixture_root(&root);
+
+        let graph = resolve_dependency_graph(
+            vec![DependencyRequest::new(
+                "@rpm-fixture/tag-consumer",
+                "^1.0.0",
+                DependencyRequestKind::DirectProduction,
+            )],
+            &provider,
+        )
+        .expect("dist-tag dependency edge should resolve");
+
+        let expected = fs::read_to_string(fixture_path(&[
+            "registry",
+            "dist-tags-edge",
+            "expected",
+            "resolved-packages.txt",
+        ]))
+        .expect("expected resolved package list should be readable");
+        let resolved = graph
+            .packages()
+            .iter()
+            .map(|package| {
+                format!(
+                    "{}@{} requested {}",
+                    package.package_name, package.version, package.requests[0].requested
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(format!("{resolved}\n"), expected);
+
+        // The consumer's only edge requested the `legacy` dist-tag, which must
+        // resolve to 1.0.0 rather than the `latest`/`stable` target of 1.2.0.
+        let tagged = graph
+            .package("@rpm-fixture/tagged", "1.0.0")
+            .expect("dist-tag target should resolve to the tagged version");
+        assert_eq!(tagged.requests[0].requested, "legacy");
+    }
+
+    #[test]
+    fn dangling_dist_tag_target_is_rejected_as_unsatisfied() {
+        // A dist-tag whose target version is absent from the `versions` map is
+        // rejected at selection time rather than returning a version key with
+        // no per-version metadata (issue #114, owned by
+        // `docs/specs/core/registry/SPEC.md`).
+        let root = fixture_path(&["registry", "dist-tags-edge", "metadata"]);
+        let provider = FixtureMetadataProvider::from_fixture_root(&root);
+
+        let error = resolve_dependency_graph(
+            vec![DependencyRequest::new(
+                "@rpm-fixture/dangling-tag",
+                "latest",
+                DependencyRequestKind::DirectProduction,
+            )],
+            &provider,
+        )
+        .expect_err("a dist-tag pointing at an absent version must fail resolution");
+
+        assert!(matches!(
+            error,
+            ResolutionError::VersionSelection {
+                source: crate::core::resolver::semver::SemverError::UnsatisfiedRange { range },
+                ..
+            } if range == "latest"
+        ));
+    }
+
+    #[test]
+    fn prerelease_version_is_excluded_from_normal_range_match() {
+        // node-semver excludes prerelease versions from range matches unless the
+        // range itself carries a prerelease at the same [major, minor, patch]
+        // tuple. A consumer requesting `^1.0.0` against a package that also
+        // publishes `1.1.0-beta.1` must resolve to the stable `1.0.0`. Owned by
+        // `docs/specs/core/semver/SPEC.md` (no RPM-specific semver dialect).
+        let root = fixture_path(&["registry", "prerelease-edge", "metadata"]);
+        let provider = FixtureMetadataProvider::from_fixture_root(&root);
+
+        let graph = resolve_dependency_graph(
+            vec![DependencyRequest::new(
+                "@rpm-fixture/prerelease-consumer",
+                "^1.0.0",
+                DependencyRequestKind::DirectProduction,
+            )],
+            &provider,
+        )
+        .expect("prerelease exclusion should not fail resolution");
+
+        let expected = fs::read_to_string(fixture_path(&[
+            "registry",
+            "prerelease-edge",
+            "expected",
+            "resolved-packages.txt",
+        ]))
+        .expect("expected resolved package list should be readable");
+        let resolved = graph
+            .packages()
+            .iter()
+            .map(|package| {
+                format!(
+                    "{}@{} requested {}",
+                    package.package_name, package.version, package.requests[0].requested
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(format!("{resolved}\n"), expected);
+
+        // The stable release must win over the prerelease.
+        let prerelease = graph
+            .package("@rpm-fixture/prerelease", "1.0.0")
+            .expect("stable release should be selected over the prerelease");
+        assert_eq!(prerelease.version, "1.0.0");
+        assert!(
+            graph
+                .package("@rpm-fixture/prerelease", "1.1.0-beta.1")
+                .is_none(),
+            "prerelease must not be selected by a non-prerelease range"
+        );
+    }
+
+    #[test]
+    fn engines_os_cpu_metadata_does_not_filter_version_selection() {
+        // RPM deserializes `engines`, `os`, and `cpu` with npm-accurate types
+        // but applies no filtering, warning, skip, or rejection policy at the
+        // registry boundary. A package declaring an incompatible platform still
+        // selects, so a consumer resolves normally. Owned by
+        // `docs/specs/core/registry/SPEC.md`.
+        let root = fixture_path(&["registry", "engines-os-cpu-preserve", "metadata"]);
+        let provider = FixtureMetadataProvider::from_fixture_root(&root);
+
+        let graph = resolve_dependency_graph(
+            vec![DependencyRequest::new(
+                "@rpm-fixture/platform-consumer",
+                "^1.0.0",
+                DependencyRequestKind::DirectProduction,
+            )],
+            &provider,
+        )
+        .expect("restrictive engines/os/cpu must not fail resolution");
+
+        let expected = fs::read_to_string(fixture_path(&[
+            "registry",
+            "engines-os-cpu-preserve",
+            "expected",
+            "resolved-packages.txt",
+        ]))
+        .expect("expected resolved package list should be readable");
+        let resolved = graph
+            .packages()
+            .iter()
+            .map(|package| {
+                format!(
+                    "{}@{} requested {}",
+                    package.package_name, package.version, package.requests[0].requested
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(format!("{resolved}\n"), expected);
+
+        // The platform-strict package must still be selected despite declaring
+        // `node >=99.0.0`, `os: ["plan9"]`, and `cpu: ["ia64"]`.
+        graph
+            .package("@rpm-fixture/platform-strict", "1.0.0")
+            .expect("platform-restrictive version must still resolve");
+    }
 }

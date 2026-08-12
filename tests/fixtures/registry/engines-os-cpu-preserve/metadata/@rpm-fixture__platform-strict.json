@@ -1,0 +1,31 @@
+{
+  "_id": "@rpm-fixture/platform-strict",
+  "name": "@rpm-fixture/platform-strict",
+  "description": "Fixture package declaring restrictive engines, os, and cpu metadata that must not trigger filtering at the registry boundary",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/platform-strict",
+      "version": "1.0.0",
+      "description": "Fixture package declaring restrictive engines, os, and cpu metadata that must not trigger filtering at the registry boundary",
+      "dependencies": {},
+      "engines": {
+        "node": ">=99.0.0"
+      },
+      "os": [
+        "plan9"
+      ],
+      "cpu": [
+        "ia64"
+      ],
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/platform-strict/-/platform-strict-1.0.0.tgz",
+        "shasum": "fixture-platform-strict-1.0.0",
+        "integrity": "sha512-fixture-platform-strict-1.0.0"
+      }
+    }
+  }
+}

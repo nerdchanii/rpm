@@ -1,0 +1,22 @@
+{
+  "_id": "@rpm-fixture/dangling-tag",
+  "name": "@rpm-fixture/dangling-tag",
+  "description": "Fixture package whose latest dist-tag targets a version absent from the versions map",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "2.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/dangling-tag",
+      "version": "1.0.0",
+      "description": "Fixture package whose latest dist-tag targets a version absent from the versions map",
+      "dependencies": {},
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/dangling-tag/-/dangling-tag-1.0.0.tgz",
+        "shasum": "fixture-dangling-tag-1.0.0",
+        "integrity": "sha512-fixture-dangling-tag-1.0.0"
+      }
+    }
+  }
+}
