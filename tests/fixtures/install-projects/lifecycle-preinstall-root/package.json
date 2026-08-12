@@ -1,0 +1,10 @@
+{
+  "name": "lifecycle-preinstall-root",
+  "version": "0.0.0",
+  "scripts": {
+    "preinstall": "echo root-preinstall-ran > root-preinstall-proof.txt"
+  },
+  "dependencies": {
+    "@rpm-fixture/lifecycle-preinstall-root": "1.0.0"
+  }
+}

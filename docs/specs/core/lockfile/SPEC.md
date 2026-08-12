@@ -52,6 +52,7 @@ version = "18.2.0"
 relationship = "direct"
 tarball = "https://registry.npmjs.org/react/-/react-18.2.0.tgz"
 integrity = "sha512-..."
+scripts = { preinstall = "echo preparing" }
 dependencies = ["loose-envify@^1.1.0"]
 ```
 
@@ -85,6 +86,8 @@ Package entries record:
 - `integrity`: Subresource Integrity value when provided.
 - `shasum`: legacy shasum when `integrity` is absent or when the registry only
   provides a shasum.
+- `scripts`: selected per-version lifecycle script map from registry metadata;
+  install lifecycle execution consumes this persisted map.
 - `dependencies`: dependency edges as requested package references.
 
 `peerDependencies` and `optionalDependencies` are not recorded in lockfile v1.

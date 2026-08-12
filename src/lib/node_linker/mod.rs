@@ -1,8 +1,9 @@
+use std::fmt;
 use std::{
     fs::{self, File},
     io::{Error, ErrorKind, Write},
     os::unix::fs::symlink,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     thread::sleep,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -17,9 +18,79 @@ use crate::{
 use flate2::read::GzDecoder;
 use tar::Archive;
 
+mod scripts;
+
 #[derive(Debug)]
 pub struct NodeModules {
     pub path: PathBuf,
+}
+
+pub(crate) struct PreparedNodeModules {
+    target: PathBuf,
+    staging: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct LifecycleExitStatus {
+    code: i32,
+    message: String,
+}
+
+impl fmt::Display for LifecycleExitStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LifecycleExitStatus {}
+
+pub fn lifecycle_exit_status(error: &std::io::Error) -> Option<i32> {
+    error
+        .get_ref()?
+        .downcast_ref::<LifecycleExitStatus>()
+        .map(|status| status.code)
+}
+
+pub(crate) fn lifecycle_error_with_message(
+    error: &std::io::Error,
+    message: String,
+) -> std::io::Error {
+    if let Some(code) = lifecycle_exit_status(error) {
+        return Error::new(error.kind(), LifecycleExitStatus { code, message });
+    }
+    Error::new(error.kind(), message)
+}
+
+impl PreparedNodeModules {
+    pub(crate) fn run_package_lifecycle_scripts(
+        &mut self,
+        lock_file: &LockFile,
+    ) -> Result<(), std::io::Error> {
+        let Some(staging) = &self.staging else {
+            return Ok(());
+        };
+        scripts::run_package_lifecycle_scripts(staging, &lock_file.get_packages())
+            .map_err(|error| phase_error("scripts", error))
+    }
+
+    pub(crate) fn publish(mut self) -> Result<NodeModules, std::io::Error> {
+        let Some(staging) = self.staging.take() else {
+            return Ok(NodeModules::new(self.target.clone()));
+        };
+        if let Err(error) = replace_node_modules(&self.target, &staging) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        Ok(NodeModules::new(self.target.clone()))
+    }
+}
+
+impl Drop for PreparedNodeModules {
+    fn drop(&mut self) {
+        if let Some(staging) = &self.staging {
+            let _ = fs::remove_dir_all(staging);
+        }
+    }
 }
 
 impl NodeModules {
@@ -42,13 +113,15 @@ impl NodeModules {
     }
 
     pub fn init() -> Result<Self, std::io::Error> {
-        Self::init_from_paths("node_modules", LOCK_FILE_PATH, CACHE_DIR)
+        let root_manifest = PackageManifest::read_default()?;
+        Self::init_from_paths("node_modules", LOCK_FILE_PATH, CACHE_DIR, &root_manifest)
     }
 
     pub(crate) fn init_from_paths<P, Q, R>(
         node_modules_path: P,
         lockfile_path: Q,
         cache_dir: R,
+        root_manifest: &PackageManifest,
     ) -> Result<Self, std::io::Error>
     where
         P: AsRef<Path>,
@@ -57,14 +130,91 @@ impl NodeModules {
     {
         let lock_file = LockFile::load_from_path(lockfile_path)
             .map_err(|error| phase_error("resolve", error))?;
-        Self::init_from_lockfile(node_modules_path, &lock_file, cache_dir)
+        Self::init_from_lockfile(node_modules_path, &lock_file, cache_dir, root_manifest)
     }
 
     pub(crate) fn init_from_lockfile<P, R>(
         node_modules_path: P,
         lock_file: &LockFile,
         cache_dir: R,
+        root_manifest: &PackageManifest,
     ) -> Result<Self, std::io::Error>
+    where
+        P: AsRef<Path>,
+        R: AsRef<Path>,
+    {
+        Self::prepare_from_lockfile(node_modules_path, lock_file, cache_dir, root_manifest)?
+            .publish()
+    }
+
+    pub(crate) fn prepare_from_lockfile<P, R>(
+        node_modules_path: P,
+        lock_file: &LockFile,
+        cache_dir: R,
+        root_manifest: &PackageManifest,
+    ) -> Result<PreparedNodeModules, std::io::Error>
+    where
+        P: AsRef<Path>,
+        R: AsRef<Path>,
+    {
+        Self::prepare_from_lockfile_with_root_lifecycle(
+            node_modules_path,
+            lock_file,
+            cache_dir,
+            root_manifest,
+            true,
+            true,
+        )
+    }
+
+    pub(crate) fn prepare_from_lockfile_without_lifecycle<P, R>(
+        node_modules_path: P,
+        lock_file: &LockFile,
+        cache_dir: R,
+        root_manifest: &PackageManifest,
+    ) -> Result<PreparedNodeModules, std::io::Error>
+    where
+        P: AsRef<Path>,
+        R: AsRef<Path>,
+    {
+        Self::prepare_from_lockfile_with_root_lifecycle(
+            node_modules_path,
+            lock_file,
+            cache_dir,
+            root_manifest,
+            false,
+            false,
+        )
+    }
+
+    pub(crate) fn prepare_from_lockfile_root_lifecycle_only<P, R>(
+        node_modules_path: P,
+        lock_file: &LockFile,
+        cache_dir: R,
+        root_manifest: &PackageManifest,
+    ) -> Result<PreparedNodeModules, std::io::Error>
+    where
+        P: AsRef<Path>,
+        R: AsRef<Path>,
+    {
+        Self::prepare_from_lockfile_with_root_lifecycle(
+            node_modules_path,
+            lock_file,
+            cache_dir,
+            root_manifest,
+            true,
+            false,
+        )
+    }
+
+    fn prepare_from_lockfile_with_root_lifecycle<P, R>(
+        node_modules_path: P,
+        lock_file: &LockFile,
+        cache_dir: R,
+        root_manifest: &PackageManifest,
+        run_root_lifecycle: bool,
+        run_package_lifecycle: bool,
+    ) -> Result<PreparedNodeModules, std::io::Error>
     where
         P: AsRef<Path>,
         R: AsRef<Path>,
@@ -76,14 +226,78 @@ impl NodeModules {
         }
         fs::create_dir_all(&staging_dir).map_err(|error| phase_error("write", error))?;
 
-        let result = Self::build_staged(&staging_dir, lock_file, cache_dir)
-            .and_then(|modules| replace_node_modules(dir, &staging_dir).map(|()| modules));
+        let packages = lock_file.get_packages();
+        let project_root = dir
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+
+        // The `scripts` phase runs between `link` and `write`
+        // (`docs/specs/core/install/scripts/SPEC.md`). A hook failure returns
+        // an error here so `replace_node_modules` is never reached: the staged
+        // tree is discarded below and the previous `node_modules` stays in
+        // place, preserving the recovery contract.
+        let result = if packages.is_empty() {
+            let result = Self::run_scripts(
+                project_root,
+                &staging_dir,
+                &packages,
+                root_manifest,
+                run_root_lifecycle,
+                run_package_lifecycle,
+            )
+            .map_err(|error| phase_error("scripts", error));
+            if result.is_ok() {
+                fs::remove_dir_all(&staging_dir)
+                    .map(|_| None)
+                    .map_err(|error| phase_error("write", error))
+            } else {
+                result.map(|_| None)
+            }
+        } else {
+            Self::build_staged(&staging_dir, lock_file, cache_dir)
+                .and_then(|_| {
+                    Self::run_scripts(
+                        project_root,
+                        &staging_dir,
+                        &packages,
+                        root_manifest,
+                        run_root_lifecycle,
+                        run_package_lifecycle,
+                    )
+                    .map_err(|error| phase_error("scripts", error))
+                })
+                .map(|_| Some(staging_dir.clone()))
+        };
 
         if result.is_err() {
             let _ = fs::remove_dir_all(&staging_dir);
         }
 
-        result.map(|_| Self::new(dir.to_path_buf()))
+        result.map(|staging| PreparedNodeModules {
+            target: dir.to_path_buf(),
+            staging,
+        })
+    }
+
+    fn run_scripts(
+        project_root: &Path,
+        staging_dir: &Path,
+        packages: &[(&String, &Dependency)],
+        root_manifest: &PackageManifest,
+        run_root_lifecycle: bool,
+        run_package_lifecycle: bool,
+    ) -> Result<(), std::io::Error> {
+        match (run_root_lifecycle, run_package_lifecycle) {
+            (true, true) => {
+                scripts::run_lifecycle_scripts(project_root, staging_dir, packages, root_manifest)
+            }
+            (true, false) => {
+                scripts::run_root_lifecycle_scripts(project_root, staging_dir, root_manifest)
+            }
+            (false, true) => scripts::run_package_lifecycle_scripts(staging_dir, packages),
+            (false, false) => Ok(()),
+        }
     }
 
     fn build_staged<P, R>(
@@ -126,6 +340,7 @@ impl NodeModules {
             let name = package_name_from_lock_key(key)?;
             let root = self.get_path();
             for dep_name in dependency.get_dependencies_name() {
+                validate_package_name(&dep_name, &dep_name)?;
                 let destination = root.join(name).join("node_modules").join(&dep_name);
                 let dest_node_modules = destination.parent().ok_or_else(|| {
                     Error::new(
@@ -203,6 +418,18 @@ impl NodeModules {
 }
 
 fn phase_error(phase: &str, error: std::io::Error) -> std::io::Error {
+    if let Some(status) = error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<LifecycleExitStatus>())
+    {
+        return Error::new(
+            error.kind(),
+            LifecycleExitStatus {
+                code: status.code,
+                message: format!("{phase} failed: {error}"),
+            },
+        );
+    }
     Error::new(error.kind(), format!("{phase} failed: {error}"))
 }
 
@@ -240,6 +467,13 @@ fn replace_node_modules(target: &Path, staging_dir: &Path) -> Result<(), std::io
         fs::rename(target, &backup_dir).map_err(|error| phase_error("write", error))?;
     }
 
+    if let Err(error) = validate_staging_for_publish(target, staging_dir) {
+        if backup_dir.exists() {
+            let _ = fs::rename(&backup_dir, target);
+        }
+        return Err(error);
+    }
+
     match fs::rename(staging_dir, target) {
         Ok(()) => {
             if backup_dir.exists() {
@@ -254,6 +488,39 @@ fn replace_node_modules(target: &Path, staging_dir: &Path) -> Result<(), std::io
             Err(phase_error("write", error))
         }
     }
+}
+
+fn validate_staging_for_publish(target: &Path, staging_dir: &Path) -> Result<(), std::io::Error> {
+    let staging_metadata =
+        fs::symlink_metadata(staging_dir).map_err(|error| phase_error("write", error))?;
+    if !staging_metadata.file_type().is_dir() || staging_metadata.file_type().is_symlink() {
+        return Err(phase_error(
+            "write",
+            Error::new(
+                ErrorKind::InvalidData,
+                "staging path is not a regular directory",
+            ),
+        ));
+    }
+
+    let target_parent = target
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let target_parent =
+        fs::canonicalize(target_parent).map_err(|error| phase_error("write", error))?;
+    let staging_parent =
+        fs::canonicalize(staging_dir).map_err(|error| phase_error("write", error))?;
+    if staging_parent.parent() != Some(target_parent.as_path()) {
+        return Err(phase_error(
+            "write",
+            Error::new(
+                ErrorKind::InvalidInput,
+                "staging path escapes node_modules parent",
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn dependency_link_target(parent_name: &str, dependency_name: &str) -> PathBuf {
@@ -470,10 +737,41 @@ fn normalize_within_root(root: &Path, target_file: &str) -> PathBuf {
 }
 
 fn package_name_from_lock_key(key: &str) -> Result<&str, std::io::Error> {
-    key.rsplit_once('@')
+    let name = key
+        .rsplit_once('@')
         .map(|(name, _version)| name)
         .filter(|name| !name.is_empty())
-        .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("invalid lock key: {key}")))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, format!("invalid lock key: {key}")))?;
+    validate_package_name(name, key)?;
+    Ok(name)
+}
+
+fn validate_package_name(name: &str, key: &str) -> Result<(), std::io::Error> {
+    let parts = name.split('/').collect::<Vec<_>>();
+    let valid_shape = match parts.as_slice() {
+        [unscoped] => !unscoped.is_empty() && !unscoped.starts_with('@'),
+        [scope, package] => scope.starts_with('@') && scope.len() > 1 && !package.is_empty(),
+        _ => false,
+    };
+    if !valid_shape
+        || name.contains('\\')
+        || Path::new(name).is_absolute()
+        || Path::new(name).components().any(|component| {
+            matches!(
+                component,
+                Component::CurDir
+                    | Component::ParentDir
+                    | Component::RootDir
+                    | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!("invalid package name in lock key: {key}"),
+        ));
+    }
+    Ok(())
 }
 
 struct NodeResolver {
@@ -637,6 +935,15 @@ mod tests {
         builder.into_inner().unwrap().finish().unwrap();
     }
 
+    /// Write a minimal root manifest with no lifecycle scripts at the temp
+    /// project root so `init_from_paths` can read it for the lifecycle
+    /// `scripts` phase without forcing every recovery test to opt in.
+    fn root_manifest(temp: &TempNodeModules) -> PackageManifest {
+        let path = temp.path.join("package.json");
+        fs::write(&path, r#"{"name":"fixture-app","version":"0.1.0"}"#).unwrap();
+        PackageManifest::read_from_path(path).unwrap()
+    }
+
     #[test]
     fn linking_points_dependency_to_actual_package() {
         let temp = TempNodeModules::new();
@@ -685,6 +992,20 @@ mod tests {
     }
 
     #[test]
+    fn linking_rejects_dependency_path_traversal() {
+        let temp = TempNodeModules::new();
+        let root = temp.node_modules();
+        fs::create_dir_all(root.join("a")).unwrap();
+        let node_modules = NodeModules::new(root);
+        let parent_key = "a@1.0.0".to_string();
+        let parent = dependency("1.0.0", &["../../outside@1.0.0"]);
+
+        let error = node_modules.linking(&[(&parent_key, &parent)]).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
     fn package_name_from_lock_key_handles_scoped_names() {
         assert_eq!(
             package_name_from_lock_key("@scope/pkg@1.2.3").unwrap(),
@@ -693,16 +1014,24 @@ mod tests {
     }
 
     #[test]
+    fn package_name_from_lock_key_rejects_path_traversal() {
+        assert!(package_name_from_lock_key("../../outside@1.0.0").is_err());
+        assert!(package_name_from_lock_key("a/../outside@1.0.0").is_err());
+    }
+
+    #[test]
     fn init_keeps_existing_node_modules_when_extract_fails() {
         let temp = TempNodeModules::new();
         let existing_file = temp.node_modules().join("keep.txt");
         fs::write(&existing_file, "existing").unwrap();
         write_lockfile(&temp.lockfile_path(), "a", &[]);
+        let root = root_manifest(&temp);
 
         let error = NodeModules::init_from_paths(
             temp.node_modules(),
             temp.lockfile_path(),
             temp.cache_dir(),
+            &root,
         )
         .unwrap_err();
 
@@ -716,16 +1045,16 @@ mod tests {
         let existing_file = temp.node_modules().join("keep.txt");
         fs::write(&existing_file, "existing").unwrap();
         fs::write(temp.lockfile_path(), "").unwrap();
+        let root = root_manifest(&temp);
 
-        let error = NodeModules::init_from_paths(
+        NodeModules::init_from_paths(
             temp.node_modules(),
             temp.lockfile_path(),
             temp.cache_dir(),
+            &root,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.to_string().contains("resolve failed"));
-        assert!(error.to_string().contains("lockfile has no packages"));
         assert_eq!(fs::read_to_string(existing_file).unwrap(), "existing");
     }
 
@@ -736,16 +1065,37 @@ mod tests {
         fs::write(&existing_file, "existing").unwrap();
         write_lockfile(&temp.lockfile_path(), "a", &["missing@1.0.0"]);
         write_package_tgz(&temp.cache_dir(), "a", "1.0.0");
+        let root = root_manifest(&temp);
 
         let error = NodeModules::init_from_paths(
             temp.node_modules(),
             temp.lockfile_path(),
             temp.cache_dir(),
+            &root,
         )
         .unwrap_err();
 
         assert!(error.to_string().contains("link failed"));
         assert_eq!(fs::read_to_string(existing_file).unwrap(), "existing");
+    }
+
+    #[test]
+    fn publish_rejects_symlinked_staging_path() {
+        let temp = TempNodeModules::new();
+        let outside = temp.path.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), "outside").unwrap();
+        let staging = temp.path.join(".node_modules.rpm-staging-test");
+        symlink(&outside, &staging).unwrap();
+
+        let error = replace_node_modules(&temp.node_modules(), &staging).unwrap_err();
+
+        assert!(error.to_string().contains("staging path"));
+        assert!(temp.node_modules().is_dir());
+        assert_eq!(
+            fs::read_to_string(outside.join("keep.txt")).unwrap(),
+            "outside"
+        );
     }
 
     #[test]
@@ -758,9 +1108,15 @@ mod tests {
         .unwrap();
         write_package_tgz(&temp.cache_dir(), "a", "1.0.0");
         write_package_tgz(&temp.cache_dir(), "b", "1.0.0");
+        let root = root_manifest(&temp);
 
-        NodeModules::init_from_paths(temp.node_modules(), temp.lockfile_path(), temp.cache_dir())
-            .unwrap();
+        NodeModules::init_from_paths(
+            temp.node_modules(),
+            temp.lockfile_path(),
+            temp.cache_dir(),
+            &root,
+        )
+        .unwrap();
 
         let link =
             fs::read_link(temp.node_modules().join("a").join("node_modules").join("b")).unwrap();

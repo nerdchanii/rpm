@@ -28,6 +28,7 @@ struct LockedInstallPackage {
     tarball: Option<String>,
     integrity: Option<String>,
     shasum: Option<String>,
+    scripts: Option<HashMap<String, String>>,
     dependencies: Vec<String>,
 }
 
@@ -97,9 +98,11 @@ where
 
     while let Some(request) = worklist.pop_front() {
         let package_name = request.package_name.clone();
-        if !metadata.has_locked_request(&package_name, &request.requested)
-            && !metadata.has_registry(&package_name)
-        {
+        let needs_registry_metadata = metadata
+            .locked_package_for_request(&package_name, &request.requested)
+            .map(|locked| locked.scripts.is_none())
+            .unwrap_or(true);
+        if needs_registry_metadata && !metadata.has_registry(&package_name) {
             let registry = fetch_registry(package_name.clone())
                 .await
                 .map_err(|error| phase_error("fetch", error))?;
@@ -157,6 +160,15 @@ async fn apply_resolved_graph(
                 .await
                 .map_err(download_error_to_phase)?;
             }
+            let scripts = match &locked_package.scripts {
+                Some(scripts) => Some(scripts.clone()),
+                None => Some(
+                    metadata
+                        .registry_io(&package.package_name)?
+                        .get_scripts_for_version(&locked_package.version)
+                        .unwrap_or_default(),
+                ),
+            };
             lockfile.add_dependency_entry(
                 &locked_package.key,
                 locked_package.package_name.clone(),
@@ -166,6 +178,7 @@ async fn apply_resolved_graph(
                 locked_package.tarball.clone(),
                 locked_package.integrity.clone(),
                 locked_package.shasum.clone(),
+                scripts,
                 &locked_package.dependencies,
             );
         } else {
@@ -192,6 +205,7 @@ async fn apply_resolved_graph(
                 dist.map(|dist| dist.tarball.clone()),
                 dist.and_then(|dist| dist.integrity.clone()),
                 dist.and_then(|dist| dist.shasum.clone()),
+                registry.get_scripts_for_version(&package.version),
                 &dependencies,
             );
         }
@@ -326,6 +340,7 @@ impl InstallMetadata {
                 tarball: dependency.get_tarball(),
                 integrity: dependency.get_integrity(),
                 shasum: dependency.get_shasum(),
+                scripts: dependency.get_scripts(),
                 dependencies: dependency.get_dependencies(),
             };
             metadata.locked_by_request.insert(
@@ -347,11 +362,6 @@ impl InstallMetadata {
 
     fn has_registry(&self, package_name: &str) -> bool {
         self.registries.contains_key(package_name)
-    }
-
-    fn has_locked_request(&self, package_name: &str, requested: &str) -> bool {
-        self.locked_by_request
-            .contains_key(&(package_name.to_string(), requested.to_string()))
     }
 
     fn locked_package_for_request(
@@ -869,6 +879,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &[],
         );
         let metadata = InstallMetadata::from_lockfile(&lockfile);
@@ -895,6 +906,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             &[],
         );
         assert_eq!(
@@ -913,6 +925,7 @@ mod tests {
 
     #[test]
     fn add_uses_existing_lockfile_records_before_registry_selection() {
+        let _guard = TestEnvLock::acquire().unwrap();
         let fixture_root = fixture_path(&["install-projects", "lockfile-reproducible"]);
         let mut package_manifest =
             PackageManifest::read_from_path(fixture_root.join("package.json")).unwrap();
@@ -923,6 +936,7 @@ mod tests {
             .into_iter()
             .map(|(library_name, version)| format!("{library_name}@{version}"))
             .collect::<Vec<_>>();
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
 
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -953,6 +967,48 @@ mod tests {
         assert_eq!(child.0, "@rpm-fixture/locked-child@1.0.0");
         assert_eq!(child.1.get_version(), "1.0.0");
         assert!(child.1.get_dependencies().is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_hydrates_scripts_for_legacy_lockfile_entries() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lockfile-reproducible"]);
+        let mut package_manifest =
+            PackageManifest::read_from_path(fixture_root.join("package.json")).unwrap();
+        let mut lockfile =
+            LockFile::load_from_path(fixture_root.join("rpm-without-tarballs.lock")).unwrap();
+        let libs = package_manifest
+            .get_dependencies()
+            .into_iter()
+            .map(|(library_name, version)| format!("{library_name}@{version}"))
+            .collect::<Vec<_>>();
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        let cache_dir =
+            std::env::temp_dir().join(format!("rpm-legacy-lock-cache-{}", std::process::id()));
+
+        add_with_cache_dir(
+            &mut package_manifest,
+            &mut lockfile,
+            libs,
+            false,
+            false,
+            &cache_dir,
+        )
+        .await
+        .unwrap();
+        let _ = fs::remove_dir_all(cache_dir);
+
+        assert_eq!(
+            lockfile
+                .get_dependency("@rpm-fixture/locked-parent@1.0.0")
+                .and_then(|dependency| dependency.get_scripts())
+                .and_then(|scripts| scripts.get("preinstall").cloned()),
+            Some("echo legacy-preinstall-ran > legacy-preinstall-proof.txt".to_string())
+        );
+        assert!(lockfile
+            .get_dependency("@rpm-fixture/locked-child@1.0.0")
+            .and_then(|dependency| dependency.get_scripts())
+            .is_some_and(|scripts| scripts.is_empty()));
     }
 
     #[test]

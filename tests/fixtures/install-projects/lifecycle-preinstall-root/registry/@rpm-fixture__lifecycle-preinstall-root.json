@@ -1,0 +1,21 @@
+{
+  "_id": "@rpm-fixture/lifecycle-preinstall-root",
+  "name": "@rpm-fixture/lifecycle-preinstall-root",
+  "description": "Fixture package lifecycle-preinstall-root",
+  "maintainers": [],
+  "dist-tags": {
+    "latest": "1.0.0"
+  },
+  "versions": {
+    "1.0.0": {
+      "name": "@rpm-fixture/lifecycle-preinstall-root",
+      "version": "1.0.0",
+      "description": "Fixture package lifecycle-preinstall-root",
+      "dist": {
+        "tarball": "https://registry.example.invalid/@rpm-fixture/lifecycle-preinstall-root/-/lifecycle-preinstall-root-1.0.0.tgz",
+        "shasum": "fixture-lifecycle-preinstall-root-1.0.0"
+      },
+      "dependencies": {}
+    }
+  }
+}

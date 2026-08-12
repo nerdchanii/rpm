@@ -1,0 +1,1 @@
+@rpm-fixture/lifecycle-preinstall-wrong-type@1.0.0 requested 1.0.0

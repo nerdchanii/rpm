@@ -11,6 +11,7 @@ pub mod node_linker;
 pub mod package_manifest;
 pub mod parser;
 pub mod registry;
+pub mod script_runner;
 pub mod util;
 
 pub use cli::opt;

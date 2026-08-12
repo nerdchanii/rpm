@@ -51,7 +51,60 @@ async fn install_in(project_root: &Path) -> std::io::Result<()> {
     )
     .await?;
 
-    let mut backups = backup_install_state(&[&lockfile_path, &package_path])?;
+    let state_paths: [&Path; 2] = [&lockfile_path, &package_path];
+    let snapshots = capture_install_state(&state_paths)?;
+    let mut prepared = match NodeModules::prepare_from_lockfile_root_lifecycle_only(
+        &node_modules_path,
+        &lockfile,
+        &cache_dir,
+        &package_manifest,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => return Err(restore_snapshot_after(&state_paths, &snapshots, error)),
+    };
+    let package_changed = state_changed(&package_path, &snapshots[1])
+        .map_err(|error| restore_snapshot_after(&state_paths, &snapshots, error))?;
+    let package_manifest_after_hook = if package_changed {
+        Some(
+            PackageManifest::read_from_path(&package_path)
+                .map_err(|error| restore_snapshot_after(&state_paths, &snapshots, error))?,
+        )
+    } else {
+        None
+    };
+    let lockfile_changed = state_changed(&lockfile_path, &snapshots[0])
+        .map_err(|error| restore_snapshot_after(&state_paths, &snapshots, error))?;
+    let lockfile_after_hook = if lockfile_changed {
+        Some(
+            LockFile::load_from_path(&lockfile_path)
+                .map_err(|error| restore_snapshot_after(&state_paths, &snapshots, error))?,
+        )
+    } else {
+        None
+    };
+    if let Some(package_manifest_after_hook) = package_manifest_after_hook {
+        package_manifest = package_manifest_after_hook;
+    }
+    if let Some(mut lockfile_after_hook) = lockfile_after_hook {
+        merge_generated_packages(&mut lockfile_after_hook, &lockfile);
+        lockfile = lockfile_after_hook;
+    }
+    if package_changed || lockfile_changed {
+        prepared = NodeModules::prepare_from_lockfile_without_lifecycle(
+            &node_modules_path,
+            &lockfile,
+            &cache_dir,
+            &package_manifest,
+        )
+        .map_err(|error| restore_snapshot_after(&state_paths, &snapshots, error))?;
+    }
+    prepared
+        .run_package_lifecycle_scripts(&lockfile)
+        .map_err(|error| restore_snapshot_after(&state_paths, &snapshots, error))?;
+    let mut backups = match backup_install_state(&state_paths) {
+        Ok(backups) => backups,
+        Err(error) => return Err(restore_snapshot_after(&state_paths, &snapshots, error)),
+    };
     if let Err(error) = lockfile.save_to_path(&lockfile_path) {
         return Err(restore_after(&mut backups, error));
     }
@@ -61,11 +114,7 @@ async fn install_in(project_root: &Path) -> std::io::Result<()> {
     if let Err(error) = restore_state_permissions(&backups) {
         return Err(restore_after(&mut backups, error));
     }
-    let output_result = if lockfile.get_packages().is_empty() {
-        Ok(())
-    } else {
-        NodeModules::init_from_lockfile(&node_modules_path, &lockfile, &cache_dir).map(|_| ())
-    };
+    let output_result = prepared.publish().map(|_| ());
 
     if let Err(error) = output_result {
         return Err(restore_after(&mut backups, error));
@@ -80,6 +129,71 @@ struct StateBackup {
     permissions: Option<fs::Permissions>,
 }
 
+struct StateSnapshot {
+    contents: Option<Vec<u8>>,
+    permissions: Option<fs::Permissions>,
+}
+
+fn capture_install_state(paths: &[&Path]) -> io::Result<Vec<StateSnapshot>> {
+    paths
+        .iter()
+        .map(|path| {
+            let metadata = match fs::symlink_metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    return Ok(StateSnapshot {
+                        contents: None,
+                        permissions: None,
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            if !metadata.file_type().is_file() {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "install state path {} is not a regular file",
+                        path.display()
+                    ),
+                ));
+            }
+            if metadata.permissions().readonly() {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    format!("{} is read-only", path.display()),
+                ));
+            }
+            Ok(StateSnapshot {
+                contents: Some(fs::read(path)?),
+                permissions: Some(metadata.permissions()),
+            })
+        })
+        .collect()
+}
+
+fn state_changed(path: &Path, snapshot: &StateSnapshot) -> io::Result<bool> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(snapshot.contents.is_some());
+        }
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "install state path {} is not a regular file",
+                path.display()
+            ),
+        ));
+    }
+    Ok(match &snapshot.contents {
+        Some(before) => before != &fs::read(path)?,
+        None => true,
+    })
+}
+
 fn backup_install_state(paths: &[&Path]) -> io::Result<Vec<StateBackup>> {
     let mut backups = Vec::new();
     for final_path in paths {
@@ -87,32 +201,48 @@ fn backup_install_state(paths: &[&Path]) -> io::Result<Vec<StateBackup>> {
         if backup_path.exists() {
             remove_path(&backup_path)?;
         }
-        if final_path.exists() {
-            let permissions = fs::metadata(final_path)?.permissions();
-            if permissions.readonly() {
-                return Err(restore_after(
-                    &mut backups,
-                    Error::new(
-                        ErrorKind::PermissionDenied,
-                        format!("install state file {} is read-only", final_path.display()),
+        let metadata = match fs::symlink_metadata(final_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                backups.push(StateBackup {
+                    final_path: final_path.to_path_buf(),
+                    backup_path: None,
+                    permissions: None,
+                });
+                continue;
+            }
+            Err(error) => return Err(restore_after(&mut backups, error)),
+        };
+        if !metadata.file_type().is_file() {
+            return Err(restore_after(
+                &mut backups,
+                Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "install state path {} is not a regular file",
+                        final_path.display()
                     ),
-                ));
-            }
-            if let Err(error) = fs::rename(final_path, &backup_path) {
-                return Err(restore_after(&mut backups, error));
-            }
-            backups.push(StateBackup {
-                final_path: final_path.to_path_buf(),
-                backup_path: Some(backup_path),
-                permissions: Some(permissions),
-            });
-        } else {
-            backups.push(StateBackup {
-                final_path: final_path.to_path_buf(),
-                backup_path: None,
-                permissions: None,
-            });
+                ),
+            ));
         }
+        let permissions = metadata.permissions();
+        if permissions.readonly() {
+            return Err(restore_after(
+                &mut backups,
+                Error::new(
+                    ErrorKind::PermissionDenied,
+                    format!("install state file {} is read-only", final_path.display()),
+                ),
+            ));
+        }
+        if let Err(error) = fs::rename(final_path, &backup_path) {
+            return Err(restore_after(&mut backups, error));
+        }
+        backups.push(StateBackup {
+            final_path: final_path.to_path_buf(),
+            backup_path: Some(backup_path),
+            permissions: Some(permissions),
+        });
     }
     Ok(backups)
 }
@@ -137,8 +267,8 @@ fn restore_state_permissions(backups: &[StateBackup]) -> io::Result<()> {
 fn restore_after(backups: &mut [StateBackup], error: io::Error) -> io::Error {
     match restore_install_state(backups) {
         Ok(()) => error,
-        Err(restore_error) => Error::new(
-            error.kind(),
+        Err(restore_error) => crate::node_linker::lifecycle_error_with_message(
+            &error,
             format!("{error}; additionally failed to restore install state: {restore_error}"),
         ),
     }
@@ -162,6 +292,73 @@ fn restore_install_state(backups: &mut [StateBackup]) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn restore_snapshot_after(
+    paths: &[&Path],
+    snapshots: &[StateSnapshot],
+    error: io::Error,
+) -> io::Error {
+    match restore_snapshots(paths, snapshots) {
+        Ok(()) => error,
+        Err(restore_error) => crate::node_linker::lifecycle_error_with_message(
+            &error,
+            format!("{error}; additionally failed to restore install state: {restore_error}"),
+        ),
+    }
+}
+
+fn restore_snapshots(paths: &[&Path], snapshots: &[StateSnapshot]) -> io::Result<()> {
+    for (path, snapshot) in paths.iter().zip(snapshots) {
+        if let Ok(metadata) = fs::symlink_metadata(path) {
+            if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+                let quarantine_path = sibling_state_path(path, "hook-conflict");
+                fs::rename(path, &quarantine_path).map_err(|error| {
+                    Error::new(
+                        error.kind(),
+                        format!(
+                            "failed to quarantine hook-created directory {}: {error}",
+                            path.display()
+                        ),
+                    )
+                })?;
+            } else {
+                remove_path(path)?;
+            }
+        }
+        if let Some(contents) = &snapshot.contents {
+            fs::write(path, contents)?;
+            if let Some(permissions) = &snapshot.permissions {
+                fs::set_permissions(path, permissions.clone())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn merge_generated_packages(hooked: &mut LockFile, generated: &LockFile) {
+    for (key, dependency) in generated.get_packages() {
+        if hooked.get_dependency(key).is_some() {
+            continue;
+        }
+        let package_name = key
+            .rsplit_once('@')
+            .map(|(name, _)| name)
+            .unwrap_or(key)
+            .to_owned();
+        hooked.add_dependency_entry(
+            key,
+            package_name,
+            dependency.get_requested(),
+            dependency.get_version(),
+            dependency.get_relationship(),
+            dependency.get_tarball(),
+            dependency.get_integrity(),
+            dependency.get_shasum(),
+            dependency.get_scripts(),
+            &dependency.get_dependencies(),
+        );
+    }
 }
 
 fn commit_install_state(backups: Vec<StateBackup>) -> io::Result<()> {
@@ -194,7 +391,8 @@ fn unique_suffix() -> String {
 }
 
 fn remove_path(path: &Path) -> io::Result<()> {
-    if path.is_dir() {
+    let file_type = fs::symlink_metadata(path)?.file_type();
+    if file_type.is_dir() && !file_type.is_symlink() {
         fs::remove_dir_all(path)
     } else {
         fs::remove_file(path)
@@ -203,7 +401,7 @@ fn remove_path(path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::install_in;
+    use super::{backup_install_state, capture_install_state, install_in, restore_snapshot_after};
     use crate::{
         command::working_process::run::run_script,
         lockfile::{LockFile, Relationship},
@@ -214,6 +412,7 @@ mod tests {
         collections::BTreeMap,
         ffi::OsString,
         fs, io,
+        os::unix::fs::symlink,
         os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
         thread,
@@ -529,6 +728,399 @@ mod tests {
         let package = PackageManifest::read_from_path(&package_path).unwrap();
         let status = run_script("missing", &package, project_root).unwrap();
         assert_ne!(status, 0);
+    }
+
+    // Issue #142: lifecycle `scripts` phase. The install pipeline runs the
+    // `preinstall` hook between `link` and `write`. A successful hook runs in
+    // the resolved package directory; a failing hook fails the `scripts` phase
+    // with a labeled error, discards the staged tree, and leaves the previous
+    // `node_modules`, `rpm.lock`, and `package.json` unchanged.
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_runs_for_resolved_package() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-success"]);
+        let project = TempProject::new("lifecycle-preinstall-success").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        install_in(project_root).await.unwrap();
+
+        // The resolved package's `preinstall` hook wrote a proof file inside
+        // its installed package directory during the `scripts` phase.
+        let proof = project_root
+            .join("node_modules")
+            .join("@rpm-fixture")
+            .join("lifecycle-preinstall-success")
+            .join("preinstall-proof.txt");
+        assert_eq!(
+            fs::read_to_string(&proof)
+                .unwrap_or_else(|error| panic!("preinstall proof should exist: {error}")),
+            "preinstall-ran\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_runs_for_root_without_dependencies() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-root"]);
+        let project = TempProject::new("lifecycle-preinstall-root-only").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        fs::write(
+            &package_path,
+            r#"{"name":"root-only","version":"0.0.0","scripts":{"preinstall":"echo root-only-ran > root-only-proof.txt"}}"#,
+        )
+        .unwrap();
+
+        install_in(project_root).await.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(project_root.join("root-only-proof.txt")).unwrap(),
+            "root-only-ran\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_failure_preserves_existing_install_state() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-failure"]);
+        let project = TempProject::new("lifecycle-preinstall-failure").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let existing_file = project_root.join("node_modules").join("keep.txt");
+        fs::create_dir_all(existing_file.parent().unwrap()).unwrap();
+        fs::write(&existing_file, "existing node_modules content").unwrap();
+        let original_package = fs::read(&package_path).unwrap();
+        let lock_path = project_root.join("rpm.lock");
+        fs::write(
+            &lock_path,
+            "lockfile_version = 1\nname = \"previous\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let original_lock = fs::read(&lock_path).unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        let error = install_in(project_root).await.unwrap_err();
+
+        assert_expected_error(&fixture_root, &error);
+        // A failed `scripts` phase must not publish partial install state: the
+        // previous `node_modules` and the root manifest stay unchanged.
+        assert_eq!(fs::read(&package_path).unwrap(), original_package);
+        assert_eq!(fs::read(&lock_path).unwrap(), original_lock);
+        assert_eq!(
+            fs::read_to_string(&existing_file).unwrap(),
+            "existing node_modules content"
+        );
+    }
+
+    #[test]
+    fn rollback_does_not_follow_hook_created_state_symlinks() {
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-root"]);
+        let project = TempProject::new("install-state-symlink-rollback").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let target_path = package_path.with_file_name("outside-target");
+        let original_package = fs::read(&package_path).unwrap();
+        fs::write(&target_path, "outside-target").unwrap();
+        let paths: [&Path; 1] = [&package_path];
+        let snapshots = capture_install_state(&paths).unwrap();
+
+        fs::remove_file(&package_path).unwrap();
+        symlink(&target_path, &package_path).unwrap();
+        let error = io::Error::other("hook failed");
+        let restored = restore_snapshot_after(&paths, &snapshots, error);
+
+        assert_eq!(restored.to_string(), "hook failed");
+        assert_eq!(fs::read(&package_path).unwrap(), original_package);
+        assert_eq!(fs::read_to_string(&target_path).unwrap(), "outside-target");
+    }
+
+    #[test]
+    fn backup_rejects_hook_created_state_symlinks() {
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-root"]);
+        let project = TempProject::new("install-state-symlink-backup").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let target_path = package_path.with_file_name("outside-target");
+        fs::write(&target_path, "outside-target").unwrap();
+        fs::remove_file(&package_path).unwrap();
+        symlink(&target_path, &package_path).unwrap();
+
+        let error = match backup_install_state(&[&package_path]) {
+            Ok(_) => panic!("hook-created state symlink must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(fs::read_to_string(&target_path).unwrap(), "outside-target");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_missing_command_fails_scripts_phase() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root =
+            fixture_path(&["install-projects", "lifecycle-preinstall-missing-command"]);
+        let project = TempProject::new("lifecycle-preinstall-missing-command").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let existing_file = project_root.join("node_modules").join("keep.txt");
+        fs::create_dir_all(existing_file.parent().unwrap()).unwrap();
+        fs::write(&existing_file, "existing node_modules content").unwrap();
+        let original_package = fs::read(&package_path).unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        let error = install_in(project_root).await.unwrap_err();
+
+        assert_expected_error(&fixture_root, &error);
+        assert_eq!(fs::read(&package_path).unwrap(), original_package);
+        assert_eq!(
+            fs::read_to_string(&existing_file).unwrap(),
+            "existing node_modules content"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_wrong_type_does_not_fail_install() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-wrong-type"]);
+        let project = TempProject::new("lifecycle-preinstall-wrong-type").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        // A wrong-type `scripts` value is discarded as absent by the manifest
+        // deserializer, so the install completes normally.
+        install_in(project_root).await.unwrap();
+
+        let node_modules = project_root.join("node_modules");
+        assert!(node_modules
+            .join("@rpm-fixture")
+            .join("lifecycle-preinstall-wrong-type")
+            .join("package.json")
+            .is_file());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_runs_for_root_manifest() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-root"]);
+        let project = TempProject::new("lifecycle-preinstall-root").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        install_in(project_root).await.unwrap();
+
+        // The root manifest's `preinstall` hook ran with the project root as
+        // its working directory.
+        assert_eq!(
+            fs::read_to_string(project_root.join("root-preinstall-proof.txt")).unwrap(),
+            "root-preinstall-ran\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_preserves_root_state_mutations() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-root"]);
+        let project = TempProject::new("lifecycle-preinstall-state-mutation").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        fs::write(
+            &package_path,
+            r##"{"name":"lifecycle-preinstall-root","version":"0.0.0","scripts":{"preinstall":"printf '%s' '{\"name\":\"hook-mutated\",\"version\":\"9.9.9\"}' > package.json && printf '%s\\n' 'lockfile_version = 1' 'name = \"hook-lock\"' 'version = \"9.9.9\"' > rpm.lock"},"dependencies":{"@rpm-fixture/lifecycle-preinstall-root":"1.0.0"}}"##,
+        )
+        .unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        install_in(project_root).await.unwrap();
+
+        let package = PackageManifest::read_from_path(&package_path).unwrap();
+        assert_eq!(package.get_name(), "hook-mutated");
+        let lockfile = fs::read_to_string(project_root.join("rpm.lock")).unwrap();
+        assert!(lockfile.contains("name = \"hook-lock\""));
+        assert!(lockfile.contains("@rpm-fixture/lifecycle-preinstall-root@1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_package_hook_runs_once_after_root_state_reconciliation() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-success"]);
+        let project = TempProject::new("install-hook-ordering").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        fs::write(
+            &package_path,
+            r##"{"name":"hook-ordering","version":"0.0.0","scripts":{"preinstall":"printf '%s' '{\"name\":\"hook-ordering-reconciled\",\"version\":\"0.0.0\",\"dependencies\":{\"@rpm-fixture/lifecycle-preinstall-success\":\"1.0.0\"}}' > package.json"},"dependencies":{"@rpm-fixture/lifecycle-preinstall-success":"1.0.0"}}"##,
+        )
+        .unwrap();
+
+        let registry_root = project_root.join("registry");
+        fs::create_dir_all(registry_root.join("tarballs")).unwrap();
+        let registry_fixture =
+            fixture_root.join("registry/@rpm-fixture__lifecycle-preinstall-success.json");
+        let registry_body = fs::read_to_string(registry_fixture).unwrap().replace(
+            "echo preinstall-ran > preinstall-proof.txt",
+            "printf x >> ../../../package-hook-count.txt && printf x > final-hook-proof.txt",
+        );
+        fs::write(
+            registry_root.join("@rpm-fixture__lifecycle-preinstall-success.json"),
+            registry_body,
+        )
+        .unwrap();
+        fs::copy(
+            fixture_root.join("registry/tarballs/@rpm-fixture__lifecycle-preinstall-success.json"),
+            registry_root.join("tarballs/@rpm-fixture__lifecycle-preinstall-success.json"),
+        )
+        .unwrap();
+
+        let _env = FixtureInstallEnv::new(&registry_root);
+        install_in(project_root).await.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(project_root.join("package-hook-count.txt")).unwrap(),
+            "x"
+        );
+        assert_eq!(
+            fs::read_to_string(project_root.join(
+                "node_modules/@rpm-fixture/lifecycle-preinstall-success/final-hook-proof.txt",
+            ),)
+            .unwrap(),
+            "x"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_failure_restores_state_when_hook_replaces_file_with_directory() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-root"]);
+        let project = TempProject::new("install-hook-directory-conflict").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        let original = fs::read(&package_path).unwrap();
+        fs::write(
+            &package_path,
+            r#"{"name":"directory-conflict","version":"0.0.0","scripts":{"preinstall":"rm package.json && mkdir package.json && exit 9"}}"#,
+        )
+        .unwrap();
+        let expected = fs::read(&package_path).unwrap();
+
+        let error = install_in(project_root).await.unwrap_err();
+
+        assert_eq!(crate::node_linker::lifecycle_exit_status(&error), Some(9));
+        assert_eq!(fs::read(&package_path).unwrap(), expected);
+        assert!(fs::read_dir(project_root)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".package.json.rpm-hook-conflict-")));
+        assert_ne!(expected, original);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_preinstall_failure_restores_permissions_changed_by_hook() {
+        let project = TempProject::new("install-state-permissions").unwrap();
+        let package_path = project
+            .copy_fixture(
+                fixture_path(&["install-projects", "lifecycle-preinstall-root"])
+                    .join("package.json"),
+                "package.json",
+            )
+            .unwrap();
+        fs::write(
+            &package_path,
+            r#"{"name":"permission-rollback","version":"0.0.0","scripts":{"preinstall":"chmod 0444 package.json"}}"#,
+        )
+        .unwrap();
+        let original = fs::read(&package_path).unwrap();
+        let original_permissions = fs::metadata(&package_path).unwrap().permissions();
+
+        let error = install_in(package_path.parent().unwrap())
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("read-only"));
+        assert_eq!(fs::read(&package_path).unwrap(), original);
+        assert_eq!(
+            fs::metadata(&package_path).unwrap().permissions(),
+            original_permissions
+        );
+    }
+
+    #[tokio::test]
+    async fn install_rebuilds_staging_after_root_lockfile_mutation() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lockfile-reproducible"]);
+        let project = TempProject::new("install-root-lockfile-mutation").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        project
+            .copy_fixture(fixture_root.join("rpm.lock"), "rpm.lock")
+            .unwrap();
+        fs::write(
+            &package_path,
+            r##"{"name":"lockfile-rewrite","version":"0.0.0","scripts":{"preinstall":"printf '%s\\n' 'lockfile_version = 1' 'name = \"lockfile-rewrite\"' 'version = \"0.0.0\"' '' '[\"@rpm-fixture/locked-parent@1.0.0\"]' 'name = \"@rpm-fixture/locked-parent\"' 'requested = \"^1.0.0\"' 'version = \"1.0.0\"' 'relationship = \"direct\"' 'dependencies = []' '' '[\"@rpm-fixture/locked-child@1.0.0\"]' 'name = \"@rpm-fixture/locked-child\"' 'requested = \"^1.0.0\"' 'version = \"1.0.0\"' 'relationship = \"transitive\"' 'dependencies = []' > rpm.lock"},"dependencies":{"@rpm-fixture/locked-parent":"^1.0.0"}}"##,
+        )
+        .unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        install_in(project_root).await.unwrap();
+
+        assert!(!project_root
+            .join("node_modules/@rpm-fixture/locked-parent/node_modules/@rpm-fixture/locked-child")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn install_runs_preinstall_from_hydrated_legacy_lockfile_metadata() {
+        let _guard = TestEnvLock::acquire().unwrap();
+        let fixture_root = fixture_path(&["install-projects", "lockfile-reproducible"]);
+        let project = TempProject::new("install-legacy-lifecycle").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let project_root = package_path.parent().unwrap();
+        project
+            .copy_fixture(fixture_root.join("rpm.lock"), "rpm.lock")
+            .unwrap();
+
+        let _env = FixtureInstallEnv::new(&fixture_root.join("registry"));
+        install_in(project_root).await.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(
+                project_root
+                    .join("node_modules/@rpm-fixture/locked-parent/legacy-preinstall-proof.txt")
+            )
+            .unwrap(),
+            "legacy-preinstall-ran\n"
+        );
     }
 
     fn assert_expected_error(fixture_root: &Path, error: &io::Error) {
