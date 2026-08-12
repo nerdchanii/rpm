@@ -177,3 +177,105 @@ Findings:
   phase with failure-safe install state, (7) #143 `rpm run` PATH verification.
   Lifecycle behavior is kept separable from linker behavior throughout so
   #139/#140 can land without forcing #141/#142, and vice versa.
+## M8 Ownership and Gap Audit
+
+The M8 audit maps each CLI diagnostics, exit-code, stdout/stderr, config, and
+CI-friendly install behavior area to its owning SPEC/ADR and records whether the
+contract is explicitly stated. M8 is a user-facing CLI stability milestone: it
+must convert internal failure classes into stable command behavior — diagnostic
+envelope, exit-code mapping, channel ownership, config precedence, and
+frozen/lockfile-only install modes — before command expansion such as `remove`
+or `update`, because those commands need stable stdout/stderr ownership, exit
+codes, configuration precedence, and lockfile mutation policy before they can be
+implemented safely. It must not fold workspace implementation, raw performance
+concurrency claims, release packaging, or new package-manager semantics into
+diagnostics work. Every gap below is assigned to an owning SPEC and a follow-up
+ticket so the diagnostic and install-mode surface becomes SPEC-owned *before*
+implementation, satisfying the M8 exit criteria.
+
+Today the public diagnostics surface is an ad hoc convention, not a contract.
+`rpm` exits through `std::process::ExitCode`: RPM-generated command outcomes
+currently collapse to `0`/`1`, while `rpm run` preserves the child process
+status through `std::process::exit(status)`; StructOpt owns parser-generated
+help, version, and argument-error exits and their output channels. ADR 0002
+assigns terminal presentation and exit-code mapping to the CLI and requires
+resolver/core code to remain callable without terminal I/O. Core progress paths
+include `src/lib/command/working_process/add.rs`, `src/lib/node_linker/mod.rs`,
+and `src/lib/package_manifest/mod.rs`; `src/lib/command/working_process/run.rs`
+prints `Running script`, while `src/main.rs` emits install/timing output and
+errors at the CLI boundary. Failure classes are typed internally — `ResolutionError`
+distinguishes missing metadata, version selection, invalid declarations,
+missing parents, and npm alias rejection (`docs/specs/core/resolver/SPEC.md`) —
+but installer phase failures are formatted `io::Error` prose from `phase_error`,
+not a typed enum (`src/lib/command/working_process/add.rs`,
+`src/lib/node_linker/mod.rs`). The direct core/library output is an existing
+ADR 0002 boundary violation. No contract maps these classes to stable
+diagnostic categories or channel ownership; this audit records that absence as
+intentional deferral and assigns each gap an owner rather than treating it as
+implicit scope.
+
+| M8 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
+| --- | --- | --- | --- |
+| diagnostic envelope and category taxonomy | ADR 0002 (CLI/core presentation boundary); `cli/run/SPEC.md` owns only `rpm run` output; resolver owns typed internal failure classes while recovery owns phase labels | absent: there is no cross-command diagnostic envelope, category taxonomy, or stable human-output shape; `ResolutionError` variants are typed, while installer phase failures remain formatted `io::Error` prose | #151 |
+| exit-code matrix | ADR 0002 and `src/main.rs` own CLI presentation: RPM-generated `0`/`1` outcomes and `rpm run` child-status passthrough; StructOpt owns parser help/version/error exits and channels | absent: no SPEC maps resolver failure classes or installer phase failures (including `integrity`) to stable non-zero exit codes beyond the current binary outcomes | #151 |
+| stdout/stderr channel ownership | ADR 0002 owns the CLI/core boundary; core progress paths are `working_process/add.rs`, `node_linker/mod.rs`, and `package_manifest/mod.rs`; `working_process/run.rs` prints `Running script`; `src/main.rs` emits install/timing and errors; StructOpt owns parser output channels | absent as a cross-command contract: no SPEC states which human output belongs on stdout, which diagnostics go to stderr, or how machine-readable output is separated; direct core/library output is an existing ADR 0002 boundary violation | #151 |
+| golden output fixture policy | none today; resolver and recovery SPECs list offline fixtures for behavior but not output wording | absent: no SPEC states how golden stdout/stderr snapshots are pinned (full-text vs information-only assertions), so future stabilization risks freezing unstable prose; the resolver peer-diagnostic "wording-not-frozen" policy is the only precedent and is explicitly superseded once this exists | #151 |
+| machine-readable output (JSON or otherwise) | none today | explicitly deferred: no SPEC owns whether/when machine-readable output is added; resolver and peer-diagnostic contracts gate all structured output on "an owning diagnostics SPEC" existing first, so this audit records the dependency rather than introducing a shape | #151 |
+| resolver failure diagnostics | `resolver/SPEC.md` (typed internal classes), `cli/run/SPEC.md` (run only) | partially owned internally: `ResolutionError` already distinguishes missing metadata, version selection, invalid declarations, missing parents, and npm alias rejection, and the SPEC requires failures stay typed enough to distinguish them; what is unowned is the stable human-readable mapping and exit code for each | #151 (envelope), then #152 (implementation) |
+| installer phase failure diagnostics | `install/recovery/SPEC.md` (phase labels and side effects `resolve|fetch|extract|link|scripts|write`), `install/performance/SPEC.md` and `registry/SPEC.md` (integrity verification/error behavior), `install/cache/SPEC.md` (cache failure context) | partially owned internally: recovery contracts the phase labels and side effects, while performance and registry contracts own integrity verification/error behavior; what is unowned is the stable diagnostic envelope and exit-code mapping, with #154 assigned the structured installer error implementation | #151 (envelope), then #154 (structured error implementation) |
+| config file discovery | none today; no config file is read by any command | absent: no SPEC owns whether RPM reads a config file, where it is discovered (project-local, user-global), or how discovery interacts with the manifest and lockfile; `manifest/SPEC.md` owns `package.json` but declares no RPM config field | #153 |
+| environment variable precedence | none today; the only `RPM_*` variable is `RPM_REGISTRY_FIXTURE_ROOT`, which is test-only (`#[cfg(test)]`-gated in the fake registry API) and is not a public config surface | absent: no SPEC owns which environment variables are public, how they rank against a config file and command-line flags, or how invalid values fail; the test-only fixture root is explicitly not a config contract | #153 |
+| supported config keys and invalid-value behavior | none today | absent: no SPEC lists supported config keys or defines whether unsupported keys and invalid values fail or warn; config must not be added before each key has owning behavior in install/cache/recovery/diagnostics SPECs | #153 |
+| frozen install mode | none today; `install()` always re-resolves from `package.json` against `rpm.lock` (`src/lib/command/working_process/install.rs`); there is no `--frozen` flag or lockfile-as-authority policy | absent: no SPEC owns a mode where install refuses to mutate `rpm.lock` or `package.json` and fails on drift between manifest and lockfile, which CI reproducibility requires | #155 |
+| lockfile-only install mode | none today; there is no mode that installs strictly from `rpm.lock` without consulting `package.json` ranges | absent: no SPEC owns a mode where the lockfile is the sole dependency authority and manifest ranges are not re-resolved | #155 |
+| lockfile mutation policy per mode | `lockfile/SPEC.md` (v1 format and save contract), `install/recovery/SPEC.md` (backup/restore on write) | owned for the default path: saving writes the complete lockfile with backup/restore; what is unowned is how frozen and lockfile-only modes change that policy (forbid writes, forbid drift, fail vs update) | #155 |
+| `remove`, `list`, and `version` command CLI contracts | none today; `Command::Remove`, `Command::List`, and `Command::Version` are declared or parser-visible but lack owning CLI contracts (unimplemented branches remain inert) | absent: no SPEC owns their argument handling, output, lockfile/manifest mutation, exit behavior, or diagnostics; each command waits for an owning CLI SPEC built on the M8 diagnostics and exit-code contract | future CLI SPEC (post-#151) |
+| `update` command CLI contract | none today; there is no `update` command in `Command` and no owning CLI SPEC | absent: no SPEC owns `rpm update` argument handling, range refresh policy, lockfile mutation, or diagnostics; it is out of scope for M8 beyond recording that command expansion must follow the diagnostics and config contracts | future CLI SPEC (post-#151, #153, #155) |
+| diagnostic envelope relationship to peer/optional diagnostics | `resolver/SPEC.md` ("Peer-requirement diagnostics ownership", optional-aware warnings deferral) | peer-requirement diagnostics are shape-gated on this envelope; optional-aware behavior remains deferred with only stable stderr and non-zero exit requirements reserved for its future contract | #151 (defines the envelope the resolver SPEC depends on) |
+
+Findings:
+
+- The public diagnostics surface is the largest M8 gap: it is a code
+  convention, not a contract. RPM-generated exit codes are binary
+  (`SUCCESS`/`FAILURE`) while `rpm run` passes through its child status, and
+  output is unstructured prose on whichever stream the emitters reach. No SPEC
+  owns categories, an envelope, or golden-output policy. `ResolutionError` is
+  typed; installer phase failures remain formatted `io::Error` prose even where
+  integrity behavior is contract-owned, so #151 defines the envelope and #154
+  owns the structured installer error implementation.
+- The diagnostics envelope is the M8 foundation: #152 (resolver failure
+  diagnostics) and #154 (installer phase diagnostics) both depend on #151, and
+  the resolver SPEC's peer-requirement diagnostic shape is explicitly gated on
+  "the owning diagnostics SPEC" existing first. Optional-aware behavior keeps
+  only stable stderr and non-zero exit requirements deferred until its own
+  contract. #151 must be delivered before active diagnostic stabilization so
+  wording and exit codes are intentional rather than frozen ad hoc.
+- Config precedence (#153) is a separate foundation: it must define discovery
+  (config file, environment variables, command-line override), supported keys,
+  and invalid-value behavior before any command reads a config. The only
+  `RPM_*` variable today is test-only (`RPM_REGISTRY_FIXTURE_ROOT`) and is
+  explicitly not a public config surface; #153 owns the first public one.
+- Frozen and lockfile-only install modes (#155) are CI-reproducibility
+  contracts: they define when install may mutate `rpm.lock` and
+  `package.json`, and how manifest/lockfile drift fails. The default
+  install/recovery contract already owns backup/restore and the save policy;
+  #155 owns how the two CI modes depart from that default (forbid writes,
+  forbid drift). #155 depends on #151 because frozen-mode drift failures must
+  surface as stable diagnostics and exit codes, not new ad hoc prose.
+- Command expansion (`remove`, `list`, `version`, `update`) is intentionally
+  kept behind owning CLI SPECs that build on the M8 contracts. These commands
+  need stable stdout/stderr ownership, exit codes, config precedence, and
+  lockfile mutation policy before implementation, so they are out of scope for
+  M8 beyond this audit recording that the contracts must precede them.
+- Machine-readable output is explicitly deferred, not silently absent: the
+  resolver SPEC gates all structured peer-diagnostic output on this audit's
+  owning diagnostics SPEC existing first, and #151 must decide whether
+  machine-readable output is supported now or explicitly deferred. This audit
+  introduces no JSON shape, field name, or key.
+- The delivery order follows the issue: (1) this contract and gap audit,
+  (2) #151 diagnostic envelope, exit codes, and human output, (3) #153 config
+  file and environment variable precedence, (4) #155 frozen and lockfile-only
+  install modes, (5) #152 stable resolver failure diagnostics, (6) #154 stable
+  installer phase failure diagnostics, (7) golden stdout/stderr fixtures where
+  behavior becomes stable. Diagnostics envelope work precedes config and
+  install-mode work where they intersect, and precedes all command expansion.
