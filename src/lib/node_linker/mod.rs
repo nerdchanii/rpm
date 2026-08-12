@@ -467,6 +467,13 @@ fn replace_node_modules(target: &Path, staging_dir: &Path) -> Result<(), std::io
         fs::rename(target, &backup_dir).map_err(|error| phase_error("write", error))?;
     }
 
+    if let Err(error) = validate_staging_for_publish(target, staging_dir) {
+        if backup_dir.exists() {
+            let _ = fs::rename(&backup_dir, target);
+        }
+        return Err(error);
+    }
+
     match fs::rename(staging_dir, target) {
         Ok(()) => {
             if backup_dir.exists() {
@@ -481,6 +488,39 @@ fn replace_node_modules(target: &Path, staging_dir: &Path) -> Result<(), std::io
             Err(phase_error("write", error))
         }
     }
+}
+
+fn validate_staging_for_publish(target: &Path, staging_dir: &Path) -> Result<(), std::io::Error> {
+    let staging_metadata =
+        fs::symlink_metadata(staging_dir).map_err(|error| phase_error("write", error))?;
+    if !staging_metadata.file_type().is_dir() || staging_metadata.file_type().is_symlink() {
+        return Err(phase_error(
+            "write",
+            Error::new(
+                ErrorKind::InvalidData,
+                "staging path is not a regular directory",
+            ),
+        ));
+    }
+
+    let target_parent = target
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let target_parent =
+        fs::canonicalize(target_parent).map_err(|error| phase_error("write", error))?;
+    let staging_parent =
+        fs::canonicalize(staging_dir).map_err(|error| phase_error("write", error))?;
+    if staging_parent.parent() != Some(target_parent.as_path()) {
+        return Err(phase_error(
+            "write",
+            Error::new(
+                ErrorKind::InvalidInput,
+                "staging path escapes node_modules parent",
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn dependency_link_target(parent_name: &str, dependency_name: &str) -> PathBuf {
@@ -1037,6 +1077,25 @@ mod tests {
 
         assert!(error.to_string().contains("link failed"));
         assert_eq!(fs::read_to_string(existing_file).unwrap(), "existing");
+    }
+
+    #[test]
+    fn publish_rejects_symlinked_staging_path() {
+        let temp = TempNodeModules::new();
+        let outside = temp.path.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), "outside").unwrap();
+        let staging = temp.path.join(".node_modules.rpm-staging-test");
+        symlink(&outside, &staging).unwrap();
+
+        let error = replace_node_modules(&temp.node_modules(), &staging).unwrap_err();
+
+        assert!(error.to_string().contains("staging path"));
+        assert!(temp.node_modules().is_dir());
+        assert_eq!(
+            fs::read_to_string(outside.join("keep.txt")).unwrap(),
+            "outside"
+        );
     }
 
     #[test]

@@ -201,32 +201,48 @@ fn backup_install_state(paths: &[&Path]) -> io::Result<Vec<StateBackup>> {
         if backup_path.exists() {
             remove_path(&backup_path)?;
         }
-        if final_path.exists() {
-            let permissions = fs::metadata(final_path)?.permissions();
-            if permissions.readonly() {
-                return Err(restore_after(
-                    &mut backups,
-                    Error::new(
-                        ErrorKind::PermissionDenied,
-                        format!("install state file {} is read-only", final_path.display()),
+        let metadata = match fs::symlink_metadata(final_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                backups.push(StateBackup {
+                    final_path: final_path.to_path_buf(),
+                    backup_path: None,
+                    permissions: None,
+                });
+                continue;
+            }
+            Err(error) => return Err(restore_after(&mut backups, error)),
+        };
+        if !metadata.file_type().is_file() {
+            return Err(restore_after(
+                &mut backups,
+                Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "install state path {} is not a regular file",
+                        final_path.display()
                     ),
-                ));
-            }
-            if let Err(error) = fs::rename(final_path, &backup_path) {
-                return Err(restore_after(&mut backups, error));
-            }
-            backups.push(StateBackup {
-                final_path: final_path.to_path_buf(),
-                backup_path: Some(backup_path),
-                permissions: Some(permissions),
-            });
-        } else {
-            backups.push(StateBackup {
-                final_path: final_path.to_path_buf(),
-                backup_path: None,
-                permissions: None,
-            });
+                ),
+            ));
         }
+        let permissions = metadata.permissions();
+        if permissions.readonly() {
+            return Err(restore_after(
+                &mut backups,
+                Error::new(
+                    ErrorKind::PermissionDenied,
+                    format!("install state file {} is read-only", final_path.display()),
+                ),
+            ));
+        }
+        if let Err(error) = fs::rename(final_path, &backup_path) {
+            return Err(restore_after(&mut backups, error));
+        }
+        backups.push(StateBackup {
+            final_path: final_path.to_path_buf(),
+            backup_path: Some(backup_path),
+            permissions: Some(permissions),
+        });
     }
     Ok(backups)
 }
@@ -385,7 +401,7 @@ fn remove_path(path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_install_state, install_in, restore_snapshot_after};
+    use super::{backup_install_state, capture_install_state, install_in, restore_snapshot_after};
     use crate::{
         command::working_process::run::run_script,
         lockfile::{LockFile, Relationship},
@@ -825,6 +841,27 @@ mod tests {
 
         assert_eq!(restored.to_string(), "hook failed");
         assert_eq!(fs::read(&package_path).unwrap(), original_package);
+        assert_eq!(fs::read_to_string(&target_path).unwrap(), "outside-target");
+    }
+
+    #[test]
+    fn backup_rejects_hook_created_state_symlinks() {
+        let fixture_root = fixture_path(&["install-projects", "lifecycle-preinstall-root"]);
+        let project = TempProject::new("install-state-symlink-backup").unwrap();
+        let package_path = project
+            .copy_fixture(fixture_root.join("package.json"), "package.json")
+            .unwrap();
+        let target_path = package_path.with_file_name("outside-target");
+        fs::write(&target_path, "outside-target").unwrap();
+        fs::remove_file(&package_path).unwrap();
+        symlink(&target_path, &package_path).unwrap();
+
+        let error = match backup_install_state(&[&package_path]) {
+            Ok(_) => panic!("hook-created state symlink must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("not a regular file"));
         assert_eq!(fs::read_to_string(&target_path).unwrap(), "outside-target");
     }
 
