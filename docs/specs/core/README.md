@@ -279,3 +279,90 @@ Findings:
   installer phase failure diagnostics, (7) golden stdout/stderr fixtures where
   behavior becomes stable. Diagnostics envelope work precedes config and
   install-mode work where they intersect, and precedes all command expansion.
+
+## M7 Ownership and Gap Audit
+
+The M7 audit maps each npm workspace behavior area to its owning SPEC/ADR and
+records whether the contract is explicitly stated. M7 is a workspace support
+milestone: it must add multi-package repository support without weakening root
+safety rules, lockfile reproducibility, or the strict per-package dependency
+visibility contract owned by `linker/SPEC.md`. It must not fold resolver
+strategy changes, cache behavior, npm metadata compatibility, or runtime
+linking changes into workspace work. Every gap below is assigned an owning SPEC
+and a follow-up ticket so workspace behavior becomes SPEC-owned *before*
+implementation, satisfying the M7 exit criteria.
+
+Today workspace support is a greenfield gap: no `workspaces` field is read by
+`manifest/SPEC.md`, no workspace-vs-external distinction exists in
+`lockfile/SPEC.md`, the linker creates only registry-resolved dependency links,
+and no CLI flag targets a workspace. Every `workspace` token in the repository
+today refers to Cargo layout, not npm workspaces. This audit records that
+absence as intentional deferral and assigns each gap an owner rather than
+treating it as implicit scope.
+
+| M7 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
+| --- | --- | --- | --- |
+| workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | absent: the root `workspaces` field is neither read nor preserved today, and current install/add save paths can therefore drop it; #145 must preserve the field or reject it explicitly and add regression coverage; the manifest SPEC owns `dependencies`, `devDependencies`, `optionalDependencies`, `peerDependencies`, `engines`/`os`/`cpu`, `bin`, and project metadata, but declares no multi-package shape | #145 |
+| workspace glob expansion and member discovery | `manifest/SPEC.md` | absent: #145 must define supported declaration forms (array of globs, `packages` map form, nested config), expand members from a canonical workspace root, reject `..` escapes and symlinks resolving outside that root, and report missing-member paths; discovery output must be root-relative, sorted, deduplicated, and repeatable, with a fixture proving those invariants | #145 |
+| root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | absent: the resolver seeds only the single root manifest's direct dependencies; there is no concept of a workspace member as a resolution root, and no rule distinguishing a local workspace package from a registry package when both match a name | #145 |
+| workspace package lockfile records | `lockfile/SPEC.md` | absent: lockfile v1 keys every entry by `<name>@<version>` with registry metadata and records no local-path or workspace-origin marker; local workspace records need not require tarball or integrity, while external records may use `shasum` when integrity is absent; whether v1 extends safely or a version bump is required is an open question for #146 | #146 |
+| external dependency edges under a workspace root | `lockfile/SPEC.md`, `resolver/SPEC.md` | partially owned in the non-workspace case: the resolver already deduplicates by `<name>@<version>` and the lockfile records requested range and resolved version distinctly, but neither owns how a shared external transitive reached from several workspace members is represented when each member requests a different range | #146 |
+| workspace-to-workspace linking (local symlink) | `linker/SPEC.md` | absent: the linker creates symlinks whose targets are extracted registry packages under `node_modules/`; there is no contract for linking a workspace member that exists as a local source directory rather than a downloaded tarball, or for confining that target to the canonical workspace root | #147 |
+| workspace-to-external linking | `linker/SPEC.md` | code and SPEC currently diverge on strict per-package dependency visibility; #147 must reconcile the implementation first, then extend the strict contract to workspace members so a member's `node_modules` exposes only that member's declared dependencies, with regression coverage | #147 |
+| missing workspace link target | `linker/SPEC.md` | absent: the linker already fails when a registry dependency target is not extracted, but there is no contract for a workspace dependency whose declared local path does not exist or does not contain the expected package | #147 |
+| workspace member writes and recovery | `install/recovery/SPEC.md`, `linker/SPEC.md` | absent: member-local writes are independent of root staging today; #147 must define one root-staged transaction, rollback of every member-local write on failure, and preservation of the prior install state, with recovery regression coverage | #147 |
+| package-name and dependency-name root confinement | `resolver/SPEC.md`, `linker/SPEC.md` | existing package metadata and lockfile names are not fully confined before extraction and dependency linking; names such as `../../outside` can escape the staged tree, so the resolver/linker boundary must reject traversal and verify canonical destinations before any write; #147 must include this regression coverage for workspace and external edges | #147 |
+| workspace member binary links | `linker/SPEC.md` | absent: the existing `.bin` contract does not state whether a workspace member's `bin` field is exposed; #147 must decide the link layout and cover it in the minimal workspace fixture (#149) | #147; #149 |
+| workspace command targeting (`--workspace`, `--all`, root) | `cli/run/SPEC.md` and future CLI command SPECs | absent: no command targeting contract exists; `rpm run` reads only the root manifest, and there is no rule for root-only, all-workspace, or selected-workspace command scope | #148 |
+| partial workspace failure and exit behavior | `cli/run/SPEC.md` (deferred to M8 for stable exit codes) | absent: no contract for how a command behaves when one workspace member fails and others succeed; stable exit codes and stdout/stderr ownership for this are owned by the M8 diagnostics contract (#150, #151) before they become public | #148 (targeting); M8 (exit-code stability) |
+
+Findings:
+
+- Workspace support is a complete greenfield gap across manifest, lockfile,
+  linker, and CLI. No SPEC references `workspaces`, no code path reads the
+  field, and every existing test fixture is single-root. This audit records
+  that absence as a deferred-but-now-assigned frontier rather than implicit
+  scope, so each M7 child ticket opens against an owning SPEC.
+- The discovery boundary (#145) is the foundation: until the manifest SPEC owns
+  which `workspaces` declaration forms are read, how member paths expand, and
+  how invalid or missing members fail, the resolver cannot seed workspace
+  members and the lockfile cannot record them. Canonical-root confinement,
+  rejection of `..` and external symlinks, root-relative sorted/deduplicated
+  output, and repeatability are part of that boundary. #145 blocks #146, #147,
+  and #148 for this reason.
+- Lockfile representation (#146) carries one open compatibility decision:
+  whether workspace package records can extend lockfile v1 with a local-origin
+  marker, or whether a workspace-aware lockfile requires a version bump and a
+  migration note. That decision belongs to #146, not to this audit; the audit
+  only records that v1 has no such marker today.
+- Linker ownership (#147) splits cleanly: workspace-to-external linking must
+  first reconcile the current code/SPEC mismatch on strict dependency
+  visibility, while workspace-to-workspace linking is new and must define
+  local symlink targets, traversal guards for member-controlled paths, and the
+  missing-target failure. Member-local writes must remain inside root staging
+  and rollback. The linker's existing `.bin` generation
+  (`linker/SPEC.md` "Executable bin links") also needs a workspace-member
+  decision and fixture coverage (#149).
+- CLI targeting (#148) depends on #145 but not on #146 or #147: command
+  targeting semantics (root, all, selected, unsupported selector) can be
+  specified as soon as discovery is owned. Partial-failure exit behavior is
+  explicitly aligned to M8 (#150, #151): this audit does not introduce stable
+  exit codes or stdout/stderr ownership for workspace commands, because that
+  ownership belongs to the diagnostics contract.
+- Root safety rules remain an explicit constraint and include existing package
+  metadata and dependency-name traversal risks. The M3/M4 staged-replacement
+  and side-effect audit guarantees (`install/recovery/SPEC.md`) apply to a
+  workspace install, while the current resolver/linker escape paths require
+  follow-up hardening before that guarantee is complete. A workspace install
+  is still intended to be a single staged `node_modules` transaction; the
+  added risks are member-controlled local paths reaching the linker and
+  member-local writes escaping root staging, which #145/#147 must confine and
+  roll back.
+- The delivery order follows the issue: (1) this contract and gap audit, (2)
+  #145 workspace discovery and root boundaries, (3) #146 lockfile records and
+  external edges, (4) #147 workspace dependency linking, (5) #148 command
+  targeting, (6) a minimal two-package workspace fixture (#149) with
+  reviewable expected output, (7) implementation of only the behavior the
+  contracts and fixture cover. Discovery and lockfile work is kept separable
+  from linker work so #145/#146 can land without forcing #147, and CLI
+  targeting (#148) can land as soon as #145 lands.
