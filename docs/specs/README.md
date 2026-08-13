@@ -164,6 +164,8 @@ docs/specs/
         SPEC.md
     linker/
       SPEC.md
+  release/
+    SPEC.md
 ```
 
 Repository structure and ownership conventions that are not themselves package
@@ -282,3 +284,5 @@ M1 should start from:
 - `docs/specs/core/install/scripts/SPEC.md`: install lifecycle script execution
   contract
 - `docs/specs/core/linker/SPEC.md`: `node_modules` linking contract
+- `docs/specs/release/SPEC.md`: supported platform matrix and release validation
+  checklist
