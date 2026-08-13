@@ -34,9 +34,12 @@ verification expectations that apply to RPM's current release surface.
 RPM does not publish pre-built binaries today. There is no release workflow
 under `.github/workflows/`, and no checksum or signature generation anywhere in
 the repository. The only release surface that exists is build-from-source:
-`cargo build --release` followed by the install scripts in `scripts/`. This SPEC
-therefore describes the contract for that surface, and names the gaps that must
-be closed before RPM can claim binary-artifact support.
+`cargo build --release` followed by the install scripts
+`scripts/installation.bash.sh` and `scripts/installation.zsh.sh`. A third
+script, `scripts/withoutclone/installation.sh`, also exists but is not part of
+this contract; see Uncovered Install Path below. This SPEC therefore describes
+the contract for that surface, and names the gaps that must be closed before RPM
+can claim binary-artifact support.
 
 This SPEC covers the platforms RPM's own binary is validated on. It does not
 cover the `engines`, `os`, and `cpu` fields that RPM reads from an installed
@@ -94,14 +97,29 @@ Release notes, README text, and install documentation must not describe Linux or
 Windows as supported while this table says otherwise. Adding a platform to the
 supported column requires adding CI coverage for it in the same change.
 
+### Uncovered Install Path
+
+`scripts/withoutclone/installation.sh` also exists. It creates a temporary
+directory, clones `https://github.com/nerdchanii/rpm.git` into it, runs
+`cargo build --release`, and copies the result to `~/.rpm/rpm`. It installs the
+default branch HEAD as of clone time, not a pinned release commit or tag, so the
+binary it produces can be a different commit than the one being released, and it
+does not build with `--locked`.
+
+That script is explicitly not covered by the validation checklist below, and it
+is not a supported release path today. This SPEC neither validates it nor
+specifies how it should behave. Making it a supported path would require pinning
+it to a release ref and adding it to the checklist in the same change.
+
 ### Release Validation Checklist
 
 Run these commands in order from a clean checkout of the commit being released,
 on a supported platform. The release is valid only when every step passes.
 
 ```sh
-# 1. Clean checkout state: no uncommitted or untracked changes.
-git status --porcelain
+# 1. Clean checkout state: no uncommitted or untracked changes. Assert the
+#    porcelain output is empty; printing it is not a check.
+test -z "$(git status --porcelain)"
 
 # 2. Full repository gate. Runs format-check, audit-fixtures, fixture-smoke,
 #    agent-assets, check, lint, test, and docs.
@@ -110,24 +128,58 @@ just validate
 # 3. Coverage floor enforced by CI (90% lines).
 just coverage
 
-# 4. Release build with the committed dependency versions.
-cargo build --release --locked
+# 4. Release build with the committed dependency versions, into a known path
+#    regardless of ambient CARGO_TARGET_DIR or .cargo/config.toml overrides.
+CARGO_TARGET_DIR=target cargo build --release --locked
 
-# 5. Install via the shell-appropriate script from the repository root.
-./scripts/installation.bash.sh    # bash users
-./scripts/installation.zsh.sh     # zsh users
+# 5. Install via the shell-appropriate script from the repository root. The
+#    scripts are not committed executable, so invoke the interpreter.
+bash scripts/installation.bash.sh    # bash users
+zsh scripts/installation.zsh.sh      # zsh users
 
 # 6. Smoke run the installed binary directly, not via PATH, so the check does
 #    not depend on shell restart or a stale binary earlier in PATH.
 ~/.rpm/rpm --version
 ~/.rpm/rpm --help
+
+# 7. Version agreement. `--version` prints "rpm <version>" on stdout, so compare
+#    its last field against the version field in Cargo.toml. Exits non-zero on
+#    drift.
+installed_version="$(~/.rpm/rpm --version | awk '{print $NF}')"
+manifest_version="$(awk -F'"' '/^version = "/ { print $2; exit }' Cargo.toml)"
+test "$installed_version" = "$manifest_version"
 ```
 
 The narrower recipes `just format-check`, `just check`, `just lint`, and
 `just test` are the triage path when step 2 fails. They are subsets of
 `just validate` and do not replace it as the gate.
 
-Steps 1 through 4 must be run on every release. Steps 5 and 6 verify the
+Step 1 must assert that `git status --porcelain` produced no output. Running the
+command for its printed output alone is not a check, because it exits `0` on a
+dirty tree as well as a clean one.
+
+Step 4 pins `CARGO_TARGET_DIR` because the install scripts copy from the literal
+path `target/release/rpm`. If an ambient `CARGO_TARGET_DIR` or a
+`.cargo/config.toml` `build.target-dir` setting redirected the build elsewhere,
+step 5 would copy whatever stale binary an earlier build left at
+`target/release/rpm`, and the checkout would still look clean, because `target/`
+is ignored by git.
+
+The install scripts are committed with mode `100644`, without the executable
+bit. They must therefore be invoked through their interpreter, as
+`bash scripts/installation.bash.sh` or `zsh scripts/installation.zsh.sh`, rather
+than executed directly as `./scripts/installation.bash.sh`, which fails with a
+permission error on a fresh checkout.
+
+Step 7 is the mechanical version-drift check. It reads the CLI version by field
+position from the `--version` output and the manifest version by line pattern
+from `Cargo.toml`. Both extractions use POSIX `awk` and are portable across `sh`
+implementations, but the `Cargo.toml` read is a text match on the first
+`version = "..."` line rather than a TOML parse. That is correct for the current
+manifest, where the first such line is the `[package]` version, and it must be
+revisited if the manifest layout changes.
+
+Steps 1 through 4 must be run on every release. Steps 5 through 7 verify the
 artifact and are required because the install scripts are the documented
 installation path and are not exercised by CI.
 
@@ -137,16 +189,17 @@ Today's release artifact is the locally built binary: `target/release/rpm`,
 published by the install scripts to `~/.rpm/rpm`. Verification of that artifact
 means all of the following hold:
 
-- `target/release/rpm` exists after step 4 and was built with `--locked`, so the
-  committed `Cargo.lock` governed the dependency set.
+- `target/release/rpm` exists after step 4 and was built with `--locked` into the
+  pinned `CARGO_TARGET_DIR`, so the committed `Cargo.lock` governed the
+  dependency set and the binary is the one step 5 installs.
 - `~/.rpm/rpm` exists and is executable after step 5.
-- `~/.rpm/rpm --version` exits `0` and prints a version string.
+- `~/.rpm/rpm --version` exits `0` and prints `rpm <version>` on stdout.
 - `~/.rpm/rpm --help` exits `0` and lists the available commands.
-- The version printed by `--version` matches the `version` field in
+- Step 7 passes: the version printed by `--version` equals the `version` field in
   `Cargo.toml`. These are two independent literals: the CLI version comes from
   `VERSION` in `src/cli/opt/constants.rs`, not from `CARGO_PKG_VERSION`. They can
-  drift silently, so the release check must compare them rather than assume they
-  agree.
+  drift silently, so step 7 compares them mechanically and exits non-zero on
+  mismatch rather than leaving the agreement to inspection.
 
 Checksum verification, signature verification, and provenance attestation are
 not part of this contract, because RPM publishes no binary artifact to verify.
@@ -160,10 +213,11 @@ to later M10 delivery items.
 
 If any checklist step fails on a supported platform, the release is not valid.
 The failure must be fixed and the checklist re-run from step 1. Partial re-runs
-are not sufficient, because steps 4 through 6 depend on the tree state validated
+are not sufficient, because steps 4 through 7 depend on the tree state validated
 in steps 1 through 3.
 
-If `~/.rpm/rpm --version` and `Cargo.toml` disagree, the release is not valid.
+If step 7 fails because `~/.rpm/rpm --version` and `Cargo.toml` disagree, the
+release is not valid.
 This is a real defect in the artifact's self-identification, not a documentation
 nit, and it must be corrected before release rather than noted in release notes.
 
