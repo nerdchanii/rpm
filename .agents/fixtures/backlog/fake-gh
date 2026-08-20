@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
+  printf '{"nameWithOwner":"nerdchanii/rpm"}\n'
+  exit 0
+fi
+
+if [ "${1:-}" = "label" ] && [ "${2:-}" = "list" ]; then
+  printf '%s\n' '[{"name":"agent:research"},{"name":"agent:ready"},{"name":"agent:claimed"},{"name":"agent:review-pending"},{"name":"agent:awaiting-merge"},{"name":"agent:blocked"}]'
+  exit 0
+fi
+
+if [ "${1:-}" = "project" ] && [ "${2:-}" = "view" ]; then
+  printf '{"number":7}\n'
+  exit 0
+fi
+
 if [ "${1:-}" = "project" ] && [ "${2:-}" = "item-list" ]; then
   cat "${RPM_BACKLOG_FIXTURE:?RPM_BACKLOG_FIXTURE is required}"
   exit 0

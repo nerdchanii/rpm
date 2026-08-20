@@ -29,6 +29,12 @@ the single review-pending issue and linked open PR through the GitHub plugin.
 Use issue-authored scope, the linked PR, and repository evidence as the input;
 do not invent missing product intent.
 
+GitHub MCP tool namespaces are host-specific. Use the GitHub tools exposed by
+the current host, such as `mcp__codex_apps__github_*` in Codex desktop or
+`mcp__plugin_github_github__*` in a Cloud plugin session. Treat a successful
+read-only GitHub call as the availability check; never require a literal
+namespace prefix.
+
 ## Core Workflow
 
 1. In scheduled mode, use the GitHub plugin to select at most one open PR linked to an open issue in `agent:review-pending`, ordered by issue number. Return `no-work` when none exists.

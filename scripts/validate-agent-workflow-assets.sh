@@ -490,6 +490,28 @@ check_backlog_inventory_order() {
   ' >/dev/null
 }
 
+check_backlog_access_preflight() {
+  local temp_dir
+  local output
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-backlog-access-gh.XXXXXX")"
+  trap 'rm -rf "${temp_dir}"' RETURN
+  cp .agents/fixtures/backlog/fake-gh "${temp_dir}/gh"
+  chmod +x "${temp_dir}/gh"
+  output="$(
+    PATH="${temp_dir}:${PATH}" \
+      RPM_BACKLOG_FIXTURE=".agents/fixtures/backlog/project-items.json" \
+      bash scripts/check-agent-backlog-access.sh --format jsonl
+  )"
+  printf '%s\n' "${output}" | jq -s -e '
+    length == 5
+    and ([.[] | select(.type == "backlog_access_check" and .data.status == "ok")] | length) == 4
+    and .[-1].type == "backlog_access_result"
+    and .[-1].data.status == "ok"
+    and .[-1].data.repository == "nerdchanii/rpm"
+    and .[-1].data.project == 7
+  ' >/dev/null
+}
+
 for skill in .agents/skills/*; do
   [ -d "${skill}" ] || continue
   name="$(basename "${skill}")"
@@ -609,6 +631,7 @@ check "readiness_live_issue_fixture" check_readiness_live_issue
 check "backlog_research_batch" check_backlog_research_batch
 check "backlog_no_work" check_backlog_no_work
 check "backlog_inventory_order" check_backlog_inventory_order
+check "backlog_access_preflight" check_backlog_access_preflight
 
 check "cloud_label_only_selection" sh -c '
   output="$(python3 scripts/check-cloud-queue-contract.py \

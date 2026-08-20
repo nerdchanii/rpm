@@ -50,14 +50,18 @@ and the open issue lifecycle-label queue. Do not require the gh CLI or Project
 access.
 
 Preflight before any queue read and before any mutation: confirm the connected
-GitHub plugin loaded (tools prefixed mcp__plugin_github_github__ are available)
-and that one read-only call such as get_me succeeds. If the tools are missing,
-or the call fails with an authentication or authorization error, end the run
-immediately reporting blocked with the exact failed precondition
-(plugin-not-loaded or github-auth-failed), make no git push and no GitHub
-mutation, and do not transition any issue label. Never fall back to the gh CLI,
-curl, git credentials, or raw GitHub API calls, and never print, export, write,
-or transmit GITHUB_PERSONAL_ACCESS_TOKEN; only the plugin may use it.
+GitHub plugin is available through the namespace exposed by the current host,
+then make one read-only GitHub call such as `github_get_profile` or `get_me`.
+Tool namespaces are host-specific: Codex desktop may expose
+`mcp__codex_apps__github_*`, while Cloud plugin sessions may expose
+`mcp__plugin_github_github__*`. Do not require a literal namespace when a
+GitHub tool is callable. If the tools are missing, or the call fails with an
+authentication or authorization error, end the run immediately reporting
+blocked with the exact failed precondition (plugin-not-loaded or
+github-auth-failed), make no git push and no GitHub mutation, and do not
+transition any issue label. Never fall back to the gh CLI, curl, git
+credentials, or raw GitHub API calls, and never print, export, write, or
+transmit GITHUB_PERSONAL_ACCESS_TOKEN; only the plugin may use it.
 
 If any open issue is agent:claimed or agent:review-pending, return no-work
 without mutation. Otherwise select at most one agent:ready issue in
@@ -97,14 +101,18 @@ Use $pr-review-resolution in scheduled mode for nerdchanii/rpm.
 Follow .agents/workflows/backlog-policy.json.
 
 Preflight before any queue read and before any mutation: confirm the connected
-GitHub plugin loaded (tools prefixed mcp__plugin_github_github__ are available)
-and that one read-only call such as get_me succeeds. If the tools are missing,
-or the call fails with an authentication or authorization error, end the run
-immediately reporting blocked with the exact failed precondition
-(plugin-not-loaded or github-auth-failed), make no git push and no GitHub
-mutation, and do not transition any issue label. Never fall back to the gh CLI,
-curl, git credentials, or raw GitHub API calls, and never print, export, write,
-or transmit GITHUB_PERSONAL_ACCESS_TOKEN; only the plugin may use it.
+GitHub plugin is available through the namespace exposed by the current host,
+then make one read-only GitHub call such as `github_get_profile` or `get_me`.
+Tool namespaces are host-specific: Codex desktop may expose
+`mcp__codex_apps__github_*`, while Cloud plugin sessions may expose
+`mcp__plugin_github_github__*`. Do not require a literal namespace when a
+GitHub tool is callable. If the tools are missing, or the call fails with an
+authentication or authorization error, end the run immediately reporting
+blocked with the exact failed precondition (plugin-not-loaded or
+github-auth-failed), make no git push and no GitHub mutation, and do not
+transition any issue label. Never fall back to the gh CLI, curl, git
+credentials, or raw GitHub API calls, and never print, export, write, or
+transmit GITHUB_PERSONAL_ACCESS_TOKEN; only the plugin may use it.
 
 Use the connected GitHub plugin to select at most one open PR linked to an open
 agent:review-pending issue, ordered by issue number. Collect the latest Codex
@@ -149,14 +157,18 @@ Use $merge-gatekeeper in scheduled mode for nerdchanii/rpm.
 Follow .agents/workflows/backlog-policy.json merge_gate.
 
 Preflight before any queue read and before any mutation: confirm the connected
-GitHub plugin loaded (tools prefixed mcp__plugin_github_github__ are available)
-and that one read-only call such as get_me succeeds. If the tools are missing,
-or the call fails with an authentication or authorization error, end the run
-immediately reporting blocked with the exact failed precondition
-(plugin-not-loaded or github-auth-failed), make no git push and no GitHub
-mutation, and do not transition any issue label. Never fall back to the gh CLI,
-curl, git credentials, or raw GitHub API calls, and never print, export, write,
-or transmit GITHUB_PERSONAL_ACCESS_TOKEN; only the plugin may use it. This
+GitHub plugin is available through the namespace exposed by the current host,
+then make one read-only GitHub call such as `github_get_profile` or `get_me`.
+Tool namespaces are host-specific: Codex desktop may expose
+`mcp__codex_apps__github_*`, while Cloud plugin sessions may expose
+`mcp__plugin_github_github__*`. Do not require a literal namespace when a
+GitHub tool is callable. If the tools are missing, or the call fails with an
+authentication or authorization error, end the run immediately reporting
+blocked with the exact failed precondition (plugin-not-loaded or
+github-auth-failed), make no git push and no GitHub mutation, and do not
+transition any issue label. Never fall back to the gh CLI, curl, git
+credentials, or raw GitHub API calls, and never print, export, write, or
+transmit GITHUB_PERSONAL_ACCESS_TOKEN; only the plugin may use it. This
 preflight failure is a run-level report, distinct from the merge_gate blocked
 verdict below, which alone transitions an issue to agent:blocked.
 

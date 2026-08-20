@@ -66,7 +66,7 @@ policy="${root}/.agents/workflows/backlog-policy.json"
 }
 
 if ! jq -e '
-  (.version == 2)
+  (.version == 3)
   and (.repository | type == "string" and length > 0)
   and (.project.number == 7)
   and (.project.owner | type == "string" and length > 0)
