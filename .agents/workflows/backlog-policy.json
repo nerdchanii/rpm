@@ -32,6 +32,42 @@
     "managed_section_start": "<!-- rpm-agent-research:start -->",
     "managed_section_end": "<!-- rpm-agent-research:end -->"
   },
+  "execution_contract": {
+    "approved_metadata": [
+      "approval_id",
+      "plan_revision",
+      "scope_hash",
+      "executor"
+    ],
+    "executor_values": [
+      "local",
+      "cloud"
+    ],
+    "active_states": [
+      "claimed",
+      "review-pending"
+    ],
+    "lease": {
+      "field": "lease",
+      "required_fields": [
+        "run_id",
+        "owner",
+        "expires_at"
+      ],
+      "ttl_seconds": 3600
+    },
+    "idempotency": {
+      "ledger_field": "runs",
+      "key_fields": [
+        "repository",
+        "issue",
+        "plan_revision",
+        "scope_hash",
+        "event_id"
+      ],
+      "algorithm": "sha256-nul-joined"
+    }
+  },
   "allowed_transitions": {
     "untracked": [
       "research"

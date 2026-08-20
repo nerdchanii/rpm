@@ -25,6 +25,12 @@ Use `scheduled` without an issue number. The router reads `.agents/workflows/bac
 
 `no-work` is a healthy terminal result. Report it concisely and make no repository or GitHub mutation.
 
+Before the scheduled `agent:ready` to `agent:claimed` transition, validate the
+managed execution metadata and run the policy-defined claim contract. Persist
+the `plan_revision`, `scope_hash`, `executor`, lease, run id, event id, and
+idempotency record with the compare-and-set label mutation. A stale revision,
+scope, executor, or expired lease returns `blocked`.
+
 ## Entry Workflow
 
 1. Read `.agents/workflows/backlog-policy.json`.

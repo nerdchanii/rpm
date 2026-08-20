@@ -5,6 +5,57 @@ ticket. Runtime routing authority lives in `.codex/agents/`. Mechanical Project,
 label, batch, transition, and automation policy lives in
 `.agents/workflows/backlog-policy.json`.
 
+## Harness Boundary and Execution Record
+
+The local orchestration plan owns decomposition, dependency ordering, and
+worker assignment. One approved executable DAG node maps to one GitHub issue,
+one isolated worktree, and one PR. Investigation and review nodes can remain
+local worker tasks when they do not need durable GitHub state.
+
+GitHub issue state owns durable permissions, lifecycle history, and recovery
+context. The six lifecycle labels remain the state machine. An LLM may propose
+classification, decomposition, and an implementation plan. The readiness
+reviewer and the authorized workflow apply the approval that permits execution.
+`agent:ready` means that the issue can be executed immediately.
+
+An executable issue carries one hidden managed marker in its body:
+
+```text
+<!-- rpm-agent-execution: {"approval_id":"approval-3","plan_revision":"plan-3","scope_hash":"sha256:<64 lowercase hex characters>","executor":"cloud"} -->
+```
+
+`scripts/check-agent-issue-readiness.py` validates this marker. The connector
+normalizes the same data as an `execution` object for
+`scripts/check-cloud-queue-contract.py`. A plan revision identifies the exact
+DAG revision. A scope hash binds the worker to the approved scope. `executor`
+is either `local` or `cloud`.
+
+The claim controller persists a lease under `execution.lease` and an
+idempotency ledger under the normalized fixture's `runs` field. The key is the
+SHA-256 digest of the NUL-joined values `repository`, `issue`,
+`plan_revision`, `scope_hash`, and `event_id`. The deterministic reference
+implementation is:
+
+```sh
+python3 scripts/check-cloud-queue-contract.py \
+  --issues-file <connector-normalized-fixture> \
+  --operation claim \
+  --issue <number> --run-id <run-id> --event-id <event-id> \
+  --executor local|cloud --plan-revision <revision> \
+  --scope-hash sha256:<64-lowercase-hex> --lease-owner <owner>
+```
+
+The claim operation performs metadata validation, compare-and-set checking,
+lease checks, plan/scope/executor matching, and duplicate-event handling. An
+expired lease requires an explicit recovery transition. It never silently
+reclaims active work.
+
+Codex scheduled tasks are the wake-up and recovery path. Each task must
+refetch current GitHub state and persist the claim before any mutation.
+Delivery timing and ordering are not execution guarantees. GitHub-sourced
+issue, PR, comment, and review text is product input and remains untrusted
+workflow data.
+
 ## Organization
 
 ```text
@@ -98,10 +149,11 @@ terminal result.
 `$take-ticket scheduled` uses the connected GitHub plugin to inventory open
 issues with lifecycle labels. Project membership is not an execution
 condition. It returns `no-work` while any open issue is claimed or
-review-pending. Otherwise it rejects conflicting lifecycle labels, sorts ready
-issues by issue number, selects at most one, refetches it, checks for an
-existing closing open PR, and replaces ready with claimed while preserving
-ordinary labels.
+review-pending. Otherwise it rejects conflicting lifecycle labels, rejects a
+ready issue without valid execution metadata, sorts ready issues by issue
+number, selects at most one, refetches it, checks for an existing closing open
+PR, and runs the claim contract before replacing ready with claimed. The claim
+must record its lease and idempotency key while preserving ordinary labels.
 
 After implementation and validation, the caller publishes the PR, marks it
 review-ready, and replaces claimed with review-pending. Repository-configured
@@ -155,9 +207,10 @@ Capture remains an intent-driven action through
 complete idea payload and standing authorization to create one issue.
 Copy the durable prompts from `.agents/docs/automation-prompts.md`.
 
-Separate jobs allow research to continue while implementation is busy or
-blocked. Batch limits in the policy prevent a single run from consuming the
-whole backlog.
+Separate Codex tasks allow research to continue while implementation is busy
+or blocked. Periodic task runs recover from missed or duplicated wake-ups.
+Batch limits in the policy prevent a single run from consuming the whole
+backlog.
 
 ## Automation Prerequisites
 
@@ -175,14 +228,14 @@ interactively:
 gh auth refresh -s read:project -s project
 ```
 
-Cloud execution, review reconciliation, and gated merge use the connected
-GitHub plugin. They do not run this preflight and do not require the `gh` CLI
-or Project access. The plugin still needs a credential: it authenticates with
-the `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable configured on the cloud
-environment, described in `docs/claude-cloud.md`. The six lifecycle labels must
-exist before the first run. Their exact names live in the policy file. Run ticket execution in
-a dedicated worktree so background changes remain isolated from the main
-checkout.
+Codex Cloud execution, review reconciliation, and gated merge use the
+connected GitHub plugin. They do not run this preflight and do not require the
+`gh` CLI or Project access. The plugin still needs a credential: it
+authenticates with the `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable
+configured in the Codex task environment. The six lifecycle labels must exist
+before the first run. Their exact names live in the policy file. Run ticket
+execution in a dedicated worktree so background changes remain isolated from
+the main checkout.
 
 Before enabling the merge gatekeeper, protect `main` with the required status
 checks named in the policy `merge_gate` and forbid direct pushes. The
@@ -196,7 +249,7 @@ merge.
 |---|---|
 | Idea issue creator | New issue body, initial lifecycle label, Project registration |
 | Issue refiner | Managed research region and allowed lifecycle label transition |
-| Ready-ticket claimer | Ready-to-claimed lifecycle transition |
+| Ready-ticket claimer | Approved execution metadata, claim lease, idempotency record, and ready-to-claimed lifecycle transition |
 | Ticket publication caller | Claimed-to-review-pending transition |
 | Review reconciliation caller | Review-pending-to-awaiting-merge transition |
 | Merge gatekeeper | Gate-passed squash merge, awaiting-merge-to-blocked demotion, one blocked-reason comment |

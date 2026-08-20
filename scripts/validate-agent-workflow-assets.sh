@@ -377,6 +377,29 @@ check_readiness_ready() {
     and .data.ready == true
     and (.data.missing_sections | length) == 0
     and (.data.unresolved_decisions | length) == 0
+    and .data.execution_error == null
+    and .data.execution_metadata.executor == "cloud"
+  ' >/dev/null
+}
+
+check_readiness_missing_execution() {
+  local output
+  local exit_code
+  set +e
+  output="$(
+    python3 scripts/check-agent-issue-readiness.py \
+      --body-file .agents/fixtures/backlog/readiness-missing-execution.md \
+      --format jsonl
+  )"
+  exit_code=$?
+  set -e
+  [ "${exit_code}" -eq 1 ] || {
+    printf 'expected readiness exit 1, got %s\n%s\n' "${exit_code}" "${output}"
+    return 1
+  }
+  printf '%s\n' "${output}" | jq -e '
+    .data.ready == false
+    and .data.execution_error == "missing-execution-metadata"
   ' >/dev/null
 }
 
@@ -559,6 +582,21 @@ check "backlog_policy_schema" jq -e '
     "awaiting-merge":"agent:awaiting-merge",
     blocked:"agent:blocked"
   }
+  and .execution_contract == {
+    approved_metadata:["approval_id","plan_revision","scope_hash","executor"],
+    executor_values:["local","cloud"],
+    active_states:["claimed","review-pending"],
+    lease:{
+      field:"lease",
+      required_fields:["run_id","owner","expires_at"],
+      ttl_seconds:3600
+    },
+    idempotency:{
+      ledger_field:"runs",
+      key_fields:["repository","issue","plan_revision","scope_hash","event_id"],
+      algorithm:"sha256-nul-joined"
+    }
+  }
   and .batch_limits == {research:1,execution:1}
   and .allowed_transitions == {
     untracked:["research"],
@@ -625,6 +663,7 @@ check "script_validate_agent_workflow_assets_syntax" \
 check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews
 check "collect_pr_review_context_no_duplicates" check_collect_does_not_duplicate_exhausted_connections
 check "readiness_ready_fixture" check_readiness_ready
+check "readiness_missing_execution_fixture" check_readiness_missing_execution
 check "readiness_missing_fixture" check_readiness_missing
 check "readiness_unresolved_fixture" check_readiness_unresolved
 check "readiness_live_issue_fixture" check_readiness_live_issue
@@ -641,6 +680,73 @@ check "cloud_label_only_selection" sh -c '
     .data.status == \"selected\"
     and .data.issues == [3]
   " >/dev/null
+'
+check "cloud_claim_contract" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-ready.json \
+    --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"claim\"
+    and .data.issue == 3
+    and .data.before == \"ready\"
+    and .data.after == \"claimed\"
+    and .data.lease.run_id == \"run-3\"
+    and .data.lease.owner == \"cloud:executor\"
+    and .data.lease.expires_at == \"2026-08-21T13:00:00Z\"
+    and .data.preserved_labels == [\"priority:high\"]
+    and .data.labels == [\"agent:claimed\",\"priority:high\"]
+  " >/dev/null
+'
+check "cloud_claim_stale_revision_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-ready.json \
+    --operation claim --issue 3 --run-id run-stale --event-id delivery-stale \
+    --executor cloud --plan-revision plan-old \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e ".data.status == \"blocked\" and .data.reason == \"plan-revision-mismatch\"" >/dev/null
+'
+check "cloud_claim_duplicate_event_no_work" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-duplicate.json \
+    --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  printf "%s\n" "$output" | jq -e ".data.status == \"no-work\" and .data.reason == \"duplicate-event\"" >/dev/null
+'
+check "cloud_claim_expired_lease_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-expired.json \
+    --operation claim --issue 8 --run-id run-8b --event-id delivery-8b \
+    --executor cloud --plan-revision plan-8 \
+    --scope-hash sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --lease-owner cloud:executor)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e ".data.status == \"blocked\" and .data.reason == \"lease-expired\"" >/dev/null
+'
+check "cloud_claim_executor_mismatch_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-executor-mismatch.json \
+    --operation claim --issue 7 --run-id run-7 --event-id delivery-7 \
+    --executor local --plan-revision plan-7 \
+    --scope-hash sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+    --lease-owner local:executor)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e ".data.status == \"blocked\" and .data.reason == \"executor-mismatch\"" >/dev/null
 '
 check "cloud_multiple_lifecycle_blocked" sh -c '
   set +e

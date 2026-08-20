@@ -98,6 +98,21 @@ EXPECTED_LABELS = {
     "awaiting-merge": "agent:awaiting-merge",
     "blocked": "agent:blocked",
 }
+EXPECTED_EXECUTION_CONTRACT = {
+    "approved_metadata": ["approval_id", "plan_revision", "scope_hash", "executor"],
+    "executor_values": ["local", "cloud"],
+    "active_states": ["claimed", "review-pending"],
+    "lease": {
+        "field": "lease",
+        "required_fields": ["run_id", "owner", "expires_at"],
+        "ttl_seconds": 3600,
+    },
+    "idempotency": {
+        "ledger_field": "runs",
+        "key_fields": ["repository", "issue", "plan_revision", "scope_hash", "event_id"],
+        "algorithm": "sha256-nul-joined",
+    },
+}
 
 
 def fail(errors: list[str], message: str) -> None:
@@ -164,6 +179,8 @@ def check_policy(errors: list[str]) -> None:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid local-roadmap Project contract")
     if policy.get("labels") != EXPECTED_LABELS:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: lifecycle labels changed")
+    if policy.get("execution_contract") != EXPECTED_EXECUTION_CONTRACT:
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid execution contract")
     if policy.get("batch_limits") != {"research": 1, "execution": 1}:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: both batch limits must equal 1")
     if policy.get("allowed_transitions") != EXPECTED_TRANSITIONS:

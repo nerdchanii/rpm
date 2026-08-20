@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Deterministically check whether an RPM issue is ready for execution."""
+"""Deterministically check whether an RPM issue is ready for execution.
+
+Readiness includes one managed rpm-agent-execution marker that binds approval,
+plan revision, scope hash, and executor to the issue.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,9 @@ from pathlib import Path
 
 
 EVENT_TYPE = "issue_readiness_result"
+EXECUTION_MARKER = re.compile(r"^\s*<!--\s*rpm-agent-execution:\s*(\{.*\})\s*-->\s*$")
+EXECUTION_REQUIRED_FIELDS = ("approval_id", "plan_revision", "scope_hash", "executor")
+EXECUTOR_VALUES = {"local", "cloud"}
 REQUIRED_SECTIONS = (
     "Context",
     "Research",
@@ -132,6 +139,36 @@ def meaningful(lines: list[tuple[int, str]]) -> bool:
     return False
 
 
+def extract_execution_metadata(body: str) -> tuple[dict[str, object] | None, str | None]:
+    matches = [
+        match.group(1)
+        for line in body.splitlines()
+        if (match := EXECUTION_MARKER.match(line)) is not None
+    ]
+    if not matches:
+        return None, "missing-execution-metadata"
+    if len(matches) != 1:
+        return None, "multiple-execution-metadata"
+    try:
+        metadata = json.loads(matches[0])
+    except json.JSONDecodeError:
+        return None, "invalid-execution-metadata-json"
+    if not isinstance(metadata, dict):
+        return None, "execution-metadata-must-be-object"
+    missing = [
+        field
+        for field in EXECUTION_REQUIRED_FIELDS
+        if not isinstance(metadata.get(field), str) or not str(metadata[field]).strip()
+    ]
+    if missing:
+        return None, f"missing-execution-fields:{','.join(missing)}"
+    if metadata["executor"] not in EXECUTOR_VALUES:
+        return None, "invalid-executor"
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(metadata["scope_hash"])):
+        return None, "invalid-scope-hash"
+    return metadata, None
+
+
 def analyze(body: str, source: dict[str, object]) -> dict[str, object]:
     sections: dict[str, list[tuple[int, str]]] = {}
     current = ""
@@ -195,7 +232,8 @@ def analyze(body: str, source: dict[str, object]) -> dict[str, object]:
                 }
             )
 
-    ready = not missing and not empty and not unresolved
+    execution_metadata, execution_error = extract_execution_metadata(body)
+    ready = not missing and not empty and not unresolved and execution_error is None
     return {
         "type": EVENT_TYPE,
         "data": {
@@ -206,6 +244,8 @@ def analyze(body: str, source: dict[str, object]) -> dict[str, object]:
             "missing_sections": missing,
             "empty_sections": empty,
             "unresolved_decisions": unresolved,
+            "execution_metadata": execution_metadata,
+            "execution_error": execution_error,
         },
     }
 

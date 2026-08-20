@@ -28,7 +28,7 @@ The created issue begins in the policy-defined research state and is registered 
 
 ### Research Cycle
 
-Use `research-cycle` manually or from a scheduled run. The router advances only the policy-defined research batch. A cycle gathers current evidence, judges readiness, updates the managed research section, and applies an allowed lifecycle transition.
+Use `research-cycle` manually or from a scheduled run. The router advances only the policy-defined research batch. A cycle gathers current evidence, judges readiness, updates the managed research section, and applies an allowed lifecycle transition. The readiness verdict may use `agent:ready` only after the managed `rpm-agent-execution` marker contains `approval_id`, `plan_revision`, `scope_hash`, and `executor`.
 
 `no-work` is a healthy terminal result. Report it concisely and make no retry in the same run.
 

@@ -5,14 +5,26 @@
       "url": "https://github.com/nerdchanii/rpm/issues/9",
       "state": "OPEN",
       "labels": ["agent:ready", "kind:feature"],
-      "closing_prs": []
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "approval-9",
+        "plan_revision": "plan-9",
+        "scope_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+        "executor": "cloud"
+      }
     },
     {
       "number": 3,
       "url": "https://github.com/nerdchanii/rpm/issues/3",
       "state": "OPEN",
       "labels": ["agent:ready", "priority:high"],
-      "closing_prs": []
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "approval-3",
+        "plan_revision": "plan-3",
+        "scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executor": "cloud"
+      }
     },
     {
       "number": 2,
