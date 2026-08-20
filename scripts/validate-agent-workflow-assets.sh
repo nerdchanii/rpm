@@ -26,7 +26,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "${format}" != "jsonl" ] && [ "${format}" != "text" ]; then
+if [ "${format}" != "jsonl" ] && [ "${format}" != "text" ] && [ "${format}" != "summary" ]; then
   printf 'agent_assets.error=invalid-format:%s\n' "${format}" >&2
   exit 2
 fi
@@ -48,7 +48,7 @@ emit_check() {
       --arg status "${result}" \
       --arg output "${output}" \
       '{type:"agent_asset_check",data:{name:$name,status:$status,output:(if $output == "" then null else $output end)}}'
-  else
+  elif [ "${format}" = "text" ] || [ "${result}" != "ok" ]; then
     printf 'agent_assets.%s=%s\n' "${name}" "${result}"
     if [ -n "${output}" ]; then
       printf 'agent_assets.%s.output.begin\n%s\nagent_assets.%s.output.end\n' \
