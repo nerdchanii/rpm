@@ -23,7 +23,9 @@
 메인: ⑥ 코멘트 작성 (1개)
      │
      ▼
-메인: ⑦ merge gate 판정 → merge / blocked / no-work
+메인: ⑦ 라벨 전환 (review-pending → awaiting-merge)
+              남은 finding이 없으면 전환, 있으면 review-pending 유지
+              머지는 이 루프 밖 — scheduled merge-gatekeeper가 담당
 ```
 
 ## 단계 명세
@@ -143,22 +145,26 @@ router 결과를 바탕으로 PR에 해결 내역 코멘트 **1개만** 작성�
 - 임시 파일: `/tmp/rpm-pr-loop-pr<pr>-comment.md` (커밋 안 함)
 - 이미 동일 내역의 코멘트가 있으면 중복 작성하지 않는다.
 
-### ⑦ 머지 게이트 + 머지 (메인)
+### ⑦ 라벨 전환 (메인)
 
-1. PR 상태 정규화: required check conclusions (`metadata`, `verify`),
-   mergeability, unresolved P0/P1 스레드를 fixture JSON shape으로 정규화.
-2. `python3 scripts/check-merge-gate.py --issues-file <normalized>
-   --operation select-merge`로 결정론적 판정.
-3. 판정에 복종:
-   - `merge`: `bash scripts/safe-direct-merge.sh <pr>`로 게이트 재확인 후
-     squash-merge 및 브랜치 정리 위임, 이슈 닫힘 확인.
-   - `no-work` (`checks-pending`, `mergeability-unknown`,
-     `no-awaiting-merge-candidate`): mutation 없이 보고.
-   - `blocked` (`checks-failed`, `not-mergeable`, `review-findings-remain`,
-     `multiple-lifecycle-labels`, `no-open-closing-pr`,
-     `multiple-open-closing-prs`): `check-cloud-queue-contract.py
-     --operation transition --issue <n> --from-state awaiting-merge
-     --to-state blocked`로 전환 검증 후 라벨 전환 + 사유 코멘트 1개.
+이 루프는 머지하지 않는다. 남은 actionable finding 여부에 따라 연결 이슈의
+라이프사이클 라벨만 전환하고, 머지는 scheduled `merge-gatekeeper`로 이관한다.
+
+1. router 결과의 `accept_now`와 남은 P0/P1 finding을 확인한다.
+2. 남은 actionable finding이 없으면 연결 이슈의 라벨 전환을 검증한다:
+   `python3 scripts/check-cloud-queue-contract.py --issues-file <file>
+   --operation transition --issue <n> --from-state review-pending
+   --to-state awaiting-merge`.
+3. 검증 통과 시:
+   - `agent:review-pending` 제거, 스테일한 `agent:claimed`도 함께 제거.
+   - 일반 라벨 보존.
+   - `agent:awaiting-merge` 추가.
+   - 이 시점부터 머지는 다음 scheduled `merge-gatekeeper` 사이클 또는
+     `agent-loop-triggers.yml`의 `agent:awaiting-merge` 라벨 감지 즉시 발화가
+     맡는다 (`agent-loop-triggers.yml`의 `issues.labeled` 이벤트가
+     `agent:awaiting-merge`를 감지해 gatekeeper routine을 fire 한다).
+4. 남은 actionable P0/P1 finding이 있으면 `agent:review-pending`을 유지한다
+   (mutation 없이 다음 루프에서 재시도).
 
 ## 라벨 전환 규칙
 
@@ -167,7 +173,8 @@ router 결과를 바탕으로 PR에 해결 내역 코멘트 **1개만** 작성�
 - 수정 후에도 actionable P0/P1이 남으면 `agent:review-pending` 유지.
 - 남은 actionable finding이 없으면 `agent:review-pending` 제거,
   `agent:claimed` 제거(스테일 시), 일반 라벨 보존, `agent:awaiting-merge` 추가.
-- 게이트 blocked 시 `agent:awaiting-merge` → `agent:blocked`.
+- `agent:awaiting-merge` → `agent:blocked` 전환은 이 루프의 책임이 아니다.
+  그것은 scheduled `merge-gatekeeper`가 게이트 판정 후 수행한다.
 - `no-work`는 라벨을 건드리지 않는다.
 
 ## 멱등성
@@ -175,4 +182,8 @@ router 결과를 바탕으로 PR에 해결 내역 코멘트 **1개만** 작성�
 - 같은 PR에 대해 같은 코멘트를 반복 작성하지 않는다.
 - 이미 머지된 PR은 선택하지 않는다.
 - `accept-now` 항목이 없으면 코드 수정·push 없이 no-change로 종료.
+- 이 루프는 머지하지 않는다. `awaiting-merge` 전환 후 머지가 일어나지 않은
+  채 다음 루프가 도달하면, PR은 이미 `agent:awaiting-merge` 상태이므로
+  selector의 우선순위에서 자연스럽게 밀려난다 (selector는
+  `agent:review-pending`을 우선).
 - `no-work`는 정상 결과다.
