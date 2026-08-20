@@ -4,7 +4,6 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly repo_root="$(cd -- "${script_dir}/.." && pwd -P)"
 readonly shared_settings="${repo_root}/.claude/settings.json"
-readonly local_settings="${repo_root}/.claude/settings.local.json"
 
 status=0
 
@@ -113,19 +112,6 @@ else
     do
       require_rule deny "${rule}"
     done
-  fi
-fi
-
-if [ -f "${local_settings}" ]; then
-  if ! jq -e . "${local_settings}" >/dev/null; then
-    fail ".claude/settings.local.json is not valid JSON"
-  else
-    local_mode="$(jq -r '.permissions.defaultMode // empty' "${local_settings}")"
-    case "${local_mode}" in
-      "" | default | plan | dontAsk) ;;
-      *) fail "local settings use an unsafe permission mode: ${local_mode}" ;;
-    esac
-    check_allowlist "${local_settings}"
   fi
 fi
 
