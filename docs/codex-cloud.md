@@ -20,7 +20,14 @@ script.
 The setup installs the Rust formatting and lint components, installs `just`
 when the universal image does not provide it, verifies the auxiliary tools used
 by repository checks, fetches locked Cargo dependencies, and checks all Rust
-targets.
+targets. The Cloud compatibility wrapper delegates to the shared
+`scripts/worktree-setup.sh` entrypoint.
+
+The checked-in environment also exposes a manual `Clean worktree artifacts`
+action. It runs `scripts/worktree-cleanup.sh`, which requires a clean worktree,
+and removes only the repository-local Cargo `target/` directory contents. It
+does not remove a worktree or modify shared Git worktree metadata. Use
+`--check` to validate its preconditions without changing anything.
 
 ## Validate a cloud task
 

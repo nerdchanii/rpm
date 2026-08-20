@@ -3,5 +3,10 @@ name = "RPM"
 
 [setup]
 script = """
-cargo fetch --locked
+bash scripts/worktree-setup.sh
 """
+
+[[actions]]
+name = "Clean worktree artifacts"
+icon = "run"
+command = "bash scripts/worktree-cleanup.sh"
