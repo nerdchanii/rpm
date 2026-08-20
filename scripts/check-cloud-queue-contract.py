@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -20,6 +23,13 @@ def lifecycle_labels(policy: dict[str, object]) -> dict[str, str]:
     if not isinstance(labels, dict):
         raise ValueError("policy labels must be an object")
     return {str(state): str(label) for state, label in labels.items()}
+
+
+def execution_contract(policy: dict[str, object]) -> dict[str, object]:
+    contract = policy.get("execution_contract")
+    if not isinstance(contract, dict):
+        raise ValueError("policy execution_contract must be an object")
+    return contract
 
 
 def issue_labels(issue: dict[str, object]) -> list[str]:
@@ -53,6 +63,190 @@ def has_open_closing_pr(issue: dict[str, object]) -> bool:
     )
 
 
+def execution_metadata(issue: dict[str, object]) -> dict[str, object] | None:
+    metadata = issue.get("execution")
+    if metadata is None:
+        return None
+    if not isinstance(metadata, dict):
+        raise ValueError("issue execution must be an object")
+    return metadata
+
+
+def validate_execution_metadata(
+    issue: dict[str, object], contract: dict[str, object]
+) -> tuple[dict[str, object] | None, str | None]:
+    metadata = execution_metadata(issue)
+    required = contract.get("approved_metadata")
+    executors = contract.get("executor_values")
+    if not isinstance(required, list) or not isinstance(executors, list):
+        raise ValueError("execution contract metadata rules are invalid")
+    if metadata is None:
+        return None, "missing-execution-contract"
+    missing = [
+        str(field)
+        for field in required
+        if not isinstance(metadata.get(str(field)), str)
+        or not str(metadata.get(str(field))).strip()
+    ]
+    if missing:
+        return metadata, f"missing-execution-fields:{','.join(missing)}"
+    if metadata["executor"] not in [str(value) for value in executors]:
+        return metadata, "invalid-executor"
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(metadata["scope_hash"])):
+        return metadata, "invalid-scope-hash"
+    return metadata, None
+
+
+def parse_timestamp(value: object, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be an RFC3339 timestamp")
+    normalized = value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as error:
+        raise ValueError(f"{field} must be an RFC3339 timestamp") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def validate_lease(lease: object, contract: dict[str, object]) -> str | None:
+    if not isinstance(lease, dict):
+        return "missing-lease"
+    lease_rules = contract.get("lease")
+    if not isinstance(lease_rules, dict):
+        raise ValueError("execution contract lease rules are invalid")
+    required = lease_rules.get("required_fields")
+    if not isinstance(required, list):
+        raise ValueError("execution contract lease required_fields are invalid")
+    missing = [
+        str(field)
+        for field in required
+        if not isinstance(lease.get(str(field)), str) or not str(lease[str(field)]).strip()
+    ]
+    if missing:
+        return f"invalid-lease-fields:{','.join(missing)}"
+    try:
+        parse_timestamp(lease["expires_at"], "lease.expires_at")
+    except ValueError:
+        return "invalid-lease-expiry"
+    return None
+
+
+def idempotency_key(
+    repository: str,
+    issue_number: int,
+    plan_revision: str,
+    scope_hash: str,
+    event_id: str,
+) -> str:
+    values = (repository, str(issue_number), plan_revision, scope_hash, event_id)
+    canonical = "\0".join(values).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def claim(
+    fixture: dict[str, object],
+    lifecycle: dict[str, str],
+    contract: dict[str, object],
+    issue_number: int,
+    run_id: str,
+    event_id: str,
+    executor: str,
+    plan_revision: str,
+    scope_hash: str,
+    lease_owner: str,
+) -> dict[str, object]:
+    issue = next(
+        (item for item in normalized_issues(fixture) if int(item.get("number", 0)) == issue_number),
+        None,
+    )
+    if issue is None:
+        return {"status": "blocked", "reason": "issue-not-found"}
+    current, matched = issue_state(issue, lifecycle)
+    if len(matched) > 1:
+        return {
+            "status": "blocked",
+            "reason": "multiple-lifecycle-labels",
+            "states": matched,
+        }
+    if not is_open(issue):
+        return {"status": "no-work", "reason": "issue-not-open", "issue": issue_number}
+    metadata, metadata_error = validate_execution_metadata(issue, contract)
+    if metadata_error:
+        return {"status": "blocked", "reason": metadata_error, "issue": issue_number}
+    assert metadata is not None
+    if str(metadata["plan_revision"]) != plan_revision:
+        return {"status": "blocked", "reason": "plan-revision-mismatch", "issue": issue_number}
+    if str(metadata["scope_hash"]) != scope_hash:
+        return {"status": "blocked", "reason": "scope-hash-mismatch", "issue": issue_number}
+    if str(metadata["executor"]) != executor:
+        return {"status": "blocked", "reason": "executor-mismatch", "issue": issue_number}
+    repository = fixture.get("repository")
+    if not isinstance(repository, str) or not repository.strip():
+        raise ValueError("fixture repository is required for claim")
+    if not run_id.strip() or not event_id.strip() or not lease_owner.strip():
+        raise ValueError("run_id, event_id, and lease_owner are required for claim")
+    key = idempotency_key(repository, issue_number, plan_revision, scope_hash, event_id)
+    runs = fixture.get("runs", [])
+    if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
+        raise ValueError("fixture runs must be an array of objects")
+    matching_runs = [run for run in runs if run.get("idempotency_key") == key]
+    if matching_runs:
+        if all(run.get("run_id") == run_id for run in matching_runs):
+            return {
+                "status": "no-work",
+                "reason": "duplicate-event",
+                "issue": issue_number,
+                "run_id": run_id,
+                "idempotency_key": key,
+            }
+        return {"status": "blocked", "reason": "idempotency-conflict", "issue": issue_number}
+    if current in set(str(value) for value in contract.get("active_states", [])):
+        lease_rules = contract.get("lease")
+        if not isinstance(lease_rules, dict):
+            raise ValueError("execution contract lease rules are invalid")
+        lease_field = str(lease_rules.get("field", "lease"))
+        lease = metadata.get(lease_field)
+        lease_error = validate_lease(lease, contract)
+        if lease_error:
+            return {"status": "blocked", "reason": lease_error, "issue": issue_number}
+        assert isinstance(lease, dict)
+        now = parse_timestamp(fixture.get("now"), "fixture now")
+        expires_at = parse_timestamp(lease.get("expires_at"), "lease.expires_at")
+        if expires_at <= now:
+            return {"status": "blocked", "reason": "lease-expired", "issue": issue_number}
+        return {"status": "no-work", "reason": "lease-active", "issue": issue_number}
+    if current != "ready":
+        return {"status": "no-work", "reason": "issue-not-ready", "issue": issue_number}
+    now = parse_timestamp(fixture.get("now"), "fixture now")
+    lease_rules = contract.get("lease")
+    if not isinstance(lease_rules, dict):
+        raise ValueError("execution contract lease rules are invalid")
+    ttl_seconds = int(lease_rules.get("ttl_seconds", 0))
+    if ttl_seconds <= 0:
+        raise ValueError("execution contract lease ttl must be positive")
+    expires_at = now + timedelta(seconds=ttl_seconds)
+    ordinary = sorted(
+        label for label in issue_labels(issue) if label not in lifecycle.values()
+    )
+    return {
+        "status": "claim",
+        "issue": issue_number,
+        "before": "ready",
+        "after": "claimed",
+        "run_id": run_id,
+        "idempotency_key": key,
+        "preserved_labels": ordinary,
+        "labels": sorted([*ordinary, lifecycle["claimed"]]),
+        "lease": {
+            "run_id": run_id,
+            "owner": lease_owner,
+            "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+        },
+    }
+
+
 def normalized_issues(fixture: dict[str, object]) -> list[dict[str, object]]:
     issues = fixture.get("issues")
     if not isinstance(issues, list) or not all(isinstance(issue, dict) for issue in issues):
@@ -61,7 +255,7 @@ def normalized_issues(fixture: dict[str, object]) -> list[dict[str, object]]:
 
 
 def select_execution(
-    fixture: dict[str, object], lifecycle: dict[str, str], batch_limit: int
+    fixture: dict[str, object], lifecycle: dict[str, str], contract: dict[str, object], batch_limit: int
 ) -> dict[str, object]:
     open_issues = [issue for issue in normalized_issues(fixture) if is_open(issue)]
     invalid = []
@@ -73,10 +267,24 @@ def select_execution(
         states.append((issue, state))
     if invalid:
         return {"status": "blocked", "reason": "multiple-lifecycle-labels", "invalid": invalid, "issues": []}
+    invalid_execution = []
+    for issue, state in states:
+        if state == "ready":
+            _, reason = validate_execution_metadata(issue, contract)
+            if reason:
+                invalid_execution.append({"number": issue.get("number"), "reason": reason})
+    if invalid_execution:
+        return {
+            "status": "blocked",
+            "reason": "execution-contract-invalid",
+            "invalid": invalid_execution,
+            "issues": [],
+        }
+    active_states = set(str(value) for value in contract.get("active_states", []))
     active = [
         int(issue.get("number", 0))
         for issue, state in states
-        if state in {"claimed", "review-pending"}
+        if state in active_states
     ]
     if active:
         return {"status": "no-work", "reason": "active-work", "active": active, "issues": []}
@@ -157,22 +365,29 @@ def main() -> int:
     parser.add_argument(
         "--operation",
         required=True,
-        choices=("select-execution", "select-review", "transition"),
+        choices=("select-execution", "select-review", "transition", "claim"),
     )
     parser.add_argument("--issue", type=int)
     parser.add_argument("--from-state")
     parser.add_argument("--to-state")
+    parser.add_argument("--run-id")
+    parser.add_argument("--event-id")
+    parser.add_argument("--executor")
+    parser.add_argument("--plan-revision")
+    parser.add_argument("--scope-hash")
+    parser.add_argument("--lease-owner")
     args = parser.parse_args()
 
     policy = load_json(args.policy)
     fixture = load_json(args.issues_file)
     lifecycle = lifecycle_labels(policy)
+    contract = execution_contract(policy)
     if args.operation == "select-execution":
         limit = int(dict(policy["batch_limits"])["execution"])
-        result = select_execution(fixture, lifecycle, limit)
+        result = select_execution(fixture, lifecycle, contract, limit)
     elif args.operation == "select-review":
         result = select_review(fixture, lifecycle)
-    else:
+    elif args.operation == "transition":
         if args.issue is None or args.from_state is None or args.to_state is None:
             parser.error("transition requires --issue, --from-state, and --to-state")
         result = transition(
@@ -182,6 +397,19 @@ def main() -> int:
             args.from_state,
             args.to_state,
         )
+    else:
+        required = {
+            "issue_number": args.issue,
+            "run_id": args.run_id,
+            "event_id": args.event_id,
+            "executor": args.executor,
+            "plan_revision": args.plan_revision,
+            "scope_hash": args.scope_hash,
+            "lease_owner": args.lease_owner,
+        }
+        if any(value is None for value in required.values()):
+            parser.error("claim requires --issue, --run-id, --event-id, --executor, --plan-revision, --scope-hash, and --lease-owner")
+        result = claim(fixture, lifecycle, contract, **required)
     print(json.dumps({"type": "cloud_queue_contract", "data": result}, sort_keys=True))
     return 1 if result.get("status") == "blocked" else 0
 

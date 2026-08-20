@@ -10,7 +10,13 @@
       "number": 6,
       "state": "OPEN",
       "labels": ["agent:ready"],
-      "closing_prs": []
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "approval-6",
+        "plan_revision": "plan-6",
+        "scope_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "executor": "cloud"
+      }
     }
   ]
 }

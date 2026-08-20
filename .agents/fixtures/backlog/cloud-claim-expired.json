@@ -1,0 +1,24 @@
+{
+  "repository": "nerdchanii/rpm",
+  "now": "2026-08-21T12:00:00Z",
+  "runs": [],
+  "issues": [
+    {
+      "number": 8,
+      "state": "OPEN",
+      "labels": ["agent:claimed"],
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "approval-8",
+        "plan_revision": "plan-8",
+        "scope_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "executor": "cloud",
+        "lease": {
+          "run_id": "run-8a",
+          "owner": "cloud:executor",
+          "expires_at": "2026-08-21T11:59:59Z"
+        }
+      }
+    }
+  ]
+}

@@ -28,6 +28,25 @@ commits, pushes, PR state, and the final report. The workflow manager is the
 single entry router. One per-issue manager owns the process for one issue. Leaf
 agents receive only their inputs, scope, and output contract.
 
+## DAG and Worktree Harness
+
+The main session owns the global DAG and final integration. It assigns each
+executable node to one worker task with an isolated worktree and a disjoint
+write scope. The worker receives the current `plan_revision`, `scope_hash`,
+executor, acceptance criteria, and validation contract. Worker output returns
+to the main session as evidence and a structured result.
+
+The main session may keep decomposition, dependency analysis, and review as
+local worker tasks. A node becomes a GitHub issue when it needs durable state,
+permission, recovery, or a PR. This keeps GitHub lifecycle labels aligned with
+executable work while allowing internal DAG nodes to remain lightweight.
+
+When decomposition or scope changes, the main session creates a new
+`plan_revision` and recomputes `scope_hash`. Existing workers finish only if
+their revision still matches. A stale worker returns `blocked` and performs no
+mutation. The claim controller binds the issue, revision, scope, executor,
+lease, and event id through the policy-defined idempotency key.
+
 ## Process
 
 ```mermaid
@@ -65,6 +84,8 @@ flowchart TD
   run sequentially.
 - Two agents must not edit overlapping files concurrently.
 - Concurrent issues require separate worktrees.
+- One issue, one active claim lease, and one worker worktree are the default
+  execution unit.
 - The default correction-loop budget is two.
 
 ## Authority Boundaries

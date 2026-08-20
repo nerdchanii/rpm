@@ -1,0 +1,19 @@
+{
+  "repository": "nerdchanii/rpm",
+  "now": "2026-08-21T12:00:00Z",
+  "runs": [],
+  "issues": [
+    {
+      "number": 7,
+      "state": "OPEN",
+      "labels": ["agent:ready"],
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "approval-7",
+        "plan_revision": "plan-7",
+        "scope_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "executor": "cloud"
+      }
+    }
+  ]
+}
