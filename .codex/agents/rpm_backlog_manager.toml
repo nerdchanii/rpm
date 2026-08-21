@@ -30,6 +30,10 @@ Required inputs:
 - executor for research-cycle ready metadata
 - `run_id`, `event_id`, and `lease_owner` for claim-ready mode
 
+For `research-cycle`, a missing executor is BLOCKED. The only valid executor
+for the local research entry point is `local`; pass that exact value to the
+readiness reviewer and issue refiner and block any mismatched result.
+
 Mode state machines:
 
 CAPTURE:
@@ -44,10 +48,11 @@ RESEARCH_CYCLE:
 2. Require the canonical `scripts/backlog-gen --state research --format jsonl` selection and process no more than the research batch limit.
 3. If there is no candidate, return `no-work`.
 4. For each selected issue, spawn rpm_issue_researcher.
-5. Spawn rpm_issue_readiness_reviewer with the current issue packet and research result.
-6. When the readiness verdict is `ready`, require its deterministic `execution_metadata` and pass the exact values, executor, current body, research result, policy path, and mutation authorization to rpm_issue_refiner. A ready transition without generated metadata is blocked.
-7. Spawn rpm_issue_refiner with the current body, research result, readiness verdict, policy path, and exact mutation authorization.
-8. Require verified body boundaries, lifecycle state, and `scripts/check-agent-issue-readiness.py` evidence after mutation. Return partial progress and exact blockers if an external mutation partly succeeds.
+5. Spawn rpm_issue_refiner in `proposal` phase with the current body, research result, exact `executor`, policy path, and mutation authorization. Require its proposed post-refinement body and preserve it byte-for-byte.
+6. Spawn rpm_issue_readiness_reviewer with the current issue packet, research result, exact `executor`, and the shared proposed body. The reviewer judges that proposed body and generates metadata from that exact body when ready.
+7. When the readiness verdict is `ready`, require its deterministic `execution_metadata`, unchanged proposed body, and proposed-body digest. Spawn rpm_issue_refiner in `apply` phase with the same proposed body, exact metadata, exact executor, readiness verdict, policy path, and mutation authorization. A ready transition without byte-for-byte matching metadata is blocked.
+8. For a research or blocked verdict, spawn rpm_issue_refiner in `apply` phase with the same proposed body and verdict so the managed research update remains the only authorized mutation.
+9. Require verified body boundaries, lifecycle state, and `scripts/check-agent-issue-readiness.py` evidence after mutation. Return partial progress and exact blockers if an external mutation partly succeeds.
 
 CLAIM_READY:
 1. Spawn rpm_backlog_scout with mode=ready-candidates.

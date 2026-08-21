@@ -16,22 +16,42 @@ SPEC.loader.exec_module(MODULE)
 
 
 MARKER = '<!-- rpm-agent-execution: {"approval_id":"a","executor":"cloud","lease":{"expires_at":"2026-08-21T13:00:00Z","owner":"cloud:executor","run_id":"r"},"plan_revision":"p","runs":[{"event_id":"e","idempotency_key":"sha256:' + "b" * 64 + '","run_id":"r","status":"active"}],"scope_hash":"sha256:' + "a" * 64 + '"} -->'
+APPROVAL_MARKER = '<!-- rpm-agent-execution: {"approval_id":"a","executor":"cloud","plan_revision":"p","scope_hash":"sha256:' + "a" * 64 + '"} -->'
 
 
 class ApplyExecutionMarkerTests(unittest.TestCase):
     def test_appends_marker_without_changing_existing_body(self) -> None:
         body = "## Intent\n\nKeep this text.\n"
-        self.assertEqual(MODULE.apply_marker(body, MARKER), body + MARKER + "\n")
+        self.assertEqual(
+            MODULE.apply_marker(body, MARKER, initialization=True),
+            body + MARKER + "\n",
+        )
 
     def test_replaces_one_marker_and_preserves_surrounding_text(self) -> None:
-        old = MARKER.replace('"status":"active"', '"status":"old"')
-        body = "prefix\n" + old + "\nsuffix\n"
-        result = MODULE.apply_marker(body, MARKER)
+        body = "prefix\n" + APPROVAL_MARKER + "\nsuffix\n"
+        result = MODULE.apply_marker(body, MARKER, expected_marker=APPROVAL_MARKER)
         self.assertEqual(result, "prefix\n" + MARKER + "\nsuffix\n")
 
     def test_multiple_markers_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "multiple"):
-            MODULE.apply_marker(MARKER + "\n" + MARKER, MARKER)
+            MODULE.apply_marker(
+                APPROVAL_MARKER + "\n" + APPROVAL_MARKER,
+                MARKER,
+                expected_marker=APPROVAL_MARKER,
+            )
+
+    def test_missing_marker_is_rejected_for_claim_application(self) -> None:
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            MODULE.apply_marker("body\n", MARKER, expected_marker=APPROVAL_MARKER)
+
+    def test_changed_predecessor_is_rejected(self) -> None:
+        changed = APPROVAL_MARKER.replace('"plan_revision":"p"', '"plan_revision":"other"')
+        with self.assertRaisesRegex(ValueError, "compare-and-set"):
+            MODULE.apply_marker(changed + "\n", MARKER, expected_marker=APPROVAL_MARKER)
+
+    def test_initialization_rejects_existing_marker(self) -> None:
+        with self.assertRaisesRegex(ValueError, "initialization"):
+            MODULE.apply_marker(APPROVAL_MARKER + "\n", MARKER, initialization=True)
 
     def test_marker_without_lease_is_rejected(self) -> None:
         invalid = MARKER.replace(
@@ -39,7 +59,7 @@ class ApplyExecutionMarkerTests(unittest.TestCase):
             "",
         )
         with self.assertRaisesRegex(ValueError, "lease"):
-            MODULE.apply_marker("body\n", invalid)
+            MODULE.apply_marker("body\n", invalid, initialization=True)
 
 
 if __name__ == "__main__":

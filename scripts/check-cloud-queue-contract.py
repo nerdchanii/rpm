@@ -145,8 +145,19 @@ def idempotency_key(
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 
-def execution_marker(metadata: dict[str, object], lease: dict[str, str], run: dict[str, str]) -> str:
-    payload = {**metadata, "lease": lease, "runs": [run]}
+def approval_marker(metadata: dict[str, object]) -> str:
+    payload = {field: metadata[field] for field in ("approval_id", "plan_revision", "scope_hash", "executor")}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"<!-- rpm-agent-execution: {encoded} -->"
+
+
+def execution_marker(
+    metadata: dict[str, object],
+    lease: dict[str, str],
+    run: dict[str, str],
+    prior_runs: list[dict[str, object]],
+) -> str:
+    payload = {**metadata, "lease": lease, "runs": [*prior_runs, run]}
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return f"<!-- rpm-agent-execution: {encoded} -->"
 
@@ -250,7 +261,8 @@ def claim(
         "idempotency_key": key,
         "status": "active",
     }
-    marker = execution_marker(metadata, lease, run)
+    prior_runs = [dict(previous_run) for previous_run in runs]
+    marker = execution_marker(metadata, lease, run, prior_runs)
     ordinary = sorted(
         label for label in issue_labels(issue) if label not in lifecycle.values()
     )
@@ -266,10 +278,11 @@ def claim(
         "labels": sorted([*ordinary, lifecycle["claimed"]]),
         "lease": lease,
         "run": run,
+        "expected_execution_marker": approval_marker(metadata),
         "execution_marker": marker,
         "execution": {
             "lease": lease,
-            "runs": [run],
+            "runs": [*prior_runs, run],
         },
     }
 

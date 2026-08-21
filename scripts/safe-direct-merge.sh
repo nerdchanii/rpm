@@ -121,13 +121,6 @@ merge_one() {
     fi
   fi
 
-  echo "OK: branch=$branch mergeable=$mergeable mergeState=$merge_state checks=green"
-
-  if [ "$dry_run" = "true" ]; then
-    echo "(dry-run) would squash-merge and delete branch $branch"
-    return 0
-  fi
-
   # Never delete or force-remove a worktree. A held branch may contain user
   # changes or belong to another Codex task; the caller must hand it off or
   # clean it explicitly before retrying this merge.
@@ -140,6 +133,13 @@ merge_one() {
       return 1
     fi
   done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
+
+  echo "OK: branch=$branch mergeable=$mergeable mergeState=$merge_state checks=green"
+
+  if [ "$dry_run" = "true" ]; then
+    echo "(dry-run) would squash-merge and delete branch $branch"
+    return 0
+  fi
 
   # Squash merge (non-interactive). No --delete-branch: we clean via ref-delete
   # push so the pre-push test gate is skipped.

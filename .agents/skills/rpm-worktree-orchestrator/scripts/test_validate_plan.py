@@ -76,6 +76,13 @@ class ValidatePlanTests(unittest.TestCase):
     def test_windows_separator_relative_path(self) -> None:
         validate(plan([node("a", paths=[r"src\shared\file.rs"])]))
 
+    def test_git_directory_is_unsafe_after_normalization(self) -> None:
+        self.assert_invalid(plan([node("a", paths=[".git"])]), "unsafe write path")
+        self.assert_invalid(plan([node("a", paths=["nested/../.git/config"])]), "unsafe write path")
+
+    def test_git_prefix_name_is_safe(self) -> None:
+        validate(plan([node("a", paths=[".gitfoo/config"])]))
+
     def test_stale_revision(self) -> None:
         self.assert_invalid(plan([node("a", revision="old")]), "stale")
 

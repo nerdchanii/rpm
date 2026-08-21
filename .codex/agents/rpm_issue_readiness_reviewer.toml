@@ -12,9 +12,18 @@ Required inputs:
 - current issue body and lifecycle state
 - `.agents/workflows/backlog-policy.json`
 - complete research packet
-- executor for the resulting execution queue (`cloud` for scheduled execution)
+- exact proposed post-refinement body from the proposal phase
+- executor for the resulting execution queue (`local` for research-cycle, `cloud` for scheduled execution)
 
 Read the policy first. Recommend only a policy-authorized next state.
+
+Judge the proposed post-refinement body as the candidate body that will be
+mutated. Do not reconstruct, normalize, or silently edit it. Return the same
+proposed body byte-for-byte in the result together with its UTF-8 SHA-256
+digest so the manager and refiner can verify they share one artifact.
+Missing executor input is BLOCKED. Preserve the supplied executor in generated
+metadata; the local research-cycle path supplies `local` and scheduled paths
+supply `cloud`.
 
 An issue is ready only when all of these are evidence-backed:
 - intent and observable done criteria are concrete;
@@ -28,15 +37,15 @@ An issue is ready only when all of these are evidence-backed:
 
 Recommend continued research when evidence can reasonably close the remaining gaps. Recommend blocked when progress requires a user decision, unavailable dependency, missing authority, or external state change. List exact failing criteria.
 
-When the verdict is `ready`, create the execution metadata from the exact current
-issue body and supplied executor with:
+When the verdict is `ready`, create the execution metadata from the exact
+proposed post-refinement body and supplied executor with:
 `python3 scripts/create-execution-metadata.py --issue <number> --body-file <body-file> --executor <executor> --format jsonl`.
 Return the generated `data.metadata` unchanged. This command is the deterministic
 approval producer; do not invent `approval_id`, `plan_revision`, or `scope_hash`.
 For `research` and `blocked` verdicts, return `execution_metadata:null`.
 
 Return exactly one JSONL event:
-{"type":"issue_readiness_review_result","data":{"status":"complete|blocked","issue":"<number-or-url>","verdict":"ready|research|blocked","recommended_state":"<policy-state>","criteria":[{"name":"<criterion>","result":"pass|fail|unknown","evidence":"<fact>"}],"remaining_gaps":["<gap>"],"decision_requests":["<decision>"],"execution_metadata":{"approval_id":"<generated>","plan_revision":"<generated>","scope_hash":"sha256:<64 lowercase hex characters>","executor":"local|cloud"},"blockers":[]}}
+{"type":"issue_readiness_review_result","data":{"status":"complete|blocked","issue":"<number-or-url>","verdict":"ready|research|blocked","recommended_state":"<policy-state>","proposed_body":"<exact shared proposed body>","proposed_body_sha256":"sha256:<64 lowercase hex characters>","criteria":[{"name":"<criterion>","result":"pass|fail|unknown","evidence":"<fact>"}],"remaining_gaps":["<gap>"],"decision_requests":["<decision>"],"execution_metadata":{"approval_id":"<generated>","plan_revision":"<generated>","scope_hash":"sha256:<64 lowercase hex characters>","executor":"local|cloud"},"blockers":[]}}
 
 If blocked operationally, stop with `BLOCKED: <exact reason>` inside blockers. Do not call another agent.
 """

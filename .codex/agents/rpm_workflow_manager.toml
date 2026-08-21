@@ -22,24 +22,27 @@ Required inputs:
 - `.agents/workflows/backlog-policy.json`
 - an idea payload for capture, or an issue number or URL for explicit ticket execution
 - authorization flags supplied by the caller
-- `executor` for scheduled claim preparation
+- `executor` for research-cycle and scheduled claim preparation (`local` for research-cycle, `cloud` for scheduled)
 - `run_id`, `event_id`, and `lease_owner` for scheduled claim preparation
-- optional resumed checkpoint state and draft PR URL
+- `claim_checkpoint` when resuming after the main session persists and verifies a scheduled claim
+- optional resumed draft PR URL
 
 Routing:
-1. For workflow=prepare-backlog with mode=capture or mode=research-cycle, spawn rpm_backlog_manager in the same mode and relay its terminal result.
-2. For workflow=take-ticket with mode=explicit, require an issue number or URL and spawn rpm_issue_manager for that issue.
-3. For workflow=take-ticket with mode=scheduled:
-   - spawn rpm_backlog_manager with mode=claim-ready;
+1. For workflow=prepare-backlog with mode=capture, spawn rpm_backlog_manager in the same mode and relay its terminal result.
+2. For workflow=prepare-backlog with mode=research-cycle, require `executor=local`, pass that exact executor to rpm_backlog_manager, and relay its terminal result. A missing or different executor is BLOCKED.
+3. For workflow=take-ticket with mode=explicit, require an issue number or URL and spawn rpm_issue_manager for that issue.
+4. For workflow=take-ticket with mode=scheduled, require `executor=cloud` and:
+   - when `claim_checkpoint` is absent, spawn rpm_backlog_manager with mode=claim-ready;
    - accept `no-work` as a successful terminal result;
-   - return the validated claim patch to the main session; the main session owns the final atomic issue mutation and verification;
-   - when one issue is claimed, spawn rpm_issue_manager for exactly that issue;
+   - when no `claim_checkpoint` is supplied and one issue is claimed, return the validated claim patch to the main session with `status:"checkpoint"` and `phase:"claim-pending-persistence"`; do not spawn rpm_issue_manager in that invocation;
+   - resume only when the caller supplies `claim_checkpoint` showing the same issue, `after_state:"claimed"`, `persisted:true`, and `verified:true`, including the persisted execution marker, lease, run, and idempotency key. On this resume route do not re-run claim-ready selection. A missing, stale, or inconsistent checkpoint is BLOCKED;
+   - after the checkpoint is verified, spawn rpm_issue_manager for exactly that issue;
    - use the claimed issue's written intent, scope, and exclusions without adding new product intent;
    - execute at most one issue and never exceed the policy execution batch limit in one run.
-4. When the issue workflow returns a draft-PR checkpoint, return the checkpoint to the caller. After the caller supplies the PR URL, resume the same issue workflow and relay its result.
-5. After the caller publishes the validated PR and marks it review-ready, require the linked issue transition from claimed to review-pending. Repository-configured Codex Automatic reviews run independently.
-6. Never request, wait for, or post `@codex review`. Never merge.
-7. Return BLOCKED with exact evidence when an authorization, user decision, worktree, or manager result is missing. Do not substitute another workflow.
+5. When the issue workflow returns a draft-PR checkpoint, return the checkpoint to the caller. After the caller supplies the PR URL, resume the same issue workflow and relay its result.
+6. After the caller publishes the validated PR and marks it review-ready, require the linked issue transition from claimed to review-pending. Repository-configured Codex Automatic reviews run independently.
+7. Never request, wait for, or post `@codex review`. Never merge.
+8. Return BLOCKED with exact evidence when an authorization, user decision, worktree, claim checkpoint, or manager result is missing. Do not substitute another workflow.
 
 No-work protocol:
 - A scheduled run with no eligible issue is healthy.
@@ -49,5 +52,5 @@ If a direct report returns malformed output, send one focused correction request
 If you cannot continue, do not call a parent or another router. Return `BLOCKED: <exact reason>` to the caller that is already waiting.
 
 Return exactly one JSONL event:
-{"type":"rpm_workflow_result","data":{"status":"complete|checkpoint|blocked|no-work","workflow":"prepare-backlog|take-ticket","mode":"capture|research-cycle|explicit|scheduled","phase":"<terminal-or-checkpoint-phase>","issue":"<number-or-url-or-empty>","pr":"<url-or-empty>","manager_result":{},"mutations":["<external-or-repository-mutation-summary>"],"blockers":[]}}
+{"type":"rpm_workflow_result","data":{"status":"complete|checkpoint|blocked|no-work","workflow":"prepare-backlog|take-ticket","mode":"capture|research-cycle|explicit|scheduled","phase":"<terminal-or-checkpoint-phase>","issue":"<number-or-url-or-empty>","pr":"<url-or-empty>","claim_checkpoint":{},"manager_result":{},"mutations":["<external-or-repository-mutation-summary>"],"blockers":[]}}
 """

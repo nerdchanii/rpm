@@ -53,6 +53,9 @@ policy-defined research state.
 ```text
 Use $prepare-backlog in research-cycle mode for nerdchanii/rpm.
 
+Pass `executor=local` through the workflow manager, readiness reviewer, and
+issue refiner. Missing or inconsistent executor input is blocked.
+
 Follow .agents/workflows/backlog-policy.json. Run the backlog access preflight,
 inventory Project #7 locally, and process at most the configured research batch. Gather
 current repository, SPEC, ADR, issue, PR, dependency, and necessary primary
@@ -67,6 +70,9 @@ Recommended interval: every 2 hours.
 
 ```text
 Use $take-ticket in scheduled mode for nerdchanii/rpm.
+
+Pass `executor=cloud` through the workflow manager, backlog manager, and claim
+path. Missing or inconsistent executor input is blocked.
 
 Follow .agents/workflows/backlog-policy.json. Use the connected GitHub plugin
 and the open issue lifecycle-label queue. Do not require the gh CLI or Project
@@ -91,6 +97,9 @@ without mutation. Otherwise select at most one agent:ready issue in
 issue-number ascending order, refetch it, validate its approved execution
 metadata, and pass the claim contract with the current event key. Persist the
 lease and idempotency record before replacing agent:ready with agent:claimed.
+The router returns a claim-pending-persistence checkpoint and starts the issue
+manager only after the main session refetches, compare-and-set applies the
+expected predecessor marker, and verifies the persisted claim checkpoint.
 Skip an issue already closed by an open PR. Execute it in an isolated worktree, complete contract review, tests,
 just validate, internal adversarial review, intentional commits, push, and PR
 publication. Mark the PR review-ready for repository-configured Codex Automatic

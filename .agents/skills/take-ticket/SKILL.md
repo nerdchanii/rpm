@@ -23,7 +23,7 @@ Use `explicit <issue-number-or-url>` when the user selects an issue. Supply the 
 
 Use `scheduled` without an issue number. The router reads `.agents/workflows/backlog-policy.json`, claims at most the configured execution batch limit, and executes the single claimed issue.
 
-`no-work` is a healthy terminal result. Report it concisely and make no repository or GitHub mutation.
+`no-work` is a healthy terminal result. Report it concisely and make no repository or GitHub mutation. Scheduled mode requires `executor=cloud`.
 
 Before the scheduled `agent:ready` to `agent:claimed` transition, validate the
 managed execution metadata and run the policy-defined claim contract. The
@@ -48,14 +48,16 @@ label mutation. A stale revision, scope, executor, or expired lease returns
    - requested outcome and exclusions for explicit mode
    - issue-defined intent and exclusions for scheduled mode
    - `may_create_followup_issues` from policy or explicit user authorization
+   - `executor=cloud` for scheduled mode
    - maximum correction loops, normally `2`
 6. Wait for its structured result.
-7. In scheduled mode, before starting the claimed issue, refetch the issue in the
-   main session. Run `scripts/apply-execution-marker.py` against the current
-   body and returned marker, then apply the resulting body and labels as one
-   issue update: replace exactly one execution marker and the ready lifecycle
-   label, preserve all other body text and labels, and verify the lease and
-   idempotency record. A
+7. In scheduled mode, a claim result is a persistence checkpoint. Before
+   starting the claimed issue, refetch the issue in the main session and run
+   `scripts/apply-execution-marker.py` with both the returned marker and its
+   `expected_execution_marker`; apply the resulting body and labels as one issue
+   update. Verify the lease and idempotency record, then resume the same router
+   with `claim_checkpoint={persisted:true,verified:true,after_state:"claimed",...}`.
+   The router starts per-issue execution only after that checkpoint. A
    compare-and-set mismatch returns `no-work` without selecting a replacement.
 8. When it returns a Draft PR checkpoint:
    - inspect the reported contract decision and focused plan;

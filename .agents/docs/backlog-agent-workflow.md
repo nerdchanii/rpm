@@ -52,10 +52,13 @@ python3 scripts/check-cloud-queue-contract.py \
 The claim operation performs metadata validation, compare-and-set checking,
 open-closing-PR rejection, lease checks, plan/scope/executor matching, and
 duplicate-event handling. Its result includes the exact lease, ledger, marker,
-and label patch. The read-only claimer returns that patch; the main session
-uses `scripts/apply-execution-marker.py`, refetches the issue, and persists the
-marker and label transition in one issue mutation. An expired lease requires an
-explicit recovery transition. It never silently reclaims active work.
+and label patch. The read-only claimer returns that patch, including the exact
+approved marker predecessor. The main session refetches the issue, uses
+`scripts/apply-execution-marker.py --expected-marker-file`, and persists the
+marker and label transition in one issue mutation. The router resumes only
+after the main session verifies that durable checkpoint. An expired lease
+requires an explicit recovery transition. It never silently reclaims active
+work.
 
 Codex scheduled tasks are the wake-up and recovery path. Each task must
 refetch current GitHub state and persist the claim before any mutation.
@@ -142,11 +145,14 @@ user-authored text outside the markers remains unchanged.
    `scripts/backlog-gen --state research --format jsonl`.
 3. Recheck SPECs, ADRs, code, tests, dependencies, duplicates, and relevant
    primary external sources.
-4. Judge readiness independently.
-5. Update the managed research region.
-6. Confirm the generated body with
+4. Build one proposed post-refinement body and pass it byte-for-byte to the
+   readiness reviewer.
+5. Judge readiness and generate execution metadata from that proposed body.
+6. Update the managed research region with the same proposed body.
+7. Confirm the generated body with
    `scripts/check-agent-issue-readiness.py`.
-7. Apply only a policy-authorized lifecycle transition.
+8. Apply only a policy-authorized lifecycle transition. Research-cycle passes
+   `executor=local`; scheduled claim execution passes `executor=cloud`.
 
 An empty eligible set returns `no-work`. It is a successful, idempotent
 terminal result.

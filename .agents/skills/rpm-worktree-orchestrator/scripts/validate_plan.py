@@ -44,7 +44,10 @@ def normalize_path(value: str) -> str:
         or path.startswith("~")
     ):
         invalid(f"unsafe write path: {value!r}")
-    return path.removeprefix("./")
+    normalized = path.removeprefix("./")
+    if normalized == ".git" or normalized.startswith(".git/"):
+        invalid(f"unsafe write path: {value!r}")
+    return normalized
 
 
 def overlap(left: str, right: str) -> bool:
