@@ -162,6 +162,42 @@ def execution_marker(
     return f"<!-- rpm-agent-execution: {encoded} -->"
 
 
+def persisted_runs(fixture: dict[str, object], issue: dict[str, object]) -> list[dict[str, object]]:
+    execution = issue.get("execution")
+    sources: list[object] = []
+    if isinstance(execution, dict) and "runs" in execution:
+        sources.append(execution["runs"])
+    sources.append(fixture.get("runs", []))
+    result: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw_runs in sources:
+        if not isinstance(raw_runs, list) or not all(isinstance(run, dict) for run in raw_runs):
+            raise ValueError("persisted runs must be an array of objects")
+        for run in raw_runs:
+            normalized = json.dumps(run, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if normalized not in seen:
+                seen.add(normalized)
+                result.append(dict(run))
+    return result
+
+
+def current_execution_marker(
+    issue: dict[str, object], metadata: dict[str, object], runs: list[dict[str, object]]
+) -> str:
+    explicit = issue.get("execution_marker")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    execution = issue.get("execution")
+    if not isinstance(execution, dict) or ("lease" not in execution and "runs" not in execution):
+        return approval_marker(metadata)
+    lease = execution.get("lease")
+    if not isinstance(lease, dict) or not runs:
+        raise ValueError("recovery execution marker must include lease and runs")
+    payload = {**metadata, "lease": lease, "runs": runs}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"<!-- rpm-agent-execution: {encoded} -->"
+
+
 def claim(
     fixture: dict[str, object],
     lifecycle: dict[str, str],
@@ -211,9 +247,7 @@ def claim(
     if not run_id.strip() or not event_id.strip() or not lease_owner.strip():
         raise ValueError("run_id, event_id, and lease_owner are required for claim")
     key = idempotency_key(repository, issue_number, plan_revision, scope_hash, event_id)
-    runs = fixture.get("runs", [])
-    if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
-        raise ValueError("fixture runs must be an array of objects")
+    runs = persisted_runs(fixture, issue)
     matching_runs = [run for run in runs if run.get("idempotency_key") == key]
     if matching_runs:
         if all(run.get("run_id") == run_id for run in matching_runs):
@@ -274,11 +308,12 @@ def claim(
         "run_id": run_id,
         "event_id": event_id,
         "idempotency_key": key,
+        "expected_labels": issue_labels(issue),
         "preserved_labels": ordinary,
         "labels": sorted([*ordinary, lifecycle["claimed"]]),
         "lease": lease,
         "run": run,
-        "expected_execution_marker": approval_marker(metadata),
+        "expected_execution_marker": current_execution_marker(issue, metadata, runs),
         "execution_marker": marker,
         "execution": {
             "lease": lease,

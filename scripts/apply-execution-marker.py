@@ -69,6 +69,20 @@ def validate_approval_marker(marker: str) -> None:
         raise ValueError("expected marker has an invalid scope hash")
 
 
+def validate_expected_marker(marker: str) -> None:
+    match = MARKER_LINE.fullmatch(marker.strip())
+    if match is None:
+        raise ValueError("expected marker must be one rpm-agent-execution comment")
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError as error:
+        raise ValueError("expected marker JSON is invalid") from error
+    if isinstance(payload, dict) and set(payload) == set(REQUIRED_FIELDS):
+        validate_approval_marker(marker)
+        return
+    validate_marker(marker)
+
+
 def apply_marker(
     body: str,
     marker: str,
@@ -82,7 +96,7 @@ def apply_marker(
         raise ValueError("claim application requires an expected predecessor or explicit initialization")
     normalized_expected = expected_marker.strip() if expected_marker is not None else None
     if normalized_expected is not None:
-        validate_approval_marker(normalized_expected)
+        validate_expected_marker(normalized_expected)
     lines = body.splitlines(keepends=True)
     matches = [index for index, line in enumerate(lines) if MARKER_LINE.fullmatch(line.rstrip("\r\n"))]
     if len(matches) > 1:

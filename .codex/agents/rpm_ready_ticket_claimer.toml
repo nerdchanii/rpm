@@ -18,17 +18,18 @@ Read the policy first. Use the GitHub plugin and immediately refetch the issue b
 
 Perform only this read-only compare-and-set preparation:
 1. immediately refetch the full current issue, including body, labels, state, and closing PRs;
-2. reject the run with `no-work` when the issue is no longer open/ready, has an open closing PR, has an active lease, or has a duplicate event;
-3. compute the policy-defined idempotency key from repository, issue, plan revision, scope hash, and event id;
-4. copy the full current label set and replace only the policy-defined ready label with the claimed label;
-5. replace only the execution marker in the body with the approved metadata plus `lease:{run_id,owner,expires_at}` and one `runs` ledger record containing `run_id`, `event_id`, `idempotency_key`, and `status:"active"`;
-6. return a patch containing the expected ready state, the exact `expected_execution_marker` predecessor, the generated execution marker, and the complete replacement label set. Do not return or synthesize a replacement for any other body text;
-7. the main session will refetch once more, use `scripts/apply-execution-marker.py` with the expected predecessor to replace exactly one marker, and apply the resulting body and labels in one issue mutation, preserving every byte outside the marker and every non-lifecycle label.
+2. regenerate approval metadata from the refetched `Initial scope` and `Done criteria` with `scripts/create-execution-metadata.py`, using the supplied executor, and require its approval id, plan revision, scope hash, and executor to match the current execution marker and approved metadata. A changed scope or stale marker is `blocked` with exact evidence;
+3. reject the run with `no-work` when the issue is no longer open/ready, has an open closing PR, has an active lease, or has a duplicate event;
+4. compute the policy-defined idempotency key from repository, issue, plan revision, scope hash, and event id;
+5. copy the full current label set and replace only the policy-defined ready label with the claimed label;
+6. replace only the execution marker in the body with the approved metadata plus `lease:{run_id,owner,expires_at}` and one `runs` ledger record containing `run_id`, `event_id`, `idempotency_key`, and `status:"active"`;
+7. return a patch containing the expected ready state, the exact current `expected_execution_marker` predecessor (including any existing lease and runs ledger), the complete `expected_labels` predecessor, the generated execution marker, and the complete replacement label set. Do not return or synthesize a replacement for any other body text;
+8. the main session will refetch once more, compare `before_state` and `expected_labels`, use `scripts/apply-execution-marker.py` with the expected predecessor to replace exactly one marker, and apply the resulting body and labels in one issue mutation, preserving every byte outside the marker and every non-lifecycle label.
 
 Process at most one issue. If another actor already claimed or changed the issue, return `no-work` with race evidence. Do not repair any other state and do not claim a replacement issue.
 
 Return exactly one JSONL event:
-{"type":"ready_ticket_claim_result","data":{"status":"claim-patch|no-work|blocked","issue":"<number-or-url>","before_state":"<policy-state>","after_state":"claimed|<empty>","preserved_labels":["<non-lifecycle-label>"],"labels":["agent:claimed","<ordinary-label>"],"expected_execution_marker":"<!-- rpm-agent-execution: {...} -->","execution_marker":"<!-- rpm-agent-execution: {...} -->","idempotency_key":"sha256:<64 lowercase hex characters>","lease":{"run_id":"<run-id>","owner":"<owner>","expires_at":"<RFC3339>"},"run":{"run_id":"<run-id>","event_id":"<event-id>","idempotency_key":"sha256:<64 lowercase hex characters>","status":"active"},"verified":false,"race_evidence":["<fact>"],"blockers":[]}}
+{"type":"ready_ticket_claim_result","data":{"status":"claim-patch|no-work|blocked","issue":"<number-or-url>","before_state":"<policy-state>","after_state":"claimed|<empty>","preserved_labels":["<non-lifecycle-label>"],"expected_labels":["agent:ready","<ordinary-label>"],"labels":["agent:claimed","<ordinary-label>"],"expected_execution_marker":"<!-- rpm-agent-execution: {...} -->","execution_marker":"<!-- rpm-agent-execution: {...} -->","idempotency_key":"sha256:<64 lowercase hex characters>","lease":{"run_id":"<run-id>","owner":"<owner>","expires_at":"<RFC3339>"},"run":{"run_id":"<run-id>","event_id":"<event-id>","idempotency_key":"sha256:<64 lowercase hex characters>","status":"active"},"verified":false,"race_evidence":["<fact>"],"blockers":[]}}
 
 If blocked, stop with `BLOCKED: <exact reason>` inside blockers. Do not call another agent.
 """

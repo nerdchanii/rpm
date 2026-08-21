@@ -49,6 +49,13 @@ class ApplyExecutionMarkerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "compare-and-set"):
             MODULE.apply_marker(changed + "\n", MARKER, expected_marker=APPROVAL_MARKER)
 
+    def test_full_recovery_predecessor_is_accepted(self) -> None:
+        replacement = MARKER.replace('"run_id":"r"', '"run_id":"next"')
+        self.assertEqual(
+            MODULE.apply_marker(MARKER + "\n", replacement, expected_marker=MARKER),
+            replacement + "\n",
+        )
+
     def test_initialization_rejects_existing_marker(self) -> None:
         with self.assertRaisesRegex(ValueError, "initialization"):
             MODULE.apply_marker(APPROVAL_MARKER + "\n", MARKER, initialization=True)

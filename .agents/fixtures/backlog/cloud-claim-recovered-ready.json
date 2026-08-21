@@ -1,0 +1,32 @@
+{
+  "repository": "nerdchanii/rpm",
+  "now": "2026-08-21T12:00:00Z",
+  "runs": [],
+  "issues": [
+    {
+      "number": 15,
+      "state": "OPEN",
+      "labels": ["agent:ready", "priority:high"],
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "approval-15",
+        "plan_revision": "plan-15",
+        "scope_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "executor": "cloud",
+        "lease": {
+          "run_id": "run-old",
+          "owner": "cloud:executor",
+          "expires_at": "2026-08-21T11:00:00Z"
+        },
+        "runs": [
+          {
+            "run_id": "run-old",
+            "event_id": "delivery-old",
+            "idempotency_key": "sha256:f04bba720226fc4a2b051d3f5b9be7f9dd4550c0048d8a227d8d43328b445055",
+            "status": "active"
+          }
+        ]
+      }
+    }
+  ]
+}

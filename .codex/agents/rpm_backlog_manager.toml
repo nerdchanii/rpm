@@ -30,9 +30,10 @@ Required inputs:
 - executor for research-cycle ready metadata
 - `run_id`, `event_id`, and `lease_owner` for claim-ready mode
 
-For `research-cycle`, a missing executor is BLOCKED. The only valid executor
-for the local research entry point is `local`; pass that exact value to the
-readiness reviewer and issue refiner and block any mismatched result.
+For `research-cycle`, a missing or invalid executor is BLOCKED. The caller
+supplies the intended execution target; preserve that exact value through the
+readiness reviewer and issue refiner and block any mismatched result. The
+environment performing research must not select or rewrite the executor.
 
 Mode state machines:
 

@@ -151,8 +151,9 @@ user-authored text outside the markers remains unchanged.
 6. Update the managed research region with the same proposed body.
 7. Confirm the generated body with
    `scripts/check-agent-issue-readiness.py`.
-8. Apply only a policy-authorized lifecycle transition. Research-cycle passes
-   `executor=local`; scheduled claim execution passes `executor=cloud`.
+8. Apply only a policy-authorized lifecycle transition. Research-cycle carries
+   the intended execution executor unchanged; the documented path for issues
+   destined for scheduled claim execution passes `executor=cloud`.
 
 An empty eligible set returns `no-work`. It is a successful, idempotent
 terminal result.
@@ -166,7 +167,11 @@ review-pending. Otherwise it rejects conflicting lifecycle labels, rejects a
 ready issue without valid execution metadata, sorts ready issues by issue
 number, selects at most one, refetches it, checks for an existing closing open
 PR, and runs the claim contract before replacing ready with claimed. The claim
-must record its lease and idempotency key while preserving ordinary labels.
+must record its lease and idempotency key while preserving ordinary labels. The
+scheduler supplies stable `run_id`, `event_id`, and `lease_owner` values and
+reuses them for retries of one delivery. The main-session persistence
+checkpoint compares the full refetched label set with the claimer's expected
+label predecessor before applying the body and label update.
 
 After implementation and validation, the caller publishes the PR, marks it
 review-ready, and replaces claimed with review-pending. Repository-configured

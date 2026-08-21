@@ -132,7 +132,7 @@ def validate(plan: Any) -> None:
             unfinished = [
                 dependency
                 for dependency in node["depends_on"]
-                if by_id[dependency]["state"] not in {"completed", "integrated"}
+                if by_id[dependency]["state"] != "integrated"
             ]
             if unfinished:
                 invalid(f"{node_id} has unfinished dependencies: {','.join(unfinished)}")

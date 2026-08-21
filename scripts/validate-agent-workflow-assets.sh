@@ -727,11 +727,27 @@ check "cloud_claim_contract" sh -c '
     and .data.run.run_id == \"run-3\"
     and .data.run.event_id == \"delivery-3\"
     and .data.run.idempotency_key == .data.idempotency_key
+    and .data.expected_labels == [\"agent:ready\",\"priority:high\"]
     and (.data.execution_marker | contains(\"rpm-agent-execution\"))
     and (.data.execution_marker | contains(\"\\\"lease\\\"\"))
     and .data.execution.runs[0].status == \"active\"
     and .data.preserved_labels == [\"priority:high\"]
     and .data.labels == [\"agent:claimed\",\"priority:high\"]
+  " >/dev/null
+'
+check "cloud_claim_recovery_preserves_marker" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-recovered-ready.json \
+    --operation claim --issue 15 --run-id run-new --event-id delivery-new \
+    --executor cloud --plan-revision plan-15 \
+    --scope-hash sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
+    --lease-owner cloud:executor)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"claim\"
+    and (.data.expected_execution_marker | contains(\"\\\"lease\\\"\"))
+    and (.data.expected_execution_marker | contains(\"\\\"runs\\\"\"))
+    and (.data.execution.runs | length) == 2
+    and .data.execution.runs[0].event_id == \"delivery-old\"
   " >/dev/null
 '
 check "cloud_claim_preserves_prior_runs" sh -c '

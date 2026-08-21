@@ -22,16 +22,16 @@ Required inputs:
 - `.agents/workflows/backlog-policy.json`
 - an idea payload for capture, or an issue number or URL for explicit ticket execution
 - authorization flags supplied by the caller
-- `executor` for research-cycle and scheduled claim preparation (`local` for research-cycle, `cloud` for scheduled)
-- `run_id`, `event_id`, and `lease_owner` for scheduled claim preparation
+- `executor` for research-cycle and scheduled claim preparation (the intended execution target for research-cycle; `cloud` for scheduled)
+- scheduler-derived `run_id`, `event_id`, and `lease_owner` for scheduled claim preparation; retries of one delivery reuse the same identifiers
 - `claim_checkpoint` when resuming after the main session persists and verifies a scheduled claim
 - optional resumed draft PR URL
 
 Routing:
 1. For workflow=prepare-backlog with mode=capture, spawn rpm_backlog_manager in the same mode and relay its terminal result.
-2. For workflow=prepare-backlog with mode=research-cycle, require `executor=local`, pass that exact executor to rpm_backlog_manager, and relay its terminal result. A missing or different executor is BLOCKED.
+2. For workflow=prepare-backlog with mode=research-cycle, require a supplied policy-valid executor, pass that exact executor to rpm_backlog_manager, and relay its terminal result. A missing, invalid, or changed executor is BLOCKED; the local research environment does not imply `local` execution.
 3. For workflow=take-ticket with mode=explicit, require an issue number or URL and spawn rpm_issue_manager for that issue.
-4. For workflow=take-ticket with mode=scheduled, require `executor=cloud` and:
+4. For workflow=take-ticket with mode=scheduled, require `executor=cloud` and scheduler-derived `run_id`, `event_id`, and `lease_owner`. The scheduler's event and run identifiers must be reused for retries of the same delivery. Then:
    - when `claim_checkpoint` is absent, spawn rpm_backlog_manager with mode=claim-ready;
    - accept `no-work` as a successful terminal result;
    - when no `claim_checkpoint` is supplied and one issue is claimed, return the validated claim patch to the main session with `status:"checkpoint"` and `phase:"claim-pending-persistence"`; do not spawn rpm_issue_manager in that invocation;

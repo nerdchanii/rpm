@@ -74,7 +74,7 @@ fixture-smoke:
 # Validate project-scoped skills, agents, hooks, and deterministic workflow helpers.
 agent-assets:
     @echo "::rpm::begin agent-assets"
-    @./scripts/validate-agent-workflow-assets.sh --format=summary
+    @bash ./scripts/validate-agent-workflow-assets.sh --format=summary
     @echo "::rpm::end agent-assets"
 
 # Run benchmarks when benchmark targets exist. Extra cargo bench args are forwarded.

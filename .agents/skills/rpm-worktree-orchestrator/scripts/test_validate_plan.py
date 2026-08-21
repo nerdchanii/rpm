@@ -64,6 +64,17 @@ class ValidatePlanTests(unittest.TestCase):
             )
         )
 
+    def test_completed_dependency_is_not_integrated(self) -> None:
+        self.assert_invalid(
+            plan(
+                [
+                    node("producer", state="completed"),
+                    node("consumer", depends_on=["producer"], state="ready"),
+                ]
+            ),
+            "unfinished dependencies",
+        )
+
     def test_windows_absolute_path(self) -> None:
         self.assert_invalid(plan([node("a", paths=["C:/Users/me/file"])]), "unsafe write path")
 

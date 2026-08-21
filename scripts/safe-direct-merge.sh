@@ -124,15 +124,19 @@ merge_one() {
   # Never delete or force-remove a worktree. A held branch may contain user
   # changes or belong to another Codex task; the caller must hand it off or
   # clean it explicitly before retrying this merge.
-  local wt wt_branch
-  while IFS= read -r wt; do
+  local wt wt_branch worktree_record
+  while IFS= read -r worktree_record; do
+    case "$worktree_record" in
+      "worktree "*) wt="${worktree_record#worktree }" ;;
+      *) continue ;;
+    esac
     [ -n "$wt" ] || continue
     wt_branch="$(git -C "$wt" branch --show-current 2>/dev/null || true)"
     if [ "$wt_branch" = "$branch" ]; then
       echo "skip: branch-held-by-worktree=$wt branch=$branch (handoff or clean it, then retry)"
       return 1
     fi
-  done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
+  done < <(git worktree list --porcelain 2>/dev/null)
 
   echo "OK: branch=$branch mergeable=$mergeable mergeState=$merge_state checks=green"
 

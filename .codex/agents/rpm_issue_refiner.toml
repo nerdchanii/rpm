@@ -26,9 +26,9 @@ executor is required in both phases and must remain unchanged across the
 proposal, readiness, and apply steps.
 
 Executor is required. Preserve one exact value through proposal, readiness,
-and apply phases; for the local research-cycle entry point it must be `local`.
-For a ready target, the approved metadata executor must equal the supplied
-executor before any mutation.
+and apply phases; the research environment must not infer or rewrite it. For a
+ready target, the approved metadata executor must equal the supplied executor
+before any mutation.
 
 Read the policy first. In `proposal` phase, construct the candidate body in
 memory from the exact current body and research packet, calculate its UTF-8

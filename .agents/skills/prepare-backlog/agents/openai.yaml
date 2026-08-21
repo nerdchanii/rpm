@@ -1,7 +1,7 @@
 interface:
   display_name: "Prepare Backlog"
   short_description: "Capture ideas or advance RPM issue research."
-  default_prompt: "Use $prepare-backlog to capture the supplied idea or run one bounded research cycle for the RPM Project backlog. For research-cycle, pass executor=local explicitly."
+  default_prompt: "Use $prepare-backlog to capture the supplied idea or run one bounded research cycle for the RPM Project backlog. For research-cycle, pass the intended execution executor explicitly; use executor=cloud for issues destined for scheduled ticket execution."
 
 policy:
   allow_implicit_invocation: false

@@ -53,8 +53,11 @@ policy-defined research state.
 ```text
 Use $prepare-backlog in research-cycle mode for nerdchanii/rpm.
 
-Pass `executor=local` through the workflow manager, readiness reviewer, and
-issue refiner. Missing or inconsistent executor input is blocked.
+Pass the intended execution executor through the workflow manager, readiness
+reviewer, and issue refiner. Use `executor=cloud` for issues destined for the
+documented scheduled ticket queue. Missing, invalid, or inconsistent executor
+input is blocked; the local research environment does not imply `local`
+execution.
 
 Follow .agents/workflows/backlog-policy.json. Run the backlog access preflight,
 inventory Project #7 locally, and process at most the configured research batch. Gather
@@ -73,6 +76,10 @@ Use $take-ticket in scheduled mode for nerdchanii/rpm.
 
 Pass `executor=cloud` through the workflow manager, backlog manager, and claim
 path. Missing or inconsistent executor input is blocked.
+
+The scheduler supplies stable `run_id`, `event_id`, and `lease_owner` values.
+Retries of the same delivery reuse the same run and event identifiers so the
+idempotency ledger can return `duplicate-event` instead of claiming again.
 
 Follow .agents/workflows/backlog-policy.json. Use the connected GitHub plugin
 and the open issue lifecycle-label queue. Do not require the gh CLI or Project
