@@ -579,19 +579,25 @@ check_just_test_verbosity() {
   ln -s /bin/echo "${temp_dir}/cargo"
 
   output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -v)"
-  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -v$'
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -v$' || return 1
 
   output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -vv)"
-  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -vv$'
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -vv$' || return 1
 
   output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -vvv)"
-  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -vvv$'
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -vvv$' || return 1
 
   output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test --verbose)"
-  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests --verbose$'
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests --verbose$' || return 1
 
   output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test package_filter --nocapture)"
-  printf '%s\n' "${output}" | rg -q '^test --quiet --locked --lib --bins --tests package_filter --nocapture$'
+  printf '%s\n' "${output}" | rg -q '^test --quiet --locked --lib --bins --tests package_filter --nocapture$' || return 1
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -q)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -q$' || return 1
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test --quiet)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests --quiet$' || return 1
 }
 
 for skill in .agents/skills/*; do

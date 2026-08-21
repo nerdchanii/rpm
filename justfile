@@ -45,6 +45,7 @@ lint:
 test *args:
     @test_args=({{args}}); \
     verbose=0; \
+    quiet=0; \
     for arg in "${test_args[@]}"; do \
       case "${arg}" in \
         --verbose) verbose=1 ;; \
@@ -55,10 +56,11 @@ test *args:
             *) verbose=1 ;; \
           esac \
           ;; \
+        -q|--quiet) quiet=1 ;; \
       esac; \
     done; \
     cargo_command=(cargo test); \
-    if [ "${verbose}" -eq 0 ]; then cargo_command+=(--quiet); fi; \
+    if [ "${verbose}" -eq 0 ] && [ "${quiet}" -eq 0 ]; then cargo_command+=(--quiet); fi; \
     echo "::rpm::begin test ${cargo_command[*]} --locked --lib --bins --tests ${test_args[*]}"; \
     "${cargo_command[@]}" --locked --lib --bins --tests "${test_args[@]}"
     @echo "::rpm::end test"
