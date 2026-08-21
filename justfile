@@ -43,8 +43,10 @@ lint:
 
 # Run tests. Extra cargo test args may be passed after the recipe name.
 test *args:
-    @echo "::rpm::begin test cargo test --quiet --locked --lib --bins --tests {{args}}"
-    @cargo test --quiet --locked --lib --bins --tests {{args}}
+    @case " {{args}} " in \
+        *" --verbose "*|*" -v "*) echo "::rpm::begin test cargo test --locked --lib --bins --tests {{args}}"; cargo test --locked --lib --bins --tests {{args}} ;; \
+        *) echo "::rpm::begin test cargo test --quiet --locked --lib --bins --tests {{args}}"; cargo test --quiet --locked --lib --bins --tests {{args}} ;; \
+    esac
     @echo "::rpm::end test"
 
 # Enforce the repository line coverage floor.

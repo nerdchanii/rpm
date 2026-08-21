@@ -59,6 +59,8 @@ RPM 정책은 batch limit, lifecycle label, lease, idempotency, `scope_hash`,
 모든 dependency를 포함하는 검증된 aggregate revision과
 `base_revision_dependencies` 목록을 기록합니다. `required_gates`가 모두
 성공해 `integrated`가 되기 전에는 전체 작업을 완료로 판정하지 않습니다.
+`write_paths`는 저장소 상대 경로의 명시적인 파일·디렉터리 목록이며 `*`와
+Git control path는 허용하지 않습니다.
 
 허용 상태는 다음과 같습니다.
 
@@ -71,6 +73,10 @@ RPM 정책은 batch limit, lifecycle label, lease, idempotency, `scope_hash`,
 
 write worker 프롬프트의 필수 필드는
 [references/worker-contract.md](references/worker-contract.md)에 둡니다.
+메인 세션은 dispatch마다 현재 node의 `node_id`와 `attempt`를 함께 전달합니다.
+worker report는 같은 두 값을 반복해야 하며, 메인 세션은 현재 plan의 값과
+일치하지 않는 report를 stale 결과로 거부합니다. timeout·cancel 이후 늦게
+도착한 이전 attempt의 결과도 통합하지 않습니다.
 
 서로 겹치는 `write_paths`를 가진 write worker를 동시에 실행하지 않습니다.
 순차 dependency로 연결된 node는 이전 결과를 통합한 뒤 같은 경로를 다시
@@ -96,6 +102,7 @@ python3 .agents/skills/rpm-worktree-orchestrator/scripts/validate_plan.py <plan.
 기록합니다. 결과를 받으면 메인 세션이 다음을 확인합니다.
 
 - `PLAN_REVISION`과 `scope_hash`가 현재 계획과 일치하는지
+- report의 `node_id`와 `attempt`가 현재 dispatch 대상 node와 일치하는지
 - `git cat-file -e <sha>^{commit}`과
   `git merge-base --is-ancestor <base_revision> <sha>`가 성공하는지
 - `base_revision_dependencies`가 있으면 각 dependency의
