@@ -13,11 +13,17 @@ Required inputs:
 - exact current issue body and lifecycle labels
 - `.agents/workflows/backlog-policy.json`
 - complete research packet
-- complete readiness verdict
-- the exact approved `execution_metadata` from the readiness verdict when the target state is `ready`
-- the exact shared `proposed_body` from proposal phase when phase=apply
-- executor used to generate the approved metadata
 - authorization to refine this issue
+
+Proposal phase requires only the current body and lifecycle labels, research
+packet, executor, and refinement authorization. It does not require a
+readiness verdict or approved execution metadata.
+
+Apply phase additionally requires the exact shared `proposed_body` from
+proposal phase and the complete readiness verdict. For a `ready` target it
+also requires the exact approved `execution_metadata` from that verdict. The
+executor is required in both phases and must remain unchanged across the
+proposal, readiness, and apply steps.
 
 Executor is required. Preserve one exact value through proposal, readiness,
 and apply phases; for the local research-cycle entry point it must be `local`.
@@ -25,10 +31,11 @@ For a ready target, the approved metadata executor must equal the supplied
 executor before any mutation.
 
 Read the policy first. In `proposal` phase, construct the candidate body in
-memory from the exact current body and research packet, run the proposed-body
-readiness check, and return it without a GitHub mutation. In `apply` phase,
-require the caller's proposed body byte-for-byte and apply only an allowed
-lifecycle transition. Preserve every byte outside:
+memory from the exact current body and research packet, calculate its UTF-8
+SHA-256, and return it without a GitHub mutation. Do not run or report the
+final readiness check in this phase because execution metadata does not exist
+yet. In `apply` phase, require the caller's proposed body byte-for-byte and
+apply only an allowed lifecycle transition. Preserve every byte outside:
 - `<!-- rpm-agent-research:start -->`
 - `<!-- rpm-agent-research:end -->`
 
@@ -43,21 +50,31 @@ If the markers are missing, append one managed region at the end without changin
 
 Use each heading once. Replace the previous managed contents with the current evidence snapshot. Preserve the user's Intent, Motivation, Desired outcome, Constraints and exclusions, and Questions from author outside the markers.
 
-For a `ready` target in `apply` phase, create the execution marker from the
+For a `ready` target in `apply` phase, create the execution metadata from the
 shared proposed body with `scripts/create-execution-metadata.py` and compare
 its generated metadata byte-for-byte with the approved `execution_metadata`.
 Also compare the proposed-body SHA-256 with the readiness result. If either
-differs, return blocked without mutation. Replace any prior execution marker
-with the generated marker and keep exactly one marker. The marker is the only
-additional controlled change outside the research region. For `research` or
-`blocked`, do not add or change execution metadata.
+differs, return blocked without mutation. Build the candidate body by placing
+the generated execution marker in the shared proposed body, then run
+`scripts/check-agent-issue-readiness.py --body-file <candidate-body-file>
+--format jsonl` before mutation and require `data.ready=true`. Replace any
+prior execution marker with the generated marker and keep exactly one marker.
+The marker is the only additional controlled change outside the research
+region. Run the same readiness check after mutation and require
+`data.ready=true` again. For `research` or `blocked`, do not add or change
+execution metadata. The no-marker candidate may be checked before mutation;
+the expected result is `data.ready=false` with exit code `1`, and that result
+must be reported as expected not-ready evidence.
 
 Write the proposed body to `/tmp/rpm-issue-refinement-<issue>.md`. Run:
-- `python3 scripts/check-agent-issue-readiness.py --body-file <body-file> --format jsonl` before mutation;
 - `python3 scripts/create-execution-metadata.py --issue <issue> --body-file <body-file> --executor <executor> --format jsonl` for a ready target;
+- `python3 scripts/check-agent-issue-readiness.py --body-file <candidate-body-file> --format jsonl` before mutation after the ready marker has been added;
 - `python3 scripts/check-agent-issue-readiness.py --issue <issue> --format jsonl` after mutation.
 
-For a ready target state, both checks must report `data.ready=true`. For a research or blocked target state, a `needs-refinement` result is expected and must agree with the readiness verdict.
+For a ready target state, the pre- and post-mutation checks must report
+`data.ready=true`. For a research or blocked target state, the no-marker
+pre-mutation check must return exit code `1` and `data.ready=false`; that
+expected not-ready result must agree with the readiness verdict.
 
 Lifecycle mutation rules:
 - change only policy-defined lifecycle labels;
@@ -71,12 +88,14 @@ If the body update succeeds and the lifecycle update fails, report the partial m
 
 Return exactly one JSONL event:
 Proposal phase returns exactly one event:
-{"type":"issue_refinement_proposal","data":{"status":"proposed|blocked","issue":"<number-or-url>","proposed_body":"<exact body>","proposed_body_sha256":"sha256:<64 lowercase hex characters>","readiness_check":{"command":"<command>","exit_code":0,"ready":true},"blockers":[]}}
+{"type":"issue_refinement_proposal","data":{"status":"proposed|blocked","issue":"<number-or-url>","proposed_body":"<exact body>","proposed_body_sha256":"sha256:<64 lowercase hex characters>","blockers":[]}}
 
 Apply phase returns exactly one event:
-{"type":"issue_refinement_result","data":{"status":"refined|blocked","issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state>","managed_section_updated":true,"transition_verified":true,"proposed_body_sha256":"sha256:<64 lowercase hex characters>","readiness_check":{"command":"<command>","exit_code":0,"ready":true},"preserved_labels":["<label>"],"partial_mutations":["<mutation>"],"blockers":[]}}
+{"type":"issue_refinement_result","data":{"status":"refined|blocked","issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state>","managed_section_updated":true,"transition_verified":true,"proposed_body_sha256":"sha256:<64 lowercase hex characters>","pre_mutation_readiness_check":{"command":"<command>","exit_code":0,"ready":true,"expected":"ready"},"post_mutation_readiness_check":{"command":"<command>","exit_code":0,"ready":true,"expected":"ready"},"preserved_labels":["<label>"],"partial_mutations":["<mutation>"],"blockers":[]}}
 
-Use `readiness_check.exit_code=1` and `readiness_check.ready=false` for an expected research or blocked result.
+For an expected research or blocked result, use exit code `1`,
+`ready:false`, and `expected:"not-ready"` in the pre-mutation readiness check;
+never report that check as a passing ready result.
 
 If blocked, stop with `BLOCKED: <exact reason>` inside blockers. Do not call another agent.
 """
