@@ -37,7 +37,6 @@ MCP_READ_ROLES = {
 GITHUB_MUTATION_ROLES = {
     "rpm_idea_issue_creator",
     "rpm_issue_refiner",
-    "rpm_ready_ticket_claimer",
     "rpm_followup_issue_creator",
 }
 RPM_ROLES = MANAGERS | LOCAL_WRITE_ROLES | MCP_READ_ROLES | {

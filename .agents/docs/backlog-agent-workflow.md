@@ -24,15 +24,19 @@ An executable issue carries one hidden managed marker in its body:
 <!-- rpm-agent-execution: {"approval_id":"approval-3","plan_revision":"plan-3","scope_hash":"sha256:<64 lowercase hex characters>","executor":"cloud"} -->
 ```
 
-`scripts/check-agent-issue-readiness.py` validates this marker. The connector
-normalizes the same data as an `execution` object for
-`scripts/check-cloud-queue-contract.py`. A plan revision identifies the exact
-DAG revision. A scope hash binds the worker to the approved scope. `executor`
-is either `local` or `cloud`.
+`scripts/create-execution-metadata.py` creates this marker from the approved
+`Initial scope` and `Done criteria`. The refinement step passes the generated
+values into the body before applying `agent:ready`; a missing or mismatched
+producer result blocks the transition. `scripts/check-agent-issue-readiness.py`
+validates the marker. The connector normalizes the same data as an `execution`
+object for `scripts/check-cloud-queue-contract.py`. A plan revision identifies
+the exact approved scope revision. A scope hash binds the worker to the
+approved scope. `executor` is either `local` or `cloud`.
 
-The claim controller persists a lease under `execution.lease` and an
-idempotency ledger under the normalized fixture's `runs` field. The key is the
-SHA-256 digest of the NUL-joined values `repository`, `issue`,
+The claim controller persists a lease under the execution marker's `lease`
+(normalized as `execution.lease`) and an idempotency ledger under its `runs`
+field. The connector-normalized fixture exposes the same ledger as its `runs`
+field. The key is the SHA-256 digest of the NUL-joined values `repository`, `issue`,
 `plan_revision`, `scope_hash`, and `event_id`. The deterministic reference
 implementation is:
 
@@ -46,9 +50,12 @@ python3 scripts/check-cloud-queue-contract.py \
 ```
 
 The claim operation performs metadata validation, compare-and-set checking,
-lease checks, plan/scope/executor matching, and duplicate-event handling. An
-expired lease requires an explicit recovery transition. It never silently
-reclaims active work.
+open-closing-PR rejection, lease checks, plan/scope/executor matching, and
+duplicate-event handling. Its result includes the exact lease, ledger, marker,
+and label patch. The read-only claimer returns that patch; the main session
+uses `scripts/apply-execution-marker.py`, refetches the issue, and persists the
+marker and label transition in one issue mutation. An expired lease requires an
+explicit recovery transition. It never silently reclaims active work.
 
 Codex scheduled tasks are the wake-up and recovery path. Each task must
 refetch current GitHub state and persist the claim before any mutation.

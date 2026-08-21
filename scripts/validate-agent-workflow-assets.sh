@@ -468,6 +468,24 @@ check_readiness_live_issue() {
   ' >/dev/null
 }
 
+check_execution_metadata_generator() {
+  local output
+  output="$(
+    python3 scripts/create-execution-metadata.py \
+      --issue 42 \
+      --body-file .agents/fixtures/backlog/readiness-ready.md \
+      --executor cloud \
+      --format jsonl
+  )"
+  printf '%s\n' "${output}" | jq -e '
+    .type == "execution_metadata_result"
+    and .data.issue == 42
+    and .data.metadata.executor == "cloud"
+    and (.data.metadata.scope_hash | test("^sha256:[0-9a-f]{64}$"))
+    and (.data.marker | contains("rpm-agent-execution"))
+  ' >/dev/null
+}
+
 with_fake_backlog_gh() {
   local state_arg="$1"
   local temp_dir
@@ -652,6 +670,10 @@ done
 
 check "script_check_agent_issue_readiness_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-agent-issue-readiness.py").read_text())'
+check "script_create_execution_metadata_syntax" \
+  python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/create-execution-metadata.py").read_text())'
+check "script_apply_execution_marker_syntax" \
+  python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/apply-execution-marker.py").read_text())'
 check "script_check_agent_organization_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-agent-organization.py").read_text())'
 check "script_check_cloud_queue_contract_syntax" \
@@ -670,6 +692,9 @@ check "readiness_missing_execution_fixture" check_readiness_missing_execution
 check "readiness_missing_fixture" check_readiness_missing
 check "readiness_unresolved_fixture" check_readiness_unresolved
 check "readiness_live_issue_fixture" check_readiness_live_issue
+check "execution_metadata_generator" check_execution_metadata_generator
+check "execution_marker_regression" \
+  env PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_apply_execution_marker.py
 check "backlog_research_batch" check_backlog_research_batch
 check "backlog_no_work" check_backlog_no_work
 check "backlog_inventory_order" check_backlog_inventory_order
@@ -699,6 +724,12 @@ check "cloud_claim_contract" sh -c '
     and .data.lease.run_id == \"run-3\"
     and .data.lease.owner == \"cloud:executor\"
     and .data.lease.expires_at == \"2026-08-21T13:00:00Z\"
+    and .data.run.run_id == \"run-3\"
+    and .data.run.event_id == \"delivery-3\"
+    and .data.run.idempotency_key == .data.idempotency_key
+    and (.data.execution_marker | contains(\"rpm-agent-execution\"))
+    and (.data.execution_marker | contains(\"\\\"lease\\\"\"))
+    and .data.execution.runs[0].status == \"active\"
     and .data.preserved_labels == [\"priority:high\"]
     and .data.labels == [\"agent:claimed\",\"priority:high\"]
   " >/dev/null
@@ -771,6 +802,27 @@ check "cloud_active_work_no_work" sh -c '
   printf "%s\n" "$output" | jq -e "
     .data.status == \"no-work\"
     and .data.reason == \"active-work\"
+  " >/dev/null
+'
+check "cloud_active_work_precedes_invalid_ready" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-active-invalid-ready.json \
+    --operation select-execution)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"no-work\"
+    and .data.reason == \"active-work\"
+  " >/dev/null
+'
+check "cloud_claim_open_closing_pr_no_work" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-closing-pr.json \
+    --operation claim --issue 13 --run-id run-13 --event-id delivery-13 \
+    --executor cloud --plan-revision plan-13 \
+    --scope-hash sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+    --lease-owner cloud:executor)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"no-work\"
+    and .data.reason == \"closing-pr-present\"
   " >/dev/null
 '
 check "cloud_ready_to_claimed" sh -c '

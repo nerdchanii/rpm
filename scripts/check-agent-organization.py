@@ -432,6 +432,8 @@ def check_deterministic_assets(errors: list[str]) -> None:
         "scripts/check-cloud-queue-contract.py",
         "scripts/check-merge-gate.py",
         "scripts/check-agent-issue-readiness.py",
+        "scripts/create-execution-metadata.py",
+        "scripts/apply-execution-marker.py",
         ".codex/hooks/agent_tool_policy.py",
         ".codex/hooks/issue_manager_stop_gate.py",
         ".codex/hooks.json",
@@ -535,7 +537,7 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "rpm_ready_ticket_claimer",
             "mcp__github__update_issue",
             {"labels": ["agent:claimed"]},
-            0,
+            2,
         ),
         (
             "claimer-body",

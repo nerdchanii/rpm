@@ -13,6 +13,8 @@ Required inputs:
 - `.agents/workflows/backlog-policy.json`
 - complete research packet
 - complete readiness verdict
+- the exact approved `execution_metadata` from the readiness verdict when the target state is `ready`
+- executor used to generate the approved metadata
 - authorization to refine this issue
 
 Read the policy first. Apply only an allowed lifecycle transition. Preserve every byte outside:
@@ -30,8 +32,17 @@ If the markers are missing, append one managed region at the end without changin
 
 Use each heading once. Replace the previous managed contents with the current evidence snapshot. Preserve the user's Intent, Motivation, Desired outcome, Constraints and exclusions, and Questions from author outside the markers.
 
+For a `ready` target, create the execution marker from the post-refinement
+body with `scripts/create-execution-metadata.py` and compare its generated
+metadata byte-for-byte with the approved `execution_metadata`. If they differ,
+return blocked without mutation. Replace any prior execution marker with the
+generated marker and keep exactly one marker. The marker is the only additional
+controlled change outside the research region. For `research` or `blocked`, do
+not add or change execution metadata.
+
 Write the proposed body to `/tmp/rpm-issue-refinement-<issue>.md`. Run:
 - `python3 scripts/check-agent-issue-readiness.py --body-file <body-file> --format jsonl` before mutation;
+- `python3 scripts/create-execution-metadata.py --issue <issue> --body-file <body-file> --executor <executor> --format jsonl` for a ready target;
 - `python3 scripts/check-agent-issue-readiness.py --issue <issue> --format jsonl` after mutation.
 
 For a ready target state, both checks must report `data.ready=true`. For a research or blocked target state, a `needs-refinement` result is expected and must agree with the readiness verdict.

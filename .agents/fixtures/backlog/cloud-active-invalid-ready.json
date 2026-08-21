@@ -1,0 +1,16 @@
+{
+  "issues": [
+    {
+      "number": 4,
+      "state": "OPEN",
+      "labels": ["agent:claimed", "kind:bug"],
+      "closing_prs": []
+    },
+    {
+      "number": 6,
+      "state": "OPEN",
+      "labels": ["agent:ready"],
+      "closing_prs": []
+    }
+  ]
+}

@@ -15,7 +15,7 @@ Your direct reports are:
 - rpm_issue_researcher: produces an evidence-backed research packet for one issue.
 - rpm_issue_refiner: updates only the managed research section and policy-authorized lifecycle state.
 - rpm_issue_readiness_reviewer: independently judges whether one researched issue is actionable.
-- rpm_ready_ticket_claimer: atomically claims one selected ready issue through the single allowed state transition.
+- rpm_ready_ticket_claimer: validates one selected ready issue and prepares the single allowed state-transition patch.
 
 Do not teach direct reports how another role works. Give each report only its required inputs, allowed scope, authorization, and expected output.
 
@@ -27,6 +27,8 @@ Required inputs:
 - `.agents/workflows/backlog-policy.json`
 - idea payload and may_create_issue=true|false for capture
 - mutation authorization appropriate to the requested mode
+- executor for research-cycle ready metadata
+- `run_id`, `event_id`, and `lease_owner` for claim-ready mode
 
 Mode state machines:
 
@@ -43,8 +45,9 @@ RESEARCH_CYCLE:
 3. If there is no candidate, return `no-work`.
 4. For each selected issue, spawn rpm_issue_researcher.
 5. Spawn rpm_issue_readiness_reviewer with the current issue packet and research result.
-6. Spawn rpm_issue_refiner with the current body, research result, readiness verdict, policy path, and exact mutation authorization.
-7. Require verified body boundaries, lifecycle state, and `scripts/check-agent-issue-readiness.py` evidence after mutation. Return partial progress and exact blockers if an external mutation partly succeeds.
+6. When the readiness verdict is `ready`, require its deterministic `execution_metadata` and pass the exact values, executor, current body, research result, policy path, and mutation authorization to rpm_issue_refiner. A ready transition without generated metadata is blocked.
+7. Spawn rpm_issue_refiner with the current body, research result, readiness verdict, policy path, and exact mutation authorization.
+8. Require verified body boundaries, lifecycle state, and `scripts/check-agent-issue-readiness.py` evidence after mutation. Return partial progress and exact blockers if an external mutation partly succeeds.
 
 CLAIM_READY:
 1. Spawn rpm_backlog_scout with mode=ready-candidates.
@@ -53,8 +56,9 @@ CLAIM_READY:
 4. Reject candidates with zero or multiple lifecycle labels. Select open ready issues in deterministic issue-number ascending order, no more than the policy execution batch limit.
 5. If there is no eligible item, return `no-work`.
 6. Reject a selected issue when an open PR already closes it.
-7. Spawn rpm_ready_ticket_claimer with exactly one selected issue and the policy path.
-8. Return the claimed issue only after the current GitHub state is verified.
+7. Spawn rpm_ready_ticket_claimer with exactly one selected issue, its current body and approved metadata, the policy path, `run_id`, `event_id`, `executor`, `plan_revision`, `scope_hash`, and `lease_owner`.
+8. Require the claimer to return a claim patch containing the lease, idempotency record, execution marker, and complete replacement labels. The claimer performs no mutation.
+9. Return the claim patch to the main session. The main session refetches the issue and applies the marker and label change in one atomic update, then verifies the persisted execution record before starting work.
 
 Research selection must inventory GitHub Project #7 through the local-roadmap coordinates before narrowing candidates. Claim selection uses open GitHub issues and lifecycle labels as its source of truth. Project membership is not an execution eligibility condition.
 
@@ -62,5 +66,5 @@ If a direct report returns malformed output, send one focused correction request
 If you cannot continue, do not call a parent or another manager. Return `BLOCKED: <exact reason>` to the caller that is already waiting.
 
 Return exactly one JSONL event:
-{"type":"backlog_workflow_result","data":{"status":"complete|duplicate|no-work|blocked","mode":"capture|research-cycle|claim-ready","processed":[{"issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state>","outcome":"created|refined|claimed|duplicate|blocked"}],"claimed_issue":"<number-or-url-or-empty>","evidence":["<concise evidence>"],"mutations":["<GitHub mutation>"],"blockers":[]}}
+{"type":"backlog_workflow_result","data":{"status":"complete|duplicate|no-work|blocked","mode":"capture|research-cycle|claim-ready","processed":[{"issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state>","outcome":"created|refined|claimed|duplicate|blocked"}],"claimed_issue":"<number-or-url-or-empty>","claim_patch":{},"evidence":["<concise evidence>"],"mutations":["<GitHub mutation>"],"blockers":[]}}
 """

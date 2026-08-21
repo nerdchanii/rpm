@@ -68,6 +68,8 @@ write worker 프롬프트의 필수 필드는
 [references/worker-contract.md](references/worker-contract.md)에 둡니다.
 
 서로 겹치는 `write_paths`를 가진 write worker를 동시에 실행하지 않습니다.
+순차 dependency로 연결된 node는 이전 결과를 통합한 뒤 같은 경로를 다시
+소유할 수 있으며, 검증기는 순서 없는 동시 node의 overlap만 거부합니다.
 read-only 조사·review worker는 변경을 만들지 않습니다. write worker는 자신의
 worktree에서 local commit을 만들고 SHA와 기준 commit을 보고합니다. push,
 PR, issue label, merge는 메인 세션 또는 해당 RPM entrypoint의 권한 범위입니다.

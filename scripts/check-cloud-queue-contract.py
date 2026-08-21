@@ -145,6 +145,12 @@ def idempotency_key(
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 
+def execution_marker(metadata: dict[str, object], lease: dict[str, str], run: dict[str, str]) -> str:
+    payload = {**metadata, "lease": lease, "runs": [run]}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"<!-- rpm-agent-execution: {encoded} -->"
+
+
 def claim(
     fixture: dict[str, object],
     lifecycle: dict[str, str],
@@ -172,6 +178,12 @@ def claim(
         }
     if not is_open(issue):
         return {"status": "no-work", "reason": "issue-not-open", "issue": issue_number}
+    if has_open_closing_pr(issue):
+        return {
+            "status": "no-work",
+            "reason": "closing-pr-present",
+            "issue": issue_number,
+        }
     metadata, metadata_error = validate_execution_metadata(issue, contract)
     if metadata_error:
         return {"status": "blocked", "reason": metadata_error, "issue": issue_number}
@@ -227,6 +239,18 @@ def claim(
     if ttl_seconds <= 0:
         raise ValueError("execution contract lease ttl must be positive")
     expires_at = now + timedelta(seconds=ttl_seconds)
+    lease = {
+        "run_id": run_id,
+        "owner": lease_owner,
+        "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+    }
+    run = {
+        "run_id": run_id,
+        "event_id": event_id,
+        "idempotency_key": key,
+        "status": "active",
+    }
+    marker = execution_marker(metadata, lease, run)
     ordinary = sorted(
         label for label in issue_labels(issue) if label not in lifecycle.values()
     )
@@ -236,13 +260,16 @@ def claim(
         "before": "ready",
         "after": "claimed",
         "run_id": run_id,
+        "event_id": event_id,
         "idempotency_key": key,
         "preserved_labels": ordinary,
         "labels": sorted([*ordinary, lifecycle["claimed"]]),
-        "lease": {
-            "run_id": run_id,
-            "owner": lease_owner,
-            "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+        "lease": lease,
+        "run": run,
+        "execution_marker": marker,
+        "execution": {
+            "lease": lease,
+            "runs": [run],
         },
     }
 
@@ -267,6 +294,14 @@ def select_execution(
         states.append((issue, state))
     if invalid:
         return {"status": "blocked", "reason": "multiple-lifecycle-labels", "invalid": invalid, "issues": []}
+    active_states = set(str(value) for value in contract.get("active_states", []))
+    active = [
+        int(issue.get("number", 0))
+        for issue, state in states
+        if state in active_states
+    ]
+    if active:
+        return {"status": "no-work", "reason": "active-work", "active": active, "issues": []}
     invalid_execution = []
     for issue, state in states:
         if state == "ready":
@@ -280,14 +315,6 @@ def select_execution(
             "invalid": invalid_execution,
             "issues": [],
         }
-    active_states = set(str(value) for value in contract.get("active_states", []))
-    active = [
-        int(issue.get("number", 0))
-        for issue, state in states
-        if state in active_states
-    ]
-    if active:
-        return {"status": "no-work", "reason": "active-work", "active": active, "issues": []}
     selected = [
         issue
         for issue, state in states

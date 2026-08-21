@@ -16,11 +16,15 @@ issue must contain one valid `rpm-agent-execution` marker with `approval_id`,
 immediately before mutation and enforces the deterministic claim contract in
 `scripts/check-cloud-queue-contract.py`.
 
-The controller records `run_id`, `event_id`, lease owner and expiry, and the
-policy-defined idempotency key before it applies `agent:ready` to
+The readiness producer is `scripts/create-execution-metadata.py`; it derives
+the marker from the approved scope and done criteria. The read-only claimer
+returns a patch containing `run_id`, `event_id`, lease owner and expiry, and the
+policy-defined idempotency key. The main session refetches the issue and
+persists that patch in the execution marker before it applies `agent:ready` to
 `agent:claimed`. A duplicate event with the same run is `no-work`. An active
-lease is `no-work`. A stale plan, scope, executor, or expired lease is
-`blocked` and requires recovery under the allowed lifecycle transitions.
+lease is `no-work`. An open closing PR is `no-work`. A stale plan, scope,
+executor, or expired lease is `blocked` and requires recovery under the allowed
+lifecycle transitions.
 
 Codex scheduled tasks are the entry and recovery path. No GitHub Actions
 workflow dispatch is part of this harness. GitHub issue, PR, comment, and

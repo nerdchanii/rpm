@@ -22,6 +22,8 @@ Required inputs:
 - `.agents/workflows/backlog-policy.json`
 - an idea payload for capture, or an issue number or URL for explicit ticket execution
 - authorization flags supplied by the caller
+- `executor` for scheduled claim preparation
+- `run_id`, `event_id`, and `lease_owner` for scheduled claim preparation
 - optional resumed checkpoint state and draft PR URL
 
 Routing:
@@ -30,6 +32,7 @@ Routing:
 3. For workflow=take-ticket with mode=scheduled:
    - spawn rpm_backlog_manager with mode=claim-ready;
    - accept `no-work` as a successful terminal result;
+   - return the validated claim patch to the main session; the main session owns the final atomic issue mutation and verification;
    - when one issue is claimed, spawn rpm_issue_manager for exactly that issue;
    - use the claimed issue's written intent, scope, and exclusions without adding new product intent;
    - execute at most one issue and never exceed the policy execution batch limit in one run.

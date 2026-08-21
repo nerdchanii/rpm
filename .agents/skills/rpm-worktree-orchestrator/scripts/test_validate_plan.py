@@ -54,6 +54,28 @@ class ValidatePlanTests(unittest.TestCase):
     def test_overlap(self) -> None:
         self.assert_invalid(plan([node("a", paths=["src/shared"]), node("b", paths=["src/shared/x.rs"])]), "overlapping")
 
+    def test_ordered_overlap_is_allowed(self) -> None:
+        validate(
+            plan(
+                [
+                    node("a", paths=["src/shared"]),
+                    node("b", depends_on=["a"], paths=["src/shared/x.rs"]),
+                ]
+            )
+        )
+
+    def test_windows_absolute_path(self) -> None:
+        self.assert_invalid(plan([node("a", paths=["C:/Users/me/file"])]), "unsafe write path")
+
+    def test_windows_unc_path(self) -> None:
+        self.assert_invalid(plan([node("a", paths=[r"\\server\share\file"])]), "unsafe write path")
+
+    def test_windows_traversal_path(self) -> None:
+        self.assert_invalid(plan([node("a", paths=[r"..\outside"])]), "unsafe write path")
+
+    def test_windows_separator_relative_path(self) -> None:
+        validate(plan([node("a", paths=[r"src\shared\file.rs"])]))
+
     def test_stale_revision(self) -> None:
         self.assert_invalid(plan([node("a", revision="old")]), "stale")
 

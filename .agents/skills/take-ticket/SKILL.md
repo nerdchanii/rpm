@@ -26,10 +26,13 @@ Use `scheduled` without an issue number. The router reads `.agents/workflows/bac
 `no-work` is a healthy terminal result. Report it concisely and make no repository or GitHub mutation.
 
 Before the scheduled `agent:ready` to `agent:claimed` transition, validate the
-managed execution metadata and run the policy-defined claim contract. Persist
+managed execution metadata and run the policy-defined claim contract. The
+scheduled caller supplies an `executor`, `run_id`, `event_id`, and `lease_owner`;
+the claim mutation persists
 the `plan_revision`, `scope_hash`, `executor`, lease, run id, event id, and
-idempotency record with the compare-and-set label mutation. A stale revision,
-scope, executor, or expired lease returns `blocked`.
+idempotency record in the execution marker together with the compare-and-set
+label mutation. A stale revision, scope, executor, or expired lease returns
+`blocked`.
 
 ## Entry Workflow
 
@@ -47,11 +50,18 @@ scope, executor, or expired lease returns `blocked`.
    - `may_create_followup_issues` from policy or explicit user authorization
    - maximum correction loops, normally `2`
 6. Wait for its structured result.
-7. When it returns a Draft PR checkpoint:
+7. In scheduled mode, before starting the claimed issue, refetch the issue in the
+   main session. Run `scripts/apply-execution-marker.py` against the current
+   body and returned marker, then apply the resulting body and labels as one
+   issue update: replace exactly one execution marker and the ready lifecycle
+   label, preserve all other body text and labels, and verify the lease and
+   idempotency record. A
+   compare-and-set mismatch returns `no-work` without selecting a replacement.
+8. When it returns a Draft PR checkpoint:
    - inspect the reported contract decision and focused plan;
    - create the Draft PR in the main session;
    - resume the same router with the PR URL.
-8. When it returns `status:"complete"`:
+9. When it returns `status:"complete"`:
    - inspect the final diff and evidence;
    - stage only intended files and create atomic Conventional Commits;
    - push the issue branch;
@@ -59,8 +69,8 @@ scope, executor, or expired lease returns `blocked`.
    - apply an approved PR label and mark the PR ready so repository-configured Codex Automatic reviews can run;
    - replace the linked issue's `agent:claimed` lifecycle label with `agent:review-pending`, preserving every non-lifecycle label;
    - use the GitHub plugin to verify PR state, body, approved label, closing issue, and the linked issue's `agent:review-pending` state. `bash scripts/check-workflow-final.sh <pr-number>` remains a local/manual fallback.
-9. When it returns `status:"no-work"`, finish successfully without retrying in the same run.
-10. When it returns `status:"blocked"`, resolve the stated decision or report the blocker. Do not silently substitute a different workflow.
+10. When it returns `status:"no-work"`, finish successfully without retrying in the same run.
+11. When it returns `status:"blocked"`, resolve the stated decision or report the blocker. Do not silently substitute a different workflow.
 
 The router owns detailed routing. Do not duplicate its manager or leaf map here.
 

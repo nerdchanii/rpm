@@ -7,7 +7,7 @@ import json
 import posixpath
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 
@@ -29,17 +29,20 @@ def invalid(message: str) -> None:
 
 
 def normalize_path(value: str) -> str:
-    path = posixpath.normpath(value.strip())
+    raw = value.strip()
+    if raw == "*":
+        return "*"
+    windows = PureWindowsPath(raw)
+    if windows.drive or windows.root:
+        invalid(f"unsafe write path: {value!r}")
+    path = posixpath.normpath(raw.replace("\\", "/"))
     if (
-        value == "*"
-        or path in {"", "."}
+        path in {"", "."}
         or path == ".."
         or path.startswith("../")
         or path.startswith("/")
         or path.startswith("~")
     ):
-        if value == "*":
-            return "*"
         invalid(f"unsafe write path: {value!r}")
     return path.removeprefix("./")
 
@@ -133,11 +136,6 @@ def validate(plan: Any) -> None:
     for gate in gates:
         if gate not in by_id:
             invalid(f"required gate is missing: {gate}")
-    for index, (left_id, left_path) in enumerate(ownership):
-        for right_id, right_path in ownership[index + 1 :]:
-            if left_id != right_id and overlap(left_path, right_path):
-                invalid(f"overlapping ownership: {left_id}:{left_path} vs {right_id}:{right_path}")
-
     visiting: set[str] = set()
     visited: set[str] = set()
 
@@ -155,6 +153,24 @@ def validate(plan: Any) -> None:
 
     for node_id in by_id:
         visit(node_id, [])
+
+    ancestors_cache: dict[str, set[str]] = {}
+
+    def ancestors(node_id: str) -> set[str]:
+        if node_id in ancestors_cache:
+            return ancestors_cache[node_id]
+        result: set[str] = set()
+        for dependency in by_id[node_id]["depends_on"]:
+            result.add(dependency)
+            result.update(ancestors(dependency))
+        ancestors_cache[node_id] = result
+        return result
+
+    for index, (left_id, left_path) in enumerate(ownership):
+        for right_id, right_path in ownership[index + 1 :]:
+            ordered = right_id in ancestors(left_id) or left_id in ancestors(right_id)
+            if left_id != right_id and not ordered and overlap(left_path, right_path):
+                invalid(f"overlapping ownership: {left_id}:{left_path} vs {right_id}:{right_path}")
 
 
 def main(argv: list[str]) -> int:
