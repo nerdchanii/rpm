@@ -17,17 +17,19 @@ immediately before mutation and enforces the deterministic claim contract in
 `scripts/check-cloud-queue-contract.py`.
 
 The readiness producer is `scripts/create-execution-metadata.py`; it derives
-the marker from the approved scope and done criteria. During recovery, the
+the marker from the complete approved issue body while excluding only mutable
+execution and run-ledger comments. During recovery, the
 refiner moves historical `runs` records into one
 `<!-- rpm-agent-run-ledger: {"runs":[...]} -->` marker while invalidating the
 old lease and approval metadata. The readiness producer restores those records
 to the new approval marker, and the claimer appends the new active run. The
 read-only claimer
 returns a patch containing `run_id`, `event_id`, lease owner and expiry, and the
-policy-defined idempotency key. The main session refetches the issue and
-persists that patch in the execution marker before it applies `agent:ready` to
-`agent:claimed`. A duplicate event with the same run is `no-work`. An active
-lease is `no-work`. An open closing PR is `no-work`. A stale plan, scope,
+policy-defined idempotency key, plus the expected issue state and complete
+closing-PR set. The main session refetches the issue and compares those
+predecessors, along with the marker and complete labels, before it persists the
+patch in the execution marker and applies `agent:ready` to `agent:claimed`. A
+duplicate event with the same run is `no-work`. An active lease is `no-work`. An open closing PR is `no-work`. A stale plan, scope,
 executor, or expired lease is `blocked` and requires recovery under the allowed
 lifecycle transitions.
 

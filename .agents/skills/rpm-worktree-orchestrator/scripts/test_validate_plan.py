@@ -99,6 +99,52 @@ class ValidatePlanTests(unittest.TestCase):
             "base_revision is stale",
         )
 
+    def test_dependent_node_rejects_original_plan_base_after_integration(self) -> None:
+        self.assert_invalid(
+            plan(
+                [
+                    node("producer", state="integrated", integrated_revision="commit-2"),
+                    node("consumer", depends_on=["producer"], state="ready"),
+                ]
+            ),
+            "base_revision is stale",
+        )
+
+    def test_join_requires_one_verified_aggregate_revision(self) -> None:
+        self.assert_invalid(
+            plan(
+                [
+                    node("first", state="integrated", integrated_revision="commit-1"),
+                    node("second", state="integrated", integrated_revision="commit-2"),
+                    node(
+                        "join",
+                        depends_on=["first", "second"],
+                        state="ready",
+                        base_revision="commit-2",
+                    ),
+                ]
+            ),
+            "base_revision_dependencies",
+        )
+
+    def test_join_accepts_shared_verified_revision(self) -> None:
+        join = node(
+            "join",
+            depends_on=["first", "second"],
+            state="ready",
+            base_revision="commit-aggregate",
+        )
+        join["base_revision_dependencies"] = ["first", "second"]
+        validate(
+            plan(
+                [
+                    node("first", state="integrated", integrated_revision="commit-2"),
+                    node("second", state="integrated", integrated_revision="commit-2"),
+                    join,
+                ]
+            )
+        )
+
     def test_integrated_node_requires_verified_revision(self) -> None:
         self.assert_invalid(plan([node("producer", state="integrated")]), "integrated_revision")
 
@@ -150,6 +196,9 @@ class ValidatePlanTests(unittest.TestCase):
 
     def test_git_prefix_name_is_safe(self) -> None:
         validate(plan([node("a", paths=[".gitfoo/config"])]))
+
+    def test_wildcard_write_path_is_unsafe(self) -> None:
+        self.assert_invalid(plan([node("a", paths=["*"])]), "unsafe write path")
 
     def test_symlink_aliases_are_not_disjoint(self) -> None:
         self.assert_invalid(

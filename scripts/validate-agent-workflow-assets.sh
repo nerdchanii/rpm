@@ -674,6 +674,8 @@ check "script_create_execution_metadata_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/create-execution-metadata.py").read_text())'
 check "script_apply_execution_marker_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/apply-execution-marker.py").read_text())'
+check "script_execution_contract_syntax" \
+  python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/execution_contract.py").read_text())'
 check "script_check_agent_organization_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-agent-organization.py").read_text())'
 check "script_check_cloud_queue_contract_syntax" \
@@ -726,6 +728,9 @@ check "cloud_claim_contract" sh -c '
     and .data.issue == 3
     and .data.before == \"ready\"
     and .data.after == \"claimed\"
+    and .data.before_open == true
+    and .data.expected_issue_state == \"OPEN\"
+    and .data.expected_closing_prs == []
     and .data.lease.run_id == \"run-3\"
     and .data.lease.owner == \"cloud:executor\"
     and .data.lease.expires_at == \"2026-08-21T13:00:00Z\"
@@ -843,6 +848,40 @@ check "cloud_claim_expired_lease_blocked" sh -c '
   set -e
   [ "$code" -eq 1 ]
   printf "%s\n" "$output" | jq -e ".data.status == \"blocked\" and .data.reason == \"lease-expired\"" >/dev/null
+'
+check "cloud_claim_malformed_lease_blocked" sh -c '
+  fixture="$(mktemp "${TMPDIR:-/tmp}/rpm-malformed-lease.XXXXXX")"
+  trap "rm -f \"${fixture}\"" EXIT
+  jq ".issues[0].execution.lease.expires_at = \"tomorrow\"" \
+    .agents/fixtures/backlog/cloud-claim-expired.json >"${fixture}"
+  set +e
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file "${fixture}" \
+    --operation claim --issue 8 --run-id run-8b --event-id delivery-8b \
+    --executor cloud --plan-revision plan-8 \
+    --scope-hash sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --lease-owner cloud:executor)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e ".data.status == \"blocked\" and .data.reason == \"invalid-lease-expiry\"" >/dev/null
+'
+check "cloud_claim_malformed_run_blocked" sh -c '
+  fixture="$(mktemp "${TMPDIR:-/tmp}/rpm-malformed-run.XXXXXX")"
+  trap "rm -f \"${fixture}\"" EXIT
+  jq ".runs_by_issue = {\"3\": [{run_id:\"run-3\",event_id:\"delivery-3\",idempotency_key:\"invalid\",status:\"active\"}]}" \
+    .agents/fixtures/backlog/cloud-claim-ready.json >"${fixture}"
+  set +e
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file "${fixture}" \
+    --operation claim --issue 3 --run-id run-3b --event-id delivery-3b \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e ".data.status == \"blocked\" and .data.reason == \"invalid-run-ledger\"" >/dev/null
 '
 check "cloud_claim_executor_mismatch_blocked" sh -c '
   set +e

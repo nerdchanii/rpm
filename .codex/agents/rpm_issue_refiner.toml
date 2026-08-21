@@ -86,8 +86,11 @@ exactly as authorized above. Run the same readiness check after mutation and req
 `data.ready=true` again. For `research` or `blocked`, the candidate body must
 contain no execution marker. Remove exactly one stale existing marker when the
 current body has one, including recovery from an executable state or a
-`blocked → research` transition; never preserve stale approval metadata or add
-a new execution marker. A preserved run-ledger marker is allowed in these
+`blocked → research` transition. If that marker contains a `runs` ledger, copy
+the validated records byte-for-byte into exactly one `rpm-agent-run-ledger`
+marker before removing the execution marker; otherwise remove the marker
+entirely. Never preserve stale approval metadata or a stale lease or add a new
+execution marker. A preserved run-ledger marker is allowed in these
 non-executable states. Run the readiness check before and after mutation; both checks
 must return `data.ready=false` with exit code `1`, and both results must be
 reported as expected not-ready evidence.

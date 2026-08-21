@@ -41,6 +41,13 @@ RUN_LEDGER = (
     '<!-- rpm-agent-run-ledger: {"runs":[{"event_id":"delivery-old",'
     '"idempotency_key":"sha256:' + "b" * 64 + '","run_id":"run-old","status":"active"}]} -->'
 )
+PRIOR_EXECUTION_MARKER = (
+    '<!-- rpm-agent-execution: {"approval_id":"old","executor":"cloud",'
+    '"lease":{"expires_at":"2026-08-21T13:00:00Z","owner":"cloud:executor",'
+    '"run_id":"run-old"},"plan_revision":"old-plan","runs":[{"event_id":"delivery-old",'
+    '"idempotency_key":"sha256:' + "b" * 64 + '","run_id":"run-old","status":"active"}],'
+    '"scope_hash":"sha256:' + "c" * 64 + '"} -->'
+)
 
 
 class ExecutionMetadataTests(unittest.TestCase):
@@ -78,6 +85,13 @@ class ExecutionMetadataTests(unittest.TestCase):
         result = MODULE.create_metadata("42", BODY + "\n" + RUN_LEDGER, "cloud")
         marker = result["data"]["marker"]
         self.assertIn('"runs":[{"event_id":"delivery-old"', marker)
+        self.assertNotIn('"lease"', marker)
+
+    def test_restores_runs_from_invalidated_execution_marker(self) -> None:
+        result = MODULE.create_metadata("42", BODY + "\n" + PRIOR_EXECUTION_MARKER, "cloud")
+        marker = result["data"]["marker"]
+        self.assertIn('"event_id":"delivery-old"', marker)
+        self.assertIn('"run_id":"run-old"', marker)
         self.assertNotIn('"lease"', marker)
 
     def test_missing_scope_is_rejected(self) -> None:

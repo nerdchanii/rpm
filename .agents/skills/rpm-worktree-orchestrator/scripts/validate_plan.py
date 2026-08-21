@@ -32,7 +32,7 @@ def invalid(message: str) -> None:
 def normalize_path(value: str) -> str:
     raw = value.strip()
     if raw == "*":
-        return "*"
+        invalid(f"unsafe write path: {value!r}")
     windows = PureWindowsPath(raw)
     if windows.drive or windows.root:
         invalid(f"unsafe write path: {value!r}")

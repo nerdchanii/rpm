@@ -6,9 +6,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from execution_contract import SHA256_KEY, parse_rfc3339, validate_run_record
 
 
 def load_json(path: str) -> dict[str, object]:
@@ -92,22 +93,13 @@ def validate_execution_metadata(
         return metadata, f"missing-execution-fields:{','.join(missing)}"
     if metadata["executor"] not in [str(value) for value in executors]:
         return metadata, "invalid-executor"
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(metadata["scope_hash"])):
+    if not SHA256_KEY.fullmatch(str(metadata["scope_hash"])):
         return metadata, "invalid-scope-hash"
     return metadata, None
 
 
 def parse_timestamp(value: object, field: str) -> datetime:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field} must be an RFC3339 timestamp")
-    normalized = value.replace("Z", "+00:00")
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError as error:
-        raise ValueError(f"{field} must be an RFC3339 timestamp") from error
-    if parsed.tzinfo is None:
-        raise ValueError(f"{field} must include a timezone")
-    return parsed.astimezone(timezone.utc)
+    return parse_rfc3339(value, field).astimezone(timezone.utc)
 
 
 def validate_lease(lease: object, contract: dict[str, object]) -> str | None:
@@ -164,6 +156,7 @@ def execution_marker(
 
 def persisted_runs(fixture: dict[str, object], issue: dict[str, object]) -> list[dict[str, object]]:
     execution = issue.get("execution")
+    issue_number = int(issue.get("number", 0))
     sources: list[object] = []
     if isinstance(execution, dict) and "runs" in execution:
         sources.append(execution["runs"])
@@ -179,10 +172,21 @@ def persisted_runs(fixture: dict[str, object], issue: dict[str, object]) -> list
         if not isinstance(raw_runs, list) or not all(isinstance(run, dict) for run in raw_runs):
             raise ValueError("persisted runs must be an array of objects")
         for run in raw_runs:
-            normalized = json.dumps(run, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            scoped_run = dict(run)
+            if "issue" in scoped_run:
+                if not isinstance(scoped_run["issue"], int) or isinstance(scoped_run["issue"], bool):
+                    raise ValueError("persisted runs must identify an integer issue")
+                if scoped_run["issue"] != issue_number:
+                    raise ValueError("persisted run belongs to another issue")
+                scoped_run.pop("issue")
+            try:
+                validate_run_record(scoped_run, "persisted run")
+            except ValueError as error:
+                raise ValueError("persisted runs contains an invalid record") from error
+            normalized = json.dumps(scoped_run, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             if normalized not in seen:
                 seen.add(normalized)
-                result.append(dict(run))
+                result.append(scoped_run)
     return result
 
 
@@ -256,7 +260,15 @@ def claim(
     if not run_id.strip() or not event_id.strip() or not lease_owner.strip():
         raise ValueError("run_id, event_id, and lease_owner are required for claim")
     key = idempotency_key(repository, issue_number, plan_revision, scope_hash, event_id)
-    runs = persisted_runs(fixture, issue)
+    try:
+        runs = persisted_runs(fixture, issue)
+    except ValueError as error:
+        return {
+            "status": "blocked",
+            "reason": "invalid-run-ledger",
+            "issue": issue_number,
+            "detail": str(error),
+        }
     matching_runs = [run for run in runs if run.get("idempotency_key") == key]
     if matching_runs:
         if all(run.get("run_id") == run_id for run in matching_runs):
@@ -314,6 +326,9 @@ def claim(
         "issue": issue_number,
         "before": "ready",
         "after": "claimed",
+        "before_open": True,
+        "expected_issue_state": str(issue.get("state", "")),
+        "expected_closing_prs": issue.get("closing_prs", []),
         "run_id": run_id,
         "event_id": event_id,
         "idempotency_key": key,

@@ -10,32 +10,25 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from execution_contract import SHA256_KEY, parse_rfc3339, validate_run_record
+
 
 MARKER_LINE = re.compile(r"^[ \t]*<!--\s*rpm-agent-execution:\s*(\{.*\})\s*-->[ \t]*$")
 REQUIRED_FIELDS = ("approval_id", "plan_revision", "scope_hash", "executor")
-SCOPE_HASH = re.compile(r"sha256:[0-9a-f]{64}\Z")
-IDEMPOTENCY_KEY = SCOPE_HASH
 
 
 def parse_timestamp(value: str) -> datetime:
-    normalized = value.replace("Z", "+00:00")
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        raise ValueError("lease.expires_at must include a timezone")
-    return parsed
+    return parse_rfc3339(value)
 
 
 def validate_runs(runs: object, *, require_active: bool) -> dict[str, object]:
     if not isinstance(runs, list) or not runs:
         raise ValueError("marker is missing runs ledger")
     for run in runs:
-        if not isinstance(run, dict) or any(
-            not isinstance(run.get(field), str) or not run[field].strip()
-            for field in ("run_id", "event_id", "idempotency_key", "status")
-        ):
-            raise ValueError("marker has an invalid runs ledger")
-        if not IDEMPOTENCY_KEY.fullmatch(run["idempotency_key"]):
-            raise ValueError("marker has an invalid runs ledger")
+        try:
+            validate_run_record(run, "marker runs ledger")
+        except ValueError as error:
+            raise ValueError("marker has an invalid runs ledger") from error
     final = runs[-1]
     if require_active and final["status"] != "active":
         raise ValueError("marker has an invalid runs ledger")
@@ -56,7 +49,7 @@ def validate_marker(marker: str) -> None:
         raise ValueError("marker is missing required execution metadata")
     if payload["executor"] not in {"local", "cloud"}:
         raise ValueError("marker has an invalid executor")
-    if not SCOPE_HASH.fullmatch(payload["scope_hash"]):
+    if not SHA256_KEY.fullmatch(payload["scope_hash"]):
         raise ValueError("marker has an invalid scope hash")
     lease = payload.get("lease")
     if not isinstance(lease, dict) or any(
@@ -89,7 +82,7 @@ def validate_approval_marker(marker: str) -> None:
         raise ValueError("expected marker is missing approved execution metadata")
     if payload["executor"] not in {"local", "cloud"}:
         raise ValueError("expected marker has an invalid executor")
-    if not SCOPE_HASH.fullmatch(payload["scope_hash"]):
+    if not SHA256_KEY.fullmatch(payload["scope_hash"]):
         raise ValueError("expected marker has an invalid scope hash")
     if "runs" in payload:
         validate_runs(payload["runs"], require_active=False)

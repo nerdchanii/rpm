@@ -85,6 +85,23 @@ class ApplyExecutionMarkerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lease.expires_at"):
             MODULE.apply_marker("body\n", invalid, initialization=True)
 
+    def test_malformed_historical_run_is_rejected(self) -> None:
+        invalid = MARKER.replace("sha256:" + "b" * 64, "invalid", 1)
+        with self.assertRaisesRegex(ValueError, "runs ledger"):
+            MODULE.apply_marker("body\n", invalid, initialization=True)
+
+    def test_lease_expiry_requires_rfc3339_timezone_and_shape(self) -> None:
+        for value in (
+            "2026-08-21T13:00:00",
+            "2026-08-21T13:00:00+0000",
+            "2026-08-21T13:00:00Zsuffix",
+            "2026-02-30T13:00:00Z",
+        ):
+            invalid = MARKER.replace("2026-08-21T13:00:00Z", value)
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "lease.expires_at"):
+                    MODULE.apply_marker("body\n", invalid, initialization=True)
+
     def test_lease_run_must_match_active_run(self) -> None:
         invalid = MARKER.replace(
             '"run_id":"r","status":"active"}],"scope_hash"',

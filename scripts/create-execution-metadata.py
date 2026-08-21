@@ -10,14 +10,14 @@ import re
 import sys
 from pathlib import Path
 
+from execution_contract import RUN_FIELDS, validate_run_record
+
 
 EXECUTOR_VALUES = {"local", "cloud"}
 HEADING = re.compile(r"^##\s+(.+?)\s*#*\s*$")
 SCOPE_HEADINGS = ("Initial scope", "Done criteria")
 EXECUTION_MARKER = re.compile(r"^\s*<!--\s*rpm-agent-execution:\s*(\{.*\})\s*-->\s*$")
 RUN_LEDGER_MARKER = re.compile(r"^\s*<!--\s*rpm-agent-run-ledger:\s*(\{.*\})\s*-->\s*$")
-IDEMPOTENCY_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
-RUN_FIELDS = ("run_id", "event_id", "idempotency_key", "status")
 
 
 def normalize_heading(value: str) -> str:
@@ -66,10 +66,10 @@ def _decode_runs(raw: object) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     seen: set[str] = set()
     for run in raw:
-        if any(not isinstance(run.get(field), str) or not run[field].strip() for field in RUN_FIELDS):
-            raise ValueError("run ledger contains an invalid record")
-        if not IDEMPOTENCY_KEY.fullmatch(run["idempotency_key"]):
-            raise ValueError("run ledger contains an invalid idempotency key")
+        try:
+            validate_run_record(run, "run ledger")
+        except ValueError as error:
+            raise ValueError("run ledger contains an invalid record") from error
         normalized = json.dumps(run, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         if normalized not in seen:
             seen.add(normalized)
