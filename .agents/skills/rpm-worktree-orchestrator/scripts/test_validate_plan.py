@@ -167,6 +167,11 @@ class ValidatePlanTests(unittest.TestCase):
     def test_integrated_node_requires_verified_revision(self) -> None:
         self.assert_invalid(plan([node("producer", state="integrated")]), "integrated_revision")
 
+    def test_boolean_attempt_is_invalid(self) -> None:
+        value = plan([node("worker")])
+        value["nodes"][0]["attempt"] = True
+        self.assert_invalid(value, "attempt must be non-negative")
+
     def test_join_node_records_all_integrated_dependencies(self) -> None:
         join = node(
             "join",

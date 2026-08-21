@@ -151,7 +151,7 @@ def validate(plan: Any) -> None:
         )
         if node["state"] not in STATES:
             invalid(f"{node_id}.state is invalid")
-        if not isinstance(node["attempt"], int) or node["attempt"] < 0:
+        if isinstance(node["attempt"], bool) or not isinstance(node["attempt"], int) or node["attempt"] < 0:
             invalid(f"{node_id}.attempt must be non-negative")
 
     for node_id, node in by_id.items():
