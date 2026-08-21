@@ -22,6 +22,7 @@ STATES = {
     "cancelled",
 }
 SCOPE_HASH = re.compile(r"sha256:[0-9a-f]{64}\Z")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 
 
 def invalid(message: str) -> None:
@@ -48,6 +49,18 @@ def normalize_path(value: str) -> str:
     if normalized == ".git" or normalized.startswith(".git/"):
         invalid(f"unsafe write path: {value!r}")
     return normalized
+
+
+def canonicalize_path(normalized: str) -> str:
+    if normalized == "*":
+        return normalized
+    try:
+        resolved = (REPOSITORY_ROOT / normalized).resolve(strict=False)
+        relative = resolved.relative_to(REPOSITORY_ROOT)
+    except (OSError, RuntimeError, ValueError) as error:
+        invalid(f"unsafe write path: {normalized!r}")
+        raise AssertionError("unreachable") from error
+    return relative.as_posix()
 
 
 def overlap(left: str, right: str) -> bool:
@@ -118,7 +131,9 @@ def validate(plan: Any) -> None:
         paths = node["write_paths"]
         if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
             invalid(f"{node_id}.write_paths must be an array")
-        ownership.extend((node_id, normalize_path(path)) for path in paths)
+        ownership.extend(
+            (node_id, canonicalize_path(normalize_path(path))) for path in paths
+        )
         if node["state"] not in STATES:
             invalid(f"{node_id}.state is invalid")
         if not isinstance(node["attempt"], int) or node["attempt"] < 0:

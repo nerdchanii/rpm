@@ -695,6 +695,11 @@ check "readiness_live_issue_fixture" check_readiness_live_issue
 check "execution_metadata_generator" check_execution_metadata_generator
 check "execution_marker_regression" \
   env PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_apply_execution_marker.py
+check "execution_metadata_regression" \
+  env PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_create_execution_metadata.py
+check "worktree_plan_regression" \
+  env PYTHONDONTWRITEBYTECODE=1 \
+    python3 .agents/skills/rpm-worktree-orchestrator/scripts/test_validate_plan.py
 check "backlog_research_batch" check_backlog_research_batch
 check "backlog_no_work" check_backlog_no_work
 check "backlog_inventory_order" check_backlog_inventory_order
@@ -735,7 +740,7 @@ check "cloud_claim_contract" sh -c '
     and .data.labels == [\"agent:claimed\",\"priority:high\"]
   " >/dev/null
 '
-check "cloud_claim_recovery_preserves_marker" sh -c '
+check "cloud_claim_recovery_active_lease_no_work" sh -c '
   output="$(python3 scripts/check-cloud-queue-contract.py \
     --issues-file .agents/fixtures/backlog/cloud-claim-recovered-ready.json \
     --operation claim --issue 15 --run-id run-new --event-id delivery-new \
@@ -743,11 +748,8 @@ check "cloud_claim_recovery_preserves_marker" sh -c '
     --scope-hash sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
     --lease-owner cloud:executor)"
   printf "%s\n" "$output" | jq -e "
-    .data.status == \"claim\"
-    and (.data.expected_execution_marker | contains(\"\\\"lease\\\"\"))
-    and (.data.expected_execution_marker | contains(\"\\\"runs\\\"\"))
-    and (.data.execution.runs | length) == 2
-    and .data.execution.runs[0].event_id == \"delivery-old\"
+    .data.status == \"no-work\"
+    and .data.reason == \"lease-active\"
   " >/dev/null
 '
 check "cloud_claim_preserves_prior_runs" sh -c '

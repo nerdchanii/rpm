@@ -94,6 +94,17 @@ class ValidatePlanTests(unittest.TestCase):
     def test_git_prefix_name_is_safe(self) -> None:
         validate(plan([node("a", paths=[".gitfoo/config"])]))
 
+    def test_symlink_aliases_are_not_disjoint(self) -> None:
+        self.assert_invalid(
+            plan(
+                [
+                    node("a", paths=[".claude/skills/pr-resolution-loop/SKILL.md"]),
+                    node("b", paths=[".agents/skills/pr-resolution-loop/SKILL.md"]),
+                ]
+            ),
+            "overlapping",
+        )
+
     def test_stale_revision(self) -> None:
         self.assert_invalid(plan([node("a", revision="old")]), "stale")
 

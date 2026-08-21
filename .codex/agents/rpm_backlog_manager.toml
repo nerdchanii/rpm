@@ -51,9 +51,20 @@ RESEARCH_CYCLE:
 4. For each selected issue, spawn rpm_issue_researcher.
 5. Spawn rpm_issue_refiner in `proposal` phase with the current body, research result, exact `executor`, policy path, and mutation authorization. Require its proposed post-refinement body and preserve it byte-for-byte.
 6. Spawn rpm_issue_readiness_reviewer with the current issue packet, research result, exact `executor`, and the shared proposed body. The reviewer judges that proposed body and generates metadata from that exact body when ready.
-7. When the readiness verdict is `ready`, require its deterministic `execution_metadata`, unchanged proposed body, and proposed-body digest. Spawn rpm_issue_refiner in `apply` phase with the same proposed body, exact metadata, exact executor, readiness verdict, policy path, and mutation authorization. A ready transition without byte-for-byte matching metadata is blocked.
-8. For a research or blocked verdict, spawn rpm_issue_refiner in `apply` phase with the same proposed body and verdict so the managed research update remains the only authorized mutation.
-9. Require verified body boundaries, lifecycle state, and `scripts/check-agent-issue-readiness.py` evidence after mutation. Return partial progress and exact blockers if an external mutation partly succeeds.
+7. When the readiness verdict is `ready`, require its deterministic
+`execution_metadata`, unchanged proposed body, and proposed-body digest. Defer
+the apply spawn until the final predecessor refetch in step 8. A ready
+transition without byte-for-byte matching metadata is blocked.
+8. Immediately before the apply phase for any readiness verdict, refetch the complete issue and compare
+the full body and full label set with the proposal predecessor used by the
+readiness reviewer. If either changed, return `blocked` with race evidence and
+make no mutation. Spawn `rpm_issue_refiner` in `apply` phase with that final
+refetched predecessor, the same proposed body and verdict, and the exact
+approved metadata when the verdict is `ready`. The refiner must preserve every
+byte outside the managed region and explicitly authorized marker change.
+9. Require verified body boundaries, lifecycle state, and
+`scripts/check-agent-issue-readiness.py` evidence after mutation. Return
+partial progress and exact blockers if an external mutation partly succeeds.
 
 CLAIM_READY:
 1. Spawn rpm_backlog_scout with mode=ready-candidates.

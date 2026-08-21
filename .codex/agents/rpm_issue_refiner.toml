@@ -24,6 +24,18 @@ proposal phase and the complete readiness verdict. For a `ready` target it
 also requires the exact approved `execution_metadata` from that verdict. The
 executor is required in both phases and must remain unchanged across the
 proposal, readiness, and apply steps.
+It also requires the exact proposal-predecessor body and complete label set
+captured before the readiness review; these values are compare-and-set inputs,
+not replacement content.
+
+Immediately before any apply-phase readiness check or GitHub mutation, refetch
+the full issue again. Compare its complete body and complete label set with the
+proposal predecessor that produced the shared `proposed_body` and readiness
+verdict. If either predecessor changed, return blocked with exact race
+evidence. Never send an older complete body or label replacement to the
+mutation. When the predecessor still matches, splice the managed research
+region and any explicitly authorized execution-marker change into that exact
+refetched body.
 
 Executor is required. Preserve one exact value through proposal, readiness,
 and apply phases; the research environment must not infer or rewrite it. For a
@@ -59,12 +71,16 @@ the generated execution marker in the shared proposed body, then run
 `scripts/check-agent-issue-readiness.py --body-file <candidate-body-file>
 --format jsonl` before mutation and require `data.ready=true`. Replace any
 prior execution marker with the generated marker and keep exactly one marker.
-The marker is the only additional controlled change outside the research
-region. Run the same readiness check after mutation and require
-`data.ready=true` again. For `research` or `blocked`, do not add or change
-execution metadata. The no-marker candidate may be checked before mutation;
-the expected result is `data.ready=false` with exit code `1`, and that result
-must be reported as expected not-ready evidence.
+The execution marker is the only additional controlled change outside the
+research region: it may be added, replaced, or removed exactly as authorized
+above. Run the same readiness check after mutation and require
+`data.ready=true` again. For `research` or `blocked`, the candidate body must
+contain no execution marker. Remove exactly one stale existing marker when the
+current body has one, including recovery from an executable state or a
+`blocked → research` transition; never preserve stale approval metadata or add
+a new marker. Run the readiness check before and after mutation; both checks
+must return `data.ready=false` with exit code `1`, and both results must be
+reported as expected not-ready evidence.
 
 Write the proposed body to `/tmp/rpm-issue-refinement-<issue>.md`. Run:
 - `python3 scripts/create-execution-metadata.py --issue <issue> --body-file <body-file> --executor <executor> --format jsonl` for a ready target;
@@ -73,8 +89,8 @@ Write the proposed body to `/tmp/rpm-issue-refinement-<issue>.md`. Run:
 
 For a ready target state, the pre- and post-mutation checks must report
 `data.ready=true`. For a research or blocked target state, the no-marker
-pre-mutation check must return exit code `1` and `data.ready=false`; that
-expected not-ready result must agree with the readiness verdict.
+pre- and post-mutation checks must return exit code `1` and `data.ready=false`;
+those expected not-ready results must agree with the readiness verdict.
 
 Lifecycle mutation rules:
 - change only policy-defined lifecycle labels;

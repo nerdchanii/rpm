@@ -259,12 +259,12 @@ def claim(
                 "idempotency_key": key,
             }
         return {"status": "blocked", "reason": "idempotency-conflict", "issue": issue_number}
-    if current in set(str(value) for value in contract.get("active_states", [])):
-        lease_rules = contract.get("lease")
-        if not isinstance(lease_rules, dict):
-            raise ValueError("execution contract lease rules are invalid")
-        lease_field = str(lease_rules.get("field", "lease"))
-        lease = metadata.get(lease_field)
+    lease_rules = contract.get("lease")
+    if not isinstance(lease_rules, dict):
+        raise ValueError("execution contract lease rules are invalid")
+    lease_field = str(lease_rules.get("field", "lease"))
+    lease = metadata.get(lease_field)
+    if current in set(str(value) for value in contract.get("active_states", [])) or lease is not None:
         lease_error = validate_lease(lease, contract)
         if lease_error:
             return {"status": "blocked", "reason": lease_error, "issue": issue_number}

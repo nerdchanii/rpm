@@ -19,7 +19,7 @@ Read the policy first. Use the GitHub plugin and immediately refetch the issue b
 Perform only this read-only compare-and-set preparation:
 1. immediately refetch the full current issue, including body, labels, state, and closing PRs;
 2. regenerate approval metadata from the refetched `Initial scope` and `Done criteria` with `scripts/create-execution-metadata.py`, using the supplied executor, and require its approval id, plan revision, scope hash, and executor to match the current execution marker and approved metadata. A changed scope or stale marker is `blocked` with exact evidence;
-3. reject the run with `no-work` when the issue is no longer open/ready, has an open closing PR, has an active lease, or has a duplicate event;
+3. reject the run with `no-work` when the issue is no longer open/ready, has an open closing PR, has an active lease, or has a duplicate event. Apply the active-lease check before the ready-state branch: a recovered `agent:ready` issue with any persisted lease must never return a claim patch. Return `blocked` for an expired persisted lease and `no-work` for an unexpired persisted lease;
 4. compute the policy-defined idempotency key from repository, issue, plan revision, scope hash, and event id;
 5. copy the full current label set and replace only the policy-defined ready label with the claimed label;
 6. replace only the execution marker in the body with the approved metadata plus `lease:{run_id,owner,expires_at}` and one `runs` ledger record containing `run_id`, `event_id`, `idempotency_key`, and `status:"active"`;
