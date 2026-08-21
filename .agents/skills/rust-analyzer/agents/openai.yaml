@@ -1,0 +1,4 @@
+interface:
+  display_name: "RPM Rust Analyzer"
+  short_description: "Run deterministic RPM Rust diagnostics."
+  default_prompt: "Use $rust-analyzer to run RPM's batch Rust analysis or the documented Cargo fallback."

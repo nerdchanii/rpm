@@ -26,7 +26,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "${format}" != "jsonl" ] && [ "${format}" != "text" ]; then
+if [ "${format}" != "jsonl" ] && [ "${format}" != "text" ] && [ "${format}" != "summary" ]; then
   printf 'agent_assets.error=invalid-format:%s\n' "${format}" >&2
   exit 2
 fi
@@ -48,7 +48,7 @@ emit_check() {
       --arg status "${result}" \
       --arg output "${output}" \
       '{type:"agent_asset_check",data:{name:$name,status:$status,output:(if $output == "" then null else $output end)}}'
-  else
+  elif [ "${format}" = "text" ] || [ "${result}" != "ok" ]; then
     printf 'agent_assets.%s=%s\n' "${name}" "${result}"
     if [ -n "${output}" ]; then
       printf 'agent_assets.%s.output.begin\n%s\nagent_assets.%s.output.end\n' \
@@ -538,7 +538,10 @@ check_backlog_access_preflight() {
 for skill in .agents/skills/*; do
   [ -d "${skill}" ] || continue
   name="$(basename "${skill}")"
-  if [ "${name}" = "take-ticket" ] || [ "${name}" = "prepare-backlog" ] || [ "${name}" = "merge-gatekeeper" ]; then
+  if [ "${name}" = "take-ticket" ] || [ "${name}" = "prepare-backlog" ] || [ "${name}" = "merge-gatekeeper" ] \
+    || [ "${name}" = "open-pr-review-batch" ] || [ "${name}" = "pr-resolution-loop" ] \
+    || [ "${name}" = "pr-review-resolution" ] || [ "${name}" = "safe-direct-merge" ] \
+    || [ "${name}" = "rpm-worktree-orchestrator" ]; then
     emit_check \
       "skill_${name}" \
       "ok" \

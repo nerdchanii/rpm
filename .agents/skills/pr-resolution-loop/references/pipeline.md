@@ -159,10 +159,7 @@ router 결과를 바탕으로 PR에 해결 내역 코멘트 **1개만** 작성�
    - `agent:review-pending` 제거, 스테일한 `agent:claimed`도 함께 제거.
    - 일반 라벨 보존.
    - `agent:awaiting-merge` 추가.
-   - 이 시점부터 머지는 다음 scheduled `merge-gatekeeper` 사이클 또는
-     `agent-loop-triggers.yml`의 `agent:awaiting-merge` 라벨 감지 즉시 발화가
-     맡는다 (`agent-loop-triggers.yml`의 `issues.labeled` 이벤트가
-     `agent:awaiting-merge`를 감지해 gatekeeper routine을 fire 한다).
+   - 이 시점부터 머지는 다음 scheduled `merge-gatekeeper` 사이클이 맡는다.
 4. 남은 actionable P0/P1 finding이 있으면 `agent:review-pending`을 유지한다
    (mutation 없이 다음 루프에서 재시도).
 

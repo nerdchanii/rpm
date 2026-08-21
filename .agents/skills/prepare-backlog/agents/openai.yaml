@@ -2,3 +2,6 @@ interface:
   display_name: "Prepare Backlog"
   short_description: "Capture ideas or advance RPM issue research."
   default_prompt: "Use $prepare-backlog to capture the supplied idea or run one bounded research cycle for the RPM Project backlog."
+
+policy:
+  allow_implicit_invocation: false

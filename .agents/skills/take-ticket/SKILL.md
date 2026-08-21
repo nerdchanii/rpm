@@ -68,6 +68,13 @@ The router owns detailed routing. Do not duplicate its manager or leaf map here.
 
 Use one worktree per concurrently active issue. Sequential scheduled runs may reuse the same worktree after the previous task reaches a clean terminal state.
 
+- The main session records the worktree path, base revision, and branch before the
+  router starts a worker.
+- A dirty intake or a worktree held by another task is a blocker. Do not copy
+  unrelated user changes into an issue worker.
+- Workers do not remove, force-remove, or clean worktrees. The main session owns
+  handoff and cleanup after the issue reaches a terminal state.
+
 ## Main Session Responsibilities
 
 1. Final scope decisions and split decisions.

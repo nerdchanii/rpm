@@ -38,7 +38,7 @@ for command_name in jq node python3; do
   fi
 done
 
-cargo fetch --locked
-cargo check --locked --all-targets
+cargo fetch --quiet --locked
+cargo check --quiet --locked --all-targets
 
 printf 'worktree-setup: ready (%s)\n' "${repo_root}"

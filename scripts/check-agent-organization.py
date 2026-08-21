@@ -81,6 +81,16 @@ FORBIDDEN_REFERENCES = (
     "pr-checklist-updater",
     "watch-codex-review.sh",
 )
+EXPLICIT_SKILLS = (
+    "take-ticket",
+    "prepare-backlog",
+    "merge-gatekeeper",
+    "open-pr-review-batch",
+    "pr-resolution-loop",
+    "pr-review-resolution",
+    "safe-direct-merge",
+    "rpm-worktree-orchestrator",
+)
 EXPECTED_TRANSITIONS = {
     "untracked": ["research"],
     "research": ["research", "ready", "blocked"],
@@ -313,6 +323,25 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str]:
             key, value = line.split(":", 1)
             values[key.strip()] = value.strip()
     return values
+
+
+def check_explicit_skill_assets(errors: list[str]) -> None:
+    """Keep mutating or orchestration skills explicit in both skill surfaces."""
+    for name in EXPLICIT_SKILLS:
+        skill_path = ROOT / ".agents" / "skills" / name
+        skill_md = skill_path / "SKILL.md"
+        values = parse_frontmatter(skill_md, errors)
+        if values.get("disable-model-invocation") != "true":
+            fail(errors, f"{skill_md.relative_to(ROOT)}: explicit skill must disable model invocation")
+
+        metadata_path = skill_path / "agents" / "openai.yaml"
+        try:
+            metadata = metadata_path.read_text()
+        except OSError as error:
+            fail(errors, f"{metadata_path.relative_to(ROOT)}: cannot read: {error}")
+            continue
+        if "allow_implicit_invocation: false" not in metadata:
+            fail(errors, f"{metadata_path.relative_to(ROOT)}: explicit skill must set allow_implicit_invocation: false")
 
 
 def check_entries_and_assets(errors: list[str]) -> None:
@@ -565,6 +594,7 @@ def main() -> int:
     agents = load_agents(errors)
     check_policy(errors)
     check_role_contracts(agents, errors)
+    check_explicit_skill_assets(errors)
     check_entries_and_assets(errors)
     check_deterministic_assets(errors)
     check_tool_policy_runtime(errors)

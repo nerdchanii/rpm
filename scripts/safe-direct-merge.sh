@@ -4,9 +4,9 @@ set -euo pipefail
 # safe-direct-merge.sh — gate-checked squash merge for PRs the scheduled
 # merge-gatekeeper cannot reach (e.g. a PR with no closing issue, or issues
 # outside the agent lifecycle). Verifies the SAME conditions the gate checks
-# in .agents/workflows/backlog-policy.json `merge_gate`, clears worktrees that
-# would block local branch deletion, squash-merges, and cleans up branches
-# without paying the full pre-push test gate on ref deletions.
+# in .agents/workflows/backlog-policy.json `merge_gate`, refuses to operate on
+# a branch held by any worktree, squash-merges, and cleans up branches without
+# paying the full pre-push test gate on ref deletions.
 
 usage() {
   cat <<'USAGE'
@@ -24,7 +24,7 @@ For each PR, verifies (mirroring merge_gate in backlog-policy.json):
   - no unresolved review threads (--allow-findings overrides)
 
 Then, per PR:
-  - removes any git worktree still holding the PR branch
+  - refuses to continue when any git worktree still holds the PR branch
   - squash-merges via `gh pr merge --squash`
   - deletes the merged remote branch (`git push --delete`, which the local
     pre-push gate skips for ref-deletion-only pushes)
@@ -128,14 +128,16 @@ merge_one() {
     return 0
   fi
 
-  # Clear worktrees still holding this branch (prevents local-delete failure).
+  # Never delete or force-remove a worktree. A held branch may contain user
+  # changes or belong to another Codex task; the caller must hand it off or
+  # clean it explicitly before retrying this merge.
   local wt wt_branch
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
     wt_branch="$(git -C "$wt" branch --show-current 2>/dev/null || true)"
     if [ "$wt_branch" = "$branch" ]; then
-      echo "removing worktree $wt holding $branch"
-      git worktree remove --force "$wt" 2>/dev/null || true
+      echo "skip: branch-held-by-worktree=$wt branch=$branch (handoff or clean it, then retry)"
+      return 1
     fi
   done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
 

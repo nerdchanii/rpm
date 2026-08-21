@@ -1,6 +1,8 @@
 ---
 name: pr-resolution-loop
 description: Scheduled 30-minute loop that inspects open PRs, reads unresolved review comments, drives a five-subagent pipeline to apply only accepted fixes, verify, comment, and transition the linked issue to awaiting-merge. This loop never merges; the scheduled merge-gatekeeper owns the merge.
+argument-hint: "[scheduled | <pr-number-or-url>]"
+disable-model-invocation: true
 ---
 
 # PR Resolution Loop
@@ -17,8 +19,8 @@ description: Scheduled 30-minute loop that inspects open PRs, reads unresolved r
 전환한다.
 
 이 루프는 머지하지 않는다. AGENTS.md가 선언하듯 머지는 scheduled
-merge-gatekeeper가 독점하며, `awaiting-merge` 전환 후 다음 gatekeeper 사이클
-또는 `agent-loop-triggers.yml`의 즉시 발화가 머지를 맡는다. 서브에이전트는
+merge-gatekeeper가 독점하며, `awaiting-merge` 전환 후 다음 gatekeeper 사이클이
+머지를 맡는다. 서브에이전트는
 `.codex/hooks/agent_tool_policy.py`에 의해 머지가 강제 차단되며, 메인 세션도
 이 루프에서는 머지를 수행하지 않는다. 코멘트 작성과 라이프사이클 라벨 전환만
 메인 세션이 담당한다.
@@ -60,8 +62,8 @@ merge-gatekeeper가 독점하며, `awaiting-merge` 전환 후 다음 gatekeeper 
    제거하고 `agent:awaiting-merge`를 추가하되 일반 라벨은 보존한다.
    스테일한 `agent:claimed`도 함께 제거한다. actionable finding이 남으면
    `agent:review-pending`을 유지한다. 머지는 이 루프의 책임이 아니다 —
-   `awaiting-merge` 전환 후 다음 scheduled `merge-gatekeeper` 사이클 또는
-   `agent-loop-triggers.yml`의 즉시 발화가 머지를 맡는다.
+   `awaiting-merge` 전환 후 다음 scheduled `merge-gatekeeper` 사이클이
+   머지를 맡는다.
 7. `no-work`는 건강한 멱등 결과다.
 
 ## Boundaries

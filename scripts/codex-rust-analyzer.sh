@@ -50,7 +50,7 @@ analyze() {
 cargo_check() {
   printf 'rust_analyzer.mode=cargo-fallback\n'
   cd -- "${repo_root}"
-  exec cargo check --locked --all-targets
+  exec cargo check --quiet --locked --all-targets
 }
 
 diagnose() {

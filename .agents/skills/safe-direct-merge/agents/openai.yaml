@@ -1,4 +1,7 @@
 interface:
   display_name: "Safe Direct Merge"
-  short_description: "Gate-checked squash merge for PRs outside the merge-gatekeeper queue."
-  default_prompt: "Use $safe-direct-merge to gate-check and squash-merge PRs the scheduled merge-gatekeeper cannot reach, then clean up branches."
+  short_description: "Explicitly authorized merge outside the lifecycle."
+  default_prompt: "Use $safe-direct-merge only with explicit authorization to gate-check an out-of-lifecycle PR without deleting held worktrees."
+
+policy:
+  allow_implicit_invocation: false

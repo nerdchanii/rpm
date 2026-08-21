@@ -172,10 +172,8 @@ gh pr comment <pr> --body-file /tmp/rpm-pr-loop-pr<pr>-comment.md
 ```
 동일 내역 코멘트가 이미 있으면 중복 작성 금지.
 
-### ⑦ 머지 게이트 + 머지
+### ⑦ 완료 handoff
 
-메인이 PR 상태를 fixture JSON으로 정규화 후:
-```
-python3 scripts/check-merge-gate.py --issues-file <normalized> --operation select-merge
-```
-판정에 복종하여 `bash scripts/safe-direct-merge.sh <pr>`로 머지 위임 또는 blocked 전환.
+이 루프는 PR을 머지하지 않는다. 남은 actionable finding이 없으면
+`review-pending → awaiting-merge` 전환 결과만 메인에 반환하고, merge 판정과
+실행은 scheduled `merge-gatekeeper`로 이관한다.

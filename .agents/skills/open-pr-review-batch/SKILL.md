@@ -1,6 +1,8 @@
 ---
 name: open-pr-review-batch
 description: Post a non-blocking code review on every open PR in parallel. One reviewer agent per PR; multi-lens (correctness, contract, filesystem safety, determinism), confidence-scored, false-positive-filtered, posted as a COMMENT review.
+argument-hint: "[all | <pr-number-or-url> ...]"
+disable-model-invocation: true
 ---
 
 # Open PR Review Batch

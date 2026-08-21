@@ -1,0 +1,7 @@
+interface:
+  display_name: "Merge Gatekeeper"
+  short_description: "Run RPM's single scheduled merge gate."
+  default_prompt: "Use $merge-gatekeeper scheduled to verify RPM's merge gate and merge at most one eligible PR."
+
+policy:
+  allow_implicit_invocation: false

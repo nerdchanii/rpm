@@ -195,7 +195,9 @@ evaluate_one() {
       soft 5 "no scripts/ cited"
     else
       local missing=()
-      for s in "${scrs[@]}"; do [ -e "${repo_root}/${s}" ] || missing+=("$s"); done
+      for s in "${scrs[@]}"; do
+        [ -e "${dir}/${s}" ] || [ -e "${repo_root}/${s}" ] || missing+=("$s")
+      done
       if [ "${#missing[@]}" -eq 0 ]; then soft 5 "all ${#scrs[@]} script(s) exist"
       else nit 5 "missing scripts: ${missing[*]}"; fi
     fi

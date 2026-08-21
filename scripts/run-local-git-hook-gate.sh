@@ -42,9 +42,9 @@ case "$hook_name" in
       echo "[local-hook] pre-push: ref-deletion-only push, skipping clippy/test gate"
       exit 0
     fi
-    run_gate "cargo clippy --all-targets --all-features -- -D warnings" \
-      cargo clippy --all-targets --all-features -- -D warnings
-    run_gate "cargo test" cargo test
+    run_gate "cargo clippy --quiet --all-targets --all-features -- -D warnings" \
+      cargo clippy --quiet --all-targets --all-features -- -D warnings
+    run_gate "cargo test --quiet" cargo test --quiet
     ;;
   *)
     echo "unsupported hook: $hook_name" >&2

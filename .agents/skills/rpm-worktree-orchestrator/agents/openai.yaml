@@ -1,0 +1,7 @@
+interface:
+  display_name: "RPM Worktree Orchestrator"
+  short_description: "Coordinate isolated workers under RPM lifecycle rules"
+  default_prompt: "Use $rpm-worktree-orchestrator local to coordinate this RPM task across isolated workers."
+
+policy:
+  allow_implicit_invocation: false

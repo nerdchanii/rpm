@@ -1,6 +1,8 @@
 ---
 name: safe-direct-merge
-description: Gate-checked squash merge for PRs the scheduled merge-gatekeeper cannot reach (no closing issue, or issues outside the agent lifecycle). Verifies the same gate conditions, clears blocking worktrees, merges, and cleans branches.
+argument-hint: "[--dry-run] [--allow-findings] <pr> ..."
+disable-model-invocation: true
+description: Gate-checked squash merge for explicitly authorized PRs outside the scheduled lifecycle. Verifies the same gate conditions, refuses branches held by worktrees, merges, and cleans branches.
 ---
 
 # Safe Direct Merge
@@ -21,6 +23,8 @@ cleans up branches. It does not replace the gatekeeper for normal lifecycle PRs.
 - The linked issue is outside the agent lifecycle and the 5-step label
   transition (`untracked→…→awaiting-merge`) is not justified.
 - The user has explicitly authorized a direct merge.
+- The user has explicitly authorized `--allow-findings` when that override is
+  needed.
 
 Prefer the scheduled `merge-gatekeeper` for PRs already in `agent:awaiting-merge`.
 
@@ -33,14 +37,17 @@ Prefer the scheduled `merge-gatekeeper` for PRs already in `agent:awaiting-merge
 3. Merge: `bash scripts/safe-direct-merge.sh [--allow-findings] <pr>...`
 4. Per PR the script verifies: OPEN / non-draft, `mergeable` true,
    `mergeState` CLEAN, required checks (`metadata`, `verify`) pass, and no
-   unresolved review threads (unless `--allow-findings`). It then clears any
-   worktree still holding the PR branch, squash-merges, and deletes the merged
-   remote branch (ref-deletion push, which the local pre-push gate skips) and
-   local branch.
+   unresolved review threads (unless explicitly authorized `--allow-findings`).
+   It blocks when any worktree holds the PR branch. The caller must hand off or
+   clean that worktree before retrying. After the branch is unheld, it
+   squash-merges and deletes the merged remote branch (ref-deletion push,
+   which the local pre-push gate skips) and local branch.
 
 ## Boundaries
 
 - Never force-push. Never merge a PR that fails the gate. Never touch labels.
+- Never delete or force-remove a worktree. A held or dirty worktree is a
+  blocker and requires explicit cleanup outside this skill.
 - Never request `@codex review`; never make merge depend on a fresh Automatic review.
 - This is a deliberate manual bypass; the scheduled `merge-gatekeeper` remains
   the default and sole merge path for lifecycle PRs.

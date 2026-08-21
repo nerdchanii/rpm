@@ -1,5 +1,7 @@
 ---
 name: pr-review-resolution
+argument-hint: "[scheduled | <review-input-jsonl>]"
+disable-model-invocation: true
 description: Resolve RPM PR review feedback. Use after Codex or human PR comments arrive, or on a scheduled reconciliation run, to collect review context, classify feedback, apply only accepted in-scope fixes, validate, and advance the linked issue.
 ---
 

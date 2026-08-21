@@ -119,8 +119,14 @@ executable. It does not change tracked files outside the hook setup.
 Default hooks:
 
 - `pre-commit`: `cargo fmt --check`
-- `pre-push`: `cargo clippy --all-targets --all-features -- -D warnings`
-- `pre-push`: `cargo test`
+- `pre-push`: `cargo clippy --quiet --all-targets --all-features -- -D warnings`
+- `pre-push`: `cargo test --quiet`
+
+The pre-push checks use Cargo's quiet mode to hide intermediate build progress.
+Compiler diagnostics, test failures, summaries, and exit statuses remain visible.
+The `just build`, `just check`, `just lint`, `just test`, `just docs`, and
+`just validate` recipes follow the same output policy. Agent-asset validation
+prints one success summary and expands individual output only when a check fails.
 
 If you need to bypass the local guardrail for a one-off case, use normal Git hook
 escape hatches such as `--no-verify`. Do not treat that as a replacement for the
