@@ -939,6 +939,18 @@ check "cloud_claim_open_closing_pr_no_work" sh -c '
     and .data.reason == \"closing-pr-present\"
   " >/dev/null
 '
+check "cloud_claim_closed_closing_pr_filtered" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-closed-closing-pr.json \
+    --operation claim --issue 14 --run-id run-14 --event-id delivery-14 \
+    --executor cloud --plan-revision plan-14 \
+    --scope-hash sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
+    --lease-owner cloud:executor)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"claim\"
+    and .data.expected_closing_prs == []
+  " >/dev/null
+'
 check "cloud_ready_to_claimed" sh -c '
   output="$(python3 scripts/check-cloud-queue-contract.py \
     --issues-file .agents/fixtures/backlog/cloud-issues.json \

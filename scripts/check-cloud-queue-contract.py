@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from execution_contract import SHA256_KEY, parse_rfc3339, validate_run_record
+from execution_contract import (
+    SHA256_KEY,
+    compute_idempotency_key,
+    parse_rfc3339,
+    validate_run_record,
+)
 
 
 def load_json(path: str) -> dict[str, object]:
@@ -55,13 +59,18 @@ def is_open(issue: dict[str, object]) -> bool:
 
 
 def has_open_closing_pr(issue: dict[str, object]) -> bool:
+    return bool(open_closing_prs(issue))
+
+
+def open_closing_prs(issue: dict[str, object]) -> list[dict[str, object]]:
     prs = issue.get("closing_prs", [])
     if not isinstance(prs, list):
         raise ValueError("closing_prs must be an array")
-    return any(
-        isinstance(pr, dict) and str(pr.get("state", "")).casefold() == "open"
+    return [
+        pr
         for pr in prs
-    )
+        if isinstance(pr, dict) and str(pr.get("state", "")).casefold() == "open"
+    ]
 
 
 def execution_metadata(issue: dict[str, object]) -> dict[str, object] | None:
@@ -132,9 +141,7 @@ def idempotency_key(
     scope_hash: str,
     event_id: str,
 ) -> str:
-    values = (repository, str(issue_number), plan_revision, scope_hash, event_id)
-    canonical = "\0".join(values).encode("utf-8")
-    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+    return compute_idempotency_key(repository, issue_number, plan_revision, scope_hash, event_id)
 
 
 def approval_marker(metadata: dict[str, object]) -> str:
@@ -328,7 +335,7 @@ def claim(
         "after": "claimed",
         "before_open": True,
         "expected_issue_state": str(issue.get("state", "")),
-        "expected_closing_prs": issue.get("closing_prs", []),
+        "expected_closing_prs": open_closing_prs(issue),
         "run_id": run_id,
         "event_id": event_id,
         "idempotency_key": key,

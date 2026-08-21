@@ -15,11 +15,15 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-MARKER = '<!-- rpm-agent-execution: {"approval_id":"a","executor":"cloud","lease":{"expires_at":"2026-08-21T13:00:00Z","owner":"cloud:executor","run_id":"r"},"plan_revision":"p","runs":[{"event_id":"e","idempotency_key":"sha256:' + "b" * 64 + '","run_id":"r","status":"active"}],"scope_hash":"sha256:' + "a" * 64 + '"} -->'
+REPOSITORY = "nerdchanii/rpm"
+ISSUE_NUMBER = 3
+SCOPE_HASH = "sha256:" + "a" * 64
+VALID_KEY = MODULE.compute_idempotency_key(REPOSITORY, ISSUE_NUMBER, "p", SCOPE_HASH, "e")
+MARKER = f'<!-- rpm-agent-execution: {{"approval_id":"a","executor":"cloud","lease":{{"expires_at":"2026-08-21T13:00:00Z","owner":"cloud:executor","run_id":"r"}},"plan_revision":"p","runs":[{{"event_id":"e","idempotency_key":"{VALID_KEY}","run_id":"r","status":"active"}}],"scope_hash":"{SCOPE_HASH}"}} -->'
 APPROVAL_MARKER = '<!-- rpm-agent-execution: {"approval_id":"a","executor":"cloud","plan_revision":"p","scope_hash":"sha256:' + "a" * 64 + '"} -->'
 APPROVAL_WITH_RUNS = APPROVAL_MARKER.replace(
     '} -->',
-    ',"runs":[{"event_id":"e","idempotency_key":"sha256:' + "b" * 64 + '","run_id":"r","status":"active"}]} -->',
+    f',"runs":[{{"event_id":"e","idempotency_key":"{VALID_KEY}","run_id":"r","status":"active"}}]}} -->',
 )
 
 
@@ -33,13 +37,23 @@ class ApplyExecutionMarkerTests(unittest.TestCase):
 
     def test_replaces_one_marker_and_preserves_surrounding_text(self) -> None:
         body = "prefix\n" + APPROVAL_MARKER + "\nsuffix\n"
-        result = MODULE.apply_marker(body, MARKER, expected_marker=APPROVAL_MARKER)
+        result = MODULE.apply_marker(
+            body,
+            MARKER,
+            expected_marker=APPROVAL_MARKER,
+            repository=REPOSITORY,
+            issue_number=ISSUE_NUMBER,
+        )
         self.assertEqual(result, "prefix\n" + MARKER + "\nsuffix\n")
 
     def test_approval_marker_with_prior_runs_is_a_valid_predecessor(self) -> None:
         self.assertEqual(
             MODULE.apply_marker(
-                "prefix\n" + APPROVAL_WITH_RUNS + "\n", MARKER, expected_marker=APPROVAL_WITH_RUNS
+                "prefix\n" + APPROVAL_WITH_RUNS + "\n",
+                MARKER,
+                expected_marker=APPROVAL_WITH_RUNS,
+                repository=REPOSITORY,
+                issue_number=ISSUE_NUMBER,
             ),
             "prefix\n" + MARKER + "\n",
         )
@@ -50,21 +64,41 @@ class ApplyExecutionMarkerTests(unittest.TestCase):
                 APPROVAL_MARKER + "\n" + APPROVAL_MARKER,
                 MARKER,
                 expected_marker=APPROVAL_MARKER,
+                repository=REPOSITORY,
+                issue_number=ISSUE_NUMBER,
             )
 
     def test_missing_marker_is_rejected_for_claim_application(self) -> None:
         with self.assertRaisesRegex(ValueError, "exactly one"):
-            MODULE.apply_marker("body\n", MARKER, expected_marker=APPROVAL_MARKER)
+            MODULE.apply_marker(
+                "body\n",
+                MARKER,
+                expected_marker=APPROVAL_MARKER,
+                repository=REPOSITORY,
+                issue_number=ISSUE_NUMBER,
+            )
 
     def test_changed_predecessor_is_rejected(self) -> None:
         changed = APPROVAL_MARKER.replace('"plan_revision":"p"', '"plan_revision":"other"')
         with self.assertRaisesRegex(ValueError, "compare-and-set"):
-            MODULE.apply_marker(changed + "\n", MARKER, expected_marker=APPROVAL_MARKER)
+            MODULE.apply_marker(
+                changed + "\n",
+                MARKER,
+                expected_marker=APPROVAL_MARKER,
+                repository=REPOSITORY,
+                issue_number=ISSUE_NUMBER,
+            )
 
     def test_full_recovery_predecessor_is_accepted(self) -> None:
         replacement = MARKER.replace('"run_id":"r"', '"run_id":"next"')
         self.assertEqual(
-            MODULE.apply_marker(MARKER + "\n", replacement, expected_marker=MARKER),
+            MODULE.apply_marker(
+                MARKER + "\n",
+                replacement,
+                expected_marker=MARKER,
+                repository=REPOSITORY,
+                issue_number=ISSUE_NUMBER,
+            ),
             replacement + "\n",
         )
 
@@ -79,12 +113,35 @@ class ApplyExecutionMarkerTests(unittest.TestCase):
                 replacement = MARKER.replace(old, new)
                 with self.assertRaisesRegex(ValueError, "approval metadata"):
                     MODULE.apply_marker(
-                        APPROVAL_MARKER + "\n", replacement, expected_marker=APPROVAL_MARKER
+                        APPROVAL_MARKER + "\n",
+                        replacement,
+                        expected_marker=APPROVAL_MARKER,
+                        repository=REPOSITORY,
+                        issue_number=ISSUE_NUMBER,
                     )
 
     def test_initialization_rejects_existing_marker(self) -> None:
         with self.assertRaisesRegex(ValueError, "initialization"):
             MODULE.apply_marker(APPROVAL_MARKER + "\n", MARKER, initialization=True)
+
+    def test_claim_rejects_unbound_active_run_idempotency_key(self) -> None:
+        invalid = MARKER.replace(VALID_KEY, "sha256:" + "b" * 64, 1)
+        with self.assertRaisesRegex(ValueError, "idempotency key"):
+            MODULE.apply_marker(
+                APPROVAL_MARKER + "\n",
+                invalid,
+                expected_marker=APPROVAL_MARKER,
+                repository=REPOSITORY,
+                issue_number=ISSUE_NUMBER,
+            )
+
+    def test_claim_requires_repository_and_issue_binding_context(self) -> None:
+        with self.assertRaisesRegex(ValueError, "repository and issue"):
+            MODULE.apply_marker(
+                APPROVAL_MARKER + "\n",
+                MARKER,
+                expected_marker=APPROVAL_MARKER,
+            )
 
     def test_marker_without_lease_is_rejected(self) -> None:
         invalid = MARKER.replace(
@@ -100,7 +157,7 @@ class ApplyExecutionMarkerTests(unittest.TestCase):
             MODULE.apply_marker("body\n", invalid, initialization=True)
 
     def test_malformed_historical_run_is_rejected(self) -> None:
-        invalid = MARKER.replace("sha256:" + "b" * 64, "invalid", 1)
+        invalid = MARKER.replace(VALID_KEY, "invalid", 1)
         with self.assertRaisesRegex(ValueError, "runs ledger"):
             MODULE.apply_marker("body\n", invalid, initialization=True)
 

@@ -10,7 +10,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from execution_contract import SHA256_KEY, parse_rfc3339, validate_run_record
+from execution_contract import (
+    SHA256_KEY,
+    compute_idempotency_key,
+    parse_rfc3339,
+    validate_run_record,
+)
 
 
 MARKER_LINE = re.compile(r"^[ \t]*<!--\s*rpm-agent-execution:\s*(\{.*\})\s*-->[ \t]*$")
@@ -119,12 +124,30 @@ def validate_expected_marker(marker: str) -> None:
     validate_marker(marker)
 
 
+def validate_claim_idempotency_key(
+    marker: str, *, repository: str, issue_number: int
+) -> None:
+    payload = marker_payload(marker)
+    run = validate_runs(payload["runs"], require_active=True)
+    expected = compute_idempotency_key(
+        repository,
+        issue_number,
+        payload["plan_revision"],
+        payload["scope_hash"],
+        run["event_id"],
+    )
+    if run["idempotency_key"] != expected:
+        raise ValueError("active run idempotency key mismatch")
+
+
 def apply_marker(
     body: str,
     marker: str,
     *,
     expected_marker: str | None = None,
     initialization: bool = False,
+    repository: str | None = None,
+    issue_number: int | None = None,
 ) -> str:
     normalized_marker = marker.strip()
     validate_marker(normalized_marker)
@@ -132,6 +155,8 @@ def apply_marker(
         raise ValueError("claim application requires an expected predecessor or explicit initialization")
     normalized_expected = expected_marker.strip() if expected_marker is not None else None
     if normalized_expected is not None:
+        if repository is None or issue_number is None:
+            raise ValueError("claim application requires repository and issue")
         validate_expected_marker(normalized_expected)
         expected_payload = marker_payload(normalized_expected)
         replacement_payload = marker_payload(normalized_marker)
@@ -140,6 +165,9 @@ def apply_marker(
             for field in REQUIRED_FIELDS
         ):
             raise ValueError("replacement marker approval metadata mismatch")
+        validate_claim_idempotency_key(
+            normalized_marker, repository=repository, issue_number=issue_number
+        )
     lines = body.splitlines(keepends=True)
     matches = [index for index, line in enumerate(lines) if MARKER_LINE.fullmatch(line.rstrip("\r\n"))]
     if len(matches) > 1:
@@ -164,6 +192,8 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--body-file", required=True, type=Path)
     parser.add_argument("--marker-file", required=True, type=Path)
+    parser.add_argument("--repository")
+    parser.add_argument("--issue", type=int)
     expected = parser.add_mutually_exclusive_group(required=True)
     expected.add_argument("--expected-marker-file", type=Path)
     expected.add_argument("--initialize", action="store_true")
@@ -182,6 +212,8 @@ def main(argv: list[str]) -> int:
             marker,
             expected_marker=expected_marker,
             initialization=args.initialize,
+            repository=args.repository,
+            issue_number=args.issue,
         )
         if args.output_file is None:
             sys.stdout.write(result)

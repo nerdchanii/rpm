@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime
 
@@ -35,3 +36,15 @@ def validate_run_record(value: object, context: str = "run") -> dict[str, object
     if not IDEMPOTENCY_KEY.fullmatch(value["idempotency_key"]):
         raise ValueError(f"{context} has an invalid idempotency key")
     return value
+
+
+def compute_idempotency_key(
+    repository: str,
+    issue_number: int,
+    plan_revision: str,
+    scope_hash: str,
+    event_id: str,
+) -> str:
+    values = (repository, str(issue_number), plan_revision, scope_hash, event_id)
+    canonical = "\0".join(values).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"

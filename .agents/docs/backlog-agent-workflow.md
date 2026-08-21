@@ -63,8 +63,10 @@ open-closing-PR rejection, lease checks, plan/scope/executor matching, and
 duplicate-event handling. Its result includes the exact lease, ledger, marker,
 and label patch. The read-only claimer returns that patch, including the exact
 approved marker predecessor. The main session refetches the issue, uses
-`scripts/apply-execution-marker.py --expected-marker-file`, and persists the
-marker and label transition in one issue mutation. The router resumes only
+`scripts/apply-execution-marker.py --repository <owner/name> --issue <number> --expected-marker-file`, and persists the
+marker and label transition in one issue mutation. The helper recomputes the
+policy idempotency key from the approved plan and claimed event before
+replacement. The router resumes only
 after the main session verifies that durable checkpoint. An expired lease
 requires an explicit recovery transition. It never silently reclaims active
 work.

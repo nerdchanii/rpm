@@ -64,8 +64,11 @@ label mutation. A stale revision, scope, executor, or expired lease returns
    state, complete label set, and execution marker exactly match the patch's
    `before_state`, `expected_labels`, `before_open`, `expected_closing_prs`, and
    predecessor marker. On any marker, state, label, open-state, or closing-PR
-   mismatch, return `no-work` without selecting a replacement. Apply the
-   resulting body and labels as one issue update. Verify the lease and idempotency record, then
+   mismatch, return `no-work` without selecting a replacement. Invoke
+   `scripts/apply-execution-marker.py` with the repository and issue number so
+   it recomputes the policy idempotency key from the replacement marker's
+   approved fields and claimed event. Apply the resulting body and labels as
+   one issue update. Verify the lease and idempotency record, then
    resume the same router with
    `claim_checkpoint={persisted:true,verified:true,after_state:"claimed",...}`.
    The router starts per-issue execution only after that checkpoint. A
