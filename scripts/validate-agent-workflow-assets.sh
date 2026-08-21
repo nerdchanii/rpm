@@ -546,13 +546,7 @@ check_summary_suppresses_skips() {
       RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION=1 \
       bash scripts/validate-agent-workflow-assets.sh --format=summary
   )"
-  printf '%s\n' "${output}" | rg -q '^agent_assets.status=ok$'
-  if printf '%s\n' "${output}" | rg -q '^agent_assets\.skill_.*=skip$'; then
-    return 1
-  fi
-  if printf '%s\n' "${output}" | rg -q '^agent_assets\.skill_.*\.output\.(begin|end)$'; then
-    return 1
-  fi
+  [ "${output}" = "agent_assets.status=ok" ]
 }
 
 for skill in .agents/skills/*; do
