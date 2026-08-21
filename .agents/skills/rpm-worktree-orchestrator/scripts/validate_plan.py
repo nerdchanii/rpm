@@ -7,7 +7,7 @@ import json
 import posixpath
 import re
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -61,6 +61,19 @@ def canonicalize_path(normalized: str) -> str:
         invalid(f"unsafe write path: {normalized!r}")
         raise AssertionError("unreachable") from error
     return relative.as_posix()
+
+
+def reject_existing_symlink(normalized: str) -> None:
+    current = REPOSITORY_ROOT
+    for component in PurePosixPath(normalized).parts:
+        current /= component
+        try:
+            is_symlink = current.is_symlink()
+        except OSError as error:
+            invalid(f"cannot inspect write path: {normalized!r}")
+            raise AssertionError("unreachable") from error
+        if is_symlink:
+            invalid(f"unsafe write path through symlink: {normalized!r}")
 
 
 def overlap(left: str, right: str) -> bool:
@@ -146,9 +159,10 @@ def validate(plan: Any) -> None:
         paths = node["write_paths"]
         if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
             invalid(f"{node_id}.write_paths must be an array")
-        ownership.extend(
-            (node_id, canonicalize_path(normalize_path(path))) for path in paths
-        )
+        for path in paths:
+            normalized = normalize_path(path)
+            reject_existing_symlink(normalized)
+            ownership.append((node_id, canonicalize_path(normalized)))
         if node["state"] not in STATES:
             invalid(f"{node_id}.state is invalid")
         if isinstance(node["attempt"], bool) or not isinstance(node["attempt"], int) or node["attempt"] < 0:

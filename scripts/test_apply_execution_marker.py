@@ -68,6 +68,20 @@ class ApplyExecutionMarkerTests(unittest.TestCase):
             replacement + "\n",
         )
 
+    def test_replacement_must_preserve_approval_metadata(self) -> None:
+        for old, new in (
+            ('"approval_id":"a"', '"approval_id":"other-approval"'),
+            ('"plan_revision":"p"', '"plan_revision":"other-plan"'),
+            ('"scope_hash":"sha256:' + "a" * 64 + '"', '"scope_hash":"sha256:' + "c" * 64 + '"'),
+            ('"executor":"cloud"', '"executor":"local"'),
+        ):
+            with self.subTest(field=old.split(":", 1)[0]):
+                replacement = MARKER.replace(old, new)
+                with self.assertRaisesRegex(ValueError, "approval metadata"):
+                    MODULE.apply_marker(
+                        APPROVAL_MARKER + "\n", replacement, expected_marker=APPROVAL_MARKER
+                    )
+
     def test_initialization_rejects_existing_marker(self) -> None:
         with self.assertRaisesRegex(ValueError, "initialization"):
             MODULE.apply_marker(APPROVAL_MARKER + "\n", MARKER, initialization=True)

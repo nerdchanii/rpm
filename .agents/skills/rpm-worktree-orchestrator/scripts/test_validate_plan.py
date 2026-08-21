@@ -224,15 +224,10 @@ class ValidatePlanTests(unittest.TestCase):
     def test_wildcard_write_path_is_unsafe(self) -> None:
         self.assert_invalid(plan([node("a", paths=["*"])]), "unsafe write path")
 
-    def test_symlink_aliases_are_not_disjoint(self) -> None:
+    def test_existing_symlink_write_path_is_rejected(self) -> None:
         self.assert_invalid(
-            plan(
-                [
-                    node("a", paths=[".claude/skills/pr-resolution-loop/SKILL.md"]),
-                    node("b", paths=[".agents/skills/pr-resolution-loop/SKILL.md"]),
-                ]
-            ),
-            "overlapping",
+            plan([node("a", paths=[".claude/skills/pr-resolution-loop/SKILL.md"])]),
+            "symlink",
         )
 
     def test_stale_revision(self) -> None:

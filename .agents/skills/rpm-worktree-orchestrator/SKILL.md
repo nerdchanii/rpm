@@ -112,7 +112,13 @@ python3 .agents/skills/rpm-worktree-orchestrator/scripts/validate_plan.py <plan.
   `integrated_revision`이 선택한 `base_revision`의 ancestor인지
   `git merge-base --is-ancestor <integrated_revision> <base_revision>`로
   확인하는지
-- diff가 worker ownership에만 포함되는지
+- diff가 worker ownership에만 포함되는지 확인하고, worker commit의 변경
+  경로에 symlink 추가·변경 또는 symlink를 통한 경로 탈출이 있으면 통합하지
+  않는지 확인합니다. `git diff --summary <base_revision>..<sha>`의 symlink
+  mode 변경과 `git diff --name-only <base_revision>..<sha>`의 각 경로 및
+  부모 경로를 worker worktree에서 검사합니다. 이 검사는 worker가 만든
+  symlink가 외부 파일을 변경한 결과를 tracked diff 소유권 검사로 우회하지
+  못하도록 통합 전에 수행합니다.
 - 사용자 변경, conflict marker, `git ls-files -u`, `git diff --check`가
   안전한지
 

@@ -21,6 +21,19 @@ def parse_timestamp(value: str) -> datetime:
     return parse_rfc3339(value)
 
 
+def marker_payload(marker: str) -> dict[str, object]:
+    match = MARKER_LINE.fullmatch(marker.strip())
+    if match is None:
+        raise ValueError("marker must be one rpm-agent-execution comment")
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError as error:
+        raise ValueError("marker JSON is invalid") from error
+    if not isinstance(payload, dict):
+        raise ValueError("marker JSON must be an object")
+    return payload
+
+
 def validate_runs(runs: object, *, require_active: bool) -> dict[str, object]:
     if not isinstance(runs, list) or not runs:
         raise ValueError("marker is missing runs ledger")
@@ -120,6 +133,13 @@ def apply_marker(
     normalized_expected = expected_marker.strip() if expected_marker is not None else None
     if normalized_expected is not None:
         validate_expected_marker(normalized_expected)
+        expected_payload = marker_payload(normalized_expected)
+        replacement_payload = marker_payload(normalized_marker)
+        if any(
+            replacement_payload[field] != expected_payload[field]
+            for field in REQUIRED_FIELDS
+        ):
+            raise ValueError("replacement marker approval metadata mismatch")
     lines = body.splitlines(keepends=True)
     matches = [index for index, line in enumerate(lines) if MARKER_LINE.fullmatch(line.rstrip("\r\n"))]
     if len(matches) > 1:
