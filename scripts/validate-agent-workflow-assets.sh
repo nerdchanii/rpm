@@ -69,6 +69,28 @@ check() {
   fi
 }
 
+if [ "${RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION:-}" = "1" ]; then
+  check_summary_formatter() {
+    local output
+    local expected
+    expected=$'agent_assets.summary_failure=fail\nagent_assets.summary_failure.output.begin\nsummary failure diagnostics\nagent_assets.summary_failure.output.end'
+    output="$(
+      emit_check "summary_skip" "skip" "skipped checks stay hidden"
+      emit_check "summary_failure" "fail" "summary failure diagnostics"
+    )"
+    if [ "${output}" != "${expected}" ]; then
+      printf 'summary formatter output mismatch\nexpected:\n%s\nactual:\n%s\n' \
+        "${expected}" "${output}" >&2
+      return 1
+    fi
+  }
+
+  check "summary_formatter" check_summary_formatter
+  printf 'agent_assets.status=%s\n' "${status}"
+  [ "${status}" = "ok" ] || exit 1
+  exit 0
+fi
+
 with_fake_collect_gh() {
   local fixture="$1"
   shift
@@ -549,6 +571,26 @@ check_summary_suppresses_skips() {
   [ "${output}" = "agent_assets.status=ok" ]
 }
 
+check_just_test_verbosity() {
+  local temp_dir
+  local output
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-just-test-verbosity.XXXXXX")"
+  trap 'rm -f "${temp_dir}/cargo"; rmdir "${temp_dir}"' RETURN
+  ln -s /bin/echo "${temp_dir}/cargo"
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -v)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -v$'
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -vv)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -vv$'
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test --verbose)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests --verbose$'
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test package_filter --nocapture)"
+  printf '%s\n' "${output}" | rg -q '^test --quiet --locked --lib --bins --tests package_filter --nocapture$'
+}
+
 for skill in .agents/skills/*; do
   [ -d "${skill}" ] || continue
   name="$(basename "${skill}")"
@@ -674,9 +716,8 @@ check "script_check_claude_security_syntax" \
 check "script_validate_agent_workflow_assets_syntax" \
   bash -n scripts/validate-agent-workflow-assets.sh
 
-if [ "${RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION:-}" != "1" ]; then
-  check "summary_suppresses_skips" check_summary_suppresses_skips
-fi
+check "summary_suppresses_skips" check_summary_suppresses_skips
+check "just_test_verbosity" check_just_test_verbosity
 
 check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews
 check "collect_pr_review_context_no_duplicates" check_collect_does_not_duplicate_exhausted_connections
