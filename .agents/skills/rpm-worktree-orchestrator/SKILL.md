@@ -57,8 +57,11 @@ RPM 정책은 batch limit, lifecycle label, lease, idempotency, `scope_hash`,
 계획의 `base_revision` 또는 직접 의존하는 통합 node의 검증된
 `integrated_revision`에서만 생성합니다. 여러 통합 dependency를 합친 node는
 모든 dependency를 포함하는 검증된 aggregate revision과
-`base_revision_dependencies` 목록을 기록합니다. `required_gates`가 모두
-성공해 `integrated`가 되기 전에는 전체 작업을 완료로 판정하지 않습니다.
+`base_revision_dependencies` 목록을 기록합니다. 앞선 dependency의
+`integrated_revision`이 다른 dependency까지 포함하면 해당 revision을
+aggregate base로 사용할 수 있으며, 메인 세션은 각 dependency가 그 base의
+ancestor인지 확인합니다. `required_gates`가 모두 성공해 `integrated`가
+되기 전에는 전체 작업을 완료로 판정하지 않습니다.
 `write_paths`는 저장소 상대 경로의 명시적인 파일·디렉터리 목록이며 `*`와
 Git control path는 허용하지 않습니다.
 

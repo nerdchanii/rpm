@@ -172,7 +172,7 @@ def validate(plan: Any) -> None:
             by_id[dependency]["integrated_revision"] for dependency in integrated_dependencies
         }
         if len(integrated_dependencies) > 1:
-            if node["base_revision"] in {plan["base_revision"], *integrated_revisions}:
+            if node["base_revision"] == plan["base_revision"]:
                 invalid(f"{node_id}.base_revision must be a verified aggregate revision")
             allowed_base_revisions = {node["base_revision"]}
         else:

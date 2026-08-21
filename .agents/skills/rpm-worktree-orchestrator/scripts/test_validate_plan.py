@@ -110,21 +110,40 @@ class ValidatePlanTests(unittest.TestCase):
             "base_revision is stale",
         )
 
-    def test_join_requires_one_verified_aggregate_revision(self) -> None:
+    def test_join_rejects_original_plan_base_even_with_dependency_evidence(self) -> None:
+        join = node(
+            "join",
+            depends_on=["first", "second"],
+            state="ready",
+        )
+        join["base_revision_dependencies"] = ["first", "second"]
         self.assert_invalid(
             plan(
                 [
                     node("first", state="integrated", integrated_revision="commit-1"),
                     node("second", state="integrated", integrated_revision="commit-2"),
-                    node(
-                        "join",
-                        depends_on=["first", "second"],
-                        state="ready",
-                        base_revision="commit-2",
-                    ),
+                    join,
                 ]
             ),
-            "base_revision_dependencies",
+            "verified aggregate revision",
+        )
+
+    def test_join_accepts_dependency_revision_that_aggregates_earlier_dependency(self) -> None:
+        join = node(
+            "join",
+            depends_on=["first", "second"],
+            state="ready",
+            base_revision="commit-2",
+        )
+        join["base_revision_dependencies"] = ["first", "second"]
+        validate(
+            plan(
+                [
+                    node("first", state="integrated", integrated_revision="commit-1"),
+                    node("second", state="integrated", integrated_revision="commit-2"),
+                    join,
+                ]
+            )
         )
 
     def test_join_accepts_shared_verified_revision(self) -> None:
