@@ -29,6 +29,11 @@ Queue work.
 - Lease and idempotency data are persisted.
 """
 
+RUN_LEDGER = (
+    '<!-- rpm-agent-run-ledger: {"runs":[{"event_id":"delivery-old",'
+    '"idempotency_key":"sha256:' + "b" * 64 + '","run_id":"run-old","status":"active"}]} -->'
+)
+
 
 class ExecutionMetadataTests(unittest.TestCase):
     def test_metadata_is_deterministic_and_contains_marker(self) -> None:
@@ -47,6 +52,12 @@ class ExecutionMetadataTests(unittest.TestCase):
         revised = MODULE.create_metadata("42", changed, "cloud")["data"]["metadata"]
         self.assertNotEqual(original["plan_revision"], revised["plan_revision"])
         self.assertNotEqual(original["scope_hash"], revised["scope_hash"])
+
+    def test_restores_prior_run_ledger_in_new_approval_marker(self) -> None:
+        result = MODULE.create_metadata("42", BODY + "\n" + RUN_LEDGER, "cloud")
+        marker = result["data"]["marker"]
+        self.assertIn('"runs":[{"event_id":"delivery-old"', marker)
+        self.assertNotIn('"lease"', marker)
 
     def test_missing_scope_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "Done criteria"):

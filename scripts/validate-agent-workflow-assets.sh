@@ -777,6 +777,23 @@ check "cloud_claim_preserves_prior_runs" sh -c '
     --lease-owner cloud:executor)"
   printf "%s\n" "${old_output}" | jq -e ".data.status == \"no-work\" and .data.reason == \"duplicate-event\"" >/dev/null
 '
+check "cloud_claim_recovered_ready_preserves_ledger" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-recovered-ready-ledger.json \
+    --operation claim --issue 3 --run-id run-new --event-id delivery-new \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  printf "%s\n" "$output" | jq -e \
+    ".data.status == \"claim\" and (.data.expected_execution_marker | contains(\"\\\"runs\\\"\")) and (.data.execution.runs | length) == 2 and .data.execution.runs[0].event_id == \"delivery-3\"" >/dev/null
+  duplicate="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-recovered-ready-ledger.json \
+    --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  printf "%s\n" "$duplicate" | jq -e ".data.status == \"no-work\" and .data.reason == \"duplicate-event\"" >/dev/null
+'
 check "cloud_claim_stale_revision_blocked" sh -c '
   set +e
   output="$(python3 scripts/check-cloud-queue-contract.py \

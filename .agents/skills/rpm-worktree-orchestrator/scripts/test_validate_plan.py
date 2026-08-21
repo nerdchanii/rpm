@@ -11,18 +11,21 @@ from validate_plan import validate
 HASH = "sha256:" + "a" * 64
 
 
-def node(node_id: str, *, depends_on: list[str] | None = None, paths: list[str] | None = None, state: str = "pending", revision: str = "p1") -> dict[str, object]:
-    return {
+def node(node_id: str, *, depends_on: list[str] | None = None, paths: list[str] | None = None, state: str = "pending", revision: str = "p1", base_revision: str = "abc123", integrated_revision: str | None = None) -> dict[str, object]:
+    value = {
         "id": node_id,
         "objective": node_id,
         "role": "worker",
         "depends_on": depends_on or [],
         "write_paths": paths or [],
-        "base_revision": "abc123",
+        "base_revision": base_revision,
         "plan_revision": revision,
         "state": state,
         "attempt": 0,
     }
+    if integrated_revision is not None:
+        value["integrated_revision"] = integrated_revision
+    return value
 
 
 def plan(nodes: list[dict[str, object]], gates: list[str] | None = None) -> dict[str, object]:
@@ -74,6 +77,30 @@ class ValidatePlanTests(unittest.TestCase):
             ),
             "unfinished dependencies",
         )
+
+    def test_dependent_node_uses_verified_integrated_revision(self) -> None:
+        validate(
+            plan(
+                [
+                    node("producer", state="integrated", integrated_revision="commit-2"),
+                    node("consumer", depends_on=["producer"], state="ready", base_revision="commit-2"),
+                ]
+            )
+        )
+
+    def test_dependent_node_rejects_unverified_base_revision(self) -> None:
+        self.assert_invalid(
+            plan(
+                [
+                    node("producer", state="integrated", integrated_revision="commit-2"),
+                    node("consumer", depends_on=["producer"], state="ready", base_revision="commit-3"),
+                ]
+            ),
+            "base_revision is stale",
+        )
+
+    def test_integrated_node_requires_verified_revision(self) -> None:
+        self.assert_invalid(plan([node("producer", state="integrated")]), "integrated_revision")
 
     def test_windows_absolute_path(self) -> None:
         self.assert_invalid(plan([node("a", paths=["C:/Users/me/file"])]), "unsafe write path")

@@ -119,8 +119,13 @@ def validate(plan: Any) -> None:
         for field in ("objective", "role", "base_revision", "plan_revision"):
             if not isinstance(node[field], str) or not node[field].strip():
                 invalid(f"{node_id}.{field} must be a non-empty string")
-        if node["base_revision"] != plan["base_revision"]:
-            invalid(f"{node_id}.base_revision is stale")
+        integrated_revision = node.get("integrated_revision")
+        if integrated_revision is not None and (
+            not isinstance(integrated_revision, str) or not integrated_revision.strip()
+        ):
+            invalid(f"{node_id}.integrated_revision must be a non-empty string")
+        if node["state"] == "integrated" and integrated_revision is None:
+            invalid(f"{node_id}.integrated_revision is required for integrated nodes")
         if node["plan_revision"] != plan["plan_revision"]:
             invalid(f"{node_id}.plan_revision is stale")
         dependencies = node["depends_on"]
@@ -143,6 +148,15 @@ def validate(plan: Any) -> None:
         for dependency in node["depends_on"]:
             if dependency not in by_id:
                 invalid(f"{node_id} depends on missing node: {dependency}")
+        allowed_base_revisions = {plan["base_revision"]}
+        allowed_base_revisions.update(
+            dependency_node["integrated_revision"]
+            for dependency_node in (by_id[dependency] for dependency in node["depends_on"])
+            if dependency_node["state"] == "integrated"
+            and isinstance(dependency_node.get("integrated_revision"), str)
+        )
+        if node["base_revision"] not in allowed_base_revisions:
+            invalid(f"{node_id}.base_revision is stale or not a verified integrated revision")
         if node["state"] in {"ready", "running", "completed", "integrated"}:
             unfinished = [
                 dependency

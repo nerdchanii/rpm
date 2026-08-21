@@ -17,6 +17,10 @@ SPEC.loader.exec_module(MODULE)
 
 MARKER = '<!-- rpm-agent-execution: {"approval_id":"a","executor":"cloud","lease":{"expires_at":"2026-08-21T13:00:00Z","owner":"cloud:executor","run_id":"r"},"plan_revision":"p","runs":[{"event_id":"e","idempotency_key":"sha256:' + "b" * 64 + '","run_id":"r","status":"active"}],"scope_hash":"sha256:' + "a" * 64 + '"} -->'
 APPROVAL_MARKER = '<!-- rpm-agent-execution: {"approval_id":"a","executor":"cloud","plan_revision":"p","scope_hash":"sha256:' + "a" * 64 + '"} -->'
+APPROVAL_WITH_RUNS = APPROVAL_MARKER.replace(
+    '} -->',
+    ',"runs":[{"event_id":"e","idempotency_key":"sha256:' + "b" * 64 + '","run_id":"r","status":"active"}]} -->',
+)
 
 
 class ApplyExecutionMarkerTests(unittest.TestCase):
@@ -31,6 +35,14 @@ class ApplyExecutionMarkerTests(unittest.TestCase):
         body = "prefix\n" + APPROVAL_MARKER + "\nsuffix\n"
         result = MODULE.apply_marker(body, MARKER, expected_marker=APPROVAL_MARKER)
         self.assertEqual(result, "prefix\n" + MARKER + "\nsuffix\n")
+
+    def test_approval_marker_with_prior_runs_is_a_valid_predecessor(self) -> None:
+        self.assertEqual(
+            MODULE.apply_marker(
+                "prefix\n" + APPROVAL_WITH_RUNS + "\n", MARKER, expected_marker=APPROVAL_WITH_RUNS
+            ),
+            "prefix\n" + MARKER + "\n",
+        )
 
     def test_multiple_markers_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "multiple"):
@@ -66,6 +78,19 @@ class ApplyExecutionMarkerTests(unittest.TestCase):
             "",
         )
         with self.assertRaisesRegex(ValueError, "lease"):
+            MODULE.apply_marker("body\n", invalid, initialization=True)
+
+    def test_malformed_lease_expiry_is_rejected(self) -> None:
+        invalid = MARKER.replace("2026-08-21T13:00:00Z", "tomorrow")
+        with self.assertRaisesRegex(ValueError, "lease.expires_at"):
+            MODULE.apply_marker("body\n", invalid, initialization=True)
+
+    def test_lease_run_must_match_active_run(self) -> None:
+        invalid = MARKER.replace(
+            '"run_id":"r","status":"active"}],"scope_hash"',
+            '"run_id":"other","status":"active"}],"scope_hash"',
+        )
+        with self.assertRaisesRegex(ValueError, "lease.run_id"):
             MODULE.apply_marker("body\n", invalid, initialization=True)
 
 

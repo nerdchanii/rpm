@@ -52,7 +52,10 @@ RPM 정책은 batch limit, lifecycle label, lease, idempotency, `scope_hash`,
 계획은 `repository=nerdchanii/rpm`, `plan_revision`, `base_revision`,
 `scope_hash`, `executor`, `required_gates`, `nodes`를 가집니다. 각 node에는
 `id`, `objective`, `depends_on`, `role`, `write_paths`, `base_revision`,
-`plan_revision`, `state`, `attempt`를 기록합니다. `required_gates`가 모두
+`plan_revision`, `state`, `attempt`를 기록합니다. 통합된 node는 메인 세션이
+검증한 통합 commit을 `integrated_revision`으로 기록합니다. 후속 node는
+계획의 `base_revision` 또는 직접 의존하는 통합 node의 검증된
+`integrated_revision`에서만 생성합니다. `required_gates`가 모두
 성공해 `integrated`가 되기 전에는 전체 작업을 완료로 판정하지 않습니다.
 
 허용 상태는 다음과 같습니다.

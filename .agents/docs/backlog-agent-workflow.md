@@ -33,6 +33,12 @@ object for `scripts/check-cloud-queue-contract.py`. A plan revision identifies
 the exact approved scope revision. A scope hash binds the worker to the
 approved scope. `executor` is either `local` or `cloud`.
 
+When recovery moves an issue through `blocked` or `research`, the refiner
+invalidates the old lease and approval marker while preserving its historical
+`runs` records in one `rpm-agent-run-ledger` marker. Readiness generation
+restores those records to the new approval marker, and claim appends the new
+active run. This preserves duplicate-event detection across reapproval.
+
 The claim controller persists a lease under the execution marker's `lease`
 (normalized as `execution.lease`) and an idempotency ledger under its `runs`
 field. The connector-normalized fixture exposes the same ledger as its `runs`

@@ -17,7 +17,12 @@ immediately before mutation and enforces the deterministic claim contract in
 `scripts/check-cloud-queue-contract.py`.
 
 The readiness producer is `scripts/create-execution-metadata.py`; it derives
-the marker from the approved scope and done criteria. The read-only claimer
+the marker from the approved scope and done criteria. During recovery, the
+refiner moves historical `runs` records into one
+`<!-- rpm-agent-run-ledger: {"runs":[...]} -->` marker while invalidating the
+old lease and approval metadata. The readiness producer restores those records
+to the new approval marker, and the claimer appends the new active run. The
+read-only claimer
 returns a patch containing `run_id`, `event_id`, lease owner and expiry, and the
 policy-defined idempotency key. The main session refetches the issue and
 persists that patch in the execution marker before it applies `agent:ready` to

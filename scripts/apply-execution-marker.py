@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -14,6 +15,31 @@ MARKER_LINE = re.compile(r"^[ \t]*<!--\s*rpm-agent-execution:\s*(\{.*\})\s*-->[ 
 REQUIRED_FIELDS = ("approval_id", "plan_revision", "scope_hash", "executor")
 SCOPE_HASH = re.compile(r"sha256:[0-9a-f]{64}\Z")
 IDEMPOTENCY_KEY = SCOPE_HASH
+
+
+def parse_timestamp(value: str) -> datetime:
+    normalized = value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        raise ValueError("lease.expires_at must include a timezone")
+    return parsed
+
+
+def validate_runs(runs: object, *, require_active: bool) -> dict[str, object]:
+    if not isinstance(runs, list) or not runs:
+        raise ValueError("marker is missing runs ledger")
+    for run in runs:
+        if not isinstance(run, dict) or any(
+            not isinstance(run.get(field), str) or not run[field].strip()
+            for field in ("run_id", "event_id", "idempotency_key", "status")
+        ):
+            raise ValueError("marker has an invalid runs ledger")
+        if not IDEMPOTENCY_KEY.fullmatch(run["idempotency_key"]):
+            raise ValueError("marker has an invalid runs ledger")
+    final = runs[-1]
+    if require_active and final["status"] != "active":
+        raise ValueError("marker has an invalid runs ledger")
+    return final
 
 
 def validate_marker(marker: str) -> None:
@@ -38,17 +64,13 @@ def validate_marker(marker: str) -> None:
         for field in ("run_id", "owner", "expires_at")
     ):
         raise ValueError("marker is missing lease")
-    runs = payload.get("runs")
-    if not isinstance(runs, list) or not runs:
-        raise ValueError("marker is missing runs ledger")
-    run = runs[-1]
-    if not isinstance(run, dict) or any(
-        not isinstance(run.get(field), str) or not run[field].strip()
-        for field in ("run_id", "event_id", "idempotency_key", "status")
-    ):
-        raise ValueError("marker has an invalid runs ledger")
-    if run["status"] != "active" or not IDEMPOTENCY_KEY.fullmatch(run["idempotency_key"]):
-        raise ValueError("marker has an invalid runs ledger")
+    try:
+        parse_timestamp(lease["expires_at"])
+    except (TypeError, ValueError) as error:
+        raise ValueError("lease.expires_at must be an RFC3339 timestamp") from error
+    run = validate_runs(payload.get("runs"), require_active=True)
+    if lease["run_id"] != run["run_id"]:
+        raise ValueError("lease.run_id must match the active run")
 
 
 def validate_approval_marker(marker: str) -> None:
@@ -59,14 +81,18 @@ def validate_approval_marker(marker: str) -> None:
         payload = json.loads(match.group(1))
     except json.JSONDecodeError as error:
         raise ValueError("expected marker JSON is invalid") from error
-    if not isinstance(payload, dict) or set(payload) != set(REQUIRED_FIELDS):
-        raise ValueError("expected marker must contain only approved execution metadata")
+    if not isinstance(payload, dict) or set(payload) - (set(REQUIRED_FIELDS) | {"runs"}):
+        raise ValueError("expected marker must contain only approved execution metadata and runs")
+    if not set(REQUIRED_FIELDS).issubset(payload):
+        raise ValueError("expected marker is missing approved execution metadata")
     if any(not isinstance(payload.get(field), str) or not payload[field].strip() for field in REQUIRED_FIELDS):
         raise ValueError("expected marker is missing approved execution metadata")
     if payload["executor"] not in {"local", "cloud"}:
         raise ValueError("expected marker has an invalid executor")
     if not SCOPE_HASH.fullmatch(payload["scope_hash"]):
         raise ValueError("expected marker has an invalid scope hash")
+    if "runs" in payload:
+        validate_runs(payload["runs"], require_active=False)
 
 
 def validate_expected_marker(marker: str) -> None:
@@ -77,7 +103,11 @@ def validate_expected_marker(marker: str) -> None:
         payload = json.loads(match.group(1))
     except json.JSONDecodeError as error:
         raise ValueError("expected marker JSON is invalid") from error
-    if isinstance(payload, dict) and set(payload) == set(REQUIRED_FIELDS):
+    if (
+        isinstance(payload, dict)
+        and set(payload).issubset(set(REQUIRED_FIELDS) | {"runs"})
+        and set(REQUIRED_FIELDS).issubset(payload)
+    ):
         validate_approval_marker(marker)
         return
     validate_marker(marker)

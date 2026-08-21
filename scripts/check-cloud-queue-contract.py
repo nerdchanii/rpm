@@ -191,8 +191,12 @@ def current_execution_marker(
     if not isinstance(execution, dict) or ("lease" not in execution and "runs" not in execution):
         return approval_marker(metadata)
     lease = execution.get("lease")
-    if not isinstance(lease, dict) or not runs:
-        raise ValueError("recovery execution marker must include lease and runs")
+    if not runs:
+        raise ValueError("recovery execution marker must include runs")
+    if not isinstance(lease, dict):
+        payload = {**metadata, "runs": runs}
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return f"<!-- rpm-agent-execution: {encoded} -->"
     payload = {**metadata, "lease": lease, "runs": runs}
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return f"<!-- rpm-agent-execution: {encoded} -->"

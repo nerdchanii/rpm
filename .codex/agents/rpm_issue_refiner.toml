@@ -65,20 +65,30 @@ Use each heading once. Replace the previous managed contents with the current ev
 For a `ready` target in `apply` phase, create the execution metadata from the
 shared proposed body with `scripts/create-execution-metadata.py` and compare
 its generated metadata byte-for-byte with the approved `execution_metadata`.
+The metadata generator also restores any historical `runs` records found in
+the dedicated `<!-- rpm-agent-run-ledger: {"runs":[...]} -->` marker or the
+prior execution marker. When a prior execution marker is being invalidated,
+move its validated `runs` records into exactly one run-ledger marker before
+removing the lease and approval metadata. Merge duplicate records
+deterministically and preserve the complete historical ledger. For a `ready`
+target, the generated execution marker carries that ledger and the temporary
+run-ledger marker is removed; only the new approval metadata is regenerated.
+Never preserve a stale lease in the ready marker.
 Also compare the proposed-body SHA-256 with the readiness result. If either
 differs, return blocked without mutation. Build the candidate body by placing
 the generated execution marker in the shared proposed body, then run
 `scripts/check-agent-issue-readiness.py --body-file <candidate-body-file>
 --format jsonl` before mutation and require `data.ready=true`. Replace any
 prior execution marker with the generated marker and keep exactly one marker.
-The execution marker is the only additional controlled change outside the
-research region: it may be added, replaced, or removed exactly as authorized
-above. Run the same readiness check after mutation and require
+The execution marker and run-ledger marker are the only additional controlled
+changes outside the research region: they may be added, replaced, or removed
+exactly as authorized above. Run the same readiness check after mutation and require
 `data.ready=true` again. For `research` or `blocked`, the candidate body must
 contain no execution marker. Remove exactly one stale existing marker when the
 current body has one, including recovery from an executable state or a
 `blocked → research` transition; never preserve stale approval metadata or add
-a new marker. Run the readiness check before and after mutation; both checks
+a new execution marker. A preserved run-ledger marker is allowed in these
+non-executable states. Run the readiness check before and after mutation; both checks
 must return `data.ready=false` with exit code `1`, and both results must be
 reported as expected not-ready evidence.
 
