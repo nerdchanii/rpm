@@ -102,6 +102,36 @@ class ValidatePlanTests(unittest.TestCase):
     def test_integrated_node_requires_verified_revision(self) -> None:
         self.assert_invalid(plan([node("producer", state="integrated")]), "integrated_revision")
 
+    def test_join_node_records_all_integrated_dependencies(self) -> None:
+        join = node(
+            "join",
+            depends_on=["left", "right"],
+            state="ready",
+            base_revision="commit-join",
+        )
+        join["base_revision_dependencies"] = ["left", "right"]
+        validate(
+            plan(
+                [
+                    node("left", state="integrated", integrated_revision="commit-left"),
+                    node("right", state="integrated", integrated_revision="commit-right"),
+                    join,
+                ]
+            )
+        )
+
+    def test_join_node_rejects_missing_aggregate_evidence(self) -> None:
+        self.assert_invalid(
+            plan(
+                [
+                    node("left", state="integrated", integrated_revision="commit-left"),
+                    node("right", state="integrated", integrated_revision="commit-right"),
+                    node("join", depends_on=["left", "right"], state="ready", base_revision="commit-left"),
+                ]
+            ),
+            "base_revision_dependencies",
+        )
+
     def test_windows_absolute_path(self) -> None:
         self.assert_invalid(plan([node("a", paths=["C:/Users/me/file"])]), "unsafe write path")
 

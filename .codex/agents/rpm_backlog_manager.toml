@@ -75,7 +75,7 @@ CLAIM_READY:
 6. Reject a selected issue when an open PR already closes it.
 7. Spawn rpm_ready_ticket_claimer with exactly one selected issue, its current body and approved metadata, the policy path, `run_id`, `event_id`, `executor`, `plan_revision`, `scope_hash`, and `lease_owner`.
 8. Require the claimer to return a claim patch containing the lease, idempotency record, execution marker, and complete replacement labels. The claimer performs no mutation.
-9. Return the claim patch to the main session. The main session refetches the issue and applies the marker and label change in one atomic update, then verifies the persisted execution record before starting work.
+9. Return the claim patch to the main session. The main session refetches the complete issue immediately before persistence and requires the issue to remain open, have no open closing PR, retain the exact `before_state` and complete `expected_labels`, and retain the expected execution marker. Apply the marker and label change in one atomic update, then verify the persisted execution record before starting work.
 
 Research selection must inventory GitHub Project #7 through the local-roadmap coordinates before narrowing candidates. Claim selection uses open GitHub issues and lifecycle labels as its source of truth. Project membership is not an execution eligibility condition.
 

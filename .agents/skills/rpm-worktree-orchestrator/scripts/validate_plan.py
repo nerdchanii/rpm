@@ -126,6 +126,16 @@ def validate(plan: Any) -> None:
             invalid(f"{node_id}.integrated_revision must be a non-empty string")
         if node["state"] == "integrated" and integrated_revision is None:
             invalid(f"{node_id}.integrated_revision is required for integrated nodes")
+        base_revision_dependencies = node.get("base_revision_dependencies")
+        if base_revision_dependencies is not None and (
+            not isinstance(base_revision_dependencies, list)
+            or any(
+                not isinstance(dependency, str) or not dependency.strip()
+                for dependency in base_revision_dependencies
+            )
+            or len(set(base_revision_dependencies)) != len(base_revision_dependencies)
+        ):
+            invalid(f"{node_id}.base_revision_dependencies must be a unique array of node ids")
         if node["plan_revision"] != plan["plan_revision"]:
             invalid(f"{node_id}.plan_revision is stale")
         dependencies = node["depends_on"]
@@ -148,13 +158,25 @@ def validate(plan: Any) -> None:
         for dependency in node["depends_on"]:
             if dependency not in by_id:
                 invalid(f"{node_id} depends on missing node: {dependency}")
-        allowed_base_revisions = {plan["base_revision"]}
-        allowed_base_revisions.update(
-            dependency_node["integrated_revision"]
-            for dependency_node in (by_id[dependency] for dependency in node["depends_on"])
-            if dependency_node["state"] == "integrated"
-            and isinstance(dependency_node.get("integrated_revision"), str)
-        )
+        integrated_dependencies = [
+            dependency
+            for dependency in node["depends_on"]
+            if by_id[dependency]["state"] == "integrated"
+        ]
+        recorded_dependencies = node.get("base_revision_dependencies")
+        if recorded_dependencies is not None and set(recorded_dependencies) != set(integrated_dependencies):
+            invalid(f"{node_id}.base_revision_dependencies must match integrated dependencies")
+        if len(integrated_dependencies) > 1 and recorded_dependencies is None:
+            invalid(f"{node_id} must record every integrated dependency in base_revision_dependencies")
+        integrated_revisions = {
+            by_id[dependency]["integrated_revision"] for dependency in integrated_dependencies
+        }
+        if len(integrated_dependencies) > 1:
+            if node["base_revision"] in {plan["base_revision"], *integrated_revisions}:
+                invalid(f"{node_id}.base_revision must be a verified aggregate revision")
+            allowed_base_revisions = {node["base_revision"]}
+        else:
+            allowed_base_revisions = {plan["base_revision"]} if not integrated_dependencies else integrated_revisions
         if node["base_revision"] not in allowed_base_revisions:
             invalid(f"{node_id}.base_revision is stale or not a verified integrated revision")
         if node["state"] in {"ready", "running", "completed", "integrated"}:

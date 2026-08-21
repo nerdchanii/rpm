@@ -50,6 +50,16 @@ def extract_scope(body: str) -> dict[str, str]:
     return scope
 
 
+def execution_scope_body(body: str) -> str:
+    """Return the approved body without mutable execution bookkeeping markers."""
+    lines: list[str] = []
+    for line in body.splitlines(keepends=True):
+        if EXECUTION_MARKER.match(line) or RUN_LEDGER_MARKER.match(line):
+            continue
+        lines.append(line)
+    return "".join(lines).rstrip()
+
+
 def _decode_runs(raw: object) -> list[dict[str, str]]:
     if not isinstance(raw, list) or not raw or not all(isinstance(run, dict) for run in raw):
         raise ValueError("run ledger must contain a non-empty array of objects")
@@ -99,7 +109,7 @@ def create_metadata(issue: str, body: str, executor: str) -> dict[str, object]:
         raise ValueError("executor must be local or cloud")
 
     scope = extract_scope(body)
-    scope_basis = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    scope_basis = execution_scope_body(body)
     digest = hashlib.sha256(scope_basis.encode("utf-8")).hexdigest()
     metadata = {
         "approval_id": f"approval-{issue}-{digest[:16]}",

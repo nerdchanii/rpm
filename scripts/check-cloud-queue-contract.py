@@ -167,7 +167,12 @@ def persisted_runs(fixture: dict[str, object], issue: dict[str, object]) -> list
     sources: list[object] = []
     if isinstance(execution, dict) and "runs" in execution:
         sources.append(execution["runs"])
-    sources.append(fixture.get("runs", []))
+    runs_by_issue = fixture.get("runs_by_issue", {})
+    if not isinstance(runs_by_issue, dict):
+        raise ValueError("runs_by_issue must be an object keyed by issue number")
+    if fixture.get("runs"):
+        raise ValueError("top-level runs must be moved to runs_by_issue")
+    sources.append(runs_by_issue.get(str(issue.get("number")), []))
     result: list[dict[str, object]] = []
     seen: set[str] = set()
     for raw_runs in sources:

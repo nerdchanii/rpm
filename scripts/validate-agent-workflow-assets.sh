@@ -758,7 +758,7 @@ check "cloud_claim_preserves_prior_runs" sh -c '
   second_fixture="$(mktemp "${TMPDIR:-/tmp}/rpm-claim-ledger.XXXXXX")"
   trap "rm -f \"${first_fixture}\" \"${second_fixture}\"" EXIT
   jq --arg key "${old_key}" \
-    ".runs = [{run_id:\"run-3\",event_id:\"delivery-3\",idempotency_key:\$key,status:\"active\"}]" \
+    ".runs_by_issue = {\"3\": [{run_id:\"run-3\",event_id:\"delivery-3\",idempotency_key:\$key,status:\"active\"}]}" \
     .agents/fixtures/backlog/cloud-claim-ready.json >"${first_fixture}"
   first_output="$(python3 scripts/check-cloud-queue-contract.py \
     --issues-file "${first_fixture}" \
@@ -768,7 +768,7 @@ check "cloud_claim_preserves_prior_runs" sh -c '
     --lease-owner cloud:executor)"
   printf "%s\n" "${first_output}" | jq -e \
     ".data.status == \"claim\" and (.data.execution.runs | length) == 2 and .data.execution.runs[0].idempotency_key == \"${old_key}\"" >/dev/null
-  jq --argjson runs "$(printf "%s\n" "${first_output}" | jq -c .data.execution.runs)" ".runs = \$runs" "${first_fixture}" >"${second_fixture}"
+  jq --argjson runs "$(printf "%s\n" "${first_output}" | jq -c .data.execution.runs)" ".runs_by_issue = {\"3\": \$runs}" "${first_fixture}" >"${second_fixture}"
   old_output="$(python3 scripts/check-cloud-queue-contract.py \
     --issues-file "${second_fixture}" \
     --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
@@ -776,6 +776,21 @@ check "cloud_claim_preserves_prior_runs" sh -c '
     --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --lease-owner cloud:executor)"
   printf "%s\n" "${old_output}" | jq -e ".data.status == \"no-work\" and .data.reason == \"duplicate-event\"" >/dev/null
+'
+check "cloud_claim_ignores_unrelated_runs" sh -c '
+  fixture="$(mktemp "${TMPDIR:-/tmp}/rpm-claim-scoped-ledger.XXXXXX")"
+  trap "rm -f \"${fixture}\"" EXIT
+  jq \
+    ".runs_by_issue = {\"3\": [{run_id:\"old-3\",event_id:\"delivery-3\",idempotency_key:\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",status:\"active\"}], \"4\": [{run_id:\"old-4\",event_id:\"delivery-4\",idempotency_key:\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",status:\"active\"}]}" \
+    .agents/fixtures/backlog/cloud-claim-ready.json >"${fixture}"
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file "${fixture}" \
+    --operation claim --issue 3 --run-id run-new --event-id delivery-new \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  printf "%s\n" "${output}" | jq -e \
+    ".data.status == \"claim\" and (.data.execution.runs | length) == 2 and .data.execution.runs[0].run_id == \"old-3\" and all(.data.execution.runs[]; .run_id != \"old-4\")" >/dev/null
 '
 check "cloud_claim_recovered_ready_preserves_ledger" sh -c '
   output="$(python3 scripts/check-cloud-queue-contract.py \

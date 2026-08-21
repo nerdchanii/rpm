@@ -15,7 +15,15 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-BODY = """## Context
+BODY = """## Intent
+
+Preserve the approved queue behavior.
+
+## Constraints and exclusions
+
+Do not change product package behavior.
+
+## Context
 
 Queue work.
 
@@ -52,6 +60,19 @@ class ExecutionMetadataTests(unittest.TestCase):
         revised = MODULE.create_metadata("42", changed, "cloud")["data"]["metadata"]
         self.assertNotEqual(original["plan_revision"], revised["plan_revision"])
         self.assertNotEqual(original["scope_hash"], revised["scope_hash"])
+
+    def test_intent_and_exclusions_change_approval_metadata(self) -> None:
+        original = MODULE.create_metadata("42", BODY, "cloud")["data"]["metadata"]
+        changed = BODY.replace("approved queue behavior", "different queue behavior")
+        revised = MODULE.create_metadata("42", changed, "cloud")["data"]["metadata"]
+        self.assertNotEqual(original["plan_revision"], revised["plan_revision"])
+        self.assertNotEqual(original["scope_hash"], revised["scope_hash"])
+
+    def test_execution_bookkeeping_does_not_change_approval_metadata(self) -> None:
+        original = MODULE.create_metadata("42", BODY, "cloud")["data"]["metadata"]
+        marker = MODULE.create_metadata("42", BODY, "cloud")["data"]["marker"]
+        with_marker = MODULE.create_metadata("42", BODY + "\n" + marker, "cloud")["data"]["metadata"]
+        self.assertEqual(original, with_marker)
 
     def test_restores_prior_run_ledger_in_new_approval_marker(self) -> None:
         result = MODULE.create_metadata("42", BODY + "\n" + RUN_LEDGER, "cloud")

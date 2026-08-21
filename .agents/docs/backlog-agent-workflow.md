@@ -24,14 +24,16 @@ An executable issue carries one hidden managed marker in its body:
 <!-- rpm-agent-execution: {"approval_id":"approval-3","plan_revision":"plan-3","scope_hash":"sha256:<64 lowercase hex characters>","executor":"cloud"} -->
 ```
 
-`scripts/create-execution-metadata.py` creates this marker from the approved
-`Initial scope` and `Done criteria`. The refinement step passes the generated
-values into the body before applying `agent:ready`; a missing or mismatched
-producer result blocks the transition. `scripts/check-agent-issue-readiness.py`
+`scripts/create-execution-metadata.py` creates this marker from the complete
+approved issue body, including author-controlled intent and exclusions, while
+ignoring only the mutable execution bookkeeping markers. It still requires
+populated `Initial scope` and `Done criteria`. The refinement step passes the
+generated values into the body before applying `agent:ready`; a missing or
+mismatched producer result blocks the transition. `scripts/check-agent-issue-readiness.py`
 validates the marker. The connector normalizes the same data as an `execution`
 object for `scripts/check-cloud-queue-contract.py`. A plan revision identifies
-the exact approved scope revision. A scope hash binds the worker to the
-approved scope. `executor` is either `local` or `cloud`.
+the exact approved body revision. A scope hash binds the worker to the
+approved body. `executor` is either `local` or `cloud`.
 
 When recovery moves an issue through `blocked` or `research`, the refiner
 invalidates the old lease and approval marker while preserving its historical
@@ -41,8 +43,9 @@ active run. This preserves duplicate-event detection across reapproval.
 
 The claim controller persists a lease under the execution marker's `lease`
 (normalized as `execution.lease`) and an idempotency ledger under its `runs`
-field. The connector-normalized fixture exposes the same ledger as its `runs`
-field. The key is the SHA-256 digest of the NUL-joined values `repository`, `issue`,
+field. Connector-normalized fixtures expose historical records under the
+issue-scoped `runs_by_issue` mapping. The key is the SHA-256 digest of the
+NUL-joined values `repository`, `issue`,
 `plan_revision`, `scope_hash`, and `event_id`. The deterministic reference
 implementation is:
 
@@ -176,8 +179,9 @@ PR, and runs the claim contract before replacing ready with claimed. The claim
 must record its lease and idempotency key while preserving ordinary labels. The
 scheduler supplies stable `run_id`, `event_id`, and `lease_owner` values and
 reuses them for retries of one delivery. The main-session persistence
-checkpoint compares the full refetched label set with the claimer's expected
-label predecessor before applying the body and label update.
+checkpoint refetches the issue and compares its open state, open closing-PR
+set, full label set, and execution marker with the claimer's expected
+predecessors before applying the body and label update.
 
 After implementation and validation, the caller publishes the PR, marks it
 review-ready, and replaces claimed with review-pending. Repository-configured

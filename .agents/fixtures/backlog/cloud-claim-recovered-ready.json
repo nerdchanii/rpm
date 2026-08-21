@@ -1,7 +1,7 @@
 {
   "repository": "nerdchanii/rpm",
   "now": "2026-08-21T12:00:00Z",
-  "runs": [],
+  "runs_by_issue": {},
   "issues": [
     {
       "number": 15,

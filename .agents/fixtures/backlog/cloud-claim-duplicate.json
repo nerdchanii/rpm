@@ -1,13 +1,16 @@
 {
   "repository": "nerdchanii/rpm",
   "now": "2026-08-21T12:00:00Z",
-  "runs": [
-    {
-      "run_id": "run-3",
-      "idempotency_key": "sha256:0ebb451daf89062a9f7314eec90cb39f62d5aae73bcdf47f7dd89e2e70f74cb1",
-      "status": "active"
-    }
-  ],
+  "runs_by_issue": {
+    "3": [
+      {
+        "run_id": "run-3",
+        "event_id": "delivery-3",
+        "idempotency_key": "sha256:0ebb451daf89062a9f7314eec90cb39f62d5aae73bcdf47f7dd89e2e70f74cb1",
+        "status": "active"
+      }
+    ]
+  },
   "issues": [
     {
       "number": 3,

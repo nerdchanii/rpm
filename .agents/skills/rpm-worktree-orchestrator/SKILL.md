@@ -55,7 +55,9 @@ RPM 정책은 batch limit, lifecycle label, lease, idempotency, `scope_hash`,
 `plan_revision`, `state`, `attempt`를 기록합니다. 통합된 node는 메인 세션이
 검증한 통합 commit을 `integrated_revision`으로 기록합니다. 후속 node는
 계획의 `base_revision` 또는 직접 의존하는 통합 node의 검증된
-`integrated_revision`에서만 생성합니다. `required_gates`가 모두
+`integrated_revision`에서만 생성합니다. 여러 통합 dependency를 합친 node는
+모든 dependency를 포함하는 검증된 aggregate revision과
+`base_revision_dependencies` 목록을 기록합니다. `required_gates`가 모두
 성공해 `integrated`가 되기 전에는 전체 작업을 완료로 판정하지 않습니다.
 
 허용 상태는 다음과 같습니다.
@@ -96,6 +98,10 @@ python3 .agents/skills/rpm-worktree-orchestrator/scripts/validate_plan.py <plan.
 - `PLAN_REVISION`과 `scope_hash`가 현재 계획과 일치하는지
 - `git cat-file -e <sha>^{commit}`과
   `git merge-base --is-ancestor <base_revision> <sha>`가 성공하는지
+- `base_revision_dependencies`가 있으면 각 dependency의
+  `integrated_revision`이 선택한 `base_revision`의 ancestor인지
+  `git merge-base --is-ancestor <integrated_revision> <base_revision>`로
+  확인하는지
 - diff가 worker ownership에만 포함되는지
 - 사용자 변경, conflict marker, `git ls-files -u`, `git diff --check`가
   안전한지

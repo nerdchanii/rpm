@@ -59,11 +59,13 @@ label mutation. A stale revision, scope, executor, or expired lease returns
 7. In scheduled mode, a claim result is a persistence checkpoint. Before
    starting the claimed issue, refetch the issue in the main session and run
    `scripts/apply-execution-marker.py` with both the returned marker and its
-   `expected_execution_marker`. Before that update, require the refetched
-   lifecycle state and complete label set to exactly match the patch's
-   `before_state` and `expected_labels`. On any marker, state, or label mismatch,
-   return `no-work` without selecting a replacement. Apply the resulting body
-   and labels as one issue update. Verify the lease and idempotency record, then
+   `expected_execution_marker`. Before that update, refetch the complete issue
+   and require it to remain open with no open closing PR, while its lifecycle
+   state, complete label set, and execution marker exactly match the patch's
+   `before_state`, `expected_labels`, `before_open`, `expected_closing_prs`, and
+   predecessor marker. On any marker, state, label, open-state, or closing-PR
+   mismatch, return `no-work` without selecting a replacement. Apply the
+   resulting body and labels as one issue update. Verify the lease and idempotency record, then
    resume the same router with
    `claim_checkpoint={persisted:true,verified:true,after_state:"claimed",...}`.
    The router starts per-issue execution only after that checkpoint. A
