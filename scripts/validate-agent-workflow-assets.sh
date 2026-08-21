@@ -584,6 +584,9 @@ check_just_test_verbosity() {
   output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -vv)"
   printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -vv$'
 
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -vvv)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -vvv$'
+
   output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test --verbose)"
   printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests --verbose$'
 

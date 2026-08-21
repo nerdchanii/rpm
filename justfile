@@ -47,7 +47,14 @@ test *args:
     verbose=0; \
     for arg in "${test_args[@]}"; do \
       case "${arg}" in \
-        -v|-vv|--verbose) verbose=1 ;; \
+        --verbose) verbose=1 ;; \
+        -v*) \
+          shorthand="${arg#-}"; \
+          case "${shorthand}" in \
+            ''|*[!v]*) ;; \
+            *) verbose=1 ;; \
+          esac \
+          ;; \
       esac; \
     done; \
     cargo_command=(cargo test); \
