@@ -48,7 +48,7 @@ emit_check() {
       --arg status "${result}" \
       --arg output "${output}" \
       '{type:"agent_asset_check",data:{name:$name,status:$status,output:(if $output == "" then null else $output end)}}'
-  elif [ "${format}" = "text" ] || [ "${result}" != "ok" ]; then
+  elif [ "${format}" = "text" ] || [ "${result}" = "fail" ]; then
     printf 'agent_assets.%s=%s\n' "${name}" "${result}"
     if [ -n "${output}" ]; then
       printf 'agent_assets.%s.output.begin\n%s\nagent_assets.%s.output.end\n' \
@@ -535,6 +535,26 @@ check_backlog_access_preflight() {
   ' >/dev/null
 }
 
+check_summary_suppresses_skips() {
+  local temp_home
+  local output
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/rpm-agent-assets-no-validator-home.XXXXXX")"
+  trap 'rm -rf "${temp_home}"' RETURN
+  output="$(
+    HOME="${temp_home}" \
+      RPM_SKILL_VALIDATOR= \
+      RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION=1 \
+      bash scripts/validate-agent-workflow-assets.sh --format=summary
+  )"
+  printf '%s\n' "${output}" | rg -q '^agent_assets.status=ok$'
+  if printf '%s\n' "${output}" | rg -q '^agent_assets\.skill_.*=skip$'; then
+    return 1
+  fi
+  if printf '%s\n' "${output}" | rg -q '^agent_assets\.skill_.*\.output\.(begin|end)$'; then
+    return 1
+  fi
+}
+
 for skill in .agents/skills/*; do
   [ -d "${skill}" ] || continue
   name="$(basename "${skill}")"
@@ -659,6 +679,10 @@ check "script_check_claude_security_syntax" \
   bash -n scripts/check-claude-security.sh
 check "script_validate_agent_workflow_assets_syntax" \
   bash -n scripts/validate-agent-workflow-assets.sh
+
+if [ "${RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION:-}" != "1" ]; then
+  check "summary_suppresses_skips" check_summary_suppresses_skips
+fi
 
 check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews
 check "collect_pr_review_context_no_duplicates" check_collect_does_not_duplicate_exhausted_connections
