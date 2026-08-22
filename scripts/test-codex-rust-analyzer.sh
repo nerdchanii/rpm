@@ -70,6 +70,6 @@ assert_contains "${output}" "rust_analyzer.reason=test rustup shim has no compon
 output="$(PATH="${temp_dir}:${PATH}" bash "${wrapper}" diagnose)"
 assert_contains "${output}" "rust_analyzer.fallback=cargo-check"
 assert_contains "${output}" "rust_analyzer.mode=cargo-fallback"
-assert_contains "${output}" "fake-cargo-args=check --locked --all-targets"
+assert_contains "${output}" "fake-cargo-args=check --quiet --locked --all-targets"
 
 printf 'codex_rust_analyzer_tests=ok\n'

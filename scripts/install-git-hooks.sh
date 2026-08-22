@@ -18,5 +18,5 @@ git config --local core.hooksPath .githooks
 
 echo "Installed repo-local git hooks at .githooks"
 echo "pre-commit: cargo fmt --check"
-echo "pre-push: cargo clippy --all-targets --all-features -- -D warnings"
-echo "pre-push: cargo test"
+echo "pre-push: cargo clippy --quiet --all-targets --all-features -- -D warnings"
+echo "pre-push: cargo test --quiet"

@@ -858,9 +858,15 @@ mod tests {
     use flate2::{write::GzEncoder, Compression};
     use std::{
         fs,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc, Barrier,
+        },
         time::{SystemTime, UNIX_EPOCH},
     };
     use tar::{Builder, Header};
+
+    static TEMP_NODE_MODULES_ID: AtomicU64 = AtomicU64::new(0);
 
     struct TempNodeModules {
         path: PathBuf,
@@ -872,10 +878,21 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_nanos())
                 .unwrap_or(0);
-            let path = std::env::temp_dir()
-                .join(format!("rpm-node-linker-{}-{nanos}", std::process::id()));
-            fs::create_dir_all(path.join("node_modules")).unwrap();
-            Self { path }
+            loop {
+                let id = TEMP_NODE_MODULES_ID.fetch_add(1, Ordering::Relaxed);
+                let path = std::env::temp_dir().join(format!(
+                    "rpm-node-linker-{}-{nanos}-{id}",
+                    std::process::id()
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => {
+                        fs::create_dir(path.join("node_modules")).unwrap();
+                        return Self { path };
+                    }
+                    Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("failed to create temp node_modules root: {error}"),
+                }
+            }
         }
 
         fn node_modules(&self) -> PathBuf {
@@ -895,6 +912,32 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn temp_node_modules_are_isolated_when_created_in_parallel() {
+        const WORKER_COUNT: usize = 32;
+        let barrier = Arc::new(Barrier::new(WORKER_COUNT));
+        let handles = (0..WORKER_COUNT)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    TempNodeModules::new()
+                })
+            })
+            .collect::<Vec<_>>();
+        let temps = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+
+        let unique_paths = temps
+            .iter()
+            .map(|temp| temp.path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique_paths.len(), WORKER_COUNT);
+        assert!(temps.iter().all(|temp| temp.node_modules().is_dir()));
     }
 
     fn dependency(version: &str, dependencies: &[&str]) -> Dependency {

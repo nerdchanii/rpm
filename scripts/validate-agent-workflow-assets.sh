@@ -26,7 +26,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "${format}" != "jsonl" ] && [ "${format}" != "text" ]; then
+if [ "${format}" != "jsonl" ] && [ "${format}" != "text" ] && [ "${format}" != "summary" ]; then
   printf 'agent_assets.error=invalid-format:%s\n' "${format}" >&2
   exit 2
 fi
@@ -48,7 +48,7 @@ emit_check() {
       --arg status "${result}" \
       --arg output "${output}" \
       '{type:"agent_asset_check",data:{name:$name,status:$status,output:(if $output == "" then null else $output end)}}'
-  else
+  elif [ "${format}" = "text" ] || [ "${result}" = "fail" ]; then
     printf 'agent_assets.%s=%s\n' "${name}" "${result}"
     if [ -n "${output}" ]; then
       printf 'agent_assets.%s.output.begin\n%s\nagent_assets.%s.output.end\n' \
@@ -68,6 +68,28 @@ check() {
     emit_check "${name}" "fail" "${output}"
   fi
 }
+
+if [ "${RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION:-}" = "1" ]; then
+  check_summary_formatter() {
+    local output
+    local expected
+    expected=$'agent_assets.summary_failure=fail\nagent_assets.summary_failure.output.begin\nsummary failure diagnostics\nagent_assets.summary_failure.output.end'
+    output="$(
+      emit_check "summary_skip" "skip" "skipped checks stay hidden"
+      emit_check "summary_failure" "fail" "summary failure diagnostics"
+    )"
+    if [ "${output}" != "${expected}" ]; then
+      printf 'summary formatter output mismatch\nexpected:\n%s\nactual:\n%s\n' \
+        "${expected}" "${output}" >&2
+      return 1
+    fi
+  }
+
+  check "summary_formatter" check_summary_formatter
+  printf 'agent_assets.status=%s\n' "${status}"
+  [ "${status}" = "ok" ] || exit 1
+  exit 0
+fi
 
 with_fake_collect_gh() {
   local fixture="$1"
@@ -535,6 +557,49 @@ check_backlog_access_preflight() {
   ' >/dev/null
 }
 
+check_summary_suppresses_skips() {
+  local temp_home
+  local output
+  temp_home="$(mktemp -d "${TMPDIR:-/tmp}/rpm-agent-assets-no-validator-home.XXXXXX")"
+  trap 'rm -rf "${temp_home}"' RETURN
+  output="$(
+    HOME="${temp_home}" \
+      RPM_SKILL_VALIDATOR= \
+      RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION=1 \
+      bash scripts/validate-agent-workflow-assets.sh --format=summary
+  )"
+  [ "${output}" = "agent_assets.status=ok" ]
+}
+
+check_just_test_verbosity() {
+  local temp_dir
+  local output
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-just-test-verbosity.XXXXXX")"
+  trap 'rm -f "${temp_dir}/cargo"; rmdir "${temp_dir}"' RETURN
+  ln -s /bin/echo "${temp_dir}/cargo"
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -v)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -v$' || return 1
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -vv)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -vv$' || return 1
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -vvv)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -vvv$' || return 1
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test --verbose)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests --verbose$' || return 1
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test package_filter --nocapture)"
+  printf '%s\n' "${output}" | rg -q '^test --quiet --locked --lib --bins --tests package_filter --nocapture$' || return 1
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test -q)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests -q$' || return 1
+
+  output="$(PATH="${temp_dir}:${PATH}" just --justfile justfile test --quiet)"
+  printf '%s\n' "${output}" | rg -q '^test --locked --lib --bins --tests --quiet$' || return 1
+}
+
 for skill in .agents/skills/*; do
   [ -d "${skill}" ] || continue
   name="$(basename "${skill}")"
@@ -659,6 +724,9 @@ check "script_check_claude_security_syntax" \
   bash -n scripts/check-claude-security.sh
 check "script_validate_agent_workflow_assets_syntax" \
   bash -n scripts/validate-agent-workflow-assets.sh
+
+check "summary_suppresses_skips" check_summary_suppresses_skips
+check "just_test_verbosity" check_just_test_verbosity
 
 check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews
 check "collect_pr_review_context_no_duplicates" check_collect_does_not_duplicate_exhausted_connections
