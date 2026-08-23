@@ -85,9 +85,41 @@ do
 done
 require_contract_text .codex/hooks.json '\[Gg\].*\[Ii\].*\[Tt\].*\[Hh\].*\[Uu\].*\[Bb\]' 'provider-neutral GitHub PreToolUse matcher'
 require_contract_text .codex/hooks.json '\[Gg\]\[Hh\]_' 'gh alias PreToolUse matcher'
-require_contract_text .codex/hooks.json '\[Ii\]ssue' 'issue alias PreToolUse matcher'
+require_contract_text .codex/hooks.json '\[Ii\].*\[Ss\].*\[Ss\].*\[Uu\].*\[Ee\]' 'case-insensitive issue alias PreToolUse matcher'
+require_contract_text .codex/hooks.json '\[Pp\].*\[Uu\].*\[Ll\].*\[Ll\].*\[Rr\].*\[Ee\].*\[Qq\].*\[Uu\].*\[Ee\].*\[Ss\].*\[Tt\]' 'case-insensitive pull-request alias PreToolUse matcher'
 hook_matcher="$(jq -r '.hooks.PreToolUse[0].matcher' .codex/hooks.json)"
-for aliased_github_tool in gh_pr_merge gh_update_issue issue_update hostIssueUpdate hostPullRequestMerge; do
+for aliased_github_tool in \
+  gh_pr_merge \
+  gh_update_issue \
+  issue_update \
+  ISSUE_UPDATE \
+  hostIssueUpdate \
+  hostISSUEUpdate \
+  hostGetProfile \
+  hostPullRequestMerge \
+  PULLREQUESTMERGE \
+  project_update \
+  connector_call \
+  connector_update \
+  dispatcher \
+  execute \
+  executor \
+  run \
+  foo_execute \
+  foo_run \
+  foo.execute \
+  serviceRun \
+  provider_do \
+  providerDo \
+  host_mutate \
+  hostMutate \
+  api_write \
+  apiWrite \
+  providerProjectUpdate \
+  hostProjectUpdate \
+  connectorProjectUpdate \
+  apiProjectUpdate
+do
   python3 -c 'import re,sys; raise SystemExit(0 if re.fullmatch(sys.argv[1], sys.argv[2]) else 1)' \
     "$hook_matcher" "$aliased_github_tool"
 done
@@ -300,7 +332,62 @@ probe_hook_tool 'camelCase GitHub mutation' 2 'githubUpdateIssue' '{"issue_numbe
 probe_hook_tool 'gh alias merge' 2 'gh_pr_merge' '{"pr_number":202}'
 probe_hook_tool 'gh alias issue mutation' 2 'gh_update_issue' '{"issue_number":202,"body":"changed"}'
 probe_hook_tool 'bare issue mutation' 2 'issue_update' '{"issue_number":202,"body":"changed"}'
+probe_hook_tool 'uppercase issue mutation' 2 'ISSUE_UPDATE' '{"issue_number":202,"body":"changed"}'
 probe_hook_tool 'host camel issue mutation' 2 'hostIssueUpdate' '{"issue_number":202,"body":"changed"}'
+probe_hook_tool 'generic connector dispatcher' 2 'connector_call' '{"service":"github","operation":"update_issue","issue_number":202}'
+probe_hook_tool 'provider-neutral connector update' 2 'connector_update' '{"service":"github","issue_number":202}'
+probe_hook_tool 'bare generic dispatcher alias' 2 'dispatcher' '{"service":"github","operation":"update_issue","issue_number":202}'
+probe_hook_tool 'generic dispatch alias' 2 'foo_dispatch' '{"service":"github","operation":"update_issue","issue_number":202}'
+probe_hook_tool 'bare generic dispatcher' 2 'execute' '{"service":"github","operation":"update_issue","issue_number":202}'
+probe_hook_tool 'bare generic executor' 2 'executor' '{"service":"github","operation":"update_issue","issue_number":202}'
+probe_hook_tool 'bare generic run' 2 'run' '{"service":"github","operation":"update_issue","issue_number":202}'
+probe_hook_tool 'generic execute alias' 2 'foo_execute' '{"service":"github","operation":"update_issue","issue_number":202}'
+probe_hook_tool 'generic run alias' 2 'foo_run' '{"service":"github","operation":"update_issue","issue_number":202}'
+probe_hook_tool 'generic dotted alias' 2 'foo.execute' '{"service":"github","operation":"update_issue","issue_number":202}'
+probe_hook_tool 'generic camel run alias' 2 'serviceRun' '{"service":"github","operation":"update_issue","issue_number":202}'
+probe_hook_tool 'provider-neutral do alias' 2 'provider_do' '{"service":"github","issue_number":202}'
+probe_hook_tool 'provider-neutral camel do alias' 2 'providerDo' '{"service":"github","issue_number":202}'
+probe_hook_tool 'provider-neutral mutate alias' 2 'host_mutate' '{"service":"github","issue_number":202}'
+probe_hook_tool 'provider-neutral camel mutate alias' 2 'hostMutate' '{"service":"github","issue_number":202}'
+probe_hook_tool 'provider-neutral write alias' 2 'api_write' '{"service":"github","issue_number":202}'
+probe_hook_tool 'provider-neutral camel write alias' 2 'apiWrite' '{"service":"github","issue_number":202}'
+probe_hook_tool 'provider-neutral dedicated read alias' 0 'hostGetProfile' '{}'
+probe_hook_tool 'provider-neutral read alias mutation override' 2 'hostGetProfile' '{"operation":"update","issue_number":202,"body":"changed"}'
+for project_mutation_alias in \
+  providerProjectUpdate \
+  hostProjectUpdate \
+  connectorProjectUpdate \
+  apiProjectUpdate
+do
+  probe_hook_tool_as_role 'rpm_issue_refiner' \
+    "$project_mutation_alias project mutation denied" 2 "$project_mutation_alias" \
+    '{"project_id":"pwn","body":"changed","labels":["agent:ready"]}'
+done
+probe_hook_tool 'curl raw GitHub mutation' 2 'exec_command' '{"cmd":"curl -X PATCH https://api.github.com/repos/nerdchanii/rpm/issues/202"}'
+probe_hook_tool 'wget raw GitHub mutation' 2 'exec_command' '{"cmd":"wget --method=POST https://api.github.com/repos/nerdchanii/rpm/issues/202"}'
+probe_hook_tool 'HTTPie raw GitHub mutation' 2 'exec_command' '{"cmd":"http PATCH https://api.github.com/repos/nerdchanii/rpm/issues/202"}'
+probe_hook_tool 'Python raw GitHub mutation' 2 'exec_command' '{"cmd":"python3 -c \"import urllib.request; urllib.request.urlopen(\\\"https://api.github.com/repos/nerdchanii/rpm/issues/202\\\")\""}'
+probe_hook_tool 'Node raw GitHub mutation' 2 'exec_command' '{"cmd":"node -e \"fetch(\\\"https://api.github.com/repos/nerdchanii/rpm/issues/202\\\")\""}'
+probe_hook_tool 'nested shell curl raw GitHub mutation' 2 'exec_command' '{"cmd":"sh -c \"curl -X PATCH https://api.github.com/repos/nerdchanii/rpm/issues/202\""}'
+probe_hook_tool 'nested bash curl raw GitHub mutation' 2 'exec_command' '{"cmd":"bash -c \"curl -X PATCH https://api.github.com/repos/nerdchanii/rpm/issues/202\""}'
+probe_hook_tool 'xargs curl raw GitHub mutation' 2 'exec_command' '{"cmd":"printf %s https://api.github.com/repos/nerdchanii/rpm/issues/202 | xargs curl -X PATCH"}'
+probe_hook_tool 'sudo curl raw GitHub mutation' 2 'exec_command' '{"cmd":"sudo curl -X PATCH https://api.github.com/repos/nerdchanii/rpm/issues/202"}'
+probe_hook_tool 'git push raw network mutation' 2 'exec_command' '{"cmd":"git push origin HEAD"}'
+probe_hook_tool 'git fetch raw network fallback' 2 'exec_command' '{"cmd":"git fetch origin"}'
+probe_hook_tool 'git clone raw network fallback' 2 'exec_command' '{"cmd":"git clone https://github.com/nerdchanii/rpm.git"}'
+probe_hook_tool 'git remote update raw network fallback' 2 'exec_command' '{"cmd":"git remote update"}'
+probe_hook_tool 'git submodule update raw network fallback' 2 'exec_command' '{"cmd":"git submodule update --remote"}'
+probe_hook_tool 'git archive remote raw network fallback' 2 'exec_command' '{"cmd":"git archive --remote=origin HEAD"}'
+probe_hook_tool 'gh api implicit POST issue create' 2 'exec_command' '{"cmd":"gh api repos/nerdchanii/rpm/issues -f title=pwn -f body=pwn"}'
+probe_hook_tool 'gh api implicit POST issue edit' 2 'exec_command' '{"cmd":"gh api repos/nerdchanii/rpm/issues/202 -f body=pwn"}'
+probe_hook_tool 'gh api raw-field implicit POST' 2 'exec_command' '{"cmd":"gh api repos/nerdchanii/rpm/issues/202 --raw-field labels[]=agent:claimed"}'
+probe_hook_tool 'SSH raw network mutation' 2 'exec_command' '{"cmd":"ssh git@github.com receive-pack nerdchanii/rpm"}'
+probe_hook_tool 'netcat raw network mutation' 2 'exec_command' '{"cmd":"nc api.github.com 443"}'
+probe_hook_tool 'OpenSSL raw network mutation' 2 'exec_command' '{"cmd":"openssl s_client -connect api.github.com:443"}'
+probe_hook_tool 'Bash TCP raw network mutation' 2 'exec_command' '{"cmd":"printf x > /dev/tcp/api.github.com/443"}'
+probe_hook_tool 'Ruby raw GitHub mutation' 2 'exec_command' '{"cmd":"ruby -e \"TCPSocket.new(\\\"api.github.com\\\", 443)\""}'
+probe_hook_tool 'local git status remains shell-safe' 0 'exec_command' '{"cmd":"git status --short"}'
+probe_hook_tool 'plain HTTPS text remains local-shell-safe' 0 'exec_command' '{"cmd":"printf %s https://example.com"}'
 probe_hook_tool 'inline GraphQL mutation' 2 'mcp__github__graphql' '{"query":"mutation UpdateIssue { updateIssue(input: {}) { issue { number } } }"}'
 probe_hook_tool 'snake-case GraphQL mutation in variables query' 2 'mcp__github__graphql' '{"variables":{"query":"mutation UpdateIssue { updateIssue(input: {}) { issue { number } } }"}}'
 probe_hook_tool 'camelCase GraphQL mutation in variables query' 2 'githubGraphql' '{"variables":{"query":"mutation UpdateIssue { updateIssue(input: {}) { issue { number } } }"}}'
@@ -333,6 +420,9 @@ probe_hook_tool_as_role 'rpm_ready_ticket_claimer' \
 probe_hook_tool_as_role 'rpm_ready_ticket_claimer' \
   'ready-ticket claimer empty labels denied' 2 'githubUpdateIssue' \
   '{"issue_number":202,"labels":[]}'
+probe_hook_tool_as_role 'rpm_ready_ticket_claimer' \
+  'ready-ticket claimer claimed marker outside labels denied' 2 'githubUpdateIssue' \
+  '{"issue_number":202,"owner":"agent:claimed","repo":"rpm","labels":[]}'
 probe_hook_tool_as_role 'rpm_ready_ticket_claimer' \
   'ready-ticket claimer metadata denied' 2 'githubUpdateIssue' \
   '{"issue_number":202,"labels":["agent:claimed"],"project_ids":["pwn"]}'

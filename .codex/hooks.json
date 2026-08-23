@@ -16,7 +16,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^(Agent|spawn_agent|apply_patch|Edit|Write|Bash|shell|exec|exec_command|functions\\.exec|functions\\.exec_command|mcp__.*|.*([Bb][Aa][Ss][Hh]|[Ss][Hh][Ee][Ll][Ll]|[Tt][Ee][Rr][Mm][Ii][Nn][Aa][Ll])$|.*([Gg][Ii][Tt][Hh][Uu][Bb]|[Gg][Hh]_|[Ii]ssue|[Pp]ull.?[Rr]equest|[Pp][Rr]_).*)$",
+        "matcher": "^(Agent|spawn_agent|apply_patch|Edit|Write|Bash|shell|exec|exec_command|functions\\.exec|functions\\.exec_command|mcp__.*|.*([Cc][Aa][Ll][Ll]|[Dd][Ii][Ss][Pp][Aa][Tt][Cc][Hh]|[Dd][Ii][Ss][Pp][Aa][Tt][Cc][Hh][Ee][Rr]|[Ee][Xx][Ee][Cc][Uu][Tt][Ee]|[Ee][Xx][Ee][Cc][Uu][Tt][Oo][Rr]|[Ii][Nn][Vv][Oo][Kk][Ee]|[Rr][Ee][Qq][Uu][Ee][Ss][Tt]|[Rr][Uu][Nn]).*|.*([Bb][Aa][Ss][Hh]|[Ss][Hh][Ee][Ll][Ll]|[Tt][Ee][Rr][Mm][Ii][Nn][Aa][Ll])$|.*([Gg][Ii][Tt][Hh][Uu][Bb]|[Gg][Hh]_|[Ii][Ss][Ss][Uu][Ee]|[Pp][Uu][Ll][Ll].?[Rr][Ee][Qq][Uu][Ee][Ss][Tt]|[Pp][Rr]_|[Pp][Rr][Oo][Jj][Ee][Cc][Tt]|[Cc][Oo][Nn][Nn][Ee][Cc][Tt][Oo][Rr]|[Dd][Ii][Ss][Pp][Aa][Tt][Cc][Hh][Ee][Rr]|[Pp][Rr][Oo][Vv][Ii][Dd][Ee][Rr]|[Aa][Pp][Ii]|[Hh][Oo][Ss][Tt]).*)$",
         "hooks": [
           {
             "type": "command",

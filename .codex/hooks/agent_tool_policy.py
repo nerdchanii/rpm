@@ -210,12 +210,19 @@ def is_github_tool(tool: str) -> bool:
     normalized = normalized_tool(tool)
     tokens = operation_tokens(tool)
     has_issue = any(token.startswith("issue") for token in tokens)
+    has_project = any(token.startswith("project") for token in tokens)
     has_pull_request = (
         "pullrequest" in tokens
         or ("pull" in tokens and "request" in tokens)
         or "pr" in tokens
     )
-    return "github" in normalized or "gh" in tokens or has_issue or has_pull_request
+    return (
+        "github" in normalized
+        or "gh" in tokens
+        or has_issue
+        or has_project
+        or has_pull_request
+    )
 
 
 def is_agent_tool(tool: str) -> bool:
@@ -322,12 +329,104 @@ MUTATION_OPERATION_WORDS = {
     "update",
     "write",
 }
-GENERIC_EXECUTOR_WORDS = {"call", "execute", "executor", "invoke", "request", "run"}
+GENERIC_EXECUTOR_WORDS = {
+    "call",
+    "dispatch",
+    "dispatcher",
+    "execute",
+    "executor",
+    "invoke",
+    "request",
+    "run",
+}
+AMBIGUOUS_PROVIDER_NAMESPACES = {"api", "connector", "host", "provider", "service"}
+AMBIGUOUS_PROVIDER_ACTIONS = (
+    MUTATION_OPERATION_WORDS
+    | GENERIC_EXECUTOR_WORDS
+    | {"do", "perform"}
+)
 
 
 def operation_tokens(value: str) -> list[str]:
     camel_case = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
     return [token for token in re.split(r"[^a-z0-9]+", camel_case.casefold()) if token]
+
+
+def is_generic_dispatcher(tool: str, tool_input: object) -> bool:
+    """Reject generic provider calls whose registered operation is not inspectable."""
+    tokens = operation_tokens(tool)
+    if any(token in GENERIC_EXECUTOR_WORDS for token in tokens):
+        return True
+    has_ambiguous_namespace = any(
+        token in AMBIGUOUS_PROVIDER_NAMESPACES for token in tokens
+    )
+    input_kinds = {
+        kind
+        for value in operation_values(tool_input)
+        if (kind := operation_kind(value)) is not None
+    }
+    if has_ambiguous_namespace and "mutation" in input_kinds:
+        return True
+    has_ambiguous_action = any(token in AMBIGUOUS_PROVIDER_ACTIONS for token in tokens)
+    has_explicit_resource = (
+        "github" in tokens
+        or "gh" in tokens
+        or "pr" in tokens
+        or any(
+            token.startswith(("issue", "project", "pullrequest")) for token in tokens
+        )
+    )
+    return has_ambiguous_namespace and has_ambiguous_action and not has_explicit_resource
+
+
+def uses_raw_network_client(text: str) -> bool:
+    """Keep GitHub-capable roles on inspectable host-provided capabilities."""
+    lowered = text.casefold()
+    if re.search(r"(?<![a-z0-9_])gh(?![a-z0-9_])\s+api(?![a-z0-9_])", lowered):
+        return True
+    if re.search(
+        r"(?<![a-z0-9_])"
+        r"(?:curl|ftp|httpie|nc|ncat|netcat|scp|sftp|socat|ssh|telnet|wget)"
+        r"(?![a-z0-9_])",
+        lowered,
+    ):
+        return True
+    if re.search(r"(?<![a-z0-9_])(?:http|https)(?![a-z0-9_:])", lowered):
+        return True
+    if "/dev/tcp/" in lowered or "/dev/udp/" in lowered:
+        return True
+    if re.search(r"(?<![a-z0-9_])openssl(?![a-z0-9_])", lowered) and re.search(
+        r"(?<![a-z0-9_])s_client(?![a-z0-9_])", lowered
+    ):
+        return True
+    if re.search(r"(?<![a-z0-9_])git(?![a-z0-9_])", lowered):
+        if re.search(
+            r"(?<![a-z0-9_])"
+            r"(?:clone|fetch|ls-remote|pull|push|receive-pack|send-pack|upload-pack)"
+            r"(?![a-z0-9_])",
+            lowered,
+        ):
+            return True
+        if re.search(r"(?<![a-z0-9_])remote(?![a-z0-9_])", lowered) and re.search(
+            r"(?<![a-z0-9_])update(?![a-z0-9_])", lowered
+        ):
+            return True
+        if re.search(r"(?<![a-z0-9_])submodule(?![a-z0-9_])", lowered) and re.search(
+            r"(?<![a-z0-9_])update(?![a-z0-9_])", lowered
+        ):
+            return True
+        if "--remote" in lowered:
+            return True
+    if not re.search(r"(?:api\.)?github\.com\b", lowered):
+        return False
+    return bool(
+        re.search(
+            r"(?<![a-z0-9_])"
+            r"(?:node(?:js)?|perl|php|python(?:3(?:\.\d+)?)?|ruby)"
+            r"(?![a-z0-9_])",
+            lowered,
+        )
+    )
 
 
 def operation_kind(value: str) -> str | None:
@@ -441,10 +540,24 @@ def allowed_github_mutation(
         lowered = shell_text.casefold()
         if lowered:
             return False
+        if not isinstance(tool_input, dict):
+            return False
+        label_fields = [
+            child
+            for key, child in tool_input.items()
+            if str(key).casefold() == "labels"
+        ]
+        if len(label_fields) != 1:
+            return False
+        label_values = label_fields[0]
+        if not isinstance(label_values, list) or not all(
+            isinstance(value, str) for value in label_values
+        ):
+            return False
         labels = {
             value
-            for value in flatten_strings(tool_input)
-            if isinstance(value, str) and value.startswith("agent:")
+            for value in label_values
+            if value.startswith("agent:")
         }
         return labels == {"agent:claimed"}
     return False
@@ -467,6 +580,9 @@ def check_tool(event: dict[str, object]) -> int:
 
     if is_agent_tool(tool):
         return 0 if role in MANAGERS else deny(f"{role} is a leaf and cannot spawn agents")
+
+    if is_generic_dispatcher(tool, tool_input):
+        return deny(f"{role} cannot use a generic provider dispatcher")
 
     if is_github_tool(tool):
         if role not in MCP_READ_ROLES:
@@ -511,6 +627,8 @@ def check_tool(event: dict[str, object]) -> int:
         return 0
 
     if is_shell_tool(tool):
+        if uses_raw_network_client(text):
+            return deny(f"{role} must use its assigned provider capability for network access")
         if role == "pr-review-resolver":
             return deny("pr-review-resolver delegates all shell validation to test roles")
         mutation = shell_mutation_kind(text)
