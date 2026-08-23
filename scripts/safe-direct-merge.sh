@@ -20,11 +20,13 @@ referenced PR before one that references it.
 For each PR, verifies (mirroring merge_gate in backlog-policy.json):
   - state OPEN, not draft
   - mergeable true, mergeState CLEAN
-  - required checks (metadata, verify) concluded pass
+  - every check named in merge_gate.required_checks concluded pass
   - no unresolved review threads (--allow-findings overrides)
 
 Then, per PR:
-  - removes any git worktree still holding the PR branch
+  - rejects cross-repository PRs
+  - rejects dirty git worktrees still holding the PR branch
+  - removes clean worktrees still holding the PR branch
   - squash-merges via `gh pr merge --squash`
   - deletes the merged remote branch (`git push --delete`, which the local
     pre-push gate skips for ref-deletion-only pushes)
@@ -63,18 +65,31 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 127
 fi
 
-required_checks=(metadata verify)
+repo_root="$(git rev-parse --show-toplevel)"
+policy_path="${repo_root}/.agents/workflows/backlog-policy.json"
+required_checks=()
+while IFS= read -r check; do
+  [ -n "${check}" ] && required_checks+=("${check}")
+done < <(jq -r '.merge_gate.required_checks[]?' "${policy_path}")
+
+if [ "${#required_checks[@]}" -eq 0 ]; then
+  echo "safe-direct-merge.error=missing-required-checks" >&2
+  exit 2
+fi
 
 merge_one() {
   local pr="$1"
   echo "=== PR #$pr ==="
 
-  local state draft mergeable merge_state branch
+  local state draft mergeable merge_state branch cross_repository
   state="$(gh pr view "$pr" --json state -q .state)"
   draft="$(gh pr view "$pr" --json isDraft -q .isDraft)"
   mergeable="$(gh pr view "$pr" --json mergeable -q .mergeable)"
   merge_state="$(gh pr view "$pr" --json mergeStateStatus -q .mergeStateStatus)"
   branch="$(gh pr view "$pr" --json headRefName -q .headRefName)"
+  if ! cross_repository="$(gh pr view "$pr" --json isCrossRepository -q .isCrossRepository)"; then
+    echo "skip: unable to determine whether PR is cross-repository"; return 1
+  fi
 
   if [ "$state" != "OPEN" ]; then
     echo "skip: state=$state (not OPEN)"; return 1
@@ -88,6 +103,9 @@ merge_one() {
   if [ "$merge_state" != "CLEAN" ]; then
     echo "skip: mergeState=$merge_state (resolve conflicts/blocking reviews first)"; return 1
   fi
+  if [ "$cross_repository" != "false" ]; then
+    echo "skip: cross-repository PRs are not eligible for safe direct merge"; return 1
+  fi
 
   # Required checks must be green. gh exits 8 while checks are pending, so
   # capture JSON regardless of exit code and classify each required check.
@@ -95,7 +113,18 @@ merge_one() {
   checks_json="$(gh pr checks "$pr" --json name,bucket 2>/dev/null || true)"
   printf '%s' "$checks_json" | jq -e . >/dev/null 2>&1 || checks_json='[]'
   for c in "${required_checks[@]}"; do
-    bucket="$(printf '%s' "$checks_json" | jq -r --arg n "$c" '.[]? | select(.name==$n) | .bucket // ""' | head -1)"
+    bucket="$(printf '%s' "$checks_json" | jq -r --arg n "$c" '
+      [.[]? | select(.name == $n) | .bucket // ""] as $buckets |
+      if ($buckets | length) == 0 then
+        "pending"
+      elif any($buckets[]; . == "fail" or . == "failure" or . == "cancelled" or . == "timed_out" or . == "action_required") then
+        "fail"
+      elif all($buckets[]; . == "pass") then
+        "pass"
+      else
+        "pending"
+      end
+    ')"
     case "$bucket" in
       pass) : ;;
       fail|failure|cancelled|timed_out|action_required) failed+=("$c=$bucket") ;;
@@ -109,12 +138,26 @@ merge_one() {
     echo "skip: required checks pending: ${pending[*]} (retry shortly)"; return 1
   fi
 
-  # Best-effort unresolved-thread check (P0/P1 proxy). gh --json reviewThreads
-  # support varies by version; degrade gracefully when unavailable.
+  # Read the complete paginated review-thread payload through the repository
+  # collector. Any lookup or parsing failure is a merge blocker: treating a
+  # missing review payload as an empty list would bypass the review gate.
   if [ "$allow_findings" = "false" ]; then
-    local unresolved
-    unresolved="$(gh pr view "$pr" --json reviewThreads \
-      -q '[.reviewThreads[]? | select(.isResolved != true)] | length' 2>/dev/null || printf '0')"
+    local collector review_context unresolved
+    collector="${repo_root}/scripts/collect-pr-review-context.sh"
+    if [ ! -x "$collector" ]; then
+      echo "skip: unable to locate review context collector"; return 1
+    fi
+    if ! review_context="$("$collector" --format json "$pr")"; then
+      echo "skip: review context collection failed; refusing to merge"; return 1
+    fi
+    if ! jq -e 'type == "object" and (.reviewThreads | type == "array")' \
+      <<<"$review_context" >/dev/null 2>&1; then
+      echo "skip: review context payload is invalid; refusing to merge"; return 1
+    fi
+    if ! unresolved="$(jq -er '[.reviewThreads[] | select(.isResolved != true)] | length' \
+      <<<"$review_context")"; then
+      echo "skip: review context reviewThreads could not be parsed; refusing to merge"; return 1
+    fi
     if [ "${unresolved:-0}" -gt 0 ]; then
       echo "skip: $unresolved unresolved review thread(s); pass --allow-findings to override"
       return 1
@@ -128,16 +171,30 @@ merge_one() {
     return 0
   fi
 
-  # Clear worktrees still holding this branch (prevents local-delete failure).
-  local wt wt_branch
+  # Check every matching worktree before removing any of them. A dirty
+  # worktree may contain user changes, so it is never deleted implicitly.
+  local wt wt_branch wt_status
+  local worktrees_to_remove=()
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
     wt_branch="$(git -C "$wt" branch --show-current 2>/dev/null || true)"
     if [ "$wt_branch" = "$branch" ]; then
-      echo "removing worktree $wt holding $branch"
-      git worktree remove --force "$wt" 2>/dev/null || true
+      if ! wt_status="$(git -C "$wt" status --ignored --porcelain --untracked-files=all 2>/dev/null)"; then
+        echo "skip: unable to inspect worktree $wt; refusing to merge"; return 1
+      fi
+      if [ -n "$wt_status" ]; then
+        echo "skip: dirty worktree $wt holds $branch; refusing to remove or merge"; return 1
+      fi
+      worktrees_to_remove+=("$wt")
     fi
-  done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
+  done < <(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+
+  for wt in "${worktrees_to_remove[@]}"; do
+    echo "removing worktree $wt holding $branch"
+    if ! git worktree remove --force "$wt"; then
+      echo "FAIL: unable to remove clean worktree $wt"; return 1
+    fi
+  done
 
   # Squash merge (non-interactive). No --delete-branch: we clean via ref-delete
   # push so the pre-push test gate is skipped.

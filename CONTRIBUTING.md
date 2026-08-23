@@ -98,28 +98,27 @@ contract issue body. Do not rely on comments alone as the current summary.
 
 ## Pull Requests
 
-Open PRs with a clear summary, validation notes, and a focused checklist. Keep implementation and cleanup separate.
+Open PRs with a clear summary, validation notes, and a focused checklist. Keep
+implementation and cleanup separate.
 
-Before a PR is ready for review, it must have repository metadata that CI can
-verify:
+PR metadata supports triage and planning. Add a descriptive label such as
+`bug`, `documentation`, `enhancement`, `refactor`, `planning`,
+`milestone-contract`, or `process:metadata-cleanup` when one clearly applies.
+Add `Closes #123` only when the PR should close that exact issue. Descriptive
+labels and issue-link hygiene do not determine merge eligibility, and issue
+lifecycle labels stay separate from PR classification.
 
-- at least one approved label: `bug`, `documentation`, `enhancement`,
-  `refactor`, `planning`, `milestone-contract`, or
-  `process:metadata-cleanup`
-- at least one GitHub-recognized closing issue reference, for example
-  `Closes #123`, or an explicit exemption in the PR body using
-  `No closing issue: <reason>`
-
-The PR policy workflow skips draft PRs and enforces this metadata when a PR is
-ready for review. The workflow depends on the approved labels already existing
-in the repository.
+The `metadata` job skips draft PRs and publishes advisory notices from the
+pull-request event payload. Missing descriptive labels or closing references
+do not fail the job. The merge gate still requires the job to complete so
+ready PRs have a current metadata report; `verify` owns code and validation
+correctness. Branch protection should require the status checks named in
+`.agents/workflows/backlog-policy.json`.
 
 Before marking a PR ready:
 
 - run the narrowest relevant validation
-- apply at least one approved label
-- replace the `Closes #` placeholder with a real closing issue reference or a
-  documented `No closing issue: <reason>` exemption
+- add a descriptive label or closing issue reference when it improves triage
 - update the PR checklist
 - push the branch
 - list follow-up work instead of expanding scope

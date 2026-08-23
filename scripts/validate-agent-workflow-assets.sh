@@ -2481,6 +2481,8 @@ check "backlog_policy_schema" jq -e '
 ' .agents/workflows/backlog-policy.json
 
 check "agent_organization" python3 scripts/check-agent-organization.py
+check "issue_206_pr_metadata" bash scripts/test-issue-206-pr-policy.sh
+check "safe_direct_merge" bash scripts/test-safe-direct-merge.sh
 check "agent_hooks_json" jq -e . .codex/hooks.json
 for hook in .codex/hooks/agent_tool_policy.py .codex/hooks/issue_manager_stop_gate.py; do
   name="$(basename "${hook}" .py)"

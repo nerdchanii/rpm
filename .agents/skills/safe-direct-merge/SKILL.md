@@ -1,6 +1,6 @@
 ---
 name: safe-direct-merge
-description: Gate-checked squash merge for PRs the scheduled merge-gatekeeper cannot reach (no closing issue, or issues outside the agent lifecycle). Verifies the same gate conditions, clears blocking worktrees, merges, and cleans branches.
+description: Gate-checked squash merge for same-repository PRs the scheduled merge-gatekeeper cannot reach (no closing issue, or issues outside the agent lifecycle). Verifies the same gate conditions, clears only clean blocking worktrees, merges, and cleans branches.
 ---
 
 # Safe Direct Merge
@@ -32,15 +32,18 @@ Prefer the scheduled `merge-gatekeeper` for PRs already in `agent:awaiting-merge
    references it).
 3. Merge: `bash scripts/safe-direct-merge.sh [--allow-findings] <pr>...`
 4. Per PR the script verifies: OPEN / non-draft, `mergeable` true,
-   `mergeState` CLEAN, required checks (`metadata`, `verify`) pass, and no
-   unresolved review threads (unless `--allow-findings`). It then clears any
-   worktree still holding the PR branch, squash-merges, and deletes the merged
-   remote branch (ref-deletion push, which the local pre-push gate skips) and
-   local branch.
+   `mergeState` CLEAN, every check named in the policy
+   `merge_gate.required_checks` passes, and no unresolved review threads
+   (unless `--allow-findings`). Review lookup and parsing failures block the
+   merge. The script rejects cross-repository PRs and dirty worktrees, clears
+   only clean worktrees holding the PR branch, squash-merges, and deletes the
+   merged remote branch (ref-deletion push, which the local pre-push gate
+   skips) and local branch.
 
 ## Boundaries
 
 - Never force-push. Never merge a PR that fails the gate. Never touch labels.
+- Never remove a dirty worktree. Never use this path for a cross-repository PR.
 - Never request `@codex review`; never make merge depend on a fresh Automatic review.
 - This is a deliberate manual bypass; the scheduled `merge-gatekeeper` remains
   the default and sole merge path for lifecycle PRs.
