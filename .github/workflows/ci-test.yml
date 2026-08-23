@@ -71,6 +71,9 @@ jobs:
       - name: Fixture smoke test
         run: ./scripts/test-fixture-tools.sh
 
+      - name: Install just
+        uses: taiki-e/install-action@just
+
       - name: Validate agent assets
         run: ./scripts/validate-agent-workflow-assets.sh --format=summary
 
