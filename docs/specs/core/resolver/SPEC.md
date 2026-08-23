@@ -100,31 +100,49 @@ accepted-form set and its error reporting; until then, parsing must not invent
 ad hoc rejection rules that diverge across CLI, manifest, and registry
 boundaries.
 
-### Workspace boundary
+### Workspace boundary (planned)
+
+This subsection defines the resolver contract for the first workspace-aware
+strategy. The current resolver has no member-table input or workspace-local
+edge type, so these rules become active with that implementation and its
+planned fixtures.
 
 Workspace discovery is owned by
 `docs/specs/core/manifest/SPEC.md`. The resolver consumes its validated result
-as an ordered table of root-relative member paths and package names; it does
-not re-expand globs, follow a second root, or infer members from registry
-metadata. The table must already satisfy canonical-root confinement, valid
-member manifests, unique package names, deduplicated paths, and stable
-lexicographic ordering.
+as an ordered table of root-relative member paths, package names, and declared
+version text when present; it does not re-expand globs, follow a second root,
+or infer members from registry metadata. The table must already satisfy
+canonical-root confinement, structurally accepted non-empty and unique package
+names, valid member manifests, deduplicated paths, and stable lexicographic
+ordering.
 
 The resolver keeps three identities distinct:
 
 - the **root package**, whose manifest declares the workspace and whose direct
   dependency requests remain root requests;
 - a **workspace member**, identified by a discovered root-relative path and its
-  package name, whose dependency requests retain that member origin; and
-- an **external package**, whose name is absent from the discovered member
-  table and whose metadata is obtained through the external package boundary.
+  package name, carrying its declared version text and retaining that member
+  origin on its dependency requests; and
+- an **external package**, whose metadata is obtained through the external
+  package boundary because no discovered member satisfies the edge.
 
 A dependency edge is classified against the discovered member table before
-external metadata lookup. A name present in that table is a workspace-local
-edge; a name absent from it is an external edge. Name collisions among members
-or between the root package and a member are invalid discovery input and must
-fail before graph traversal. A missing or malformed member supplied by the
-manifest boundary is likewise an input error, not an external-package fallback.
+external metadata lookup. A name absent from the table is an external edge. A
+name present in the table is workspace-local only when the member has a valid
+declared semantic version and that version satisfies the edge's requested
+range under `docs/specs/core/semver/SPEC.md`. A missing, invalid, or
+range-incompatible member version leaves that edge external, allowing external
+metadata to select a compatible package version. Registry dist-tags have no
+local member mapping and remain external selectors. Invalid or unsupported
+request syntax still fails under its owning input contract; it is not converted
+into a workspace-local edge.
+
+Name collisions among members or between the root package and a member are
+invalid discovery input and must fail before graph traversal. A missing or
+malformed member supplied by the manifest boundary is likewise an input error,
+not an external-package fallback. Package-name acceptance follows the same
+current structural non-empty rule described under "Package name parsing";
+workspace discovery and resolution must not add an independent syntax gate.
 
 This issue defines identity and input boundaries only. Workspace lockfile
 records and compatibility are owned by #146, local and external filesystem
@@ -327,12 +345,13 @@ on semver range behavior.
 ### Workspace boundary fixtures
 
 Planned offline resolver coverage includes a root package with two ordered
-workspace members, a workspace-local dependency edge, an external dependency
-edge with the same deterministic member ordering, duplicate member-name
-rejection, root/member name collision rejection, and rejection of a discovery
-result that escapes the canonical root. Lockfile snapshots and filesystem
-trees are deferred to #146 and #147; this SPEC does not require workspace
-installation behavior.
+workspace members, a satisfying workspace-local dependency edge, a same-name
+member whose incompatible version falls back to an external compatible
+version, an external dependency edge with the same deterministic member
+ordering, duplicate member-name rejection, root/member name collision
+rejection, and rejection of a discovery result that escapes the canonical
+root. Lockfile snapshots and filesystem trees are deferred to #146 and #147;
+this SPEC does not require workspace installation behavior.
 
 ### Optional-dependency non-enqueue guard fixture
 
