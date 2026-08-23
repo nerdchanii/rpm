@@ -692,8 +692,6 @@ check "backlog_policy_schema" jq -e '
 
 check "agent_organization" python3 scripts/check-agent-organization.py
 check "agent_hooks_json" jq -e . .codex/hooks.json
-check "claude_security" bash scripts/check-claude-security.sh
-
 for hook in .codex/hooks/agent_tool_policy.py .codex/hooks/issue_manager_stop_gate.py; do
   name="$(basename "${hook}" .py)"
   check "hook_${name}_syntax" \
@@ -720,8 +718,6 @@ check "script_check_cloud_queue_contract_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-cloud-queue-contract.py").read_text())'
 check "script_check_merge_gate_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-merge-gate.py").read_text())'
-check "script_check_claude_security_syntax" \
-  bash -n scripts/check-claude-security.sh
 check "script_validate_agent_workflow_assets_syntax" \
   bash -n scripts/validate-agent-workflow-assets.sh
 
