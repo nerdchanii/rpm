@@ -191,7 +191,14 @@ registry boundary (`docs/specs/core/registry/SPEC.md`) under the same
 `string -> string` shape and the same wrong-type tolerance, and feed the same
 lifecycle execution contract for resolved packages.
 
-### Workspace declaration and discovery
+### Workspace declaration and discovery (planned)
+
+This subsection defines the contract for the first workspace-aware manifest
+and discovery implementation. RPM does not currently deserialize or preserve
+the `workspaces` field and has no workspace discovery API, so the rules below
+are an implementation target rather than a claim about the current root-only
+code path. The implementation that activates this contract must land with the
+planned fixtures in this section.
 
 The root manifest may declare workspace members through the `workspaces` field.
 RPM supports exactly these declaration shapes:
@@ -199,6 +206,15 @@ RPM supports exactly these declaration shapes:
 - an array of non-empty strings, each interpreted as a relative member glob;
 - an object with a `packages` array of non-empty strings, interpreted the same
   way as the array form.
+
+Workspace patterns use a portable RPM dialect. `/` is the only path separator
+and every segment must be non-empty. `*` matches zero or more non-`/`
+characters within one segment, while `**` is supported only as a complete
+segment and matches zero or more descendant segments. Wildcards do not match a
+segment whose first character is `.`; a non-excluded dot-prefixed segment must
+be named literally. Brace expansion, character classes, `?`, extglobs,
+negation with `!`, and backslash escaping or separators are unsupported, and a
+pattern containing those forms is an invalid declaration.
 
 The object form does not implicitly enable npm- or Yarn-specific workspace
 options. Unsupported object keys and every other `workspaces` value type are
@@ -216,21 +232,32 @@ directory without a valid `package.json`, or a member path equal to the root is
 an invalid workspace declaration. Discovery must not read or write a manifest
 outside the canonical root.
 
+Expansion considers descendant directories only and prunes install artifacts
+before matching. A path at or below any `node_modules` or `.rpm` component, or
+at or below an RPM-managed cache, store, staging, or backup path, is never a
+workspace candidate. Current root-local managed paths include `.rpm/**`,
+`.node_modules.rpm-staging-*`, and `.node_modules.rpm-backup-*`. These
+exclusions are applied again after symlink resolution, so an explicit pattern
+or in-root symlink cannot opt an artifact tree into discovery.
+
 Discovery returns member paths relative to the canonical root using `/`
 separators. Paths are deduplicated and sorted lexicographically before they are
 passed to resolution, so overlapping patterns and filesystem enumeration order
 cannot change the workspace set or its order. Every discovered member must
-have a valid package name; duplicate member package names are rejected as an
-ambiguous declaration.
+have a non-empty package name accepted by the resolver's current structural
+package-name rule; discovery must not introduce stricter npm name-syntax checks.
+Duplicate member package names are rejected as an ambiguous declaration. Each
+member-table row carries the member's root-relative path, package name, and
+declared version text when the manifest contains a version.
 
 The root package, a discovered workspace member, and an external package are
 distinct identities. The root is the manifest that owns the declaration. A
 workspace member is identified by its discovered root-relative path and its
-package name. An external package is a dependency that is absent from the
-discovered member set and is resolved through the external package boundary.
-The resolver owns the classification of dependency edges using this discovery
-result; lockfile records, local linking, and command targeting remain owned by
-the contracts for issues #146, #147, and #148.
+package name and carries its declared version for edge classification. An
+external package is reached through an edge that the resolver cannot satisfy
+from a compatible discovered member. The resolver owns that classification;
+lockfile records, local linking, and command targeting remain owned by the
+contracts for issues #146, #147, and #148.
 
 Reading and saving a root manifest must preserve a valid `workspaces`
 declaration without changing its supported shape, patterns, or pattern order.
@@ -256,11 +283,17 @@ workspace contract requires planned coverage for:
 - the array declaration and the object `{ "packages": [...] }` declaration;
 - a root-only project with no `workspaces` field;
 - malformed, unsupported, empty, and wrong-type declarations;
+- supported `*` and `**` patterns plus rejected brace, character-class,
+  negation, escape, and platform-separator forms;
 - a declaration whose pattern matches no member path;
 - a member without a valid `package.json`;
 - `..` or absolute path escape attempts;
 - a symlink whose resolved target is outside the canonical root;
+- a broad pattern with pre-existing `node_modules`, `.rpm`, and RPM-managed
+  staging or backup paths, proving artifacts do not change discovery;
 - overlapping declarations proving sorted, deduplicated root-relative output;
+- a structurally accepted non-empty member name that is preserved without a
+  discovery-only npm syntax gate;
 - duplicate workspace package names; and
 - a save attempt proving the declaration is preserved or fails before file
   replacement.
