@@ -292,19 +292,19 @@ linking changes into workspace work. Every gap below is assigned an owning SPEC
 and a follow-up ticket so workspace behavior becomes SPEC-owned *before*
 implementation, satisfying the M7 exit criteria.
 
-Today workspace support is a greenfield gap: no `workspaces` field is read by
-`manifest/SPEC.md`, no workspace-vs-external distinction exists in
-`lockfile/SPEC.md`, the linker creates only registry-resolved dependency links,
-and no CLI flag targets a workspace. Every `workspace` token in the repository
-today refers to Cargo layout, not npm workspaces. This audit records that
-absence as intentional deferral and assigns each gap an owner rather than
-treating it as implicit scope.
+Workspace implementation remains a greenfield gap: no code path reads the
+`workspaces` field, no workspace-vs-external distinction exists in the
+lockfile, the linker creates only registry-resolved dependency links, and no
+CLI flag targets a workspace. The planned manifest-discovery and resolver
+boundary contracts are now defined by #145; their implementation and fixtures
+remain deferred. This audit distinguishes that defined contract from the
+remaining implementation gaps and assigns each gap an owner.
 
 | M7 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
-| workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | absent: the root `workspaces` field is neither read nor preserved today, and current install/add save paths can therefore drop it; #145 must preserve the field or reject it explicitly and add regression coverage; the manifest SPEC owns `dependencies`, `devDependencies`, `optionalDependencies`, `peerDependencies`, `engines`/`os`/`cpu`, `bin`, and project metadata, but declares no multi-package shape | #145 |
-| workspace glob expansion and member discovery | `manifest/SPEC.md` | absent: #145 must define supported declaration forms (array of globs, `packages` map form, nested config), expand members from a canonical workspace root, reject `..` escapes and symlinks resolving outside that root, and report missing-member paths; discovery output must be root-relative, sorted, deduplicated, and repeatable, with a fixture proving those invariants | #145 |
-| root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | absent: the resolver seeds only the single root manifest's direct dependencies; there is no concept of a workspace member as a resolution root, and no rule distinguishing a local workspace package from a registry package when both match a name | #145 |
+| workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, invalid declarations, preservation-before-write, and planned regression coverage are specified; current manifest code still does not read or preserve the field | #145 |
+| workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect, canonical-root and symlink confinement, install-artifact exclusions, deterministic root-relative output, and planned fixtures are specified | #145 |
+| root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: member path/name/version input, deterministic member resolution roots, request origin, compatible-range local classification, external fallback, and distinct local/external graph identities are specified | #145 |
 | workspace package lockfile records | `lockfile/SPEC.md` | absent: lockfile v1 keys every entry by `<name>@<version>` with registry metadata and records no local-path or workspace-origin marker; local workspace records need not require tarball or integrity, while external records may use `shasum` when integrity is absent; whether v1 extends safely or a version bump is required is an open question for #146 | #146 |
 | external dependency edges under a workspace root | `lockfile/SPEC.md`, `resolver/SPEC.md` | partially owned in the non-workspace case: the resolver already deduplicates by `<name>@<version>` and the lockfile records requested range and resolved version distinctly, but neither owns how a shared external transitive reached from several workspace members is represented when each member requests a different range | #146 |
 | workspace-to-workspace linking (local symlink) | `linker/SPEC.md` | absent: the linker creates symlinks whose targets are extracted registry packages under `node_modules/`; there is no contract for linking a workspace member that exists as a local source directory rather than a downloaded tarball, or for confining that target to the canonical workspace root | #147 |
@@ -318,18 +318,17 @@ treating it as implicit scope.
 
 Findings:
 
-- Workspace support is a complete greenfield gap across manifest, lockfile,
-  linker, and CLI. No SPEC references `workspaces`, no code path reads the
-  field, and every existing test fixture is single-root. This audit records
-  that absence as a deferred-but-now-assigned frontier rather than implicit
-  scope, so each M7 child ticket opens against an owning SPEC.
-- The discovery boundary (#145) is the foundation: until the manifest SPEC owns
-  which `workspaces` declaration forms are read, how member paths expand, and
-  how invalid or missing members fail, the resolver cannot seed workspace
-  members and the lockfile cannot record them. Canonical-root confinement,
-  rejection of `..` and external symlinks, root-relative sorted/deduplicated
-  output, and repeatability are part of that boundary. #145 blocks #146, #147,
-  and #148 for this reason.
+- Workspace implementation remains a greenfield gap across manifest, resolver,
+  lockfile, linker, and CLI, and every executable fixture is still single-root.
+  The manifest and resolver SPECs now own the planned `workspaces` contract, so
+  follow-up work starts from defined inputs and identities instead of an
+  implicit frontier.
+- The discovery boundary (#145) defines supported declarations, portable glob
+  expansion, invalid-member behavior, canonical-root confinement, deterministic
+  member output, member resolution-root seeding, and local-versus-external edge
+  classification. Its implementation and executable fixtures remain pending.
+  #146, #147, and #148 must consume this member table and origin model without
+  redefining them.
 - Lockfile representation (#146) carries one open compatibility decision:
   whether workspace package records can extend lockfile v1 with a local-origin
   marker, or whether a workspace-aware lockfile requires a version bump and a

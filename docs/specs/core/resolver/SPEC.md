@@ -53,11 +53,16 @@ preserves both the requested range and the selected version. The graph is the
 input to later installer phases that download tarballs, verify integrity,
 extract packages, link `node_modules`, and write lockfile or manifest state.
 
-The resolved graph contains at most one record per `<name>@<version>`. A
-package reached through several parents is merged into a single node, so a
-shared transitive package/version is represented once even when it is reached
-through different requested ranges. This node-uniqueness invariant is the basis
-for the deduplication proofs in
+The external-package portion of the resolved graph contains at most one record
+per `<name>@<version>`. An external package reached through several parents is
+merged into a single node, so a shared transitive package/version is represented
+once even when it is reached through different requested ranges. Under the
+planned workspace boundary, root and member resolution roots use origin
+identities in a separate key domain: the project root uses the root identity and
+each member uses its canonical root-relative path. A local member and an
+external package must never merge, including when their package names and
+version text are equal. This node-uniqueness invariant is the basis for the
+deduplication proofs in
 `docs/specs/core/install/performance/SPEC.md`, and it is the reason later
 installer phases may download and cache a selected version at most once.
 
@@ -126,6 +131,25 @@ The resolver keeps three identities distinct:
 - an **external package**, whose metadata is obtained through the external
   package boundary because no discovered member satisfies the edge.
 
+The workspace-aware graph starts with an ordered set of resolution-root
+records: the project root first, followed by every member in the discovery
+table's stable order. Every discovered member is a resolution root even when
+the project root has no dependency edge to it. A root record retains its root or
+member origin, manifest path, package name, declared version text when present,
+and direct dependency edges; workspace lockfile serialization of those records
+remains owned by #146.
+
+The resolver seeds requests from both `dependencies` and `devDependencies` in
+the project-root manifest and every member manifest. Seed order is root first,
+then members in discovery order; within each manifest, production requests
+precede development requests and package names are ordered lexicographically.
+Production and development seeds retain `DirectProduction` and
+`DirectDevelopment` request kinds respectively and carry a separate origin of
+root or the member's root-relative path. Requests read from selected external
+metadata remain `Transitive` and identify their resolved parent. This origin is
+preserved on graph edges, so a dependency reachable only from a member cannot
+be omitted or mistaken for a root-manifest entry.
+
 A dependency edge is classified against the discovered member table before
 external metadata lookup. A name absent from the table is an external edge. A
 name present in the table is workspace-local only when the member has a valid
@@ -158,7 +182,9 @@ must not rely on recursive calls for correctness.
 
 The first strategy is an iterative FIFO worklist:
 
-1. Seed the worklist with direct dependency requests.
+1. Seed the worklist with the deterministic root and member direct-request
+   sequence defined by the workspace boundary; a root-only project supplies
+   only the project-root sequence.
 2. Pop the oldest pending request.
 3. Read package metadata through the metadata abstraction.
 4. Select a version through the version selection abstraction.
@@ -347,11 +373,15 @@ on semver range behavior.
 Planned offline resolver coverage includes a root package with two ordered
 workspace members, a satisfying workspace-local dependency edge, a same-name
 member whose incompatible version falls back to an external compatible
-version, an external dependency edge with the same deterministic member
-ordering, duplicate member-name rejection, root/member name collision
-rejection, and rejection of a discovery result that escapes the canonical
-root. Lockfile snapshots and filesystem trees are deferred to #146 and #147;
-this SPEC does not require workspace installation behavior.
+version, and a member-only external edge when the project root has no dependency
+on either the member or its dependency. That member-only fixture records the
+member origin and proves production and development seeds retain their distinct
+direct request kinds. Coverage also keeps a local member node distinct from an
+external node with equal name and version text, preserves the same deterministic
+member ordering for external edges, rejects duplicate member names and
+root/member name collisions, and rejects a discovery result that escapes the
+canonical root. Lockfile snapshots and filesystem trees are deferred to #146
+and #147; this SPEC does not require workspace installation behavior.
 
 ### Optional-dependency non-enqueue guard fixture
 
