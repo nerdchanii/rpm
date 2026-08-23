@@ -2,9 +2,9 @@
 
 ## Steps
 
-1. For a scheduled run, use the GitHub plugin to find open issues in `agent:review-pending`, ordered by issue number, and select at most one linked open PR.
+1. For a scheduled run, use the GitHub capability to find open issues in `agent:review-pending`, ordered by issue number, and select at most one linked open PR.
 2. Return `status:"no-work"` without mutation when there is no candidate or the latest Codex Automatic review has not arrived.
-3. Collect the latest Codex review and every unresolved review comment through the GitHub plugin. The local/manual fallback is `bash scripts/collect-pr-review-context.sh <pr-number> --format jsonl`.
+3. Collect the latest Codex review and every unresolved review comment through the GitHub capability. The local/manual fallback is `bash scripts/collect-pr-review-context.sh <pr-number> --format jsonl`.
 4. Spawn `pr-review-resolver` using the prompt in `templates.md`.
 5. Review resolver output and current diff.
 6. If resolver applied `accept-now` fixes, verify validation actually ran or rerun it in the main session.

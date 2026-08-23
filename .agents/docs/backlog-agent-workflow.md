@@ -146,7 +146,7 @@ terminal result.
 
 ## Claim-and-Execute Contract
 
-`$take-ticket scheduled` uses the connected GitHub plugin to inventory open
+`$take-ticket scheduled` uses the host-provided GitHub capability to inventory open
 issues with lifecycle labels. Project membership is not an execution
 condition. It returns `no-work` while any open issue is claimed or
 review-pending. Otherwise it rejects conflicting lifecycle labels, rejects a
@@ -159,8 +159,11 @@ After implementation and validation, the caller publishes the PR, marks it
 review-ready, and replaces claimed with review-pending. Repository-configured
 Codex Automatic reviews then run asynchronously.
 
-`$take-ticket explicit <issue>` executes a user-selected issue without running
-the scheduled candidate claim flow.
+`$take-ticket explicit <issue>` sends the exact user-selected issue through the
+same policy-authorized claim workflow used by scheduled execution. An eligible
+ready issue is claimed without substituting another candidate. A currently
+claimed issue may resume only with matching current claim evidence and a valid
+lease. Untracked, stale, expired, or mismatched selections are blocked.
 
 Scheduled runs do not post, request, or wait for `@codex review`. Repository
 code-review settings run independently after a pull request is published.
@@ -182,7 +185,7 @@ selects at most one open awaiting-merge issue with exactly one open closing PR
 and confirms the verdict with `scripts/check-merge-gate.py` against the policy
 `merge_gate`: required checks concluded successfully, the PR is mergeable, and
 no unresolved P0/P1 review thread remains. A `merge` verdict squash-merges
-through the GitHub plugin and lets GitHub close the linked issue; lifecycle
+through the GitHub capability and lets GitHub close the linked issue; lifecycle
 labels on closed issues are inert. Pending checks or unknown mergeability
 return `no-work`. Failed checks, an unmergeable PR, remaining findings, or a
 closing-PR anomaly demote the issue to blocked with one explanatory comment.
@@ -228,14 +231,13 @@ interactively:
 gh auth refresh -s read:project -s project
 ```
 
-Codex Cloud execution, review reconciliation, and gated merge use the
-connected GitHub plugin. They do not run this preflight and do not require the
-`gh` CLI or Project access. The plugin still needs a credential: it
-authenticates with the `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable
-configured in the Codex task environment. The six lifecycle labels must exist
-before the first run. Their exact names live in the policy file. Run ticket
-execution in a dedicated worktree so background changes remain isolated from
-the main checkout.
+Cloud execution, review reconciliation, and gated merge use the connected
+GitHub capability discovered by the host. They do not run this local preflight
+and do not require the `gh` CLI or Project access. Credential handling remains
+inside that capability and is never read or transmitted by shared workflow
+contracts. The six lifecycle labels must exist before the first run. Their
+exact names live in the policy file. Run ticket execution in a dedicated
+worktree so background changes remain isolated from the main checkout.
 
 Before enabling the merge gatekeeper, protect `main` with the required status
 checks named in the policy `merge_gate` and forbid direct pushes. The

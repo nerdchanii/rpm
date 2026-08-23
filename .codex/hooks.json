@@ -16,7 +16,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^(Agent|spawn_agent|apply_patch|Edit|Write|Bash|shell|exec|exec_command|functions\\.exec|functions\\.exec_command|mcp__.*)$",
+        "matcher": "^(Agent|spawn_agent|apply_patch|Edit|Write|Bash|shell|exec|exec_command|functions\\.exec|functions\\.exec_command|mcp__.*|.*([Bb][Aa][Ss][Hh]|[Ss][Hh][Ee][Ll][Ll]|[Tt][Ee][Rr][Mm][Ii][Nn][Aa][Ll])$|.*([Gg][Ii][Tt][Hh][Uu][Bb]|[Gg][Hh]_|[Ii]ssue|[Pp]ull.?[Rr]equest|[Pp][Rr]_).*)$",
         "hooks": [
           {
             "type": "command",

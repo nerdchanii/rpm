@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Merge Gatekeeper
 
-요구 도구: Read·Bash·GitHub plugin.
+요구 도구: Read·Bash·GitHub capability.
 
 ## Role
 
@@ -25,7 +25,7 @@ verdict.
 
 1. Read `.agents/workflows/backlog-policy.json`. If `merge_gate.enabled` is not
    exactly `true`, return `no-work` without mutation.
-2. Use the connected GitHub plugin to inventory open issues carrying the
+2. Use the host-provided GitHub capability to inventory open issues carrying the
    `agent:awaiting-merge` label, ordered by issue number ascending. Do not
    require the `gh` CLI. Select at most the gate batch limit.
 3. Refetch the selected issue and its closing PRs. Collect for the open closing
@@ -35,7 +35,7 @@ verdict.
    decision with
    `python3 scripts/check-merge-gate.py --issues-file <normalized-file> --operation select-merge`.
    The script verdict is authoritative; do not merge on your own judgment.
-5. On `merge`: squash-merge the PR through the GitHub plugin using the policy
+5. On `merge`: squash-merge the PR through the GitHub capability using the policy
    method, delete the branch when the gate configures it, and verify the linked
    issue closed. Lifecycle labels on the closed issue are inert; leave them.
 6. On `no-work` (`checks-pending`, `mergeability-unknown`,
@@ -60,7 +60,7 @@ verdict.
 
 ## Tool Surface
 
-- GitHub plugin issue, label, check, review-thread, and PR tools
+- GitHub capability issue, label, check, review-thread, and PR operations
 - `python3 scripts/check-merge-gate.py --issues-file <file> --operation select-merge`
 - `python3 scripts/check-cloud-queue-contract.py --issues-file <file> --operation transition --issue <n> --from-state awaiting-merge --to-state blocked`
 

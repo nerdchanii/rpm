@@ -25,6 +25,10 @@ Required inputs:
 - mode=capture|research-cycle|claim-ready
 - repository
 - `.agents/workflows/backlog-policy.json`
+- optional selected_issue for an explicit claim-ready request; it must be the
+  exact user-selected issue and never changes the shared claim contract
+- approved claim inputs for claim-ready mode: run id, event id, executor, plan
+  revision, scope hash, and lease owner
 - idea payload and may_create_issue=true|false for capture
 - mutation authorization appropriate to the requested mode
 
@@ -48,13 +52,18 @@ RESEARCH_CYCLE:
 
 CLAIM_READY:
 1. Spawn rpm_backlog_scout with mode=ready-candidates.
-2. Require GitHub plugin evidence for every open issue carrying any lifecycle label. Do not run `gh`, Project queries, or Project preflights.
+2. Require host-provided GitHub capability evidence for every open issue carrying any lifecycle label. Do not run `gh`, Project queries, or Project preflights.
 3. If an open issue is already claimed or review-pending, return `no-work` without mutation.
-4. Reject candidates with zero or multiple lifecycle labels. Select open ready issues in deterministic issue-number ascending order, no more than the policy execution batch limit.
+4. Reject candidates with zero or multiple lifecycle labels. For a supplied selected_issue, require that exact open issue to be ready and eligible; never substitute another candidate. Otherwise select open ready issues in deterministic issue-number ascending order, no more than the policy execution batch limit.
 5. If there is no eligible item, return `no-work`.
 6. Reject a selected issue when an open PR already closes it.
-7. Spawn rpm_ready_ticket_claimer with exactly one selected issue and the policy path.
-8. Return the claimed issue only after the current GitHub state is verified.
+7. Spawn rpm_ready_ticket_claimer with exactly one selected issue, the fresh
+   normalized candidate snapshot, policy path, and approved claim inputs. It
+   must run the deterministic claim checker and return its normalized result.
+8. Return the claimed issue only after the claim result and current GitHub state
+   are verified for that same issue. Preserve the complete
+   `ready_ticket_claim_result` as structured `claim_result`; do not reduce it to
+   an evidence string.
 
 Research selection must inventory GitHub Project #7 through the local-roadmap coordinates before narrowing candidates. Claim selection uses open GitHub issues and lifecycle labels as its source of truth. Project membership is not an execution eligibility condition.
 
@@ -62,5 +71,5 @@ If a direct report returns malformed output, send one focused correction request
 If you cannot continue, do not call a parent or another manager. Return `BLOCKED: <exact reason>` to the caller that is already waiting.
 
 Return exactly one JSONL event:
-{"type":"backlog_workflow_result","data":{"status":"complete|duplicate|no-work|blocked","mode":"capture|research-cycle|claim-ready","processed":[{"issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state>","outcome":"created|refined|claimed|duplicate|blocked"}],"claimed_issue":"<number-or-url-or-empty>","evidence":["<concise evidence>"],"mutations":["<GitHub mutation>"],"blockers":[]}}
+{"type":"backlog_workflow_result","data":{"status":"complete|duplicate|no-work|blocked","mode":"capture|research-cycle|claim-ready","processed":[{"issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state>","outcome":"created|refined|claimed|duplicate|blocked"}],"claimed_issue":"<number-or-url-or-empty>","claim_result":{},"evidence":["<concise evidence>"],"mutations":["<GitHub mutation>"],"blockers":[]}}
 """

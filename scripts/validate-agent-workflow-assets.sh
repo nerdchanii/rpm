@@ -945,6 +945,7 @@ check "workflow_forbids_merge_and_codex_request" sh -c '
     | rg -v \
       "(Never|never|금지|Do not|does not|do not|without|request_codex_review|configured code review|does not post|no @codex review|or request @codex review|request, or wait for)"
 '
+check "issue_202_workflow_contract" bash scripts/test-issue-202-workflow-contract.sh
 
 if [ "${format}" = "jsonl" ]; then
   jq -nc --arg status "${status}" '{type:"agent_assets_result",data:{status:$status}}'

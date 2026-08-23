@@ -1,0 +1,53 @@
+[
+  {
+    "mode": "scheduled",
+    "input": {
+      "queue": "eligible-issue",
+      "issue": 3,
+      "claim_result": {
+        "type": "ready_ticket_claim_result",
+        "data": {
+          "status": "claimed",
+          "issue": 3,
+          "claim_contract": {
+            "status": "claim",
+            "issue": 3,
+            "idempotency_key": "sha256:fixture",
+            "lease": {
+              "run_id": "run-3",
+              "owner": "cloud:executor",
+              "expires_at": "2026-08-21T13:00:00Z"
+            }
+          }
+        }
+      }
+    },
+    "owner": "rpm_workflow_manager",
+    "expected_status": "complete"
+  },
+  {
+    "mode": "scheduled",
+    "input": {"queue": "empty"},
+    "owner": "rpm_workflow_manager",
+    "expected_status": "no-work"
+  },
+  {
+    "mode": "explicit",
+    "input": {
+      "issue": 202,
+      "claim_state": "ready",
+      "controller_status": "claim",
+      "claim_result_issue": 202,
+      "idempotency_key": "sha256:fixture",
+      "lease": "valid"
+    },
+    "owner": "take-ticket",
+    "expected_status": "complete"
+  },
+  {
+    "mode": "explicit",
+    "input": {"issue": 202, "claim_state": "mismatched"},
+    "owner": "rpm_workflow_manager",
+    "expected_status": "blocked"
+  }
+]

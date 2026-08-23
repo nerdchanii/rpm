@@ -10,11 +10,18 @@ You are an RPM ready-ticket claimer. Claim exactly one supplied issue through th
 Required inputs:
 - repository and exact issue number or URL
 - `.agents/workflows/backlog-policy.json`
-- GitHub plugin candidate evidence showing open state, ready state, and no existing closing open PR
+- host-provided GitHub capability candidate evidence showing open state, ready state, and no existing closing open PR
+- fresh normalized candidate snapshot for the exact issue
+- approved run id, event id, executor, plan revision, scope hash, and lease owner
 
-Read the policy first. Use the GitHub plugin and immediately refetch the issue before mutation. The issue must be open, have exactly the expected ready lifecycle state, have no conflicting lifecycle label, and have no open PR that closes it. Do not use `gh`, `GH_TOKEN`, or Project access.
+Read the policy first. Use the host-provided GitHub capability and immediately refetch the issue before mutation. The issue must be open, have exactly the expected ready lifecycle state, have no conflicting lifecycle label, and have no open PR that closes it. Do not use `gh`, a credential variable, or Project access.
 
-Perform only this compare-and-set style mutation:
+Run `python3 scripts/check-cloud-queue-contract.py` with the snapshot, policy,
+exact issue, and approved claim inputs. Require
+`cloud_queue_contract.data.status == "claim"` for the same issue, with matching
+ready/claimed states, preserved labels, run id, idempotency key, and valid
+lease. A blocked or no-work controller result is terminal and performs no
+mutation. Perform only this compare-and-set style mutation:
 1. copy the full current label set;
 2. replace only the policy-defined ready label with the claimed label in one issue update;
 3. preserve every non-lifecycle label;
@@ -22,8 +29,10 @@ Perform only this compare-and-set style mutation:
 
 Process at most one issue. If another actor already claimed or changed the issue, return `no-work` with race evidence. Do not repair any other state and do not claim a replacement issue.
 
-Return exactly one JSONL event:
-{"type":"ready_ticket_claim_result","data":{"status":"claimed|no-work|blocked","issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state-or-empty>","preserved_labels":["<non-lifecycle-label>"],"verified":true,"race_evidence":["<fact>"],"blockers":[]}}
+Normalize a successful controller `status:"claim"` to wrapper
+`status:"claimed"` and embed the complete controller data without changing its
+fields. Return exactly one JSONL event:
+{"type":"ready_ticket_claim_result","data":{"status":"claimed|no-work|blocked","issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state-or-empty>","claim_contract":{"status":"claim","issue":0,"before":"ready","after":"claimed","run_id":"<run-id>","idempotency_key":"<key>","lease":{"run_id":"<run-id>","owner":"<owner>","expires_at":"<timestamp>"},"preserved_labels":["<non-lifecycle-label>"],"labels":["agent:claimed","<non-lifecycle-label>"]},"preserved_labels":["<non-lifecycle-label>"],"verified":true,"race_evidence":["<fact>"],"blockers":[]}}
 
 If blocked, stop with `BLOCKED: <exact reason>` inside blockers. Do not call another agent.
 """

@@ -52,14 +52,6 @@ PATCH_PATH = re.compile(
     r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$",
     re.MULTILINE,
 )
-STATE_LABELS = {
-    "agent:research",
-    "agent:ready",
-    "agent:claimed",
-    "agent:review-pending",
-    "agent:awaiting-merge",
-    "agent:blocked",
-}
 SHELL_TOOL_PARTS = {
     "bash",
     "shell",
@@ -153,7 +145,8 @@ def operation_values(value: object) -> list[str]:
         selected = [
             item
             for key, child in value.items()
-            if str(key).casefold() in {"action", "operation", "method", "mutation"}
+            if str(key).casefold()
+            in {"action", "operation", "operationname", "method", "mutation"}
             for item in flatten_strings(child)
         ]
         return selected + [
@@ -194,7 +187,12 @@ def path_allowed(role: str, path: PurePosixPath) -> bool:
             or text.startswith(".agents/")
         )
     if role == "pr-review-resolver":
-        return not (text.startswith(".codex/") or text.startswith(".agents/"))
+        return not (
+            text.startswith(".codex/")
+            or text.startswith(".agents/")
+            or text.startswith(".claude/")
+            or text.startswith(".github/")
+        )
     return False
 
 
@@ -205,6 +203,19 @@ def deny(reason: str) -> int:
 
 def normalized_tool(tool: str) -> str:
     return tool.replace("-", "_").casefold()
+
+
+def is_github_tool(tool: str) -> bool:
+    """Recognize GitHub capabilities without depending on an MCP namespace."""
+    normalized = normalized_tool(tool)
+    tokens = operation_tokens(tool)
+    has_issue = any(token.startswith("issue") for token in tokens)
+    has_pull_request = (
+        "pullrequest" in tokens
+        or ("pull" in tokens and "request" in tokens)
+        or "pr" in tokens
+    )
+    return "github" in normalized or "gh" in tokens or has_issue or has_pull_request
 
 
 def is_agent_tool(tool: str) -> bool:
@@ -232,9 +243,9 @@ def has_forbidden_review_or_merge(text: str) -> str | None:
         return "`@codex review` is owned by external repository review configuration"
     if re.search(r"\bgh\s+pr\s+merge\b", lowered):
         return "RPM subagents cannot merge pull requests"
-    if "mergepullrequest" in lowered or re.search(
+    if "mergepullrequest" in lowered or "pullrequestmerge" in lowered or re.search(
         r"\bmerge(?:_pull_request|pullrequest)\b", lowered
-    ):
+    ) or re.search(r"\b(?:gh[_-]?pr|pr|pull[_-]?request)[_-]?merge\b", lowered):
         return "RPM subagents cannot merge pull requests"
     return None
 
@@ -264,37 +275,133 @@ def shell_mutation_kind(text: str) -> str | None:
     return None
 
 
-def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:
-    lowered = f"{normalized_tool(tool)} {' '.join(operation_values(tool_input)).casefold()}"
-    mutation_words = (
-        "create",
-        "update",
-        "edit",
-        "write",
-        "delete",
-        "remove",
-        "add",
-        "close",
-        "reopen",
-        "comment",
-        "label",
-        "mutation",
-    )
-    if not any(word in lowered for word in mutation_words):
+def graphql_query_document(value: object) -> str | None:
+    """Return only the request's dedicated top-level GraphQL document field."""
+    if not isinstance(value, dict):
         return None
-    if "merge" in lowered:
+    for key, child in value.items():
+        if str(key).casefold() == "query" and isinstance(child, str):
+            return child
+    return None
+
+
+READ_OPERATION_WORDS = {
+    "check",
+    "fetch",
+    "find",
+    "get",
+    "head",
+    "list",
+    "options",
+    "query",
+    "read",
+    "search",
+    "status",
+    "view",
+}
+MUTATION_OPERATION_WORDS = {
+    "add",
+    "claim",
+    "close",
+    "comment",
+    "create",
+    "delete",
+    "edit",
+    "label",
+    "merge",
+    "mutate",
+    "mutation",
+    "patch",
+    "post",
+    "put",
+    "remove",
+    "reopen",
+    "replace",
+    "set",
+    "transition",
+    "update",
+    "write",
+}
+GENERIC_EXECUTOR_WORDS = {"call", "execute", "executor", "invoke", "request", "run"}
+
+
+def operation_tokens(value: str) -> list[str]:
+    camel_case = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
+    return [token for token in re.split(r"[^a-z0-9]+", camel_case.casefold()) if token]
+
+
+def operation_kind(value: str) -> str | None:
+    for token in operation_tokens(value):
+        if token in READ_OPERATION_WORDS:
+            return "read"
+        if token in MUTATION_OPERATION_WORDS:
+            return "mutation"
+    return None
+
+
+def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:
+    normalized = normalized_tool(tool)
+    is_graphql = "graphql" in normalized
+    if is_graphql:
+        # Inline GraphQL operations declare their operation in the dedicated
+        # query field. Ignore operationName, variables, and descriptions:
+        # those values can contain arbitrary words that are not a document.
+        document = graphql_query_document(tool_input)
+        if document is None:
+            # A persisted operation name does not prove the registered
+            # document is read-only, so fail closed without the document.
+            return "unknown_mutation"
+        payload = document.casefold()
+        if re.search(r"\bmutation\b", payload):
+            # Raw GraphQL mutations remain unavailable to every mutation role.
+            return "raw_api_mutation"
+        elif re.search(r"\bquery\b", payload) or payload.lstrip().startswith("{"):
+            return None
+        else:
+            return "unknown_mutation"
+    else:
+        # REST-style capabilities expose the operation in an explicit field or
+        # in the tool name. Do not scan ordinary search/read payload text.
+        generic_executor = any(
+            token in GENERIC_EXECUTOR_WORDS for token in operation_tokens(tool)
+        )
+        if generic_executor:
+            # Generic executors cannot prove read-only semantics across hosts.
+            return "raw_api_mutation"
+        operation_text = operation_values(tool_input)
+        candidates = [operation_kind(value) for value in operation_text]
+        candidates = [candidate for candidate in candidates if candidate is not None]
+        tool_kind = operation_kind(tool)
+        signals = [tool_kind, *candidates]
+        signals = [signal for signal in signals if signal is not None]
+        if len(set(signals)) > 1:
+            return "unknown_mutation"
+        selected_kind = signals[0] if signals else None
+        if selected_kind is None:
+            return "unknown_mutation"
+        if selected_kind == "read":
+            return None
+        context = [tool, *operation_text]
+    context_tokens = [
+        token
+        for value in context
+        for token in operation_tokens(value)
+    ]
+    if "merge" in context_tokens:
         return "merge"
-    if "issue" in lowered and "create" in lowered:
+    has_issue = any(token.startswith("issue") for token in context_tokens)
+    has_project = any(token.startswith("project") for token in context_tokens)
+    if has_issue and "create" in context_tokens:
         return "issue_create"
-    if "project" in lowered and any(word in lowered for word in ("add", "create")):
+    if has_project and any(word in context_tokens for word in ("add", "create")):
         return "project_add"
-    if "project" in lowered:
+    if has_project:
         return "project_other"
-    if "label" in lowered:
+    if "label" in context_tokens:
         return "label"
-    if "issue" in lowered and any(word in lowered for word in ("update", "edit")):
+    if has_issue and any(word in context_tokens for word in ("update", "edit")):
         return "issue_edit"
-    if "issue" in lowered:
+    if has_issue:
         return "issue_other"
     return "unknown_mutation"
 
@@ -320,28 +427,26 @@ def allowed_github_mutation(
     if role == "rpm_ready_ticket_claimer":
         if kind not in {"issue_edit", "label"}:
             return False
-        forbidden_keys = {
-            "title",
-            "body",
-            "body_file",
-            "assignees",
-            "milestone",
-            "state",
+        allowed_keys = {
+            "issue",
+            "issue_number",
+            "labels",
+            "number",
+            "owner",
+            "repo",
+            "repository",
         }
-        if collect_keys(tool_input) & forbidden_keys:
+        if collect_keys(tool_input) - allowed_keys:
             return False
         lowered = shell_text.casefold()
-        if lowered and any(
-            flag in lowered
-            for flag in ("--body", "--body-file", "--title", "--assignee", "--milestone")
-        ):
+        if lowered:
             return False
         labels = {
             value
             for value in flatten_strings(tool_input)
             if isinstance(value, str) and value.startswith("agent:")
         }
-        return not labels or labels <= STATE_LABELS
+        return labels == {"agent:claimed"}
     return False
 
 
@@ -362,6 +467,20 @@ def check_tool(event: dict[str, object]) -> int:
 
     if is_agent_tool(tool):
         return 0 if role in MANAGERS else deny(f"{role} is a leaf and cannot spawn agents")
+
+    if is_github_tool(tool):
+        if role not in MCP_READ_ROLES:
+            return deny(f"{role} has no GitHub capability assignment")
+        mutation = mcp_mutation_kind(tool, tool_input)
+        if mutation is None:
+            return 0
+        if role not in GITHUB_MUTATION_ROLES:
+            return deny(f"{role} has read-only GitHub capability access")
+        return (
+            0
+            if allowed_github_mutation(role, mutation, tool_input)
+            else deny(f"{role} cannot perform GitHub capability mutation {mutation}")
+        )
 
     if tool.startswith("mcp__"):
         if role not in MCP_READ_ROLES:
@@ -392,6 +511,8 @@ def check_tool(event: dict[str, object]) -> int:
         return 0
 
     if is_shell_tool(tool):
+        if role == "pr-review-resolver":
+            return deny("pr-review-resolver delegates all shell validation to test roles")
         mutation = shell_mutation_kind(text)
         if mutation is None:
             return 0
