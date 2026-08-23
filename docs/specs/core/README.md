@@ -296,11 +296,12 @@ Workspace implementation remains a greenfield gap: no code path reads the
 `workspaces` field, no workspace-vs-external distinction exists in the
 lockfile, the linker creates only registry-resolved dependency links, and no
 CLI flag targets a workspace. The planned manifest-discovery and resolver
-boundary contracts are now defined by #145; their implementation and fixtures
-remain deferred to #221. The lockfile contract is tracked by #146 in PR #217,
-CLI targeting by #148 in PR #216, linker/integration work by #147/#149, and
-workspace lifecycle/recovery activation by #222. Workspace lifecycle remains
-disabled.
+boundary contracts are defined by #145, and the cross-command targeting
+contract is defined by #148 in PR #216. Discovery and resolver implementation
+remain deferred to #221, while CLI-targeting implementation remains deferred
+to #223. The lockfile contract is tracked by #146 in PR #217,
+linker/integration work by #147/#149, and workspace lifecycle/recovery
+activation by #222. Workspace lifecycle remains disabled.
 
 | M7 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
@@ -316,16 +317,16 @@ disabled.
 | workspace member lifecycle scripts | `install/scripts/SPEC.md`, `install/recovery/SPEC.md` | contract and implementation deferred: current behavior remains root-only; workspace hook provenance, order, working directory, environment/runtime boundary, staged read/write isolation, lockfile visibility, and failure recovery must remain disabled until #222 defines and tests them | #222 |
 | package-name and dependency-name root confinement | `resolver/SPEC.md`, `linker/SPEC.md` | existing package metadata and lockfile names are not fully confined before extraction and dependency linking; names such as `../../outside` can escape the staged tree, so the resolver/linker boundary must reject traversal and verify canonical destinations before any write; #147 must include this regression coverage for workspace and external edges | #147 |
 | workspace member binary links | `linker/SPEC.md` | absent: the existing `.bin` contract does not state whether a workspace member's `bin` field is exposed; #147 must decide the link layout and cover it in the minimal workspace fixture (#149) | #147; #149 |
-| workspace command targeting (`--workspace`, `--all`, root) | `cli/run/SPEC.md` and future CLI command SPECs | absent on this branch: `rpm run` reads only the root manifest; #148 owns the targeting contract in PR #216 | #148 / PR #216 |
-| partial workspace failure and exit behavior | `cli/run/SPEC.md` (deferred to M8 for stable exit codes) | absent: no contract for how a command behaves when one workspace member fails and others succeed; stable exit codes and stdout/stderr ownership for this are owned by the M8 diagnostics contract (#150, #151) before they become public | #148 (targeting); M8 (exit-code stability) |
+| workspace command targeting (`--workspace`, `--all`, root) | `cli/workspace-targeting/SPEC.md`, `cli/run/SPEC.md` | contract defined, implementation deferred: root-only default, all-member selection, exact name/path selectors, deterministic #145 table ordering, validation-before-execution, and command opt-in are specified; only `rpm run` opts in | #148 / PR #216; #223 implementation |
+| partial workspace failure and exit behavior | `cli/workspace-targeting/SPEC.md`, `cli/run/SPEC.md`, M8 #151 | target-set validation is defined, execution and diagnostic policy deferred: target lists resolve atomically before execution; fail-fast versus continue, failure aggregation, stable numeric exit code, diagnostic envelope, and stdout/stderr ownership remain explicitly owned by #151 and the adopting command | #148 (target set); #223 implementation; #151 (execution/diagnostics) |
 
 Findings:
 
 - Workspace implementation remains a greenfield gap across manifest, resolver,
   lockfile, linker, and CLI, and every executable fixture is still single-root.
-  The manifest and resolver SPECs now own the planned `workspaces` contract, so
-  follow-up work starts from defined inputs and identities instead of an
-  implicit frontier.
+  The manifest and resolver SPECs now own the planned `workspaces` contract, and
+  the CLI targeting SPEC now owns target selection, so follow-up work starts
+  from defined inputs and identities instead of an implicit frontier.
 - The discovery boundary (#145) defines supported declarations, portable glob
   expansion, invalid-member behavior, canonical-root confinement, deterministic
   Unicode member keys with valid UTF-8 round-trip rejection before resolver
@@ -358,12 +359,13 @@ Findings:
   and rollback. The linker's existing `.bin` generation
   (`linker/SPEC.md` "Executable bin links") also needs a workspace-member
   decision and fixture coverage (#149).
-- CLI targeting (#148) depends on #145 but not on #146 or #147: command
-  targeting semantics (root, all, selected, unsupported selector) can be
-  specified as soon as discovery is owned. Partial-failure exit behavior is
-  explicitly aligned to M8 (#150, #151): this audit does not introduce stable
-  exit codes or stdout/stderr ownership for workspace commands, because that
-  ownership belongs to the diagnostics contract.
+- CLI targeting (#148) depends on #145 but not on #146 or #147. The
+  `cli/workspace-targeting/SPEC.md` contract now defines root, all, selected,
+  unsupported-filter, deterministic-order, and validation behavior; execution
+  and planned fixtures remain deferred. Fail-fast versus continue, failure
+  aggregation, stable numeric exit codes, diagnostic envelopes, and
+  stdout/stderr ownership remain explicitly owned by M8 #151 and the adopting
+  command, so this audit introduces no execution or diagnostic policy.
 - Root safety rules remain an explicit constraint and include existing package
   metadata and dependency-name traversal risks. #147 must confine workspace
   link targets and dependency-name writes. Workspace mutation, rollback, and

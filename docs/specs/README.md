@@ -269,6 +269,8 @@ M1 should start from:
 ## Current Index
 
 - `docs/specs/cli/run/SPEC.md`: `rpm run` command contract
+- `docs/specs/cli/workspace-targeting/SPEC.md`: target selection for opted-in
+  workspace-aware CLI commands (currently `rpm run`)
 - `docs/specs/core/manifest/SPEC.md`: `package.json` interpretation
 - `docs/specs/core/semver/SPEC.md`: npm-compatible semver selection baseline
 - `docs/specs/core/resolver/SPEC.md`: dependency graph resolution boundary
