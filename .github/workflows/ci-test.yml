@@ -22,7 +22,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  pr-checks:
+  # The check name `verify` is required by the merge gate
+  # (.agents/workflows/backlog-policy.json, scripts/check-merge-gate.py)
+  # and by branch protection; do not rename without updating both.
+  verify:
     if: github.event_name == 'pull_request'
     runs-on: macos-latest
 
@@ -59,6 +62,22 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
+
+      # Remainder of the local `just validate` gate so post-merge validation
+      # detects the same failures as the repository gate.
+      - name: Audit fixtures
+        run: ./scripts/audit-fixtures.sh
+
+      - name: Fixture smoke test
+        run: ./scripts/test-fixture-tools.sh
+
+      - name: Validate agent assets
+        run: ./scripts/validate-agent-workflow-assets.sh --format=summary
+
+      - name: Check docs build warning-free
+        env:
+          RUSTDOCFLAGS: -Dwarnings
+        run: cargo doc --quiet --locked --no-deps
 
       - name: Install llvm tools
         run: rustup component add llvm-tools-preview
