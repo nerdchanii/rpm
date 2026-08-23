@@ -3,7 +3,7 @@ spec_id: resolver_boundary
 title: Resolver Strategy Boundary
 status: draft
 owner: core/resolver
-last_reviewed: 2026-08-11
+last_reviewed: 2026-08-24
 authors:
   - nerdchanii
 deciders:
@@ -20,13 +20,14 @@ related_issues:
   - 133
   - 135
   - 136
+  - 145
 ---
 
 # Spec: Resolver Strategy Boundary
 
 Status: Draft
 Owner: core/resolver
-Last reviewed: 2026-08-11
+Last reviewed: 2026-08-24
 
 ## Purpose
 
@@ -98,6 +99,38 @@ validation is intentionally deferred until a name-validation contract owns the
 accepted-form set and its error reporting; until then, parsing must not invent
 ad hoc rejection rules that diverge across CLI, manifest, and registry
 boundaries.
+
+### Workspace boundary
+
+Workspace discovery is owned by
+`docs/specs/core/manifest/SPEC.md`. The resolver consumes its validated result
+as an ordered table of root-relative member paths and package names; it does
+not re-expand globs, follow a second root, or infer members from registry
+metadata. The table must already satisfy canonical-root confinement, valid
+member manifests, unique package names, deduplicated paths, and stable
+lexicographic ordering.
+
+The resolver keeps three identities distinct:
+
+- the **root package**, whose manifest declares the workspace and whose direct
+  dependency requests remain root requests;
+- a **workspace member**, identified by a discovered root-relative path and its
+  package name, whose dependency requests retain that member origin; and
+- an **external package**, whose name is absent from the discovered member
+  table and whose metadata is obtained through the external package boundary.
+
+A dependency edge is classified against the discovered member table before
+external metadata lookup. A name present in that table is a workspace-local
+edge; a name absent from it is an external edge. Name collisions among members
+or between the root package and a member are invalid discovery input and must
+fail before graph traversal. A missing or malformed member supplied by the
+manifest boundary is likewise an input error, not an external-package fallback.
+
+This issue defines identity and input boundaries only. Workspace lockfile
+records and compatibility are owned by #146, local and external filesystem
+links are owned by #147, and workspace command targeting is owned by #148.
+Those follow-up contracts must consume the same member table and must not
+redefine member order, root confinement, or local-versus-external identity.
 
 Traversal policy is behind a replaceable `ResolutionStrategy` boundary, or an
 equivalent internal abstraction, owned by the `src/core/resolver` root module.
@@ -290,6 +323,16 @@ resolver fixtures should not mutate the repository root, `.rpm`, `rpm.lock`, or
 The semver baseline fixtures are defined by
 `docs/specs/core/semver/SPEC.md` and must be used before installer flow relies
 on semver range behavior.
+
+### Workspace boundary fixtures
+
+Planned offline resolver coverage includes a root package with two ordered
+workspace members, a workspace-local dependency edge, an external dependency
+edge with the same deterministic member ordering, duplicate member-name
+rejection, root/member name collision rejection, and rejection of a discovery
+result that escapes the canonical root. Lockfile snapshots and filesystem
+trees are deferred to #146 and #147; this SPEC does not require workspace
+installation behavior.
 
 ### Optional-dependency non-enqueue guard fixture
 

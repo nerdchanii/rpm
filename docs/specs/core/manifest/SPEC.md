@@ -3,7 +3,7 @@ spec_id: package_manifest
 title: Package Manifest
 status: draft
 owner: core/manifest
-last_reviewed: 2026-08-10
+last_reviewed: 2026-08-24
 authors:
   - nerdchanii
 deciders:
@@ -20,13 +20,14 @@ related_issues:
   - 139
   - 141
   - 142
+  - 145
 ---
 
 # Spec: Package Manifest
 
 Status: Draft
 Owner: core/manifest
-Last reviewed: 2026-08-11
+Last reviewed: 2026-08-24
 
 ## Purpose
 
@@ -190,6 +191,54 @@ registry boundary (`docs/specs/core/registry/SPEC.md`) under the same
 `string -> string` shape and the same wrong-type tolerance, and feed the same
 lifecycle execution contract for resolved packages.
 
+### Workspace declaration and discovery
+
+The root manifest may declare workspace members through the `workspaces` field.
+RPM supports exactly these declaration shapes:
+
+- an array of non-empty strings, each interpreted as a relative member glob;
+- an object with a `packages` array of non-empty strings, interpreted the same
+  way as the array form.
+
+The object form does not implicitly enable npm- or Yarn-specific workspace
+options. Unsupported object keys and every other `workspaces` value type are
+invalid declarations and must produce an input error that names the manifest
+path, the `workspaces` field, and the reason. A missing `workspaces` field means
+that the project is root-only. Nested `workspaces` declarations in a member
+manifest are not recursively discovered by this contract.
+
+The declaration is read from the canonical project-root manifest. Each pattern
+is normalized relative to that root before expansion. Absolute patterns,
+patterns that can escape through `..`, and matched member paths whose resolved
+symlink target is outside the canonical root are rejected before a discovery
+result is returned. A pattern with no matching member directory, a member
+directory without a valid `package.json`, or a member path equal to the root is
+an invalid workspace declaration. Discovery must not read or write a manifest
+outside the canonical root.
+
+Discovery returns member paths relative to the canonical root using `/`
+separators. Paths are deduplicated and sorted lexicographically before they are
+passed to resolution, so overlapping patterns and filesystem enumeration order
+cannot change the workspace set or its order. Every discovered member must
+have a valid package name; duplicate member package names are rejected as an
+ambiguous declaration.
+
+The root package, a discovered workspace member, and an external package are
+distinct identities. The root is the manifest that owns the declaration. A
+workspace member is identified by its discovered root-relative path and its
+package name. An external package is a dependency that is absent from the
+discovered member set and is resolved through the external package boundary.
+The resolver owns the classification of dependency edges using this discovery
+result; lockfile records, local linking, and command targeting remain owned by
+the contracts for issues #146, #147, and #148.
+
+Reading and saving a root manifest must preserve a valid `workspaces`
+declaration without changing its supported shape, patterns, or pattern order.
+If a manifest writer cannot preserve the declaration, it must fail before
+truncating or replacing the existing file rather than silently dropping
+workspace configuration. Discovery and validation errors occur before install
+or manifest mutation side effects.
+
 ## Error Cases
 
 Invalid JSON is an input error and must not be reported as a successful command.
@@ -199,3 +248,23 @@ panics.
 ## Test Fixtures
 
 Manifest fixtures live under `tests/fixtures/package_manifest/`.
+
+Workspace discovery fixtures must remain deterministic and offline. The
+workspace contract requires planned coverage for:
+
+- a simple root with two workspace packages;
+- the array declaration and the object `{ "packages": [...] }` declaration;
+- a root-only project with no `workspaces` field;
+- malformed, unsupported, empty, and wrong-type declarations;
+- a declaration whose pattern matches no member path;
+- a member without a valid `package.json`;
+- `..` or absolute path escape attempts;
+- a symlink whose resolved target is outside the canonical root;
+- overlapping declarations proving sorted, deduplicated root-relative output;
+- duplicate workspace package names; and
+- a save attempt proving the declaration is preserved or fails before file
+  replacement.
+
+The minimal mutable two-package install fixture, expected lockfile, and
+expected filesystem tree are owned by issue #149 and must not be added to this
+manifest contract change.
