@@ -14,6 +14,25 @@ Use the closest issue template and include:
 
 Issue text explains intent, but it does not override an owning SPEC.
 
+A GitHub issue is the durable handoff for a fresh worker. Keep the current body
+self-contained with the goal, scope, non-goals, acceptance criteria,
+dependencies, validation plan, and necessary context. Issue #207 remains the
+open implementation that will persist and validate the executable-issue
+contract and its schema/mutations; current manual guidance does not claim
+automatic template enforcement.
+
+When work is discovered during execution or review, record one disposition:
+an in-scope fix, a narrowly justified blocker or hotfix, or a durable linked
+follow-up issue. Actionable findings cannot remain hidden output or expand an
+unrelated PR. Follow-up creation requires policy authorization,
+`may_create_followup_issues=true`, a duplicate check, and a bounded writer;
+without approval, retain a draft disposition or link an existing issue. Issue
+#208 owns the discovered-work disposition implementation.
+
+Structured model proposals and bounded deterministic writes have separate
+responsibilities. A proposal supplies classification or planning evidence; an
+authorized workflow applies only the bounded mutation allowed by its contract.
+
 ### Agent-backed backlog
 
 Unrefined product ideas use the Idea issue template and enter GitHub Project #7
@@ -26,14 +45,29 @@ transitions are defined in
 - `agent:ready`: the readiness gate passed and scheduled execution may select the issue
 - `agent:claimed`: one scheduled execution owns the issue
 - `agent:review-pending`: the implementation PR is review-ready and awaits review reconciliation
-- `agent:awaiting-merge`: review reconciliation is complete and a human may decide whether to merge
+- `agent:awaiting-merge`: review reconciliation is complete and the issue is eligible for the scheduled merge gatekeeper
 - `agent:blocked`: a user, product, permission, or dependency decision is required
 
 Scheduled research and ticket execution process at most the configured batch
 size. An issue reaches `agent:ready` only after its owning SPEC impact, scope,
 dependencies, observable done criteria, and validation plan are explicit.
-Repository automation does not request Codex review. Review feedback generated
-by the configured GitHub integration is handled after it appears.
+Codex is the current primary and default repository operating path. Codex Cloud
+scheduled execution and repository-configured Codex Automatic review are current
+mechanisms. Shared lifecycle, state, validation, and mutation contracts are
+provider-neutral, with provider-specific details kept in adapters, environments,
+and role instructions.
+
+Issue #199 owns repository-external Codex Automatic review creation. Lifecycle
+ticket execution does not create or request an Automatic review or post `@codex review`;
+its arrival is asynchronous evidence, not a synchronous
+completion dependency or blocking condition. Review reconciliation returns
+`no-work` without mutation when feedback is absent and rechecks on a later
+scheduled run. Explicit review-only workflows retain their documented
+non-blocking COMMENT review-posting scope. Issue #195 owns the planned
+deterministic blocking CI aggregate contract; current `merge_gate.required_checks`
+consumes policy `metadata` and `verify` conclusions as individual evidence. The
+scheduled `merge-gatekeeper` is the actual merge owner, with issue #202
+preserving and organizing that lifecycle ownership.
 
 ## Milestones
 
