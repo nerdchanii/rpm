@@ -1,31 +1,92 @@
+# Split CI responsibilities (issue #194):
+#
+# - `pr-checks`: fast merge-relevant signal on pull requests
+#   (format, compilation, clippy, default tests).
+# - `post-merge-validation`: the full validation set on `main`, including the
+#   coverage gate. The coverage requirement is preserved here; it is moved,
+#   not removed.
+#
+# Cargo invocations mirror the `just` recipes (`format-check`, `check`,
+# `lint`, `test`, and the coverage step of `validate`) so local and CI gates
+# stay aligned. `just` itself is not installed on runners.
+
 name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The check name `verify` is required by the merge gate
+  # (.agents/workflows/backlog-policy.json, scripts/check-merge-gate.py)
+  # and by branch protection; do not rename without updating both.
   verify:
+    if: github.event_name == 'pull_request'
     runs-on: macos-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Check formatting
-      run: cargo fmt --check
-    - name: Check compilation
-      run: cargo check
-    - name: Lint
-      run: cargo clippy --all-targets --all-features -- -D warnings
-    - name: Run tests
-      run: cargo test
-    - name: Install llvm tools
-      run: rustup component add llvm-tools-preview
-    - name: Install coverage tool
-      uses: taiki-e/install-action@cargo-llvm-cov
-    - name: Check coverage
-      run: rustup run stable cargo llvm-cov --locked --lib --bins --all-features --fail-under-lines 90
+      - uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Check compilation
+        run: cargo check --quiet --locked --all-targets
+
+      - name: Lint
+        run: cargo clippy --quiet --locked --all-targets --all-features -- -D warnings -D clippy::dbg_macro -D clippy::todo -D clippy::unimplemented -D clippy::wildcard_imports -D clippy::disallowed_methods -D clippy::disallowed_types -D clippy::disallowed_macros
+
+      - name: Run tests
+        run: cargo test --locked
+
+  post-merge-validation:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Check compilation
+        run: cargo check --quiet --locked --all-targets
+
+      - name: Lint
+        run: cargo clippy --quiet --locked --all-targets --all-features -- -D warnings -D clippy::dbg_macro -D clippy::todo -D clippy::unimplemented -D clippy::wildcard_imports -D clippy::disallowed_methods -D clippy::disallowed_types -D clippy::disallowed_macros
+
+      - name: Run tests
+        run: cargo test --locked
+
+      # Remainder of the local `just validate` gate so post-merge validation
+      # detects the same failures as the repository gate.
+      - name: Audit fixtures
+        run: ./scripts/audit-fixtures.sh
+
+      - name: Fixture smoke test
+        run: ./scripts/test-fixture-tools.sh
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Validate agent assets
+        run: ./scripts/validate-agent-workflow-assets.sh --format=summary
+
+      - name: Check docs build warning-free
+        env:
+          RUSTDOCFLAGS: -Dwarnings
+        run: cargo doc --quiet --locked --no-deps
+
+      - name: Install llvm tools
+        run: rustup component add llvm-tools-preview
+
+      - name: Install coverage tool
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Check coverage
+        run: rustup run stable cargo llvm-cov --locked --lib --bins --all-features --fail-under-lines 90

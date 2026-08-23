@@ -54,12 +54,12 @@ here changes package-manager semantics.
 ### Supported Platform Matrix
 
 A platform is supported only when the repository has automated evidence that
-RPM builds and passes its test suite there. The current evidence is the `verify`
-job in `.github/workflows/ci-test.yml`, which runs on a single runner label.
+RPM builds and passes its test suite there. The current evidence is the CI jobs
+in `.github/workflows/ci-test.yml`, which run on a single runner label.
 
 | Platform | Install method | CI evidence | Status |
 | --- | --- | --- | --- |
-| macOS (`macos-latest` GitHub-hosted runner) | Build from source | `verify` job in `.github/workflows/ci-test.yml` | Supported |
+| macOS (`macos-latest` GitHub-hosted runner) | Build from source | `verify`/`post-merge-validation` jobs in `.github/workflows/ci-test.yml` | Supported |
 | Linux | Build from source | None | Unsupported / untested |
 | Windows | Not available (see below) | None | Unsupported |
 
@@ -236,13 +236,15 @@ release evidence must come from a supported platform.
 
 There is no automated fixture for this SPEC today. The checklist is manual.
 
-The only automated evidence backing the supported-platform claim is the `verify`
-job in `.github/workflows/ci-test.yml` (workflow name `Rust`), which runs on
-`macos-latest` and executes `cargo fmt --check`, `cargo check`,
-`cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, and a
-`cargo llvm-cov` run with a 90% line-coverage floor. That job establishes that
-RPM builds and tests cleanly on macOS. It does not cover the rest of this
-contract.
+The only automated evidence backing the supported-platform claim comes from the
+ci-test.yml workflow (name `Rust`) on `macos-latest`. On pull requests, the
+required `verify` job runs `cargo fmt --check`, `cargo check`, strict
+`cargo clippy --all-targets --all-features -- -D warnings ...`, and
+`cargo test`. On pushes to `main`, the `post-merge-validation` job repeats those
+steps and adds a `cargo llvm-cov` run with a 90% line-coverage floor plus the
+fixture, agent-asset, and documentation checks from the local validation gate.
+Together these establish that RPM builds and tests cleanly on macOS. They do
+not cover the rest of this contract.
 
 Specifically, no automated check currently verifies:
 
