@@ -67,6 +67,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 repo="$(gh repo view --json owner,name --jq '.owner.login + "/" + .name')"
+repo="${repo,,}"
 owner="${repo%%/*}"
 name="${repo#*/}"
 
@@ -75,12 +76,21 @@ if [ -z "${pr_ref}" ]; then
 elif printf '%s' "${pr_ref}" | grep -Eq '^[0-9]+$'; then
   pr_number="${pr_ref}"
 else
-  pr_number="$(printf '%s\n' "${pr_ref}" | sed -E 's#^.*/pull/([0-9]+).*#\1#')"
-  if ! printf '%s' "${pr_number}" | grep -Eq '^[0-9]+$'; then
+  normalized_pr_ref="${pr_ref,,}"
+  if [[ "${normalized_pr_ref}" =~ ^https?://github\.com/([^/]+)/([^/]+)/pull/([0-9]+)(/.*)?$ ]]; then
+    requested_repo="${BASH_REMATCH[1],,}/${BASH_REMATCH[2],,}"
+    if [ "${requested_repo}" != "${repo}" ]; then
+      printf 'review_context.error=pr-repository-mismatch:%s\n' "${requested_repo}" >&2
+      exit 1
+    fi
+    pr_number="${BASH_REMATCH[3]}"
+  else
     printf 'review_context.error=invalid-pr-ref:%s\n' "${pr_ref}" >&2
     exit 2
   fi
 fi
+
+expected_pr_url="https://github.com/${repo}/pull/${pr_number}"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
@@ -202,7 +212,50 @@ while :; do
     gh_args+=(-f reviewThreadsAfter="${review_threads_after}")
   fi
 
-  gh "${gh_args[@]}" > "${tmp_dir}/page-${page}.json"
+  if ! gh "${gh_args[@]}" > "${tmp_dir}/page-${page}.json"; then
+    printf 'review_context.error=graphql-request-failed:page-%s\n' "${page}" >&2
+    exit 1
+  fi
+
+  if ! jq -e \
+    --argjson number "${pr_number}" \
+    --arg expected_url "${expected_pr_url}" \
+    --argjson include_comments "${include_comments}" \
+    --argjson include_reviews "${include_reviews}" \
+    --argjson include_review_threads "${include_review_threads}" '
+      def connection_ok($name; $enabled):
+        if ($enabled | not) then
+          true
+        else
+          (.data.repository.pullRequest[$name]) as $connection |
+          if ($connection | type) != "object"
+             or ($connection.nodes | type) != "array"
+             or ($connection.pageInfo | type) != "object"
+             or ($connection.pageInfo.hasNextPage | type) != "boolean" then
+            false
+          elif $connection.pageInfo.hasNextPage then
+            (($connection.pageInfo.endCursor | type) == "string"
+             and ($connection.pageInfo.endCursor | length) > 0)
+          else
+            true
+          end
+        end;
+      ((has("errors") | not)
+       or ((.errors | type) == "array" and (.errors | length) == 0))
+      and (.data | type == "object")
+      and (.data.repository | type == "object")
+      and (.data.repository.pullRequest | type == "object")
+      and (.data.repository.pullRequest.number == $number)
+      and ((.data.repository.pullRequest.url | type == "string")
+           and ((.data.repository.pullRequest.url | sub("/$"; "") | ascii_downcase)
+                == ($expected_url | ascii_downcase)))
+      and connection_ok("comments"; $include_comments)
+      and connection_ok("reviews"; $include_reviews)
+      and connection_ok("reviewThreads"; $include_review_threads)
+    ' "${tmp_dir}/page-${page}.json" >/dev/null; then
+    printf 'review_context.error=graphql-payload-invalid:page-%s\n' "${page}" >&2
+    exit 1
+  fi
 
   if [ "${comments_done}" != "true" ]; then
     jq -c '.data.repository.pullRequest.comments.nodes[]?' "${tmp_dir}/page-${page}.json" >> "${tmp_dir}/issue-comments.jsonl"
@@ -259,7 +312,7 @@ jq -n \
 # Sibling open PRs (cross-PR dependency context). Excludes this PR itself.
 # Lets a resolver/reviewer see what other still-open PRs introduce or cite,
 # e.g. a counter that "does not exist yet" because it lands in another PR.
-gh pr list --state open --json number,title,headRefName,baseRefName,files,body 2>/dev/null \
+gh pr list --repo "${repo}" --state open --json number,title,headRefName,baseRefName,files,body 2>/dev/null \
   | jq --argjson self "${pr_number}" \
        '[.[] | select(.number != $self)
               | {number,title,headRefName,baseRefName,

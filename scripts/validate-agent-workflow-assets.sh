@@ -1931,7 +1931,7 @@ check_collect_paginates_comments_and_reviews() {
           pullRequest: {
             number: 1,
             title: "Fixture PR",
-            url: "https://example.test/pr/1",
+            url: "https://github.com/owner/repo/pull/1",
             state: "OPEN",
             isDraft: false,
             comments: {
@@ -1976,7 +1976,7 @@ check_collect_paginates_comments_and_reviews() {
           pullRequest: {
             number: 1,
             title: "Fixture PR",
-            url: "https://example.test/pr/1",
+            url: "https://github.com/owner/repo/pull/1",
             state: "OPEN",
             isDraft: false,
             comments: {
@@ -2039,7 +2039,7 @@ check_collect_does_not_duplicate_exhausted_connections() {
           pullRequest: {
             number: 1,
             title: "Fixture PR",
-            url: "https://example.test/pr/1",
+            url: "https://github.com/owner/repo/pull/1",
             state: "OPEN",
             isDraft: false,
             comments: {
@@ -2082,7 +2082,7 @@ check_collect_does_not_duplicate_exhausted_connections() {
           pullRequest: {
             number: 1,
             title: "Fixture PR",
-            url: "https://example.test/pr/1",
+            url: "https://github.com/owner/repo/pull/1",
             state: "OPEN",
             isDraft: false,
             comments: {
@@ -2125,7 +2125,7 @@ check_collect_does_not_duplicate_exhausted_connections() {
           pullRequest: {
             number: 1,
             title: "Fixture PR",
-            url: "https://example.test/pr/1",
+            url: "https://github.com/owner/repo/pull/1",
             state: "OPEN",
             isDraft: false,
             comments: {
@@ -2174,6 +2174,69 @@ check_collect_does_not_duplicate_exhausted_connections() {
     and (.reviews | length) == 3
     and ([.reviews[].body] == ["review page 1", "review page 2", "review page 3"])
   ' >/dev/null
+}
+
+check_collect_rejects_invalid_graphql_pages() {
+  local scenario fixture_dir output exit_code
+  for scenario in top-level-errors null-payload partial-payload identity-mismatch; do
+    fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-collect-invalid-${scenario}.XXXXXX")"
+    trap 'rm -rf "${fixture_dir}"' RETURN
+    case "${scenario}" in
+      top-level-errors)
+        jq -n '{errors:[{message:"fixture GraphQL error"}]}' >"${fixture_dir}/page-1.json"
+        ;;
+      null-payload)
+        jq -n '{data:{repository:null}}' >"${fixture_dir}/page-1.json"
+        ;;
+      partial-payload)
+        jq -n '
+          {data:{repository:{pullRequest:{
+            number:1,
+            url:"https://github.com/owner/repo/pull/1",
+            comments:null,
+            reviews:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[]},
+            reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[]}
+          }}}}
+        ' >"${fixture_dir}/page-1.json"
+        ;;
+      identity-mismatch)
+        jq -n '
+          {data:{repository:{pullRequest:{
+            number:2,
+            url:"https://github.com/owner/repo/pull/2",
+            comments:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[]},
+            reviews:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[]},
+            reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[]}
+          }}}}
+        ' >"${fixture_dir}/page-1.json"
+        ;;
+    esac
+    cp "${fixture_dir}/page-1.json" "${fixture_dir}/page-last.json"
+    set +e
+    output="$(with_fake_collect_gh "${fixture_dir}" \
+      bash scripts/collect-pr-review-context.sh 1 --format json 2>&1)"
+    exit_code=$?
+    set -e
+    rm -rf "${fixture_dir}"
+    if [ "${exit_code}" -eq 0 ]; then
+      printf '%s\n' "${output}" >&2
+      return 1
+    fi
+  done
+
+  fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-collect-invalid-url.XXXXXX")"
+  trap 'rm -rf "${fixture_dir}"' RETURN
+  set +e
+  output="$(with_fake_collect_gh "${fixture_dir}" \
+    bash scripts/collect-pr-review-context.sh \
+      https://github.com/other/repo/pull/1 --format json 2>&1)"
+  exit_code=$?
+  set -e
+  rm -rf "${fixture_dir}"
+  [ "${exit_code}" -ne 0 ] || {
+    printf '%s\n' "${output}" >&2
+    return 1
+  }
 }
 
 check_readiness_ready() {
@@ -2519,6 +2582,7 @@ check "just_test_verbosity" check_just_test_verbosity
 
 check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews
 check "collect_pr_review_context_no_duplicates" check_collect_does_not_duplicate_exhausted_connections
+check "collect_pr_review_context_rejects_invalid_pages" check_collect_rejects_invalid_graphql_pages
 check "readiness_ready_fixture" check_readiness_ready
 check "readiness_missing_execution_fixture" check_readiness_missing_execution
 check "readiness_missing_fixture" check_readiness_missing
