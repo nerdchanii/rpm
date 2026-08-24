@@ -21,6 +21,7 @@ related_issues:
   - 135
   - 136
   - 145
+  - 221
 ---
 
 # Spec: Resolver Strategy Boundary
@@ -113,21 +114,28 @@ edge type, so these rules become active with that implementation and its
 planned fixtures.
 
 Workspace discovery is owned by
-`docs/specs/core/manifest/SPEC.md`. The resolver consumes its validated result
-as an ordered table of root-relative member paths, package names, and declared
-version text when present; it does not re-expand globs, follow a second root,
+`docs/specs/core/manifest/SPEC.md`. The resolver consumes one validated discovery
+result containing the immutable parsed root-manifest snapshot and an ordered
+table of NFC-normalized UTF-8 `member_path_key` values with immutable parsed
+member snapshots. Each snapshot includes the package name, declared version text
+when present, and the parsed dependency maps used for request seeding. Native
+paths, directory handles, and file identities remain manifest/filesystem-layer
+validation data and are not resolver graph inputs. The resolver does not
+re-expand globs, follow a second root, reopen a root or member manifest by path,
 or infer members from registry metadata. The table must already satisfy
 canonical-root confinement, structurally accepted non-empty and unique package
-names, valid member manifests, deduplicated paths, and stable lexicographic
-ordering.
+names, valid manifest snapshots, deduplicated portable keys, and stable unsigned
+UTF-8 byte ordering.
 
 The resolver keeps three identities distinct:
 
 - the **root package**, whose manifest declares the workspace and whose direct
-  dependency requests remain root requests;
-- a **workspace member**, identified by a discovered root-relative path and its
-  package name, carrying its declared version text and retaining that member
-  origin on its dependency requests; and
+  dependency requests come from the immutable root snapshot and remain root
+  requests;
+- a **workspace member**, identified in the graph by its validated portable
+  `member_path_key` and package name, carrying its immutable validated manifest
+  snapshot and declared version text, and retaining that portable key as the
+  member origin on its dependency requests;
 - an **external package**, whose metadata is obtained through the external
   package boundary because no discovered member satisfies the edge.
 
@@ -135,18 +143,29 @@ The workspace-aware graph starts with an ordered set of resolution-root
 records: the project root first, followed by every member in the discovery
 table's stable order. Every discovered member is a resolution root even when
 the project root has no dependency edge to it. A root record retains its root or
-member origin, manifest path, package name, declared version text when present,
-and direct dependency edges; workspace lockfile serialization of those records
-remains owned by #146.
+portable-member-key origin, package name, declared version text when present,
+and direct dependency edges from the already validated snapshot; workspace
+lockfile serialization of those records remains owned by #146. Native canonical
+paths and native file/directory identities are used only by the descriptor-based
+filesystem owner and must not be copied into graph node identity, request origin,
+ordering, or equality. Neither the root nor a member manifest path is a resolver
+input after discovery, so a rename or replacement between discovery and graph
+seeding cannot change the requests in the operation.
 
 The resolver seeds requests from both `dependencies` and `devDependencies` in
 the project-root manifest and every member manifest. Seed order is root first,
 then members in discovery order; within each manifest, production requests
-precede development requests and package names are ordered lexicographically.
+precede development requests and package names are ordered by unsigned UTF-8
+byte order without locale collation or case folding. When the same package name
+appears in both maps of one manifest, the `dependencies` entry has precedence:
+RPM emits exactly one `DirectProduction` request using its requested text and
+does not emit the overlapping development entry. This precedence is applied
+before workspace-local versus external classification, so two maps cannot send
+one package name to conflicting local and external targets.
 Production and development seeds retain `DirectProduction` and
 `DirectDevelopment` request kinds respectively and carry a separate origin of
-root or the member's root-relative path. Requests read from selected external
-metadata remain `Transitive` and identify their resolved parent. This origin is
+root or the member's portable `member_path_key`. Requests read from selected
+external metadata remain `Transitive` and identify their resolved parent. This origin is
 preserved on graph edges, so a dependency reachable only from a member cannot
 be omitted or mistaken for a root-manifest entry.
 
@@ -389,7 +408,14 @@ direct request kinds. Coverage also keeps a local member node distinct from an
 external node with equal name and version text, preserves the same deterministic
 member ordering for external edges, rejects duplicate member names and
 root/member name collisions, and rejects a discovery result that escapes the
-canonical root. Resolver workspace fixtures do not execute lifecycle scripts.
+canonical root. An inter-phase replacement case proves request seeding consumes
+the immutable root/member snapshots without reopening either path. Equivalent
+POSIX and Windows native path fixtures prove graph identity, request origin, and
+ordering use the same NFC `/`-separated `member_path_key` and never a native
+canonical path or separator. Overlapping `dependencies` and `devDependencies`
+cases use ranges that would otherwise select different local/external targets
+and prove the production declaration wins with exactly one `DirectProduction`
+request. Resolver workspace fixtures do not execute lifecycle scripts.
 Lockfile snapshots, filesystem trees, and lifecycle execution fixtures are
 deferred to their lockfile, linker, and install-script owners; this SPEC does
 not require workspace installation behavior.
