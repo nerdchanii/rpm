@@ -49,10 +49,14 @@ not be treated as root manifest entries. Package metadata access supplies
 available versions, dist metadata, and dependency declarations without
 downloading or extracting tarballs as part of traversal.
 
-The resolver produces a resolved dependency graph. Each resolved package record
-preserves both the requested range and the selected version. The graph is the
-input to later installer phases that download tarballs, verify integrity,
-extract packages, link `node_modules`, and write lockfile or manifest state.
+The resolver produces a resolved dependency graph. Each dependency edge
+preserves its requested range or version text and request kind. Each resolved
+package record continues to preserve its requested range and selected version;
+the per-edge fields retain every incoming request when node deduplication leaves
+one package record. Direct edges also preserve their root or member origin, and
+transitive edges preserve their resolved parent. The graph is the input to later
+installer phases that download tarballs, verify integrity, extract packages,
+link `node_modules`, and write lockfile or manifest state.
 
 The external-package portion of the resolved graph contains at most one record
 per `<name>@<version>`. An external package reached through several parents is
@@ -165,9 +169,13 @@ one package name to conflicting local and external targets.
 Production and development seeds retain `DirectProduction` and
 `DirectDevelopment` request kinds respectively and carry a separate origin of
 root or the member's portable `member_path_key`. Requests read from selected
-external metadata remain `Transitive` and identify their resolved parent. This origin is
-preserved on graph edges, so a dependency reachable only from a member cannot
-be omitted or mistaken for a root-manifest entry.
+external metadata remain `Transitive` and identify their resolved parent. Every
+edge preserves that request kind, its requested range or version text, and its
+origin or resolved parent independently of node deduplication. When several
+root/member/transitive requests select one external `<name>@<version>` node,
+merging the node must not merge or discard those per-edge fields. A dependency
+reachable only from a member therefore cannot be omitted or mistaken for a
+root-manifest entry.
 
 A dependency edge is classified against the discovered member table before
 external metadata lookup. A name absent from the table is an external edge. A
@@ -399,7 +407,8 @@ RPM's user-facing or API-facing contract.
 
 Resolver tests should use offline registry metadata fixtures. Each fixture
 should represent one graph scenario and include expected resolved package
-records with requested range and selected version. Integration fixtures may add
+records with selected versions and expected edges with requested ranges and
+request kinds. Integration fixtures may add
 expected lockfile snapshots or filesystem trees for later installer phases, but
 resolver fixtures should not mutate the repository root, `.rpm`, `rpm.lock`, or
 `node_modules`.
@@ -416,12 +425,20 @@ member whose incompatible version falls back to an external compatible
 version, and a member-only external edge when the project root has no dependency
 on either the member or its dependency. That member-only fixture records the
 member origin and proves production and development seeds retain their distinct
-direct request kinds. Coverage also keeps a local member node distinct from an
-external node with equal name and version text, preserves the same deterministic
-member ordering for external edges, rejects duplicate member names and
-root/member name collisions, and rejects a discovery result that escapes the
-canonical root. An inter-phase replacement case proves request seeding consumes
-the immutable root/member snapshots without reopening either path. Equivalent
+direct request kinds. A shared-external-node fixture has two members request
+different ranges that select the same `<name>@<version>`, with one production
+edge and one development edge. It proves both edges retain their own requested
+range, distinct direct request kind, and member origin after node deduplication.
+A shared-transitive-node fixture routes different requested ranges through two
+resolved external parents to the same selected
+`<name>@<version>` and proves both `Transitive` edges retain their own requested
+range and resolved parent. Coverage also keeps a local member node distinct
+from an external node with equal name and version text, preserves the same
+deterministic member ordering for external edges, rejects duplicate member
+names and root/member name collisions, and rejects a discovery result that
+escapes the canonical root. An inter-phase replacement case proves request
+seeding consumes the immutable root/member snapshots without reopening either
+path. Equivalent
 POSIX and Windows native path fixtures prove graph identity, request origin, and
 ordering use the same NFC `/`-separated `member_path_key` and never a native
 canonical path or separator. Overlapping `dependencies` and `devDependencies`

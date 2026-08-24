@@ -211,6 +211,10 @@ RPM supports exactly these declaration shapes:
 
 An empty array in either supported shape is an invalid declaration. It does not
 mean root-only; only an absent `workspaces` field has that meaning.
+Manifest parsing must reject more than one top-level `workspaces` key and more
+than one `packages` key inside the `workspaces` object before a generic JSON
+representation can discard the duplicate. A parser's first-key or last-key
+selection behavior must not determine the discovered member set.
 
 Workspace patterns use a portable RPM dialect. `/` is the only path separator
 and every segment must be non-empty. `*` matches zero or more non-`/`
@@ -225,17 +229,21 @@ prefix matching `[A-Za-z]:`, and every backslash-qualified UNC or device form
 are absolute or platform-qualified and invalid on every host. Implementations
 must not delegate this decision to the current operating system's path parser.
 
-Pattern matching is host-independent and case-sensitive. RPM decodes both each
-JSON pattern segment and each enumerated native directory-entry component to
-Unicode scalar values, then compares literal scalars for exact equality. `*`
-matches a sequence of zero or more Unicode scalars within one component; `**`
-applies the same scalar model across complete components. Matching performs no
-locale collation, case folding, or Unicode normalization, so case variants and
-canonically equivalent composed/decomposed spellings remain distinct at this
-boundary. NFC normalization occurs only when a successfully matched path becomes
-a `member_path_key`. RPM must enumerate entries and apply this matcher instead of
-delegating literal or wildcard matching to host glob or case-insensitive path
-lookup behavior.
+Pattern matching is host-independent and case-sensitive. RPM decodes each JSON
+pattern segment and each enumerated native directory-entry component losslessly
+to Unicode scalar values. A literal segment matches when its complete NFC form
+equals the candidate component's complete NFC form. A segment containing `*`
+matches when some sequence of Unicode scalars substituted for each wildcard
+makes the complete materialized segment NFC-equal to the complete candidate
+component; this whole-result rule also applies when a wildcard falls between a
+base scalar and a combining scalar. `**` retains its complete-component meaning
+across path segments. Matching performs no locale collation or case folding, so
+case variants remain distinct while canonically equivalent composed/decomposed
+spellings match. For an ordinary directory candidate the candidate's normalized
+root-relative components later form the `member_path_key`; a selected directory
+symlink uses the canonical-target rule below. RPM must enumerate entries and
+apply this matcher instead of delegating literal or wildcard matching to host
+glob, host Unicode normalization, or case-insensitive path lookup behavior.
 
 The object form does not implicitly enable npm- or Yarn-specific workspace
 options. Unsupported object keys and every other `workspaces` value type are
@@ -267,7 +275,13 @@ that retained project-root descriptor with no symlink following. The path
 itself must be a regular, non-symlink file, and its pre-open native identity must
 match the opened descriptor. Discovery pins that descriptor identity, exact
 bytes, permissions, and single-link guarantee and parses one immutable root
-snapshot containing at least `name`, `version`, `scripts`, `dependencies`,
+snapshot. Obtaining the exact bytes requires either a platform-provided stable
+file snapshot or two complete descriptor reads from offset zero with unchanged
+identity, link count, size, permissions, and content-change metadata before,
+between, and after the reads; both reads must be byte-identical. Any detected
+in-place mutation, unstable byte sequence, or platform unable to provide one of
+these stable-read guarantees fails discovery before parsing. The snapshot
+contains at least `name`, `version`, `scripts`, `dependencies`,
 `devDependencies`, and `workspaces`. The declaration is read from this snapshot.
 
 The root snapshot and member table form one read-only discovery result. Resolver
@@ -307,8 +321,12 @@ through them. A symlink path that the complete pattern selects is a terminal
 member candidate only when it canonicalizes to a directory inside the canonical
 root. Its descendants are not discovered through that link. A dangling link, a
 symlink cycle, an outside-root target, or any other canonicalization failure on
-a selected symlink is an invalid declaration. This rule is independent of the
-filesystem walker's default symlink policy.
+a selected symlink is an invalid declaration. For an accepted directory-symlink
+candidate, the `member_path_key` is derived from the canonical target's
+root-relative native component chain, not from the glob-visible symlink path.
+Selecting the same canonical directory through its target path and one or more
+aliases therefore produces one member identity and one key. This rule is
+independent of the filesystem walker's default symlink policy.
 
 Before opening a candidate manifest, discovery canonicalizes the candidate's
 direct `package.json` path and requires the candidate path itself to be a
@@ -326,7 +344,9 @@ descriptor's regular-file type and identity, and the descriptor must remain
 inside both the canonical member directory and project root. A path swap,
 identity mismatch, or platform without an atomic equivalent for this operation
 fails the entire discovery before the candidate bytes are read; discovery must
-not fall back to a path-based open.
+not fall back to a path-based open. The same stable-snapshot or repeated
+byte-identical descriptor-read rule used for the root manifest applies to every
+member manifest, so an in-place write cannot produce a mixed snapshot.
 
 Every present root or member manifest descriptor must report exactly one
 filesystem link (`st_nlink == 1`) or a platform-equivalent atomic guarantee that
@@ -340,9 +360,20 @@ Directory traversal uses descriptor-relative, no-follow directory handles for
 every enumeration and metadata operation, or an atomic equivalent with the
 same identity and root-confinement guarantees. Before and after each traversal
 operation, the directory handle identity must still represent the expected
-root-relative directory. A directory replacement, identity mismatch, or
-platform without a supported equivalent fails the entire discovery; discovery
-must not continue from a path-based handle or return a partial member table.
+root-relative directory. Traversal must not cross a descendant mount, bind
+mount, volume, or non-symlink reparse boundary: every opened descendant and
+every canonical target chain must retain the root's mount/volume identity, with
+a no-cross-device/mount primitive or platform equivalent that detects bind
+mounts even when ordinary device numbers are equal. Each directory enumeration
+must also provide a stable entry-set snapshot through an atomic enumeration
+snapshot or a reliable monotonic directory-content generation spanning the
+complete enumeration and final pre-return validation. Repeated equal
+enumerations without such a generation do not establish stability because an
+entry set can change and return to its earlier shape between observations. Any
+entry-set drift fails the full operation. A directory replacement,
+mount/reparse crossing, identity mismatch, entry-set mutation, or platform
+without a supported equivalent fails the entire discovery; discovery must not
+continue from a path-based handle or return a partial member table.
 
 Discovery fails closed on every filesystem I/O error that can affect the
 member table. This includes directory enumeration, directory or candidate
@@ -357,16 +388,20 @@ before matching. A path at or below any `node_modules` or `.rpm` component, or
 at or below an RPM-managed cache, store, staging, or backup path, is never a
 workspace candidate. Current root-local managed paths include `.rpm/**`,
 `.node_modules.rpm-staging-*`, and `.node_modules.rpm-backup-*`. These
-exclusions are applied again after symlink resolution, so an explicit pattern
-or in-root symlink cannot opt an artifact tree into discovery.
+ASCII reserved component names and prefixes are compared case-insensitively on
+every host, so aliases such as `NODE_MODULES` and `.RPM` are
+pruned consistently. These exclusions are applied again after symlink
+resolution, so an explicit pattern or in-root symlink cannot opt an artifact
+tree into discovery.
 
-Discovery serializes each member path into a portable `member_path_key`. Every
-native path component must decode losslessly to Unicode scalar values; an
-unpaired surrogate, invalid UTF-8 byte sequence, or any other non-Unicode
+Discovery serializes each member's canonical-target root-relative path into a
+portable `member_path_key`. Every native path component must decode losslessly
+to Unicode scalar values; an unpaired surrogate, invalid UTF-8 byte sequence,
+or any other non-Unicode
 component makes the declaration invalid. Lossy `OsStr` conversion, replacement
 characters introduced by such conversion, WTF-8, and host-private surrogate
-encodings are not accepted. Each
-component is normalized to Unicode NFC, the normalized components are joined
+encodings are not accepted. Each component is normalized to Unicode NFC, the
+normalized components are joined
 with the literal `/` character, and the result is encoded as valid UTF-8. The
 complete key must decode and re-encode byte-for-byte under the same rule on
 every supported host. Discovery rejects a native component or completed key
@@ -379,11 +414,13 @@ Filesystem access continues through the descriptor-validated native identity
 captured during discovery; an implementation must not reopen a member by
 reparsing the serialized key.
 
-Discovery also retains the exact descriptor-relative native component chain and
-parent-directory identities that produced each key. The chain is filesystem
-validation state and must serialize to that row's `member_path_key`; it is not a
-second graph identity. Later filesystem consumers use this retained parent/name
-mapping instead of reconstructing a host path from the portable key.
+Discovery also retains the exact canonical-target, descriptor-relative native
+component chain and parent-directory identities that produced each key. For a
+directory-symlink candidate this is the target chain, not the glob-visible alias
+chain. The retained chain is filesystem validation state and must serialize to
+that row's `member_path_key`; it is not a second graph identity. Later
+filesystem consumers use this retained parent/name mapping instead of
+reconstructing a host path from the portable key.
 
 This serialization makes member order independent of host path representation,
 filesystem enumeration order, and locale, including for non-ASCII names.
@@ -442,14 +479,18 @@ workspace contract requires planned coverage for:
   root-only initialization snapshot and a concurrent manifest creation is
   rejected before an initializer writes;
 - malformed, unsupported, wrong-type, `[]`, and `{ "packages": [] }`
-  declarations, proving only a missing field is root-only;
+  declarations, plus duplicate top-level `workspaces` keys and duplicate
+  object-form `packages` keys, proving only a missing field is root-only and a
+  JSON parser's duplicate-key selection policy cannot change discovery;
 - supported `*` and `**` patterns plus rejected brace, character-class,
   negation, escape, platform-separator, drive-qualified (`C:/...` and
   `C:\\...`), UNC, and device-path forms on every host;
 - literal and wildcard patterns over ASCII case variants, non-ASCII case
   variants, Turkish dotted/dotless I, and composed/decomposed spellings, proving
-  exact Unicode-scalar matching returns identical results on simulated
-  case-sensitive and case-insensitive hosts without locale or normalization;
+  NFC component matching returns identical results on simulated case-sensitive,
+  case-insensitive, and normalization-changing filesystem adapters without
+  locale or host normalization behavior; a wildcard between a base scalar and
+  combining scalar proves matching normalizes the complete materialized result;
 - `packages/**` over ordinary intermediate and source directories, proving
   the zero-segment directory and nested directories with direct `package.json`
   entries become candidates while directories without one are ignored; a
@@ -458,9 +499,11 @@ workspace contract requires planned coverage for:
 - a declaration whose pattern matches no member path;
 - a member without a valid `package.json`;
 - `..` or absolute path escape attempts;
-- an in-root directory-symlink member whose descendants are not traversed, a
-  directory-symlink cycle that fails without traversal, and a symlink whose
-  resolved target is outside the canonical root;
+- an in-root directory-symlink member whose descendants are not traversed and
+  whose key uses the canonical target's root-relative chain; selecting that
+  target through both its glob-visible alias and canonical path produces one
+  identity and key; a directory-symlink cycle fails without traversal, and a
+  symlink whose resolved target is outside the canonical root is rejected;
 - an in-root member whose direct `package.json` is a symlink (including one
   resolving outside the member or canonical root) and is rejected before the
   target is read;
@@ -468,6 +511,9 @@ workspace contract requires planned coverage for:
   symlink resolution/canonicalization, and candidate manifest reads, proving
   each error names the operation and safe root-relative path and returns no
   partial member table;
+- a descendant bind mount, volume boundary, and non-symlink reparse point plus a
+  recursive bind mount, proving traversal and selected canonical target chains
+  fail before reading external bytes or recursing through the mounted tree;
 - an injected descriptor-relative validate-open path swap and identity mismatch,
   including a platform without an atomic equivalent, proving the candidate
   target is not read and the full discovery fails without a partial table;
@@ -478,6 +524,8 @@ workspace contract requires planned coverage for:
 - a root-manifest replacement between discovery and a later consumer, proving
   every workspace-discovery consumer uses the immutable root snapshot and no
   workspace-aware path publishes or truncates the replacement;
+- injected in-place root/member manifest writes during descriptor reads, proving
+  the stable-snapshot check rejects changing or mixed bytes before parsing;
 - an attempted present-manifest write by a workspace-discovery consumer,
   proving the operation is rejected before the root manifest or any alias is
   modified and remains deferred to #222;
@@ -487,8 +535,12 @@ workspace contract requires planned coverage for:
 - an injected directory replacement during descriptor-relative enumeration or
   metadata validation, proving the traversal identity mismatch fails the full
   discovery without a partial table;
+- injected additions, removals, and renames during enumeration, proving entry-
+  set drift fails the full discovery without a timing-dependent member table;
 - a broad pattern with pre-existing `node_modules`, `.rpm`, and RPM-managed
-  staging or backup paths, proving artifacts do not change discovery;
+  staging or backup paths plus ASCII case aliases of those reserved components,
+  proving artifacts do not change discovery on case-sensitive or
+  case-insensitive adapters;
 - overlapping declarations proving sorted, deduplicated root-relative output;
 - composed and decomposed non-ASCII member names plus CJK member names, proving
   NFC `member_path_key` serialization and unsigned UTF-8 byte ordering produce
