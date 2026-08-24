@@ -346,6 +346,9 @@ YAML_UNSUPPORTED_STRUCTURE_SEPARATOR_ERROR = (
 YAML_UNSUPPORTED_STRUCTURE_SEPARATORS = frozenset(
     ("\u000B", "\u000C", "\u001C", "\u001D", "\u001E")
 )
+YAML_LITERAL_CONTROL_ERROR = (
+    "literal C0 and DEL control characters are not allowed in openai.yaml"
+)
 YAML_TOKEN_ASCII_CONTINUATIONS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 )
@@ -374,6 +377,14 @@ def contains_unsupported_yaml_line_separator(text: str) -> bool:
 
 def contains_unsupported_yaml_structure_separator(text: str) -> bool:
     return any(character in text for character in YAML_UNSUPPORTED_STRUCTURE_SEPARATORS)
+
+
+def contains_literal_yaml_control(text: str) -> bool:
+    return any(
+        (ord(character) <= 0x1F and character not in "\t\r\n")
+        or ord(character) == 0x7F
+        for character in text
+    )
 
 
 def is_supported_root_mapping_line(stripped: str) -> bool:
@@ -469,6 +480,8 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
     """
     if contains_unsupported_yaml_structure_separator(text):
         return None, YAML_UNSUPPORTED_STRUCTURE_SEPARATOR_ERROR
+    if contains_literal_yaml_control(text):
+        return None, YAML_LITERAL_CONTROL_ERROR
     if contains_unsupported_yaml_line_separator(text):
         return None, YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR
     if text.startswith("\ufeff"):
@@ -705,6 +718,8 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
     """
     if contains_unsupported_yaml_structure_separator(text):
         return [YAML_UNSUPPORTED_STRUCTURE_SEPARATOR_ERROR]
+    if contains_literal_yaml_control(text):
+        return [YAML_LITERAL_CONTROL_ERROR]
     if contains_unsupported_yaml_line_separator(text):
         return [YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR]
     if text.startswith("\ufeff"):
@@ -782,6 +797,19 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
     return errors
 
 
+def validate_skill_frontmatter_name(skill_name: str, skill_path: Path, errors: list[str]) -> None:
+    values = parse_frontmatter(skill_path, errors)
+    declared_name = values.get("name")
+    if declared_name is None:
+        fail(errors, f"{skill_path.relative_to(ROOT)}: frontmatter name is missing")
+    elif declared_name != skill_name:
+        fail(
+            errors,
+            f"{skill_path.relative_to(ROOT)}: frontmatter name {declared_name!r} "
+            f"does not match inventory entry {skill_name!r}",
+        )
+
+
 def check_skill_inventory(errors: list[str]) -> None:
     skills_dir = ROOT / ".agents" / "skills"
     if not skills_dir.is_dir():
@@ -796,6 +824,11 @@ def check_skill_inventory(errors: list[str]) -> None:
         fail(errors, f".agents/skills/{unexpected}: unregistered skill directory")
 
     for skill_name, allow_implicit in EXPECTED_SKILL_INVOCATION_POLICY.items():
+        skill_path = skills_dir / skill_name / "SKILL.md"
+        if not skill_path.is_file():
+            fail(errors, f"{skill_path.relative_to(ROOT)}: skill instructions are missing")
+        else:
+            validate_skill_frontmatter_name(skill_name, skill_path, errors)
         metadata_path = skills_dir / skill_name / "agents" / "openai.yaml"
         if not metadata_path.is_file():
             fail(errors, f"{metadata_path.relative_to(ROOT)}: metadata is missing")

@@ -73,6 +73,7 @@ check_skill_policy_structure_negative() {
   PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
 import importlib.util
 import pathlib
+import tempfile
 
 checker_path = pathlib.Path("scripts/check-agent-organization.py")
 spec = importlib.util.spec_from_file_location("rpm_agent_organization", checker_path)
@@ -164,6 +165,32 @@ for name, child_value in {
         raise SystemExit(
             f"invalid boolean comment {name} was accepted: child={child_value!r}, "
             f"value={policy_value!r}, error={policy_error!r}"
+        )
+
+literal_yaml_control_error = checker.YAML_LITERAL_CONTROL_ERROR
+for control in ("\x00", "\x01", "\x1f", "\x7f"):
+    policy_value, policy_error = checker.parse_skill_invocation_policy(
+        "policy:\n"
+        "  allow_implicit_invocation: false # comment"
+        f"{control}\n"
+    )
+    if policy_value is not None or policy_error != literal_yaml_control_error:
+        raise SystemExit(
+            f"policy control U+{ord(control):04X} was accepted after comment stripping: "
+            f"value={policy_value!r}, error={policy_error!r}"
+        )
+    interface_errors = checker.validate_skill_interface_metadata(
+        "interface:\n"
+        "  display_name: Fixture Governance\n"
+        "  short_description: Create safe fixtures.\n"
+        "  default_prompt: Use $fixture-governance. # comment"
+        f"{control}\n",
+        "fixture-governance",
+    )
+    if interface_errors != [literal_yaml_control_error]:
+        raise SystemExit(
+            f"interface control U+{ord(control):04X} was accepted in a comment: "
+            f"errors={interface_errors!r}"
         )
 
 nested_policy = (
@@ -590,6 +617,26 @@ for name, text in valid_interface_scalars.items():
     )
     if interface_errors:
         raise SystemExit(f"{name} was rejected: errors={interface_errors!r}")
+
+with tempfile.TemporaryDirectory(dir=".") as temp_dir:
+    mismatched_skill_path = pathlib.Path(temp_dir) / "SKILL.md"
+    mismatched_skill_path.write_text(
+        "---\n"
+        "name: other-skill\n"
+        "description: A valid temporary skill fixture.\n"
+        "---\n"
+    )
+    frontmatter_errors = []
+    checker.validate_skill_frontmatter_name(
+        "fixture-governance",
+        mismatched_skill_path,
+        frontmatter_errors,
+    )
+    if len(frontmatter_errors) != 1 or "does not match inventory entry" not in frontmatter_errors[0]:
+        raise SystemExit(
+            "mismatched SKILL.md name was accepted: "
+            f"errors={frontmatter_errors!r}"
+        )
 
 nbspace_value = "Fixture" + chr(0xA0) + "#Governance"
 parsed, parse_error = checker.parse_yaml_string_scalar(nbspace_value, 1)
