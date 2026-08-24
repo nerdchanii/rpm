@@ -21,6 +21,7 @@ related_issues:
   - 141
   - 142
   - 145
+  - 221
 ---
 
 # Spec: Package Manifest
@@ -231,11 +232,29 @@ path, the `workspaces` field, and the reason. A missing `workspaces` field means
 that the project is root-only. Nested `workspaces` declarations in a member
 manifest are not recursively discovered by this contract.
 
-The declaration is read from the canonical project-root manifest. Each pattern
-is normalized relative to that root before expansion. Absolute patterns,
-patterns that can escape through `..`, and matched member paths whose resolved
-symlink target is outside the canonical root are rejected before a discovery
-result is returned.
+For workspace discovery, the root `package.json` is opened descriptor-relative
+to the canonical project-root directory with no symlink following. The path
+itself must be a regular, non-symlink file, and its pre-open native identity must
+match the opened descriptor. Discovery pins that descriptor identity, exact
+bytes, and permissions and parses one immutable root snapshot containing at
+least `name`, `version`, `scripts`, `dependencies`, `devDependencies`, and
+`workspaces`. The declaration is read from this snapshot.
+
+The root snapshot and member table form one discovery result. Resolver seeding,
+workspace staging, and root lifecycle-script selection consume that result and
+must not reopen the live root manifest by path. The live root descriptor/native
+identity is filesystem-validation state only. Immediately before any workspace
+publication, after acquiring the exclusive workspace transaction guard defined
+by `docs/specs/core/install/recovery/SPEC.md`, the transaction verifies through
+the retained descriptor and a descriptor-relative no-follow lookup that the live
+root manifest still has the pinned identity, exact bytes, and permissions. A
+replacement or concurrent byte or mode change fails before backup or publication
+and must not be overwritten or absorbed into transaction state.
+
+Each workspace pattern is normalized relative to the canonical project root
+before expansion. Absolute patterns, patterns that can escape through `..`, and
+matched member paths whose resolved symlink target is outside the canonical
+root are rejected before a discovery result is returned.
 
 Glob expansion distinguishes traversal directories from member candidates.
 Directories consumed only while a `**` segment matches zero or more descendant
@@ -274,6 +293,14 @@ identity mismatch, or platform without an atomic equivalent for this operation
 fails the entire discovery before the candidate bytes are read; discovery must
 not fall back to a path-based open.
 
+Both root and member manifest descriptors must report exactly one filesystem
+link (`st_nlink == 1`) or a platform-equivalent atomic guarantee that no second
+pathname aliases the opened file identity. A hard-linked manifest is invalid
+even when every known link is inside the canonical root, because an unobserved
+alias could mutate the validated bytes. If the platform cannot obtain the link
+count or an equivalent guarantee from the opened descriptor, workspace
+discovery fails closed before reading or returning manifest data.
+
 Directory traversal uses descriptor-relative, no-follow directory handles for
 every enumeration and metadata operation, or an atomic equivalent with the
 same identity and root-confinement guarantees. Before and after each traversal
@@ -298,24 +325,54 @@ workspace candidate. Current root-local managed paths include `.rpm/**`,
 exclusions are applied again after symlink resolution, so an explicit pattern
 or in-root symlink cannot opt an artifact tree into discovery.
 
-Discovery returns member paths relative to the canonical root using `/`
-separators. Paths are deduplicated and sorted lexicographically before they are
-passed to resolution, so overlapping patterns and filesystem enumeration order
-cannot change the workspace set or its order. Every discovered member must
-have a non-empty package name accepted by the resolver's current structural
-package-name rule; discovery must not introduce stricter npm name-syntax checks.
-Duplicate member package names are rejected as an ambiguous declaration. Each
-member-table row carries the member's root-relative path, package name, and
-declared version text when the manifest contains a version.
+Discovery serializes each member path into a portable `member_path_key`. Every
+native path component must decode losslessly to Unicode scalar values; an
+unpaired surrogate, invalid UTF-8 byte sequence, or any other non-Unicode
+component makes the declaration invalid. Each component is normalized to
+Unicode NFC, the normalized components are joined with the literal `/`
+character, and the result is encoded as UTF-8. Discovery performs no locale
+collation or case folding. It deduplicates and sorts keys by unsigned UTF-8 byte
+order. Two distinct validated filesystem identities that serialize to the same
+key are an ambiguous declaration and are rejected instead of being silently
+deduplicated. Filesystem access continues through the descriptor-validated
+native identity captured during discovery; an implementation must not reopen a
+member by reparsing the serialized key.
+
+Discovery also retains the exact descriptor-relative native component chain and
+parent-directory identities that produced each key. The chain is filesystem
+validation state and must serialize to that row's `member_path_key`; it is not a
+second graph identity. Staging and lifecycle validation consume this retained
+parent/name mapping instead of reconstructing a host path from the portable key.
+
+This serialization makes member order independent of host path representation,
+filesystem enumeration order, and locale, including for non-ASCII names.
+Every discovered member must have a non-empty package name accepted by the
+resolver's current structural package-name rule; discovery must not introduce
+stricter npm name-syntax checks. Duplicate member package names are rejected as
+an ambiguous declaration.
+
+Each member-table row carries the `member_path_key`, the descriptor-validated
+native member identity and parent/name mapping, and one immutable parsed snapshot
+from the same descriptor-validated manifest read. The snapshot includes every
+supported manifest field, including package name, declared version text,
+`dependencies`, `devDependencies`, and `scripts`. Resolution consumes dependency
+declarations from this snapshot and must not perform a second path-based
+member-manifest read between discovery and request seeding. Later workspace
+phases either consume the same snapshot or apply their owning transaction's
+explicit identity check; they must not silently substitute bytes from a path
+that changed after discovery.
 
 The root package, a discovered workspace member, and an external package are
 distinct identities. The root is the manifest that owns the declaration. A
-workspace member is identified by its discovered root-relative path and its
-package name and carries its declared version for edge classification. An
-external package is reached through an edge that the resolver cannot satisfy
-from a compatible discovered member. The resolver owns that classification;
-lockfile records, local linking, and command targeting remain owned by the
-contracts for issues #146, #147, and #148.
+workspace member is identified for graph/origin purposes by its validated
+portable `member_path_key` and package name and carries its declared version for
+edge classification. Its native canonical path and native file/directory
+identities are retained only for descriptor-rooted filesystem access and
+validation; they must not become resolver graph identity or origin. An external
+package is reached through an edge that the resolver cannot satisfy from a
+compatible discovered member. The resolver owns that classification; lockfile
+records, local linking, and command targeting remain owned by the contracts for
+issues #146, #147, and #148.
 
 Reading and saving a root manifest must preserve a valid `workspaces`
 declaration without changing its supported shape, patterns, or pattern order.
@@ -364,12 +421,30 @@ workspace contract requires planned coverage for:
 - an injected descriptor-relative validate-open path swap and identity mismatch,
   including a platform without an atomic equivalent, proving the candidate
   target is not read and the full discovery fails without a partial table;
+- a root-manifest replacement between discovery and resolver/staging plus a
+  second replacement immediately before publication, proving every consumer
+  uses the immutable root snapshot and final identity/bytes/permissions
+  validation fails before overwriting the replacement;
+- root and member `package.json` files hard-linked to an external alias, plus an
+  injected platform without descriptor link-count support, proving discovery
+  rejects each case before parsing or returning a snapshot;
 - an injected directory replacement during descriptor-relative enumeration or
   metadata validation, proving the traversal identity mismatch fails the full
   discovery without a partial table;
 - a broad pattern with pre-existing `node_modules`, `.rpm`, and RPM-managed
   staging or backup paths, proving artifacts do not change discovery;
 - overlapping declarations proving sorted, deduplicated root-relative output;
+- composed and decomposed non-ASCII member names plus CJK member names, proving
+  NFC `member_path_key` serialization and unsigned UTF-8 byte ordering produce
+  the same order on every host; an injected non-Unicode native component and a
+  normalized-key collision are rejected without a partial table;
+- equivalent POSIX and Windows native component sequences, proving both
+  serialize to the same `/`-separated `member_path_key` without leaking `\` or
+  drive spelling into graph identity; a literal backslash in a declaration
+  remains invalid under the portable glob grammar;
+- an injected member-manifest replacement after discovery but before resolver
+  seeding, proving dependencies and development dependencies come from the
+  descriptor-validated snapshot and the replacement path is not reopened;
 - a structurally accepted non-empty member name that is preserved without a
   discovery-only npm syntax gate;
 - duplicate workspace package names; and

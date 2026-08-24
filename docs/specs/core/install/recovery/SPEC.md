@@ -18,6 +18,8 @@ related_issues:
   - 81
   - 141
   - 142
+  - 145
+  - 222
 ---
 
 # Spec: Install Recovery
@@ -69,17 +71,75 @@ owned jointly with `docs/specs/core/install/scripts/SPEC.md` (#141).
 ### Workspace lifecycle recovery boundary (planned)
 
 Workspace discovery and resolution do not change the active recovery pipeline.
-Before a workspace install may execute a member lifecycle hook, the installer
-must provide one workspace transaction that stages every root/member install
-output governed by the operation and owns each member's staged execution view.
-The canonical root of a member execution view corresponds to that member's
-discovered path within the staged workspace root. It never points at the live
-member source directory or a previously published `node_modules` tree. The
-source member manifest remains immutable transaction input. The hook process is
-confined to the transaction staging root for both reads and writes; if the
-execution platform cannot enforce that isolation, member hooks are skipped and
-the transaction fails closed. Workspace linking under #147 is a prerequisite
-for that transaction; #147 does not own member lifecycle execution.
+Before a workspace install may execute any root or member lifecycle hook, the
+installer must provide one workspace transaction that stages every root/member
+install output governed by the operation, the explicit root manifest/lockfile
+write state, and the temporary root/member source overlays used for execution.
+The transaction owns both the staged root execution view and each member view.
+The root hook's canonical execution root is the staged workspace root; a member
+view corresponds to that member's `member_path_key` inside the staged root.
+Neither points at a live root/member source directory or a previously published
+`node_modules` tree. The validated member manifest snapshots remain immutable
+transaction input. Root and member hook processes are confined to the staging
+root for both reads and writes; if the execution platform cannot enforce that
+isolation, the transaction fails closed before any workspace hook runs.
+Workspace linking under #147 is a prerequisite for that transaction; #147 does
+not own lifecycle execution, which remains disabled until #222.
+
+The only publishable managed output is the transaction-owned root/member
+`node_modules` set. The staged root `package.json` and `rpm.lock` are separate
+write-phase state and publish only after scripts reconciliation and validation.
+All other staged root/member source-overlay writes are discarded after the
+scripts phase even on success and are never copied to live source. This
+publication boundary is owned jointly with
+`docs/specs/core/install/scripts/SPEC.md`.
+
+Before the first workspace hook, RPM records a read-only expected-state table for
+the live root/member manifests, every root/member `node_modules` tree,
+`rpm.lock`, and every other path classified as managed output. Each row pins
+presence or absence, type, permissions, exact file/tree bytes, symlink targets
+where applicable, and native identity through descriptor-relative no-follow
+operations. This is the transaction-start baseline; a later live value must not
+silently replace it.
+
+After staged hooks complete and before final live validation or the first live
+backup, rename, or write, RPM acquires one exclusive workspace install
+transaction guard bound to the canonical workspace root and the complete target
+set. The guard must be enforced against concurrent processes and handles by the
+platform. An equivalent filesystem transaction or descriptor/CAS primitive is
+valid only when it atomically reserves the complete target set for the same
+interval and conditions every rename and write on the pinned identities. A
+cooperative lockfile or independent per-path compare-then-write sequence is
+insufficient. If the guard is contended or the platform has no qualifying
+primitive, RPM fails closed without backing up, renaming, or publishing a live
+target.
+
+While holding the guard, RPM repeats every expected-state lookup and compares
+live root/member manifests and outputs for presence or absence, type, native
+identity, exact bytes/tree, symlink target, and permissions. Any drift fails the
+transaction before backup preparation, preserves the concurrent value exactly,
+and must not absorb that value into a backup or overwrite it with staged state.
+The guard remains held through backup preparation, every publication step, all
+final postconditions, and either successful backup cleanup or verified rollback;
+releasing it is the transaction's last live-state action.
+
+Only after the guarded revalidation succeeds does RPM create one workspace
+transaction record covering the root and every member `node_modules` tree, the
+root `package.json`, `rpm.lock`, and every other path classified as managed
+output by the operation. The record binds to the verified expected-state rows.
+Every existing output is moved to a distinct same-filesystem transaction backup
+so restoring it preserves the original identity; an originally absent path is
+recorded as absent. If backup preparation fails, already moved paths are restored
+before the operation returns and no staged output is published.
+
+Publication then replaces outputs only through that record. RPM does not delete
+or unlink any backup until every root/member tree, manifest, lockfile, and managed
+output has been published and all final postconditions pass. A failure at any
+intermediate publish or verification step removes every newly published path and
+restores the complete recorded set through same-filesystem renames, including
+exact bytes, type, mode, and original native identity. If full restoration cannot
+be verified, RPM reports a recovery failure, retains the transaction record and
+remaining backups, and never reports install success.
 
 The workspace `scripts` phase remains between `link` and `write`. Its source,
 root/member/external visit order, staged member execution root, PATH, and
@@ -88,6 +148,7 @@ supported hook inventory are owned by
 when any of those hooks fails:
 
 - no staged root or member install output is published;
+- no staged source-overlay output is copied to a live source directory;
 - every previously published root/member `node_modules` tree remains unchanged;
 - `rpm.lock` and every participating root/member `package.json` remain at their
   pre-transaction bytes and permissions; and
@@ -95,32 +156,84 @@ when any of those hooks fails:
   exists.
 
 After each member hook exits zero, the staged member `package.json` is checked
-against its pre-hook snapshot. A change is a post-hook validation failure. RPM
+against the transaction-start staged identity plus the immutable discovery
+bytes and permissions and must remain a regular non-symlink with one link. A
+change is a post-hook validation failure. RPM
 does not reload or re-resolve from that staged change and does not write it to
 the source member manifest. A later hook failure or this validation failure
 discards every staged execution view, while the previously published root and
 member `node_modules` trees remain byte-identical.
 
-Before any member hook starts, staged symlinks and link targets are
-canonicalized and must be non-dangling, acyclic, and confined to the staging
-root. A target resolving to the live source or a previously published tree
-fails the `scripts` phase before execution. Link construction remains owned by
-#147; links created during a hook are checked by staging-root write confinement
-and post-hook validation. The member manifest snapshot uses no-follow
-`lstat`/`fstat`-equivalent checks for regular non-symlink type, identity, bytes,
-and permissions. Symlink, directory, special-file, identity, mode, or byte
-changes fail without reading the replacement target.
+After a workspace root hook exits zero, the staged root manifest must preserve
+the frozen parsed `workspaces` declaration: field presence, supported shape,
+pattern strings, and pattern order are identical to discovery input. A change
+fails before any member or external hook. RPM performs no second discovery or
+resolution and publishes neither the changed manifest nor any staged output.
+Every staged member manifest is also checked against its immutable discovery
+snapshot at that boundary. The root declaration and all member manifests are
+revalidated after each later hook that can write the shared view and once more
+immediately before `write`; no lifecycle hook runs after the final check.
+
+Discovery's immutable root snapshot is the only root-manifest input to resolver,
+staging, and hook selection. While the exclusive workspace guard is held and
+immediately before backup preparation, RPM revalidates the live root manifest
+through the retained descriptor and descriptor-relative no-follow lookup. Its
+native identity, exact bytes, and permissions must still equal discovery input.
+The staged root manifest must remain on its transaction-start regular-file
+identity with one link; allowed staged byte changes follow the scripts contract.
+Any live or staged replacement fails before the transaction overwrites or backs
+up a live path.
+
+The transaction retains a descriptor, pinned native identity, and the exact
+descriptor-relative native parent/name chain for every staged member directory.
+Immediately before and after every root, member, and external hook and
+immediately before publication, it walks every chain from the retained
+staging-root descriptor without following links. Every parent identity and entry
+name, final directory identity and type, root containment check, and serialized
+`member_path_key` mapping must still match. A same-inode rename to another
+parent/name entry fails alongside replacement, mount or reparse substitution, or
+an unavailable equivalent identity primitive.
+
+After `link`, RPM pins the allowed managed-tree link/identity inventory. Before
+and after every root, member, and external hook and immediately before
+publication, it scans the complete staged managed tree from the retained root
+descriptor without following links. A new symlink or hard link, changed pinned
+link/target, duplicate inode/device or platform file identity, cross-device or
+reparse alias, or identity shared with live source/published state fails the
+transaction. New regular hook output is eligible only with one link and a unique
+identity on the staging volume. Platforms without equivalent descriptor-rooted
+tree and identity checks fail closed before workspace hooks run.
+
+This managed-tree inventory covers only publishable root/member `node_modules`
+trees and linker-created entries. Manifests and `rpm.lock` use their dedicated
+snapshot validation. Temporary source-overlay entries are excluded because they
+are never published. Their link safety is enforced by the hook-process
+confinement boundary for every lookup and mutation, including later-hook access;
+no source-overlay symlink, hard link, or reparse entry may resolve or alias to
+live source or published state. Platforms unable to enforce that boundary fail
+before workspace hooks.
+
+Before any workspace root or member hook starts, staged symlinks and link
+targets are canonicalized and must be non-dangling, acyclic, and confined to
+the staging root. A target resolving to any live root/member source or
+previously published tree fails the `scripts` phase before execution. Link
+construction remains owned by #147; links created during a hook are checked by
+staging-root write confinement and post-hook validation. The member manifest
+snapshot uses no-follow `lstat`/`fstat`-equivalent checks for regular
+non-symlink type, identity, bytes, and permissions. Symlink, directory,
+special-file, identity, mode, or byte changes fail without reading the
+replacement target.
+
 The staged execution view also must not share hard-link inode/device identity
-with the live member source or a previously published install tree. The view
+with any live root/member source or previously published install tree. The view
 uses materialized or copy-up regular files, and a shared alias fails the phase
 before hook execution.
 
-The guarantee covers RPM-owned install state and the manifest/lockfile snapshots
-named above. It does not claim to reverse arbitrary writes performed by a hook
-to a live member source tree or outside the workspace; those writes are outside
-the transaction boundary and cannot weaken the protected published-tree
-guarantee. Member hooks remain disabled until a dedicated
-lifecycle/recovery integration issue implements this boundary and its fixtures.
+The active root-only hook retains its existing arbitrary-write limitation. The
+planned workspace path has the stricter isolation and publication boundary
+above, so live source and published install trees are unavailable as hook
+targets. Workspace root/member hooks remain disabled until #222 implements this
+boundary and its fixtures.
 
 ## M3 Side-Effect Audit
 
@@ -213,8 +326,8 @@ Findings:
 ### Planned workspace lifecycle audit
 
 The workspace contract adds no active side effects in its discovery/resolver
-phase. Member lifecycle execution is deferred and has no current open execution
-issue. Activation requires the scripts contract's deterministic order/cwd
+phase. Workspace lifecycle execution is deferred to #222. Activation requires
+the scripts contract's deterministic order/cwd
 fixture and a recovery fixture that injects a failing member hook after linking,
 then proves all previously published root/member install trees, `rpm.lock`, and
 participating manifests retain their exact bytes and permissions. The fixture
@@ -239,7 +352,43 @@ The paired `workspace-lifecycle-member-manifest-mutation` fixture must cover a
 zero-exit member hook that changes its staged `package.json`, proving the
 post-hook validation failure, source-manifest immutability, and staged-view
 discard guarantee with the same byte and permission checks.
-The recovery fixture matrix also includes the published-tree absolute-write,
-staged escaping/dangling/cyclic-link, and staged manifest
-symlink/directory/mode-replacement and staged hard-link alias cases owned by the
-scripts SPEC.
+The paired `workspace-lifecycle-root-workspaces-mutation` fixture freezes the
+original declaration/member table and proves a zero-exit root mutation fails
+before later hooks or publication. The paired
+`workspace-lifecycle-root-manifest-replacement` fixture replaces the live root
+manifest after discovery and the staged copy during hook execution, proving
+snapshot-only inputs and final live/staged identity checks. The paired
+`workspace-lifecycle-root-member-manifest-mutation` fixture proves a root hook
+cannot replace a staged member manifest before its hook runs. The successful
+`workspace-lifecycle-member-output-publication` fixture proves ordinary source
+overlay is discarded while managed member install output publishes atomically.
+The recovery fixture matrix also includes staged member-directory replacement;
+same-inode staged member-directory rename across a different parent/name entry;
+root/member/external hook-created symlink, hard-link, inode/device, and
+published-tree aliases; root/member published-tree absolute-write; staged
+escaping/dangling/cyclic-link; staged manifest symlink/directory/mode
+replacement; staged hard-link alias; and source-overlay link-confinement cases
+owned by the scripts SPEC.
+
+`workspace-publication-exclusive-guard` uses a deterministic second process and
+phase barriers. A mutation after the read-only expected-state snapshot but before
+guard acquisition must remain untouched while guarded revalidation reports drift
+and performs zero backups or publications. Lock contention and an unsupported
+guard primitive also fail with zero target mutation. Attempts after guard
+acquisition are injected before guarded validation, between validation and the
+first backup, between every backup move, between backup completion and the first
+publication, between every publication position, before final postcondition
+verification, and before backup cleanup. Each attempt must be excluded for the
+entire held interval; no concurrent bytes, type, mode, identity, or absence state
+may become backup input or be overwritten. The barrier matrix rotates the target
+across root and member manifests, present and absent root/member install trees,
+`rpm.lock`, and every additional managed output class.
+
+Workspace publication recovery additionally requires deterministic injected
+failures after publishing (1) the root install tree, (2) each member install
+tree position, (3) the root manifest, (4) the lockfile, (5) every additional
+managed output position, and (6) during final postcondition verification. Each
+case starts with distinct prior bytes, types, modes, and native identities at
+every path and proves the single transaction record restores the entire set,
+removes paths that were originally absent, retains backups until full success,
+and never reports a partially published install as successful.
