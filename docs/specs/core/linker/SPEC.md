@@ -125,6 +125,33 @@ completes; RPM does not merge or union colliding binaries. The collision
 resolution order is owned by the linker implementation ticket (#140), not by
 this contract.
 
+Planned workspace v2 makes that existing exception deterministic for each
+root/member `node_modules/.bin` directory. Eligible package producers are
+visited in lockfile v2's total identity order and each package's validated
+binary names are visited in unsigned UTF-8 byte order. When multiple producers
+use the exact same binary-name bytes, the later producer replaces the earlier
+link and is the one surviving target. This exact-name case is one intentional
+logical output slot and is exempt from the general #147 projection-collision
+rejection. Two distinct raw names that only collide after host case folding,
+Unicode normalization, trailing-space/dot handling, or another filesystem
+equivalence are separate objects and remain invalid before linking.
+
+The v2 external record stores each selected external version's canonical bin
+map. #147 must derive and validate every external-package `.bin` destination
+from those locked maps before replay accesses a cache or network and, for a
+fresh writer, after #221-validated local/external classification and
+side-effect-free metadata resolution but before tarball download, cache
+mutation, extraction, or linking. If #147 enables workspace-member binary
+exposure, it combines these external destinations with bin inputs from #221's
+validated immutable member manifests. The stable verified archive descriptor
+must expose the same canonical external bin map during the lockfile SPEC's
+pre-extraction provenance gate; a mismatch fails before any archive entry or
+link is materialized. This pre-acquisition pass covers only graph, name, and
+destination projections derivable without archive bytes. #147 validates archive
+entry paths plus symlink and hardlink targets after acquisition into the
+transaction-private verified descriptor and before extraction, cache
+publication, or install publication.
+
 The `.bin` directory and its links are part of the install output transaction:
 they are created during the link phase and must be present before the install
 is reported as successful. `rpm run` consumes the resulting `node_modules/.bin`
@@ -191,7 +218,11 @@ destination-directory and symlink-creation failures.
 - an object-form `bin` key that is not a single path component (absolute,
   separator-containing, parent-referencing, or empty, for example
   `{"../../etc/foo": "./cli.js"}`) producing a link input error rather than a
-  link written outside `node_modules/.bin/`.
+  link written outside `node_modules/.bin/`;
+- two planned v2 producers with the exact same validated binary name, proving
+  the later producer in total identity order wins deterministically; and
+- two distinct raw binary names that project to the same host key, proving the
+  pair is rejected instead of entering last-writer precedence.
 
 Fixtures must copy install projects to temporary directories before mutation
 and must not use live npm.
