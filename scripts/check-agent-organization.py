@@ -371,6 +371,53 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
     return value.strip() == "true", None
 
 
+def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
+    """Validate required metadata as direct children of one interface mapping."""
+    blocks: list[dict[str, tuple[str, int]]] = []
+    current: dict[str, tuple[str, int]] | None = None
+    for line_number, raw_line in enumerate(text.splitlines(), 1):
+        leading = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
+        if "\t" in leading:
+            return [f"line {line_number}: tabs are not allowed for interface indentation"]
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if indent == 0:
+            if re.match(r"^interface\s*:", stripped):
+                if stripped != "interface:":
+                    return [f"line {line_number}: interface must be a root mapping"]
+                blocks.append({})
+                current = blocks[-1]
+            else:
+                current = None
+            continue
+        if current is None or indent != 2:
+            continue
+        key, separator, value = stripped.partition(":")
+        if separator != ":":
+            return [f"line {line_number}: invalid interface child"]
+        key = key.strip()
+        if key in current:
+            return [f"line {line_number}: duplicate interface child {key!r}"]
+        current[key] = (value.strip(), line_number)
+
+    if len(blocks) != 1:
+        return ["expected exactly one root interface mapping"]
+
+    errors: list[str] = []
+    fields = blocks[0]
+    for key in ("display_name", "short_description"):
+        if key not in fields or not fields[key][0]:
+            errors.append(f"{key} is missing")
+    default_prompt = fields.get("default_prompt")
+    if default_prompt is None or not default_prompt[0]:
+        errors.append("default_prompt is missing")
+    elif f"${skill_name}" not in default_prompt[0]:
+        errors.append(f"default_prompt must mention ${skill_name}")
+    return errors
+
+
 def check_skill_inventory(errors: list[str]) -> None:
     skills_dir = ROOT / ".agents" / "skills"
     if not skills_dir.is_dir():
@@ -394,17 +441,11 @@ def check_skill_inventory(errors: list[str]) -> None:
         except OSError as error:
             fail(errors, f"{metadata_path.relative_to(ROOT)}: cannot read: {error}")
             continue
-        if not re.search(r"(?m)^interface:\s*$", text):
-            fail(errors, f"{metadata_path.relative_to(ROOT)}: interface block is missing")
-        if not re.search(r"(?m)^\s+display_name:\s*\S+", text):
-            fail(errors, f"{metadata_path.relative_to(ROOT)}: display_name is missing")
-        if not re.search(r"(?m)^\s+short_description:\s*\S+", text):
-            fail(errors, f"{metadata_path.relative_to(ROOT)}: short_description is missing")
-        if not re.search(
-            rf"(?m)^\s+default_prompt:\s*.*\${re.escape(skill_name)}",
-            text,
-        ):
-            fail(errors, f"{metadata_path.relative_to(ROOT)}: default_prompt must mention ${skill_name}")
+        for interface_error in validate_skill_interface_metadata(text, skill_name):
+            fail(
+                errors,
+                f"{metadata_path.relative_to(ROOT)}: invalid interface metadata: {interface_error}",
+            )
         value, policy_error = parse_skill_invocation_policy(text)
         if policy_error is not None:
             fail(

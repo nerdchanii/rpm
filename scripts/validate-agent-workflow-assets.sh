@@ -93,6 +93,31 @@ for name, text in malformed.items():
     value, error = checker.parse_skill_invocation_policy(text)
     if error is None:
         raise SystemExit(f"{name} was accepted: value={value!r}")
+
+misplaced_interface = """\
+interface:
+other:
+  display_name: "Fixture Governance"
+  short_description: "Create deterministic fixtures."
+  default_prompt: "Use $fixture-governance for fixtures."
+policy:
+  allow_implicit_invocation: true
+"""
+interface_errors = set(
+    checker.validate_skill_interface_metadata(
+        misplaced_interface,
+        "fixture-governance",
+    )
+)
+expected_errors = {
+    "display_name is missing",
+    "short_description is missing",
+    "default_prompt is missing",
+}
+if not expected_errors.issubset(interface_errors):
+    raise SystemExit(
+        f"misplaced interface metadata was accepted: errors={sorted(interface_errors)!r}"
+    )
 PY
 }
 
