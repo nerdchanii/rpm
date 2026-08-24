@@ -475,10 +475,130 @@ Resolution-root fields use `origin`, `manifest_path`,
 `bin`, `scripts`; edge
 fields use the order shown in the example. Optional fields retain their listed
 position when present. Every nested map, including `bin` and `scripts`, is emitted with
-UTF-8 bytewise ascending keys. Empty maps use `{}`. A serializer must not expose
-HashMap iteration order. Consequently, serializing the same graph twice
-produces byte-identical lockfiles, independent of filesystem enumeration,
-registry timing, or map seeding.
+UTF-8 bytewise ascending keys. Empty maps use `{}`. The #224 writer must not
+expose HashMap iteration order. It therefore emits byte-identical
+lockfiles for the same graph, independent of filesystem enumeration, registry
+timing, or map seeding, when it follows the lexical profile below.
+
+The writer's canonical lexical profile is part of the planned v2 contract. Every
+assignment is an unindented line with exactly one ASCII space on each side of
+`=` and no trailing whitespace. Static field names and table headers use bare
+keys. A dynamic map key uses a bare key only when its decoded text matches the
+TOML bare-key grammar `[A-Za-z0-9_-]+`; every other key is a TOML basic quoted
+key. Key ordering is computed from the decoded UTF-8 bytes before this
+bare-versus-quoted choice or any escaping.
+
+The maps-and-escapes snapshot includes quoted script keys whose decoded UTF-8
+order is a command, m plus U+0000, m plus a quote, m plus a backslash, then
+z command; the escaped spellings in the output must preserve that decoded
+order rather than sorting the emitted key bytes.
+
+All string values and quoted keys use TOML basic-string syntax. The writer never
+uses literal or multiline strings, comments, or a UTF-8 BOM. It emits `\\`, `\"`, `\\b`, `\\t`, `\\n`,
+`\\f`, and `\\r` for backslash, quote, backspace, tab, line feed, form feed,
+and carriage return. Other code points in `U+0000..U+001F` or
+`U+007F..U+009F` use uppercase `\\uXXXX` escapes, and code points above the
+BMP use uppercase `\\UXXXXXXXX` escapes. Other Unicode scalar values are
+written as UTF-8. The hexadecimal digits in escapes are uppercase.
+
+Every non-empty inline table is one line in the form `{ key = value, key =
+value }`: exactly one space follows `{`, precedes `}`, follows each comma, and
+surrounds each `=`. Empty inline tables are exactly `{}`. Inline-table entries
+use the field or map order defined above and have no trailing comma. Array-of-
+tables use the exact headers `[[resolution_roots]]`, `[[external_packages]]`,
+and `[[edges]]`; records have no indentation, and one blank line separates
+records and collection blocks; no other blank lines are emitted. Optional fields
+are omitted without leaving a blank assignment. These rules define the bytes
+emitted by #224's planned writer. They do not claim that an arbitrary TOML
+serializer or a semantically
+equivalent alternate spelling is byte-identical; repeated output from this
+profile is byte-identical for the same graph.
+
+The planned golden lexical fixture below is a semantically valid two-member
+graph. It exercises every lexical branch in one small snapshot: a bare and a
+quoted dynamic key, sorted map entries, empty inline tables, optional field
+omission and presence, all basic-string escapes, multiple records in each
+collection, and the final LF after the last `target` assignment. A root-only
+snapshot with the optional top-level `version` and root `declared_version`
+omitted is a separate minimal fixture for the omission branch.
+
+```toml
+lockfile_version = 2
+name = "app"
+version = "0.1.0"
+
+[[resolution_roots]]
+origin = { kind = "root", path = "." }
+manifest_path = "package.json"
+name = "app"
+declared_version = "0.1.0"
+
+[[resolution_roots]]
+origin = { kind = "workspace", path = "packages/a" }
+manifest_path = "packages/a/package.json"
+name = "a"
+
+[[external_packages]]
+identity = { kind = "external", name = "tool", version = "1.0.0" }
+name = "tool"
+version = "1.0.0"
+registry_origin = "https://registry.example"
+registry_base = "https://registry.example/npm"
+tarball = "https://registry.example/npm/tool/-/tool-1.0.0.tgz"
+integrity = "sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg=="
+shasum = "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+bin = { alpha = "bin/alpha.js", tool = "bin/cli.js" }
+scripts = { "a command" = "slash:\\ quote:\" backspace:\b tab:\t lf:\n ff:\f cr:\r nul:\u0000 c1:\u0085 smile:\U0001F600 café", "m\u0000 key" = "echo nul", "m\" key" = "echo quote", "m\\ key" = "echo backslash", "z command" = "echo z" }
+
+[[external_packages]]
+identity = { kind = "external", name = "util", version = "1.0.0" }
+name = "util"
+version = "1.0.0"
+registry_origin = "https://registry.example"
+registry_base = "https://registry.example/npm"
+tarball = "https://registry.example/npm/util/-/util-1.0.0.tgz"
+integrity = "sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg=="
+bin = {}
+scripts = {}
+
+[[edges]]
+source = { kind = "root", path = "." }
+requested_name = "tool"
+requested = "1.0.0"
+selector_kind = "semver"
+relationship = "direct"
+target = { kind = "external", name = "tool", version = "1.0.0" }
+
+[[edges]]
+source = { kind = "workspace", path = "packages/a" }
+requested_name = "util"
+requested = "1.0.0"
+selector_kind = "semver"
+relationship = "direct"
+target = { kind = "external", name = "util", version = "1.0.0" }
+```
+
+The separate minimal root-only snapshot is:
+
+~~~toml
+lockfile_version = 2
+name = "app"
+
+[[resolution_roots]]
+origin = { kind = "root", path = "." }
+manifest_path = "package.json"
+name = "app"
+~~~
+
+The snapshot coverage matrix is:
+
+| snapshot | lexical coverage |
+| --- | --- |
+| minimal root-only | omitted optional top-level/root fields, scalar block, collection start, and final LF |
+| maps-and-escapes | present/omitted `shasum`, empty and non-empty inline tables, sorted valid bare `bin` keys, quoted `scripts` keys containing quote/backslash/control escapes in decoded UTF-8 order, every specified string escape, multiple records, collection blank lines, and final LF |
+
+This fixture is planned evidence for #224 and does not assert that the current
+runtime can read or write v2 records.
 
 #### Replay trust boundary
 
@@ -628,14 +748,39 @@ reopen the workspace root through its pathname after discovery or use a
 path-based temporary file followed by a path-based rename.
 
 Candidate creation is descriptor-relative to that handle. RPM exclusively
-creates the candidate as a regular file with no-follow final-component
-semantics, writes and flushes it through the opened descriptor, and keeps it
-transaction-private until every applicable graph, provenance, archive-entry,
-and install staging gate succeeds. Candidate bytes do not become replayable or
-hook-visible merely because the candidate file exists. The existing archive
-sequence remains in force: graph/name/destination preflight precedes archive
-acquisition, acquisition writes only the transaction-private stable archive
-descriptor, and descriptor-bound archive-entry/link validation precedes
+creates an unnamed/unlinked candidate or, for a named candidate, a regular file
+with no-follow final-component semantics; it writes and flushes the candidate
+through the opened descriptor and keeps it transaction-private until every
+applicable graph, provenance, archive-entry,
+and install staging gate succeeds. Candidate handling then uses one of three
+concrete adapter modes. In unnamed/unlinked mode, the candidate
+has no workspace pathname or other exported writable handle, so its bytes are
+actually unobservable and unrewritable through workspace paths or hooks. In
+write-excluding mode, the retained candidate handle provides actual
+adapter-level exclusion of in-place writes for the whole interval; an advisory
+lock that an
+uncooperating writer can ignore does not qualify, and the candidate remains
+outside every hook capability. In named content-version-CAS mode, the candidate
+may be observable or readable by another process; its guarantee is atomic
+invalidation rather than physical unobservability. The commit primitive must
+receive the named candidate's expected object identity and opaque content
+version, and any in-place write, truncate, unlink, or directory-entry
+replacement after the final flush must invalidate publication at that same
+commit point. A candidate that relies only on pathname secrecy or permissions
+without one of these adapter conditions is unsupported.
+
+For every mode, candidate bytes remain outside hook capabilities and do not
+become replayable or hook-visible merely because the candidate file exists.
+For named content-version-CAS mode, transaction-private means not
+replayable, hook-visible, or install-visible; it does not imply filesystem
+unobservability. The
+content version used by named CAS must be captured after the final
+write/flush/serialization and change on every successful candidate write or
+truncate; it must come from the adapter's object/version primitive, and mtime,
+size, or a separately recomputed hash alone does not qualify. The existing
+archive sequence remains in force: graph/name/destination preflight precedes
+archive acquisition, acquisition writes only the transaction-private stable
+archive descriptor, and descriptor-bound archive-entry/link validation precedes
 extraction and cache/install publication.
 
 Final `rpm.lock` publication is a descriptor-relative, no-follow atomic replace
@@ -659,30 +804,39 @@ has no existing-file lease or version.
 
 The final operation must use a platform-backed conditional root-bound publish
 primitive with the retained root handle, expected root identity, expected
-parent/name chain, candidate descriptor, expected destination identity, and
-either the retained lease or expected content version as inputs. At one atomic
-commit point, that primitive must prove that the retained root is still the live
-project root reached through the same validated parent/name chain, that the
+parent/name chain, candidate descriptor, the selected mode proof, expected
+destination identity, and either the retained destination lease or expected
+destination content version as inputs. The mode proof is the retained
+unnamed/unlinked descriptor with its no-path condition, the retained
+write-excluding handle, or the named candidate's expected object identity and
+content version. At one atomic commit point, that primitive must prove that the
+retained root is still the live project root reached through the same validated
+parent/name chain, the candidate is still valid under its selected mode, and the
 destination identity and content version remain valid or the write-excluding
 lease is held, and then perform the no-follow destination replace. A separate
-parent-chain recheck or identity-only destination check followed by an ordinary
-`renameat`/`renameat2` does not provide this guarantee. A root-path replacement
-or in-place edit race therefore returns a publication race, discards the
-candidate, leaves the bytes present at the commit attempt untouched, and cannot
-write an `rpm.lock` in the replacement directory.
-#221/#224 own this capability and its implementation contract. If the target
-platform cannot provide the atomic conditional proof, v2 lockfile publication
-is disabled and fails closed before lockfile or install state changes. A separate
+parent-chain recheck, candidate identity/version check, or destination identity
+check followed by an ordinary `renameat`/`renameat2` does not provide this
+guarantee. A root-path replacement, candidate in-place edit or replacement, or
+destination in-place edit race therefore returns a publication race, discards
+the candidate, leaves the bytes present at the commit attempt untouched, and
+cannot write an `rpm.lock` in the replacement directory.
+#224 owns the concrete lockfile publication and candidate adapter, its
+capability contract, and its executable fixtures. #221 supplies only the
+validated workspace-root/member-table prerequisite consumed by that adapter.
+If the target platform cannot provide the atomic conditional proof, candidate
+isolation, and destination lease/content-version condition, v2 lockfile
+publication is disabled and fails closed before lockfile or install state
+changes. A separate
 `fstatat`/`fstat` identity check followed by `renameat` or `renameat2`, including
 the sequence currently available through the Rust/POSIX adapters, is not an
-atomic parent-chain-and-destination CAS and cannot qualify as this adapter. No
-current supported RPM adapter is treated as having this capability: planned v2
-lockfile publication and replay remain disabled on every current adapter until
-#224 supplies a concrete platform adapter and an executable capability test
-proves both the root-bound proof and the write-excluding lease/content-version
-CAS. An ordinary `renameat` or `renameat2`, even when called with
-descriptor-relative arguments after a separate check, cannot qualify as that
-adapter.
+atomic parent-chain, candidate, and destination CAS and cannot qualify as this
+adapter. No current supported RPM adapter is treated as having this capability:
+planned v2 lockfile publication and replay remain disabled on every current
+adapter until #224 supplies a concrete platform adapter and an executable
+capability test proving the root-bound proof, candidate condition, and
+write-excluding lease/content-version CAS. An ordinary `renameat` or
+`renameat2`, even when called with descriptor-relative arguments after a
+separate check, cannot qualify as that adapter.
 
 #### Migration and failure preservation
 
@@ -827,12 +981,30 @@ Planned workspace snapshots must cover:
   write-excluding lease or content-version CAS rejects the edit and leaves the
   bytes present at commit untouched; an adapter without either primitive reports
   unsupported and keeps v2 publication and replay disabled;
+- a named content-version-CAS candidate barrier after final
+  flush/serialization and validation and before commit where a test writer
+  mutates the readable candidate in place and separately replaces its directory
+  entry, proving the candidate content-version/identity CAS rejects both races,
+  discards the candidate, leaves the prior `rpm.lock` bytes unchanged, and
+  still prevents hooks from consuming the candidate; an adapter without this
+  atomic candidate primitive reports unsupported and publishes nothing;
+- an unnamed/unlinked candidate descriptor fixture proving that no workspace
+  path can open or replace the candidate, publication succeeds only from the
+  retained descriptor, and hooks cannot consume it; a path-based reopen or
+  rename attempt fails, while an adapter without actual no-path isolation
+  reports unsupported and publishes nothing;
+- a write-excluding candidate fixture proving that every adapter writer is
+  blocked from in-place mutation for the whole interval, an advisory lock is
+  insufficient, and hooks cannot consume the candidate; an adapter without
+  actual write exclusion reports unsupported and publishes nothing;
 - v1-to-v2 migration and failure preservation without lifecycle execution,
   proving that a failed fresh resolution or publication preserves the prior v1
   file and only the fully validated v2 candidate can publish; #222 must define
   separate prior-live/candidate hook-visibility and recovery fixtures before
   workspace lifecycle activation;
 - an unsupported future version rejected before record interpretation; and
-- repeated canonical serialization producing identical bytes.
+- repeated canonical serialization producing identical bytes under the lexical
+  profile, including byte-for-byte comparisons with the minimal and
+  maps-and-escapes snapshots above.
 
 The mutable filesystem fixture for #149 remains outside this lockfile contract.

@@ -176,8 +176,27 @@ outgoing transitive dependency requests produced from that same per-version
 record. A writer must take the whole tuple from one selected version record. It
 must not combine a tarball, bin map, or scripts map from root fallback fields, a
 different version, or a later metadata read.
-`docs/specs/core/lockfile/SPEC.md` owns the v2 record shape and #224 owns its
-runtime implementation.
+`docs/specs/core/lockfile/SPEC.md` owns the v2 record shape. #224 owns the
+concrete duplicate-aware v2 metadata parser, builder, and executable fixtures;
+the current v1 registry parser remains unchanged.
+
+The planned v2 builder must parse the raw packument with duplicate-member
+detection before constructing any consumed map or provenance-bearing struct.
+A duplicate JSON member name is a metadata error even when the repeated values
+are equal, and names that become equal after JSON string-escape decoding are
+duplicates as well. Before selection or map construction, the check covers the
+consumed outer `dist-tags` and `versions` objects, including duplicate `latest`
+members and a `versions` collision such as `1.0.0` versus `\u0031.0.0`. It then
+covers the selected version object and its `dist` object, ordinary
+`dependencies` object, object-form `bin` map, and `scripts` map. It therefore
+rejects duplicate `dist`, `tarball`, `integrity`, or `shasum` members; duplicate
+dependency, binary-name, or script-name entries; and duplicate selected-record
+fields before last-value-wins deserialization can occur. The check runs before
+the corresponding `HashMap` or struct is built and before selection or selected
+per-version facts are consumed. Duplicate keys in metadata that is outside this
+provenance path are outside this v2 rule; current v1 interpretation remains
+unchanged. This rule is a precondition for #224's planned v2 writer and does
+not claim current runtime support.
 
 The legacy single-version registry shape remains supported by current v1 paths,
 but it is ineligible as a source for v2 publication. Its authoritative root
@@ -571,6 +590,14 @@ targeted version key is absent, the required packument request still counts and
 selection fails; RPM does not invent a zero-metadata result or run the
 selected-version identity gate for an unavailable version.
 
+A duplicate member in the consumed outer `dist-tags` or `versions` object is
+detected after the required packument request (and any redirect hops) and before
+tag classification or version selection. The parser then performs zero
+selected-record or per-version metadata reads or requests, zero tarball
+requests, and zero cache or install publication. The request accounting is
+therefore one packument response followed by a duplicate-key parse failure, not
+an invented zero-request result.
+
 Version selection precedence at the registry boundary:
 
 1. An empty request or `latest` resolves to the root `version` fallback when
@@ -686,6 +713,14 @@ content. Failures must be returned to callers as typed errors:
   The URL-policy diagnostic uses the redaction rules above and never echoes a
   rejected path, query, credential, signature, or expiry value.
   A valid SHA-1 shasum does not make that v2 tuple eligible.
+- A duplicate JSON member in the consumed outer `dist-tags` or `versions` map,
+  the selected v2 version record, `dist`, ordinary `dependencies`, object-form
+  `bin`, or `scripts` object is a metadata parse failure. For an outer-map
+  duplicate, the required packument request has already occurred, then parsing
+  fails before selection, selected-record or per-version consumption, tarball
+  acquisition, cache mutation, extraction, or install output. The same applies
+  when two differently escaped JSON names decode to the same member name,
+  including `latest` or `1.0.0` versus `\u0031.0.0`.
 - A legacy single-version root record is ineligible for v2 publication even when
   its root dist contains valid SHA-512 integrity; rejection occurs before tarball
   download or cache mutation. Existing v1 interpretation remains unchanged.
@@ -780,6 +815,16 @@ Fixture expectations are defined by the owning scenario and documented in
   filenames are `token-1.0.0.tgz`, `auth-1.0.0.tgz`,
   `signature-1.0.0.tgz`, and `expires-1.0.0.tgz`, and those redirects are
   accepted only at the exact generated locators;
+- duplicate-key packuments with repeated consumed outer `dist-tags` and
+  `versions` members, including duplicate `latest` and the escape-equivalent
+  version keys `1.0.0` and `\u0031.0.0`, plus repeated selected-record, `dist`,
+  `tarball`, `integrity`, `shasum`, dependency, object-form `bin`, and
+  `scripts` members. Outer-map cases make exactly one required packument
+  request, then perform zero tag/version selection, selected-record or
+  per-version consumption, tarball requests, and cache/install publication;
+  nested cases fail before any provenance map or struct is constructed. Names
+  differing only by JSON escapes are compared after decoding. Duplicate keys in
+  ignored metadata remain outside this planned v2 fixture scope;
 - metadata redirects from a configured base such as
   `https://repo.example/npm-private/` to a same-origin alternate base such as
   `/npm-public/pkg/1`, or to a different package/version under
