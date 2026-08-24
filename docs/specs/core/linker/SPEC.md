@@ -146,7 +146,11 @@ exposure, it combines these external destinations with bin inputs from #221's
 validated immutable member manifests. The stable verified archive descriptor
 must expose the same canonical external bin map during the lockfile SPEC's
 pre-extraction provenance gate; a mismatch fails before any archive entry or
-link is materialized.
+link is materialized. This pre-acquisition pass covers only graph, name, and
+destination projections derivable without archive bytes. #147 validates archive
+entry paths plus symlink and hardlink targets after acquisition into the
+transaction-private verified descriptor and before extraction, cache
+publication, or install publication.
 
 The `.bin` directory and its links are part of the install output transaction:
 they are created during the link phase and must be present before the install

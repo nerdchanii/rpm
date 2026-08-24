@@ -241,8 +241,11 @@ fact is written once even when several parents reach the same name and version.
 Local workspace members have no external package record and do not require a
 registry origin, tarball, integrity, or shasum.
 
-Before any external archive entry is extracted or published, #147's archive
-inspection boundary reads the single package manifest from the stable
+Archive acquisition may occur after the graph, name, and destination projections
+derivable without archive bytes pass preflight, but it may write only a
+transaction-private non-published stable descriptor. Before any external
+archive entry is extracted or cache/install output is published, #147's archive
+inspection boundary reads the single package manifest from that
 SHA-512-verified descriptor without materializing archive output. Its `name` and
 `version` must both be strings and must exactly equal the external record's
 `name`, `version`, and structured identity fields. Archive `bin` and `scripts`
@@ -275,21 +278,27 @@ registry metadata cannot be published and a crafted lockfile cannot escape a
 filesystem root.
 
 Lexical confinement is followed by a host-filesystem projection check for every
-cache and linker destination. The owning cache and linker boundaries derive
-comparison keys that reflect the actual destination filesystem's case folding,
-Unicode normalization, trailing-space and trailing-dot behavior, and reserved
-name semantics. Every external record must project to a distinct cache
-publication path. Separately, #147 enumerates the extraction and link
-destinations and rejects any two distinct planned filesystem objects that
-project to the same host key. The sole intentional linker alias is two or more
-packages exposing the exact same validated binary name in the same
-`node_modules/.bin` directory. Those producers describe one logical output slot
-and use the linker SPEC's deterministic v2 last-writer precedence. Distinct raw
-binary names that merely become equivalent under host projection remain a
-collision and are rejected. Every other cache, extraction, or link collision is
-invalid before download, extraction, or linking, even when the structured
-identities or UTF-8 path spellings differ. If the host semantics cannot be
-represented conservatively, v2 replay fails closed. The cache projection and
+cache and graph-derived linker destination. The owning cache and linker
+boundaries derive comparison keys that reflect the actual destination
+filesystem's case folding, Unicode normalization, trailing-space and
+trailing-dot behavior, and reserved name semantics. Every external record must
+project to a distinct cache
+publication path. Before archive acquisition, #147 enumerates link destinations
+derivable from locked metadata and rejects any two distinct planned filesystem
+objects that project to the same host key. After stable-descriptor verification,
+#147 separately enumerates archive-entry extraction destinations and link
+targets and applies the same rejection before extraction or publication. The
+sole intentional linker alias is two or more packages exposing the exact same
+validated binary name in the same `node_modules/.bin` directory. Those
+producers describe one logical output slot and use the linker SPEC's
+deterministic v2 last-writer precedence. Distinct raw binary names that merely
+become equivalent under host projection remain a collision and are rejected.
+Every other cache or graph-derived link collision is invalid before download.
+Every archive-derived extraction or link collision is invalid after verified
+descriptor acquisition and before extraction, cache publication, or install
+publication, even when the structured identities or UTF-8 path spellings
+differ. If the host semantics cannot be represented conservatively, v2 replay
+fails closed. The cache projection and
 verified-read rules are owned by `docs/specs/core/install/cache/SPEC.md`; #147
 owns the extraction/link projection and layout, which this SPEC does not
 redefine.
@@ -489,10 +498,12 @@ succeeds.
 Missing or duplicate records, unknown fields or identity kinds, malformed
 fields, unsafe external path components, disallowed provenance URLs, absent
 or unsupported SHA-512 integrity, shasum-only records, untrusted lockfile bytes,
-archive-manifest identity, bin, or scripts mismatches, cache or linker projection
-collisions,
-and equality, uniqueness, reachability, selector/target, or
-referential-integrity failures are load failures before mutation.
+cache or graph-derived linker projection collisions, and equality, uniqueness,
+reachability, selector/target, or referential-integrity failures are load
+failures before acquisition or mutation. Archive-manifest identity, bin, or
+scripts mismatches and archive-derived projection failures are
+stable-descriptor validation failures after private acquisition; they fail
+before extraction or any cache, lockfile, or install publication.
 
 V2 acceptance and publication also depend on filesystem boundaries owned by the
 adjacent workspace issues. Before a v2 reader marks a decoded document
@@ -504,7 +515,10 @@ by that operation:
   `member_path_key` identities, canonical-root confinement, and injective member
   path projection; and
 - #147 supplies complete local/external package-name, requested dependency-name,
-  extraction-destination, link-destination, and host-projection validation.
+  and graph-derived link-destination and host-projection preflight before
+  archive acquisition, followed by descriptor-bound archive-entry,
+  extraction-destination, symlink/hardlink-target, and host-projection
+  validation before extraction or publication.
 
 The #147 result must reject traversal, absolute, drive, UNC, device, unsupported
 separator, reserved, trailing-space/dot, and host-equivalent collision cases for
@@ -516,8 +530,11 @@ that boundary has accepted it.
 
 A syntactically valid v2 document, structurally non-empty local name, or
 self-asserted validation flag is insufficient evidence. For replay, missing,
-stale, unsupported, or failed #221/#147 validation fails before cache or network
-access, extraction, linking, scripts, lockfile publication, install publication,
+stale, unsupported, or failed #221 validation or #147 graph/name/destination
+preflight fails before cache or network access. After that preflight, acquisition
+may create only the transaction-private non-published stable descriptor;
+missing or failed #147 archive-entry/link validation fails before extraction,
+linking, scripts, cache publication, lockfile publication, install publication,
 or any other live mutation. A fresh writer first requires #221's validated
 immutable member table and uses it to apply #145 local/external classification;
 compatible-local branches perform no metadata access. It may then perform
@@ -613,12 +630,16 @@ Planned workspace snapshots must cover:
   otherwise valid untrusted or post-approval replaced lockfile rejected before
   network access or mutation;
 - cross-contract #221/#147/#222 prerequisite fixtures with missing or failed
-  validation results; local member names and requested dependency names that use
-  traversal, unsupported separator, absolute, drive, UNC, device, reserved, or
-  trailing-space/dot forms; and local/local and local/external names that collide
-  only after host case folding or Unicode normalization, proving #224 blocks
-  replay before cache or network and blocks fresh external metadata results
-  before tarball download or cache mutation;
+  pre-acquisition validation results; local member names and requested
+  dependency names that use traversal, unsupported separator, absolute, drive,
+  UNC, device, reserved, or trailing-space/dot forms; and local/local and
+  local/external names that collide only after host case folding or Unicode
+  normalization, proving #224 blocks replay before cache or network and blocks
+  fresh external metadata results before tarball download or cache mutation;
+  missing descriptor-bound archive validation permits only transaction-private
+  acquisition, preserves existing lockfile bytes, and blocks extraction,
+  linking, scripts, cache publication, lockfile publication, install
+  publication, and every other live mutation;
 - escaping archive symlink and hardlink entries rejected after tarball download
   and stable-descriptor verification but before extraction, cache publication,
   linking, lifecycle hooks, install publication, or other live mutation;

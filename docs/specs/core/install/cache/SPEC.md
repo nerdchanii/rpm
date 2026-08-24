@@ -127,25 +127,33 @@ descriptor to inspect the archive package manifest. The manifest `name`,
 `version`, canonical bin map, and scripts map must exactly match the v2 external
 record under the lockfile SPEC.
 RPM rewinds the descriptor again and passes it directly to extraction only after
-both checks succeed, keeping it open throughout. Extraction must not resolve or
+both checks and #147's descriptor-bound archive-entry, symlink, and hardlink
+validation succeed, keeping it open throughout. Extraction must not resolve or
 reopen the cache path. Failure to obtain a stable descriptor, a descriptor
-identity or type change, a short or changed read, a SHA-512 mismatch, or an
-archive-manifest identity failure invalidates the hit and blocks extraction.
+identity or type change, a short or changed read, a SHA-512 mismatch, an
+archive-manifest identity failure, or failed archive-entry/link validation
+invalidates the hit and blocks extraction and publication.
 
-A newly downloaded v2 archive follows the same rule: bytes are staged under an
-exclusive transaction-owned descriptor, SHA-512 verified there, inspected for
-the exact external package-manifest identity, and extracted from that same
-descriptor. Final cache publication may occur only after both verification and
-identity/bin/scripts inspection succeed. RPM retains the originally approved
-cache-root
-directory descriptor through publication. The staged entry is created relative
-to that descriptor, and the final same-directory rename is performed relative
-to the same descriptor with no-follow final-component semantics. The publisher
-must atomically reject a final destination that appeared or changed after
-preflight; it must not truncate, follow, or replace that entry. Reopening
-`.rpm/.cache` or the final destination through a workspace pathname is invalid.
-A cache-root identity change, unsupported descriptor-relative publication, or
-destination race fails publication and discards the staged entry. These
+A newly downloaded v2 archive follows the same rule. After the graph, name, and
+destination projections derivable without archive bytes pass preflight, network
+acquisition may write only an exclusive transaction-owned descriptor that is
+not published through a cache or install pathname. RPM verifies SHA-512 there,
+inspects the exact external package-manifest identity/bin/scripts provenance,
+and runs #147's archive-entry, symlink, and hardlink validation against that
+same descriptor before extraction. Extraction consumes the same descriptor.
+Final cache publication may occur only after verification, provenance
+inspection, and archive-entry/link validation succeed. RPM retains the
+originally approved cache-root directory descriptor through publication. The
+staged cache entry is exclusively created as a regular file relative to that
+descriptor with no-follow final-component semantics. RPM writes and flushes it
+through that exact opened descriptor. The final same-directory rename publishes
+that same staged entry relative to the same cache-root descriptor without a
+pathname reopen. The publisher must atomically reject a final destination that
+appeared or changed after preflight; it must not truncate, follow, or replace
+that entry. Reopening `.rpm/.cache`, the staged entry, or the final destination
+through a workspace pathname is invalid. A cache-root identity change,
+unsupported descriptor-relative staging or publication, or a raced staging or
+final destination fails publication and discards the staged entry. These
 requirements make pathname replacement after open irrelevant to the bytes
 consumed by extraction and keep cache replay and publication from introducing a
 verify/use race.
@@ -168,10 +176,12 @@ tarball URLs.
 
 For v2, a cache projection collision, reserved host spelling, symlink or
 non-regular cache entry, unstable verification descriptor, missing or invalid
-SHA-512 integrity, shasum-only provenance, or archive-manifest identity failure
-is reported before extraction and before install output is published. Cache-root
-identity drift, unavailable descriptor-relative publication, or a raced final
-destination fails cache publication and still blocks install publication.
+SHA-512 integrity, shasum-only provenance, archive-manifest identity failure,
+or archive-entry/link validation failure is reported before extraction and
+before cache or install output is published. Cache-root identity drift,
+unavailable descriptor-relative publication, or a raced final destination fails
+cache publication and still blocks install publication. A raced or unsafe
+staging entry fails before verified bytes are copied into cache staging.
 
 ## Test Fixtures
 
@@ -187,7 +197,7 @@ Planned v2 fixtures must additionally cover:
 
 - names that collide only after host case folding or Unicode normalization,
   plus trailing-dot, trailing-space, and reserved-name spellings, proving the
-  whole destination set is rejected before download or cache creation;
+  whole cache destination set is rejected before download or cache creation;
 - a final cache entry replaced with a symlink or non-regular file, proving the
   descriptor-relative no-follow open rejects it without reading the target;
 - a pathname swap after the cache entry is opened, proving verification and
@@ -196,6 +206,10 @@ Planned v2 fixtures must additionally cover:
   between verification and publication, proving publication remains relative
   to the originally opened cache-root descriptor and fails without following or
   replacing the raced destination;
+- a pre-existing or raced cache staging name that is a symlink or other entry,
+  proving exclusive descriptor-relative no-follow creation fails without
+  writing through the entry, publishing a final cache file, or changing install
+  or lockfile output;
 - concurrent content mutation where a stable direct descriptor cannot be
   guaranteed, proving the transaction-owned verified descriptor is used or the
   replay fails closed; and

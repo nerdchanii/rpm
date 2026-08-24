@@ -208,6 +208,14 @@ The initial v2 transport policy is fail-closed:
   rejected. The initial v2 contract has no implicit CDN or alternate-origin
   exception.
 
+After the graph, name, and destination projections derivable without archive
+bytes pass preflight, the approved tarball request may acquire bytes only into a
+transaction-private non-published stable descriptor. SHA-512 verification binds
+that descriptor to the selected provenance. #147 then validates archive entry
+paths and symlink/hardlink targets from the same descriptor before extraction,
+cache publication, or install publication. Acquisition creates no cache or
+install publication.
+
 Offline registry fixtures use the fixture transport and do not relax this
 production URL policy. A future configurable registry or CDN allowlist requires
 an explicit registry contract update and a stable provenance representation;
