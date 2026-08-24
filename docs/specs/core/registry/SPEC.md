@@ -300,45 +300,88 @@ The initial v2 transport policy is fail-closed:
   | structural `@scope` | `@scope` |
   | non-structural `%40scope` | `%2540scope` |
 
+  Before constructing a v2 packument locator, package-name identity preflight
+  applies the credential-marker projection to each resolver-approved external
+  package-name component. A structural identity is exempt only when its
+  canonical value is exactly one bare marker word such as `token`, `secret`,
+  `sig`, `signature`, `credential`, `auth`, `authorization`, `access_key`,
+  `expires`, `expiry`, or `expires_at`. A marker followed by a delimiter or
+  value, such as `token=fixture-secret`, `token-fixture`, or `auth.signature`,
+  is rejected, including URL spellings with equivalent unreserved or delimiter
+  escapes. The `x-amz-*` marker family has no bare-word exemption. A rejected
+  package name fails before any metadata request.
+
+  Selected-version identity is gated separately. Its gate runs only after the
+  required packument request and tag classification/version selection, even
+  when an explicit version selector supplied the candidate string. RPM then
+  applies the same projection to that selected-version identity and
+  rejects a marker followed by a delimiter or value before consuming selected
+  per-version fields or issuing any per-version metadata, tarball, cache, or
+  install operation. A redirect cannot legitimize a credential-looking
+  selected-version identity. Resolver package-name and semver validity rules
+  remain authoritative; this transport policy does not broaden the accepted
+  identity set. #224 owns the executable v2 builder, identity preflight, and
+  canonical-locator comparator that enforce these gates.
+
   The filename is one path component. Any extra segment or alternate path,
-  including a token, signature, or expiry-bearing path segment, is rejected
-  before archive acquisition. V2 has no runtime credential injection, so a
-  private or expiring artifact path is ineligible until a future SPEC defines a
-  stable redacted locator and an explicit authenticated runtime injection API.
+  including a credential-looking non-structural or extra path segment, is
+  rejected before archive acquisition. A generated filename may contain a bare
+  marker word as its package-name portion, such as `token-1.0.0.tgz`, only when
+  the package and version pass identity preflight and the complete filename
+  equals the canonical `<name>-<version>.tgz` value. V2 has no runtime
+  credential injection, so a private or expiring artifact path is ineligible
+  until a future SPEC defines a stable redacted locator and an explicit
+  authenticated runtime injection API.
 - Metadata and tarball redirects are limited to five hops. Every redirect
   target is parsed and checked before following it, remains HTTPS, has no user
   information, query, or fragment, and has the same normalized origin. A
   relative redirect is allowed only when resolution against the current URL
-  produces a URL that passes those checks. Its raw path segments must pass the
-  credential-free policy above before dot-segment removal, so a redirect such as
+  produces a URL that passes those checks. RPM applies the credential-marker
+  scan above only to raw path material outside the exact structural locator
+  expected for this request, and performs that scan before dot-segment removal.
+  The structural components include the configured base
+  path, the canonical package and optional version components, and, for an
+  artifact, the `/-/` segment and canonical filename. A package-name or
+  scope/leaf component whose exact canonical identity is a bare marker word
+  such as `token`, `auth`, `signature`, or `expires` remains valid. A generated
+  artifact filename such as `token-1.0.0.tgz` is valid only when it is produced
+  from an identity that passed preflight and equals the complete canonical
+  filename. A structural identity containing a marker followed by a delimiter
+  or value is never exempt from identity preflight, even when a redirect target
+  has the same apparent path. Non-structural or extra path material, including
+  a marker segment that would otherwise disappear in a dot-segment walk,
+  remains subject to the scan; therefore
   `token=secret/../registry` is rejected before it can disappear during
-  canonicalization. Cross-origin redirects, HTTPS downgrades, and credential-
-  or expiry-bearing redirect URLs are rejected. A metadata redirect must remain
-  within the configured `registry_base` path and must preserve the exact
-  canonical packument locator for the original metadata request. The locator is
-  the normalized `registry_base` path followed by the encoded package-name
-  component, with an encoded-version component appended only when the original
-  metadata request contained that version segment. A redirect must not add,
-  remove, or substitute that optional version component. For a scoped name the
-  structural separator is `%2F` inside the package-name segment; a literal
-  `%2F` in an identity component is encoded as `%252F` and remains distinct.
-  A same-origin redirect from `/npm-private/pkg/1` to `/npm-public/pkg/1`, or
-  to a different package or version under the same origin, is rejected and must
-  not change the persisted `registry_base`. A tarball redirect must also
-  preserve the same canonical artifact locator path; an alternate path is
-  rejected. The initial v2 contract has no implicit CDN or alternate-origin
-  exception.
+  canonicalization. Cross-origin redirects, HTTPS downgrades, and
+  credential- or expiry-bearing non-structural path material are rejected. A
+  metadata redirect must remain within the configured `registry_base` path and
+  must preserve the exact canonical packument locator for the original metadata
+  request. The locator is the normalized `registry_base` path followed by the
+  encoded package-name component, with an encoded-version component appended
+  only when the original metadata request contained that version segment. A
+  redirect must not add, remove, or substitute that optional version component.
+  For a scoped name the structural separator is `%2F` inside the package-name
+  segment; a literal `%2F` in an identity component is encoded as `%252F` and
+  remains distinct. A same-origin redirect from `/npm-private/pkg/1` to
+  `/npm-public/pkg/1`, or to a different package or version under the same
+  origin, is rejected and must not change the persisted `registry_base`. A
+  tarball redirect must also preserve the same canonical artifact locator path;
+  an alternate path is rejected. The initial v2 contract has no implicit CDN
+  or alternate-origin exception.
 
 When a tarball response supplies a redirect, the request for the current URL
 that returned its `Location` is required to discover the target. A one-hop
-redirect-target rejection therefore has exactly one request to the valid
-initial tarball URL, zero requests to the rejected target, and zero archive or
-cache publication. A direct tarball URL-policy rejection occurs before any
-tarball request. The same accounting applies to metadata redirects: a rejected
-one-hop target has exactly one request to the valid initial metadata URL and
-zero requests to the rejected target, while a direct metadata URL-policy
-rejection occurs before any metadata request. Redirect-limit failures must
-likewise stop before requesting a target beyond the allowed hop count.
+redirect-target URL-policy rejection therefore has exactly one request to the
+valid initial tarball URL, zero requests to the rejected target, and zero
+archive or cache publication. A direct tarball URL-policy rejection occurs
+before any tarball request. The same pre-request accounting applies to
+non-structural extra-path metadata redirects: a rejected one-hop target has
+exactly one request to the valid initial metadata URL and zero requests to the
+rejected target, while a direct metadata URL-policy rejection occurs before any
+metadata request. A selected-version identity rejection follows the required
+packument response accounting above when the target itself is needed to obtain
+that response. Redirect-limit failures must likewise stop before requesting a
+target beyond the allowed hop count.
 
 Every v2 URL-policy rejection uses a redacted diagnostic locator. When parsing
 succeeds, the locator may contain only the scheme, normalized lower-case host,
@@ -515,6 +558,19 @@ classification is separate from version selection: it does not select a version
 or retrieve per-version metadata. External version selection continues to use
 the precedence below.
 
+Planned v2 metadata request accounting follows this boundary. A package-name
+identity rejection occurs before the packument URL is built and therefore makes
+zero metadata requests. After the package name passes, RPM makes the one
+required packument request (with any redirect hops counted by the redirect
+contract) and performs tag classification and version selection from that
+response. A credential-looking selected version or tag target is rejected only
+after that required packument/tag-classification operation and before selected
+per-version metadata is consumed or any per-version metadata request, tarball
+request, cache mutation, or install output occurs. If the requested or tag-
+targeted version key is absent, the required packument request still counts and
+selection fails; RPM does not invent a zero-metadata result or run the
+selected-version identity gate for an unavailable version.
+
 Version selection precedence at the registry boundary:
 
 1. An empty request or `latest` resolves to the root `version` fallback when
@@ -621,9 +677,10 @@ content. Failures must be returned to callers as typed errors:
   fetch/verify cache side effect, not before all installer side effects.
 - A planned v2 provenance tuple with an invalid registry origin or base endpoint,
   a same-origin/different-path registry drift, a disallowed tarball URL or
-  redirect, a query-bearing or noncanonical credential-bearing tarball path,
-  a credential/signature/expiry-bearing or raw-dot-removal-bypass `registry_base`
-  path, malformed percent encoding, mixed-version metadata, an untrusted
+  redirect, a query-bearing or noncanonical credential-bearing tarball path, a
+  credential-looking package/artifact identity, a credential/signature/expiry-
+  bearing or raw-dot-removal-bypass `registry_base` path, malformed percent
+  encoding, mixed-version metadata, an untrusted
   lockfile source, or missing/invalid SHA-512 SRI fails before archive
   acquisition, cache mutation, extraction, and any install output publication.
   The URL-policy diagnostic uses the redaction rules above and never echoes a
@@ -685,11 +742,44 @@ Fixture expectations are defined by the owning scenario and documented in
   `/expires=2099-01-01T00:00:00Z/...`) rejected before any tarball request and
   zero cache writes while diagnostics contain neither `fixture-secret` nor the
   expiry text and omit the raw path and secret values; one-hop redirects
-  carrying those paths, plus HTTPS downgrade, query-bearing, and cross-origin
-  redirect targets, require exactly one request to the valid initial tarball
-  URL, make zero requests to the rejected target, and publish no archive or
-  cache; redirect-limit overflow stops before requesting a target beyond the
-  allowed hop count;
+  carrying those non-structural extra paths, plus HTTPS downgrade,
+  query-bearing, and cross-origin redirect targets, require exactly one request
+  to the valid initial tarball URL, make zero requests to the rejected target,
+  and publish no archive or cache; redirect-limit overflow stops before
+  requesting a target beyond the allowed hop count. Resolver-approved bare
+  structural package identities `token`, `auth`, `signature`, and `expires`
+  are accepted. Package-name candidates reaching transport identity preflight
+  with a marker followed by a delimiter or value, such as
+  `token=fixture-secret`, `token-fixture`, or `auth.signature`, are rejected
+  before the packument URL is built, with zero metadata requests; the resolver
+  may reject the same candidate earlier. URL spellings of the rejected package
+  identity such as `token%3Dfixture-secret`, `token%3dfixture-secret`, and
+  `%74oken%3Dfixture-secret` are covered with the same zero-request result.
+  Selected-version and tag-target candidates use a valid package name and a
+  packument whose selected key or tag target is one of those marker-delimited
+  values. They are rejected only after exactly one required packument request
+  and tag classification/selection, before any selected per-version metadata
+  read or request, tarball request, cache mutation, or install output. The
+  canonical-equivalent dot-segment bypasses
+  `/npm/token%3Dfixture-secret/../token` and
+  `/npm/%2E/token%3dfixture-secret/../token` remain rejected before the marker
+  material can disappear. An unavailable requested or tag-targeted version key
+  records the required packument request and selection failure without a
+  selected-version identity rejection or an invented zero-metadata result. A
+  redirect carrying one of these forms makes exactly one request to the valid
+  initial URL, zero requests to the rejected target, and publishes no archive or
+  cache. The one-initial/zero-target accounting applies to redirect targets
+  rejected as non-structural extra path material. A selected-version identity
+  carried by an otherwise exact structural redirect locator keeps the required
+  packument request and redirect-hop accounting, then rejects only after the
+  packument response and tag classification/selection; redirect handling cannot
+  legitimize an identity rejected by preflight.
+  Positive redirect fixtures use exact canonical packument and artifact locators
+  for the resolver-approved package names `token`, `auth`, `signature`, and
+  `expires` at valid version `1.0.0`; their generated canonical artifact
+  filenames are `token-1.0.0.tgz`, `auth-1.0.0.tgz`,
+  `signature-1.0.0.tgz`, and `expires-1.0.0.tgz`, and those redirects are
+  accepted only at the exact generated locators;
 - metadata redirects from a configured base such as
   `https://repo.example/npm-private/` to a same-origin alternate base such as
   `/npm-public/pkg/1`, or to a different package/version under
