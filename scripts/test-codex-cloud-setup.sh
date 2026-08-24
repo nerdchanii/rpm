@@ -103,7 +103,8 @@ make_fake_environment() {
   local repo_dir="${case_dir}/repo"
   local home_dir="${case_dir}/home"
   local canonical_rustup_home
-  local stable_toolchain_bin="${home_dir}/.rustup/toolchains/stable-fixture/bin"
+  local toolchain_name=stable-x86_64-unknown-linux-gnu
+  local stable_toolchain_bin
   local stable_canonical_toolchain_bin
   local other_toolchain_bin="${home_dir}/.rustup/toolchains/other-fixture/bin"
   local other_canonical_toolchain_bin="${home_dir}/.rustup/toolchains/other-fixture/bin"
@@ -111,6 +112,11 @@ make_fake_environment() {
   local log_file="${case_dir}/commands"
   local recipe_log="${case_dir}/recipes"
   local command_name
+
+  if [ "${mode}" = versioned-toolchain ]; then
+    toolchain_name=1.89.0-x86_64-unknown-linux-gnu
+  fi
+  stable_toolchain_bin="${home_dir}/.rustup/toolchains/${toolchain_name}/bin"
 
   mkdir -p "${trusted_bin}" "${repo_dir}" "${home_dir}/.cargo/bin" \
     "${stable_toolchain_bin}"
@@ -144,7 +150,7 @@ do
 done
 [ "\${CARGO_HOME}" = "\${original_home}/.cargo" ] || exit 91
 [ "\${RUSTUP_HOME}" = "\${canonical_rustup_home}" ] || exit 92
-[ "\${RUSTUP_TOOLCHAIN}" = stable-fixture ] || exit 93
+[ "\${RUSTUP_TOOLCHAIN}" = '${toolchain_name}' ] || exit 93
 [ "\${HOME}" != "\${original_home}" ] || exit 94
 case "\${HOME}" in '${ambient_tmp}'*) exit 95 ;; esac
 [ "\${GIT_CONFIG_GLOBAL}" = /dev/null ] || exit 96
@@ -206,7 +212,7 @@ fi
 if [ "\${1:-}" = toolchain ] && [ "\${2:-}" = list ]; then
   [ -z "\${RUSTUP_TOOLCHAIN+x}" ] || exit 93
 else
-  [ "\${RUSTUP_TOOLCHAIN}" = stable-fixture ] || exit 93
+  [ "\${RUSTUP_TOOLCHAIN}" = '${toolchain_name}' ] || exit 93
 fi
 [ "\${HOME}" != "\${original_home}" ] || exit 94
 case "\${HOME}" in '${ambient_tmp}'*) exit 95 ;; esac
@@ -219,26 +225,26 @@ if [ "\${1:-}" = toolchain ] && [ "\${2:-}" = list ] && \
   [ "\${3:-}" = --verbose ]; then
   case "\${mode}" in
     tracking-stable)
-      printf 'stable (default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      printf 'stable (default) %s\\n' '${canonical_rustup_home}/toolchains/${toolchain_name}'
       ;;
     multiple-stable)
-      printf 'stable-fixture (active, default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
-      printf 'stable-secondary (default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      printf 'stable-x86_64-unknown-linux-gnu (active, default) %s\\n' '${canonical_rustup_home}/toolchains/${toolchain_name}'
+      printf 'stable-aarch64-unknown-linux-gnu (default) %s\\n' '${canonical_rustup_home}/toolchains/${toolchain_name}'
       ;;
     custom-stable)
-      printf 'stable-custom (active, default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      printf 'stable-custom (active, default) %s\\n' '${canonical_rustup_home}/toolchains/stable-custom'
       ;;
     host-mismatch)
-      printf 'stable-foreign (active, default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      printf 'stable-aarch64-unknown-linux-gnu (active, default) %s\\n' '${canonical_rustup_home}/toolchains/${toolchain_name}'
       ;;
     *)
-      printf 'stable-fixture (active, default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      printf '%s (active, default) %s\\n' '${toolchain_name}' '${canonical_rustup_home}/toolchains/${toolchain_name}'
       ;;
   esac
   exit 0
 fi
 if [ "\${1:-}" = which ] && [ "\${2:-}" = --toolchain ] && \\
-  [ "\${3:-}" = stable-fixture ] && [ "\${4:-}" = cargo ]; then
+  [ "\${3:-}" = '${toolchain_name}' ] && [ "\${4:-}" = cargo ]; then
   case "\${mode}" in
     dotdot) printf '%s\\n' '${stable_canonical_toolchain_bin}/../bin/cargo' ;;
     unselected-toolchain) printf '%s\\n' '${other_canonical_toolchain_bin}/cargo' ;;
@@ -247,7 +253,7 @@ if [ "\${1:-}" = which ] && [ "\${2:-}" = --toolchain ] && \\
   exit 0
 fi
 if [ "\${1:-}" = which ] && [ "\${2:-}" = --toolchain ] && \\
-  [ "\${3:-}" = stable-fixture ] && [ "\${4:-}" = rustc ]; then
+  [ "\${3:-}" = '${toolchain_name}' ] && [ "\${4:-}" = rustc ]; then
   case "\${mode}" in
     rustc-missing) exit 0 ;;
     rustc-failure) printf 'fake rustc lookup failed\\n' >&2; exit 77 ;;
@@ -258,7 +264,9 @@ if [ "\${1:-}" = which ] && [ "\${2:-}" = --toolchain ] && \\
   exit 0
 fi
 if [ "\${1:-}" = component ] && [ "\${2:-}" = list ]; then
-  if [ "\${mode}" = warm ] || [ "\${mode}" = missing-just ] || [ "\${mode}" = fetch-failure ]; then
+  if [ "\${mode}" = warm ] || [ "\${mode}" = rustup-proxies ] || \
+    [ "\${mode}" = versioned-toolchain ] || [ "\${mode}" = missing-just ] || \
+    [ "\${mode}" = fetch-failure ]; then
     printf 'rustfmt-x86_64-unknown-linux-gnu\\nclippy-x86_64-unknown-linux-gnu\\n'
   fi
   exit 0
@@ -376,12 +384,12 @@ EOF
     ln -s "${case_dir}/external/cargo" "${stable_toolchain_bin}/cargo"
   fi
   if [ "${mode}" = parent-symlink ]; then
-    parent_toolchain_dir="${case_dir}/external/stable-fixture"
+    parent_toolchain_dir="${case_dir}/external/${toolchain_name}"
     mkdir -p "${parent_toolchain_dir}/bin"
     mv "${stable_toolchain_bin}/cargo" "${parent_toolchain_dir}/bin/cargo"
     mv "${stable_toolchain_bin}/rustc" "${parent_toolchain_dir}/bin/rustc"
-    rmdir "${stable_toolchain_bin}" "${home_dir}/.rustup/toolchains/stable-fixture"
-    ln -s "${parent_toolchain_dir}" "${home_dir}/.rustup/toolchains/stable-fixture"
+    rmdir "${stable_toolchain_bin}" "${home_dir}/.rustup/toolchains/${toolchain_name}"
+    ln -s "${parent_toolchain_dir}" "${home_dir}/.rustup/toolchains/${toolchain_name}"
   fi
 
   for command_name in jq node python3; do
@@ -389,13 +397,24 @@ EOF
     printf '#!/bin/bash\nexit 0\n' >"${trusted_bin}/${command_name}"
   done
 
-  if [ "${mode}" = warm ] || [ "${mode}" = missing-just ] || [ "${mode}" = fetch-failure ]; then
+  if [ "${mode}" = warm ] || [ "${mode}" = rustup-proxies ] || \
+    [ "${mode}" = versioned-toolchain ] || [ "${mode}" = missing-just ] || \
+    [ "${mode}" = fetch-failure ]; then
     for command_name in rustfmt cargo-clippy; do
       printf '#!/bin/bash\nexit 0\n' >"${trusted_bin}/${command_name}"
     done
   fi
-  if [ "${mode}" = warm ] || [ "${mode}" = fetch-failure ]; then
+  if [ "${mode}" = warm ] || [ "${mode}" = rustup-proxies ] || \
+    [ "${mode}" = versioned-toolchain ] || [ "${mode}" = fetch-failure ]; then
     printf '#!/bin/bash\nexit 0\n' >"${trusted_bin}/just"
+  fi
+
+  if [ "${mode}" = rustup-proxies ]; then
+    cp "${trusted_bin}/rustup" "${home_dir}/.cargo/bin/rustup"
+    chmod +x "${home_dir}/.cargo/bin/rustup"
+    ln -s rustup "${home_dir}/.cargo/bin/cargo"
+    ln -s rustup "${home_dir}/.cargo/bin/rustfmt"
+    ln -s rustup "${home_dir}/.cargo/bin/cargo-clippy"
   fi
 
   if [ "${omit_command}" = rustup ]; then
@@ -521,7 +540,7 @@ run_setup "${fresh_case}" "${fresh_trusted_path}" "${fresh_case}/shadow/bin" \
   "${fresh_output}" "${fresh_status}"
 [ "$(<"${fresh_status}")" -eq 0 ]
 assert_contains "$(<"${fresh_output}")" 'codex-cloud-setup: ready ('
-expected_fresh=$'rustup toolchain list --verbose\nrustup component list --toolchain stable-fixture --installed\nrustup component add --toolchain stable-fixture rustfmt\nrustup component add --toolchain stable-fixture clippy\nrustup which --toolchain stable-fixture cargo\nrustup which --toolchain stable-fixture rustc\ncargo install just --locked\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
+expected_fresh=$'rustup toolchain list --verbose\nrustup component list --toolchain stable-x86_64-unknown-linux-gnu --installed\nrustup component add --toolchain stable-x86_64-unknown-linux-gnu rustfmt\nrustup component add --toolchain stable-x86_64-unknown-linux-gnu clippy\nrustup which --toolchain stable-x86_64-unknown-linux-gnu cargo\nrustup which --toolchain stable-x86_64-unknown-linux-gnu rustc\ncargo install just --locked\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
 actual_fresh="$(commands_without_environment_markers "${fresh_log}")"
 [ "${actual_fresh}" = "${expected_fresh}" ] || {
   printf 'unexpected fresh setup commands:\n%s\n' "${actual_fresh}" >&2
@@ -552,7 +571,7 @@ warm_status="${warm_case}/status"
 run_setup "${warm_case}" "${warm_case}/trusted/bin" "${warm_case}/trusted/bin" \
   "${warm_output}" "${warm_status}"
 [ "$(<"${warm_status}")" -eq 0 ]
-expected_warm=$'rustup toolchain list --verbose\nrustup component list --toolchain stable-fixture --installed\nrustup which --toolchain stable-fixture cargo\nrustup which --toolchain stable-fixture rustc\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
+expected_warm=$'rustup toolchain list --verbose\nrustup component list --toolchain stable-x86_64-unknown-linux-gnu --installed\nrustup which --toolchain stable-x86_64-unknown-linux-gnu cargo\nrustup which --toolchain stable-x86_64-unknown-linux-gnu rustc\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
 actual_warm="$(commands_without_environment_markers "${warm_log}")"
 [ "${actual_warm}" = "${expected_warm}" ] || {
   printf 'unexpected warm setup commands:\n%s\n' "${actual_warm}" >&2
@@ -560,6 +579,87 @@ actual_warm="$(commands_without_environment_markers "${warm_log}")"
 }
 assert_not_contains "$(<"${warm_log}")" 'cargo-proxy'
 assert_not_contains "$(<"${warm_log}")" 'rustup-proxy-network-attempt'
+
+rustup_proxies_case="$(new_case rustup-proxies)"
+make_fake_environment "${rustup_proxies_case}" rustup-proxies
+rustup_proxies_output="${rustup_proxies_case}/output"
+rustup_proxies_status="${rustup_proxies_case}/status"
+run_setup "${rustup_proxies_case}" \
+  "${rustup_proxies_case}/home/.cargo/bin:${rustup_proxies_case}/trusted/bin" \
+  "${rustup_proxies_case}/trusted/bin" "${rustup_proxies_output}" \
+  "${rustup_proxies_status}"
+[ "$(<"${rustup_proxies_status}")" -eq 0 ]
+assert_contains "$(<"${rustup_proxies_output}")" 'codex-cloud-setup: ready ('
+assert_not_contains "$(<"${rustup_proxies_case}/commands")" 'rustup-proxy-network-attempt'
+
+cargo_parent_symlink_case="$(new_case cargo-parent-symlink)"
+make_fake_environment "${cargo_parent_symlink_case}" rustup-proxies
+mv "${cargo_parent_symlink_case}/home/.cargo" \
+  "${cargo_parent_symlink_case}/home/cargo-platform-cache"
+ln -s cargo-platform-cache "${cargo_parent_symlink_case}/home/.cargo"
+cargo_parent_symlink_output="${cargo_parent_symlink_case}/output"
+cargo_parent_symlink_status="${cargo_parent_symlink_case}/status"
+run_setup "${cargo_parent_symlink_case}" \
+  "${cargo_parent_symlink_case}/home/.cargo/bin:${cargo_parent_symlink_case}/trusted/bin" \
+  "${cargo_parent_symlink_case}/trusted/bin" "${cargo_parent_symlink_output}" \
+  "${cargo_parent_symlink_status}"
+assert_contains "$(<"${cargo_parent_symlink_output}")" 'Cargo bin contains a symlink path component'
+[ "$(<"${cargo_parent_symlink_status}")" -eq 1 ]
+
+regular_cargo_parent_symlink_case="$(new_case regular-cargo-parent-symlink)"
+make_fake_environment "${regular_cargo_parent_symlink_case}" warm
+cp "${regular_cargo_parent_symlink_case}/trusted/bin/"* \
+  "${regular_cargo_parent_symlink_case}/home/.cargo/bin/"
+mv "${regular_cargo_parent_symlink_case}/home/.cargo" \
+  "${regular_cargo_parent_symlink_case}/home/cargo-platform-cache"
+ln -s cargo-platform-cache "${regular_cargo_parent_symlink_case}/home/.cargo"
+regular_cargo_parent_symlink_output="${regular_cargo_parent_symlink_case}/output"
+regular_cargo_parent_symlink_status="${regular_cargo_parent_symlink_case}/status"
+run_setup "${regular_cargo_parent_symlink_case}" \
+  "${regular_cargo_parent_symlink_case}/home/.cargo/bin:${regular_cargo_parent_symlink_case}/trusted/bin" \
+  "${regular_cargo_parent_symlink_case}/trusted/bin" \
+  "${regular_cargo_parent_symlink_output}" "${regular_cargo_parent_symlink_status}"
+assert_contains "$(<"${regular_cargo_parent_symlink_output}")" \
+  'Cargo bin contains a symlink path component'
+[ "$(<"${regular_cargo_parent_symlink_status}")" -eq 1 ]
+
+rustup_proxy_writable_case="$(new_case rustup-proxy-writable)"
+make_fake_environment "${rustup_proxy_writable_case}" rustup-proxies
+chmod 777 "${rustup_proxy_writable_case}/home/.cargo/bin/rustup"
+rustup_proxy_writable_output="${rustup_proxy_writable_case}/output"
+rustup_proxy_writable_status="${rustup_proxy_writable_case}/status"
+run_setup "${rustup_proxy_writable_case}" \
+  "${rustup_proxy_writable_case}/home/.cargo/bin:${rustup_proxy_writable_case}/trusted/bin" \
+  "${rustup_proxy_writable_case}/trusted/bin" "${rustup_proxy_writable_output}" \
+  "${rustup_proxy_writable_status}"
+[ "$(<"${rustup_proxy_writable_status}")" -eq 1 ]
+assert_contains "$(<"${rustup_proxy_writable_output}")" 'writable by a group or other user'
+
+rustup_proxy_escape_case="$(new_case rustup-proxy-escape)"
+make_fake_environment "${rustup_proxy_escape_case}" warm
+ln -s "${rustup_proxy_escape_case}/trusted/bin/rustup" \
+  "${rustup_proxy_escape_case}/home/.cargo/bin/cargo"
+rustup_proxy_escape_output="${rustup_proxy_escape_case}/output"
+rustup_proxy_escape_status="${rustup_proxy_escape_case}/status"
+run_setup "${rustup_proxy_escape_case}" \
+  "${rustup_proxy_escape_case}/home/.cargo/bin:${rustup_proxy_escape_case}/trusted/bin" \
+  "${rustup_proxy_escape_case}/trusted/bin" "${rustup_proxy_escape_output}" \
+  "${rustup_proxy_escape_status}"
+[ "$(<"${rustup_proxy_escape_status}")" -eq 1 ]
+assert_contains "$(<"${rustup_proxy_escape_output}")" 'rustup proxy target must be an executable regular file'
+
+versioned_toolchain_case="$(new_case versioned-toolchain)"
+make_fake_environment "${versioned_toolchain_case}" versioned-toolchain
+versioned_toolchain_output="${versioned_toolchain_case}/output"
+versioned_toolchain_status="${versioned_toolchain_case}/status"
+run_setup "${versioned_toolchain_case}" "${versioned_toolchain_case}/trusted/bin" \
+  "${versioned_toolchain_case}/trusted/bin" "${versioned_toolchain_output}" \
+  "${versioned_toolchain_status}"
+[ "$(<"${versioned_toolchain_status}")" -eq 0 ]
+assert_contains "$(<"${versioned_toolchain_case}/commands")" \
+  'rustup which --toolchain 1.89.0-x86_64-unknown-linux-gnu cargo'
+assert_contains "$(<"${versioned_toolchain_case}/commands")" \
+  'rustup which --toolchain 1.89.0-x86_64-unknown-linux-gnu rustc'
 
 multiple_stable_case="$(new_case multiple-stable)"
 make_fake_environment "${multiple_stable_case}" multiple-stable
@@ -570,7 +670,7 @@ run_setup "${multiple_stable_case}" \
   "${multiple_stable_case}/trusted/bin" "${multiple_stable_output}" \
   "${multiple_stable_status}"
 [ "$(<"${multiple_stable_status}")" -ne 0 ]
-assert_contains "$(<"${multiple_stable_output}")" 'exactly one active/default stable host toolchain'
+assert_contains "$(<"${multiple_stable_output}")" 'exactly one active/default concrete stable host toolchain'
 
 custom_stable_case="$(new_case custom-stable)"
 make_fake_environment "${custom_stable_case}" custom-stable
@@ -581,7 +681,7 @@ run_setup "${custom_stable_case}" \
   "${custom_stable_case}/trusted/bin" "${custom_stable_output}" \
   "${custom_stable_status}"
 [ "$(<"${custom_stable_status}")" -ne 0 ]
-assert_contains "$(<"${custom_stable_output}")" 'does not match its active host name'
+assert_contains "$(<"${custom_stable_output}")" 'not a supported Cloud host'
 
 host_mismatch_case="$(new_case host-mismatch)"
 make_fake_environment "${host_mismatch_case}" host-mismatch
@@ -684,7 +784,7 @@ run_setup "${shadow_symlink_case}" \
   "${shadow_symlink_case}/trusted/bin" "${shadow_symlink_output}" \
   "${shadow_symlink_status}"
 [ "$(<"${shadow_symlink_status}")" -eq 1 ]
-assert_contains "$(<"${shadow_symlink_output}")" 'symlink path component'
+assert_contains "$(<"${shadow_symlink_output}")" 'rustup proxy target must be an executable regular file'
 
 shadow_writable_case="$(new_case shadow-writable)"
 make_fake_environment "${shadow_writable_case}" warm
@@ -802,6 +902,53 @@ default_expected_path="${default_canonical_nvm_bin}:${default_nvm_case}/home/.ca
     "$(<"${default_nvm_case}/observed-trusted-path")" >&2
   exit 1
 }
+
+nvm_writable_case="$(new_case nvm-writable)"
+make_fake_environment "${nvm_writable_case}" warm
+nvm_writable_bin="${nvm_writable_case}/home/.nvm/versions/node/vfixture/bin"
+mkdir -p "${nvm_writable_bin}"
+cp "${nvm_writable_case}/trusted/bin/"* "${nvm_writable_case}/home/.cargo/bin/"
+cp "${nvm_writable_case}/trusted/bin/node" "${nvm_writable_bin}/node"
+chmod 775 "${nvm_writable_case}/home/.nvm/versions/node/vfixture"
+nvm_writable_output="${nvm_writable_case}/output"
+nvm_writable_status="${nvm_writable_case}/status"
+run_setup "${nvm_writable_case}" __DEFAULT__ "${nvm_writable_case}/shadow/bin" \
+  "${nvm_writable_output}" "${nvm_writable_status}" \
+  "${nvm_writable_case}/home" "${nvm_writable_bin}"
+[ "$(<"${nvm_writable_status}")" -eq 1 ]
+assert_contains "$(<"${nvm_writable_output}")" 'NVM_BIN is writable by a group or other user'
+
+if [ "${EUID}" -eq 0 ]; then
+  platform_nvm_case="$(new_case platform-nvm-owner)"
+  make_fake_environment "${platform_nvm_case}" warm
+  platform_nvm_bin="${platform_nvm_case}/home/.nvm/versions/node/vfixture/bin"
+  mkdir -p "${platform_nvm_bin}"
+  cp "${platform_nvm_case}/trusted/bin/"* "${platform_nvm_case}/home/.cargo/bin/"
+  cp "${platform_nvm_case}/trusted/bin/node" "${platform_nvm_bin}/node"
+  chown -R 1001 "${platform_nvm_case}/home/.nvm"
+  platform_nvm_output="${platform_nvm_case}/output"
+  platform_nvm_status="${platform_nvm_case}/status"
+  run_setup "${platform_nvm_case}" __DEFAULT__ \
+    "${platform_nvm_case}/shadow/bin" "${platform_nvm_output}" \
+    "${platform_nvm_status}" "${platform_nvm_case}/home" "${platform_nvm_bin}"
+  [ "$(<"${platform_nvm_status}")" -eq 0 ]
+
+  mixed_nvm_case="$(new_case mixed-nvm-owner)"
+  make_fake_environment "${mixed_nvm_case}" warm
+  mixed_nvm_bin="${mixed_nvm_case}/home/.nvm/versions/node/vfixture/bin"
+  mkdir -p "${mixed_nvm_bin}"
+  cp "${mixed_nvm_case}/trusted/bin/"* "${mixed_nvm_case}/home/.cargo/bin/"
+  cp "${mixed_nvm_case}/trusted/bin/node" "${mixed_nvm_bin}/node"
+  chown -R 1001 "${mixed_nvm_case}/home/.nvm"
+  chown 1002 "${mixed_nvm_bin}/node"
+  mixed_nvm_output="${mixed_nvm_case}/output"
+  mixed_nvm_status="${mixed_nvm_case}/status"
+  run_setup "${mixed_nvm_case}" __DEFAULT__ "${mixed_nvm_case}/shadow/bin" \
+    "${mixed_nvm_output}" "${mixed_nvm_status}" "${mixed_nvm_case}/home" \
+    "${mixed_nvm_bin}"
+  [ "$(<"${mixed_nvm_status}")" -eq 1 ]
+  assert_contains "$(<"${mixed_nvm_output}")" 'does not match the pinned NVM owner'
+fi
 
 default_unset_nvm_case="$(new_case default-unset-nvm)"
 make_fake_environment "${default_unset_nvm_case}" warm

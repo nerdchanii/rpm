@@ -38,6 +38,11 @@ is an existing absolute canonical directory at
 prepended to the default trusted PATH, so a platform-managed Node binary is
 discovered before the fixed system directories. An exported empty value, a
 malformed or nonexistent directory, or an out-of-bound `NVM_BIN` fails setup.
+Every directory from `${HOME}/.nvm` through the selected `bin` must be a
+non-symlink directory owned consistently by either the setup UID or the pinned
+universal-container NVM owner UID 1001, and must not be writable by group or
+other users. Executables selected from that `bin` must have the same pinned
+owner and mode protection. Mixed or arbitrary owners fail setup.
 When `NVM_BIN` is unset, the fixed system directories remain the supported
 Node lookup path; ambient PATH entries are never used as a fallback. An
 explicit trusted PATH override is used exactly as supplied and does not
@@ -73,9 +78,12 @@ The setup performs these steps in order:
    `.cargo/` directory from the repository root through its filesystem-root
    ancestors. Public locked setup does not accept source replacement or
    private credentials.
-3. Require `rustup`, resolve the unique active/default concrete installed
-   `stable-<host>` toolchain with local `rustup toolchain list --verbose`
-   inspection, and reject custom, multiple, or host-mismatched entries. Inspect
+3. Require `rustup`, resolve the unique active/default concrete installed host
+   toolchain with local `rustup toolchain list --verbose` inspection, and
+   accept either `stable-<host>` or a versioned release such as
+   `1.89.0-<host>` for the supported `x86_64-unknown-linux-gnu` and
+   `aarch64-unknown-linux-gnu` Cloud hosts. Reject tracking, custom,
+   unsupported-host, multiple active/default, or path/name-mismatched entries. Inspect
    its `rustfmt` and `clippy` components without channel synchronization. Install
    missing components through the vetted online transport, then resolve its
    installed binaries with `rustup which --toolchain <concrete-toolchain> cargo`
@@ -106,12 +114,20 @@ code, so their socket and file access is governed by the platform sandbox,
 network, and secret policies.
 Setup never runs the full test suite or `just validate`.
 
-Every executable discovered on the trusted PATH must be a regular non-symlink
-file without traversal components. Executables under immutable platform paths
-must be platform-owned and non-writable by group or other users. Other trusted
-executables, including `${HOME}/.cargo/bin`, must be owned by the setup user and
-must also be non-writable by group or other users. This prevents a Cargo-bin
-shadow executable from replacing a platform command.
+Every executable discovered on the trusted PATH must be an executable regular
+file without traversal components, with one narrow exception for standard
+Rustup proxies. `${HOME}/.cargo/bin/cargo`, `rustfmt`, and `cargo-clippy` may be
+symlinks only when each resolves to the executable, regular, non-symlink
+`${HOME}/.cargo/bin/rustup` file. The Cargo-bin trusted root is confined to the
+canonical `${HOME}/.cargo/bin` path, and neither `${HOME}` nor its `.cargo/bin`
+path may contain a symlink for proxy or regular executables. Other symlinks
+fail setup. Executables under
+immutable platform paths must be platform-owned and non-writable by group or
+other users. Other trusted executables, including `${HOME}/.cargo/bin`, must be
+owned by the setup user and must also be non-writable by group or other users.
+The validated NVM subtree follows its pinned owner rule described above. These
+checks prevent a Cargo-bin shadow executable or mixed-owner NVM entry from
+replacing a platform command.
 
 The checked-in environment also exposes a manual `Clean worktree artifacts`
 action. It runs `scripts/worktree-cleanup.sh`, which requires a clean worktree,

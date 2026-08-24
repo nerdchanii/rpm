@@ -22,6 +22,9 @@ case "${original_home}" in
   *:*|*$'\n'*) die 'HOME must not contain colon or newline' ;;
 esac
 
+cargo_home="${original_home}/.cargo"
+cargo_bin="${cargo_home}/bin"
+
 select_canonicalizer() {
   local candidate
 
@@ -111,6 +114,8 @@ reject_symlink_components() {
 }
 
 canonical_nvm_bin=
+trusted_nvm_owner=
+platform_nvm_owner_uid=1001
 if [ "${NVM_BIN+x}" = x ]; then
   nvm_bin="${NVM_BIN}"
   [ -n "${nvm_bin}" ] || die 'NVM_BIN must not be empty'
@@ -236,6 +241,18 @@ validate_owner_and_mode() {
   metadata="$(file_metadata "${path}")"
   mode="${metadata%% *}"
   owner="${metadata#* }"
+  if [ -n "${canonical_nvm_bin}" ]; then
+    case "${path}" in
+      "${canonical_nvm_bin}"|"${canonical_nvm_bin}"/*)
+        [ -n "${trusted_nvm_owner}" ] && [ "${owner}" = "${trusted_nvm_owner}" ] || \
+          die "${label} does not match the pinned NVM owner: ${path}"
+        if (( 8#${mode} & 022 )); then
+          die "${label} is writable by a group or other user: ${path}"
+        fi
+        return 0
+        ;;
+    esac
+  fi
   case "${path}" in
     /bin/*|/usr/bin/*|/sbin/*|/usr/sbin/*|/usr/local/bin/*|/usr/local/sbin/*)
       [ "${owner}" = 0 ] || die "${label} is not owned by the platform owner: ${path}"
@@ -249,6 +266,89 @@ validate_owner_and_mode() {
   fi
 }
 
+validate_nvm_provenance() {
+  local current
+  local remainder
+  local component
+  local metadata
+  local mode
+  local owner
+
+  [ -n "${canonical_nvm_bin}" ] || return 0
+  reject_symlink_components NVM_BIN "${original_home}" "${nvm_bin}"
+  current="${canonical_home}"
+  remainder="${canonical_nvm_bin#"${canonical_home}"/}"
+  while [ -n "${remainder}" ]; do
+    case "${remainder}" in
+      */*)
+        component="${remainder%%/*}"
+        remainder="${remainder#*/}"
+        ;;
+      *)
+        component="${remainder}"
+        remainder=
+        ;;
+    esac
+    current="${current}/${component}"
+    [ -d "${current}" ] && [ ! -L "${current}" ] || \
+      die "NVM_BIN contains an unsafe directory: ${current}"
+    metadata="$(file_metadata "${current}")"
+    mode="${metadata%% *}"
+    owner="${metadata#* }"
+    if [ -z "${trusted_nvm_owner}" ]; then
+      case "${owner}" in
+        "${EUID}"|"${platform_nvm_owner_uid}") trusted_nvm_owner="${owner}" ;;
+        *) die "NVM_BIN is not owned by the setup user or pinned platform owner: ${current}" ;;
+      esac
+    fi
+    [ "${owner}" = "${trusted_nvm_owner}" ] || \
+      die "NVM_BIN ownership changes within the trusted path: ${current}"
+    if (( 8#${mode} & 022 )); then
+      die "NVM_BIN is writable by a group or other user: ${current}"
+    fi
+  done
+}
+
+validate_nvm_provenance
+
+validate_cargo_bin_provenance() {
+  local canonical_cargo_bin
+  local cargo_canonical_home
+
+  reject_symlink_components 'Cargo bin' "${original_home}" "${cargo_bin}"
+  canonical_cargo_bin="$(canonicalize_path 'Cargo bin' "${cargo_bin}")"
+  cargo_canonical_home="$(canonicalize_path HOME "${original_home}")"
+  [ "${canonical_cargo_bin}" = "${cargo_canonical_home}/.cargo/bin" ] || \
+    die "Cargo bin resolves outside its trusted HOME path: ${cargo_bin}"
+}
+
+validate_rustup_proxy() {
+  local label="$1"
+  local executable_path="$2"
+  local trusted_root="$3"
+  local proxy_parent
+  local proxy_target
+  local rustup_target="${cargo_bin}/rustup"
+  local canonical_rustup_target
+
+  [ "${trusted_root}" = "${cargo_bin}" ] || return 1
+  case "${label}:${executable_path}" in
+    "cargo:${cargo_bin}/cargo"|"rustfmt:${cargo_bin}/rustfmt"|\
+      "cargo-clippy:${cargo_bin}/cargo-clippy") ;;
+    *) return 1 ;;
+  esac
+  proxy_parent="${executable_path%/*}"
+  reject_symlink_components "${label}" "${trusted_root}" "${proxy_parent}"
+  [ -f "${rustup_target}" ] && [ ! -L "${rustup_target}" ] && \
+    [ -x "${rustup_target}" ] || \
+    die "${label} rustup proxy target must be an executable regular file: ${rustup_target}"
+  proxy_target="$(canonicalize_path "${label} rustup proxy target" "${executable_path}")"
+  canonical_rustup_target="$(canonicalize_path rustup "${rustup_target}")"
+  [ "${proxy_target}" = "${canonical_rustup_target}" ] || \
+    die "${label} rustup proxy must resolve to ${rustup_target}"
+  validate_owner_and_mode "${label} rustup proxy target" "${rustup_target}"
+}
+
 validate_executable_path() {
   local label="$1"
   local executable_path="$2"
@@ -259,11 +359,18 @@ validate_executable_path() {
     *:*|*$'\n'*) die "${label} contains an unsafe separator: ${executable_path}" ;;
   esac
   trusted_root="$(trusted_path_root_for "${executable_path}")"
-  reject_symlink_components "${label}" "${trusted_root}" "${executable_path}"
+  if [ "${trusted_root}" = "${cargo_bin}" ]; then
+    validate_cargo_bin_provenance
+  fi
   [ -d "${trusted_root}" ] || die "trusted PATH root is not a directory: ${trusted_root}"
   validate_owner_and_mode "trusted PATH root" "${trusted_root}"
-  [ -f "${executable_path}" ] && [ ! -L "${executable_path}" ] && \
-    [ -x "${executable_path}" ] || \
+  if [ -L "${executable_path}" ]; then
+    validate_rustup_proxy "${label}" "${executable_path}" "${trusted_root}" || \
+      die "${label} is not an approved rustup proxy: ${executable_path}"
+    return 0
+  fi
+  reject_symlink_components "${label}" "${trusted_root}" "${executable_path}"
+  [ -f "${executable_path}" ] && [ -x "${executable_path}" ] || \
     die "${label} must be an executable regular file: ${executable_path}"
 
   validate_owner_and_mode "${label}" "${executable_path}"
@@ -322,8 +429,6 @@ git_command="$(find_command git)"
 cargo_command="$(find_command cargo)"
 rustup_command="$(find_command rustup)"
 
-cargo_home="${original_home}/.cargo"
-cargo_bin="${cargo_home}/bin"
 just_command="$(find_optional_command just)"
 if [ -z "${just_command}" ]; then
   has_trusted_path_entry "${cargo_bin}" || die "just is missing and trusted PATH must include ${cargo_bin} before tool installation"
@@ -484,35 +589,44 @@ resolve_installed_stable_toolchain() {
   local remainder
   local canonical_toolchain_path
   local expected_toolchain_path
-  local stable_count=0
   local active_default_count=0
   local selected_toolchain=
   local selected_toolchain_path=
+  local selected_host
 
   installed_toolchains="$(run_clean_env '' '' offline "${rustup_command}" toolchain list --verbose)"
   while IFS= read -r line; do
     candidate="${line%% *}"
+    remainder="${line#"${candidate}"}"
+    case "${remainder}" in
+      ' (active, default) '*|' (default, active) '*|' (active) '*|' (default) '*) ;;
+      *) continue ;;
+    esac
+    [ "${candidate}" != stable ] || die 'rustup returned a tracking stable channel entry'
     case "${candidate}" in
-      stable) die 'rustup returned a tracking stable channel entry' ;;
       stable-*)
-        case "${candidate}" in
-          *[!A-Za-z0-9._-]*) die "rustup returned an invalid stable toolchain name: ${candidate}" ;;
-          *) ;;
+        selected_host="${candidate#stable-}"
+        case "${selected_host}" in
+          x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
+          *) die "rustup stable toolchain is not a supported Cloud host: ${candidate}" ;;
         esac
-        stable_count=$((stable_count + 1))
-        remainder="${line#"${candidate}"}"
-        case "${remainder}" in
-          ' (active, default) '*|' (default, active) '*|' (active) '*|' (default) '*)
-            active_default_count=$((active_default_count + 1))
-            selected_toolchain="${candidate}"
-            selected_toolchain_path="${remainder##* }"
-            ;;
+        ;;
+      *)
+        [[ "${candidate}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-(.+)$ ]] || \
+          die "rustup active/default toolchain is not a concrete stable host toolchain: ${candidate}"
+        selected_host="${BASH_REMATCH[1]}"
+        case "${selected_host}" in
+          x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
+          *) die "rustup versioned toolchain is not a supported Cloud host: ${candidate}" ;;
         esac
         ;;
     esac
+    active_default_count=$((active_default_count + 1))
+    selected_toolchain="${candidate}"
+    selected_toolchain_path="${remainder##* }"
   done <<<"${installed_toolchains}"
-  [ "${stable_count}" -eq 1 ] && [ "${active_default_count}" -eq 1 ] || \
-    die 'rustup must expose exactly one active/default stable host toolchain'
+  [ "${active_default_count}" -eq 1 ] || \
+    die 'rustup must expose exactly one active/default concrete stable host toolchain'
   [ -n "${selected_toolchain_path}" ] || \
     die 'rustup active/default stable toolchain has no installation path'
   reject_unsafe_path 'stable toolchain path' "${selected_toolchain_path}"
