@@ -2021,11 +2021,111 @@ for mutation, expected in (
         "namespace.__getattribute__('GITHUB_MUTATION_ROLES')",
         "getattr/setattr/__getattribute__/__ior__",
     ),
+    (
+        "sys.modules[__name__].__dict__.get('LOCAL_WRITE_ROLES').add('rpm_verifier')",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "sys.modules[__name__].__dict__.update({'LOCAL_WRITE_ROLES': {'rpm_verifier'}})",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "dict.__setitem__(sys.modules[__name__].__dict__, 'LOCAL_WRITE_ROLES', {'rpm_verifier'})",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "for item in sys.modules[__name__].__dict__.items():\n    pass",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "getattr(sys.modules[__name__], '__dict__')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "operator.attrgetter('__dict__')(namespace)",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "operator.attrgetter('__' + 'dict__')(namespace)",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "operator.attrgetter('unrelated')(namespace)",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "attrgetter('unrelated')",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "from operator import attrgetter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "from operator import attrgetter as getter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "import operator.attrgetter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "from module import harmless as attrgetter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "import module as attrgetter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "attrgetter_alias = operator.attrgetter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "match value:\n    case attrgetter:\n        pass",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "getattr_alias = builtins.getattr",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "builtins.getattr(namespace, '__' + 'dict__')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "getattr(namespace, '__' + 'dict__')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "object.__getattribute__(namespace, '__' + 'dict__')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "sys.modules[__name__]['__dict__']",
+        "dynamic namespace and capability-name subscripts are forbidden",
+    ),
+    (
+        "namespace['attrgetter']",
+        "dynamic namespace and capability-name subscripts are forbidden",
+    ),
     ("exec('GITHUB_MUTATION_ROLES.update(set())')", "dynamic exec/eval access is forbidden"),
     ("eval('GITHUB_MUTATION_ROLES')", "dynamic exec/eval access is forbidden"),
     (
         "dynamic_getattr = getattr\ndynamic_getattr(namespace, 'GITHUB_MUTATION_ROLES')",
         "dynamic namespace and code built-in aliases are forbidden",
+    ),
+    (
+        "role in GITHUB_MUTATION_ROLES in namespace",
+        "direct membership check",
+    ),
+    (
+        "role in namespace in GITHUB_MUTATION_ROLES",
+        "direct membership check",
+    ),
+    (
+        "role in GITHUB_MUTATION_ROLES not in namespace",
+        "direct membership check",
     ),
     (
         "from module import GITHUB_MUTATION_ROLES",
@@ -2054,6 +2154,32 @@ for mutation, expected in (
     (
         "(lambda GITHUB_MUTATION_ROLES: GITHUB_MUTATION_ROLES)(set())",
         "capability names cannot be used as lambda arguments",
+    ),
+    (
+        "class GITHUB_MUTATION_ROLES:\n    pass",
+        "GITHUB_MUTATION_ROLES cannot be rebound as a definition",
+    ),
+    (
+        "match value:\n    case GITHUB_MUTATION_ROLES:\n        pass",
+        "capability names cannot be used as match pattern bindings",
+    ),
+    (
+        "match value:\n"
+        "    case [item, {\"role\": GITHUB_MUTATION_ROLES}]:\n"
+        "        pass",
+        "capability names cannot be used as match pattern bindings",
+    ),
+    (
+        "match value:\n"
+        "    case [*GITHUB_MUTATION_ROLES]:\n"
+        "        pass",
+        "capability names cannot be used as match pattern bindings",
+    ),
+    (
+        "match value:\n"
+        "    case {\"role\": item, **GITHUB_MUTATION_ROLES}:\n"
+        "        pass",
+        "capability names cannot be used as match pattern bindings",
     ),
     (
         "GITHUB_MUTATION_ROLES = {'rpm_backlog_scout'}",
@@ -2093,6 +2219,50 @@ with tempfile.TemporaryDirectory() as root:
         checker.ROOT = original_root
 if errors:
     raise SystemExit(f"harmless unrelated import was rejected: {errors!r}")
+
+with tempfile.TemporaryDirectory() as root:
+    temporary_root = pathlib.Path(root)
+    hook_path = temporary_root / ".codex" / "hooks" / "agent_tool_policy.py"
+    hook_path.parent.mkdir(parents=True)
+    hook_path.write_text(hook_source + "\nclass Harmless:\n    pass\n")
+    original_root = checker.ROOT
+    try:
+        checker.ROOT = temporary_root
+        errors = []
+        checker.check_tool_policy_mutation_capabilities(errors)
+    finally:
+        checker.ROOT = original_root
+if errors:
+    raise SystemExit(f"harmless class definition was rejected: {errors!r}")
+
+with tempfile.TemporaryDirectory() as root:
+    temporary_root = pathlib.Path(root)
+    hook_path = temporary_root / ".codex" / "hooks" / "agent_tool_policy.py"
+    hook_path.parent.mkdir(parents=True)
+    hook_path.write_text(
+        hook_source
+        + "\n"
+        + "ordinary = {}\n"
+        + "ordinary.update({'unrelated': 'value'})\n"
+        + "ordinary['unrelated']\n"
+        + "ordinary.items()\n"
+        + "dict.__setitem__(ordinary, 'unrelated', 'value')\n"
+        + "namespace.unrelated\n"
+        + "operator.itemgetter('unrelated')(ordinary)\n"
+        + "operator.add(1, 2)\n"
+        + "match value:\n"
+        + "    case {\"role\": role, **rest}:\n"
+        + "        pass\n"
+    )
+    original_root = checker.ROOT
+    try:
+        checker.ROOT = temporary_root
+        errors = []
+        checker.check_tool_policy_mutation_capabilities(errors)
+    finally:
+        checker.ROOT = original_root
+if errors:
+    raise SystemExit(f"harmless dictionary and match patterns were rejected: {errors!r}")
 PY
 }
 

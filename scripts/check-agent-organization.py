@@ -667,11 +667,21 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
     relative = str(path.relative_to(ROOT))
     reported: set[str] = set()
     dynamic_names = {"getattr", "setattr", "globals", "locals", "vars", "exec", "eval"}
-    dynamic_attributes = {
+    dynamic_namespace_attributes = {"__dict__"}
+    dynamic_reflection_names = {
+        "attrgetter",
+        "getattr_static",
         "__getattribute__",
         "__setattr__",
         "__ior__",
+    }
+    forbidden_dynamic_names = {
         *dynamic_names,
+        *dynamic_namespace_attributes,
+        *dynamic_reflection_names,
+    }
+    dynamic_attributes = {
+        *forbidden_dynamic_names,
     }
 
     def reject(reason: str) -> None:
@@ -716,6 +726,15 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
             for item in ast.walk(node)
         )
 
+    def forbidden_dynamic_name(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            name = node.id
+        elif isinstance(node, ast.Attribute):
+            name = node.attr
+        else:
+            return None
+        return name if name in forbidden_dynamic_names else None
+
     def capability_root(node: ast.AST) -> str | None:
         current = node
         while isinstance(current, (ast.Attribute, ast.Subscript)):
@@ -732,27 +751,32 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
             parents[id(child)] = parent
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id in capability_names:
-            if isinstance(node.ctx, ast.Store):
-                if id(node) in canonical_targets:
+        if isinstance(node, ast.Name):
+            if node.id in capability_names:
+                if isinstance(node.ctx, ast.Store):
+                    if id(node) in canonical_targets:
+                        continue
+                    reject(
+                        f"{node.id} cannot use augmented assignment or be rebound "
+                        "outside its canonical declaration"
+                    )
+                    continue
+                parent = parents.get(id(node))
+                if (
+                    isinstance(node.ctx, ast.Load)
+                    and isinstance(parent, ast.Compare)
+                    and len(parent.ops) == 1
+                    and len(parent.comparators) == 1
+                    and any(id(comparator) == id(node) for comparator in parent.comparators)
+                    and all(isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops)
+                ):
                     continue
                 reject(
-                    f"{node.id} cannot use augmented assignment or be rebound "
-                    "outside its canonical declaration"
+                    f"{node.id} may only be read in a direct membership check; "
+                    "aliasing, argument passing, and dynamic access are forbidden"
                 )
-                continue
-            parent = parents.get(id(node))
-            if (
-                isinstance(node.ctx, ast.Load)
-                and isinstance(parent, ast.Compare)
-                and any(id(comparator) == id(node) for comparator in parent.comparators)
-                and all(isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops)
-            ):
-                continue
-            reject(
-                f"{node.id} may only be read in a direct membership check; "
-                "aliasing, argument passing, and dynamic access are forbidden"
-            )
+            elif node.id in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
         elif isinstance(node, ast.Attribute):
             root = capability_root(node.value)
             if node.attr in capability_names or root is not None:
@@ -775,6 +799,8 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
                 and (
                     node.slice.value in capability_names
                     or node.slice.value in dynamic_names
+                    or node.slice.value in dynamic_namespace_attributes
+                    or node.slice.value in dynamic_reflection_names
                 )
             ):
                 reject("dynamic namespace and capability-name subscripts are forbidden")
@@ -787,6 +813,8 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
             if function_name in {"exec", "eval"}:
                 reject("dynamic exec/eval access is forbidden")
             if function_name in {"getattr", "setattr"} or attribute_name in {
+                "getattr",
+                "setattr",
                 "__getattribute__",
                 "__setattr__",
                 "__ior__",
@@ -800,19 +828,24 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
                 for keyword in node.keywords
             ):
                 reject("capability sets cannot be passed as call arguments")
-        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
-            if node.value.id in dynamic_names:
+        elif isinstance(node, ast.Assign):
+            if isinstance(node.value, ast.Name) and node.value.id in dynamic_names:
                 reject("dynamic namespace and code built-in aliases are forbidden")
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            elif forbidden_dynamic_name(node.value) is not None:
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name in capability_names:
                 reject(f"{node.name} cannot be rebound as a definition")
+            if node.name in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
+            function_arguments = (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
             if any(
                 argument.arg in capability_names
-                for argument in (
-                    *node.args.posonlyargs,
-                    *node.args.args,
-                    *node.args.kwonlyargs,
-                )
+                for argument in function_arguments
             ) or (
                 node.args.vararg is not None
                 and node.args.vararg.arg in capability_names
@@ -821,6 +854,19 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
                 and node.args.kwarg.arg in capability_names
             ):
                 reject("capability names cannot be used as function arguments")
+            if any(argument.arg in forbidden_dynamic_names for argument in function_arguments) or (
+                node.args.vararg is not None
+                and node.args.vararg.arg in forbidden_dynamic_names
+            ) or (
+                node.args.kwarg is not None
+                and node.args.kwarg.arg in forbidden_dynamic_names
+            ):
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, ast.ClassDef):
+            if node.name in capability_names:
+                reject(f"{node.name} cannot be rebound as a definition")
+            if node.name in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
         elif isinstance(node, ast.Lambda):
             lambda_arguments = (
                 *node.args.posonlyargs,
@@ -835,8 +881,27 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
                 and node.args.kwarg.arg in capability_names
             ):
                 reject("capability names cannot be used as lambda arguments")
+            if any(argument.arg in forbidden_dynamic_names for argument in lambda_arguments) or (
+                node.args.vararg is not None
+                and node.args.vararg.arg in forbidden_dynamic_names
+            ) or (
+                node.args.kwarg is not None
+                and node.args.kwarg.arg in forbidden_dynamic_names
+            ):
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            if node.name in capability_names:
+                reject("capability names cannot be used as match pattern bindings")
+            elif node.name in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest in capability_names:
+                reject("capability names cannot be used as match pattern bindings")
+            elif node.rest in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
         elif isinstance(node, ast.alias):
             import_root = node.name.split(".", 1)[0]
+            imported_name = node.name.rsplit(".", 1)[-1]
             if node.name == "*":
                 reject("wildcard imports are forbidden in the capability hook")
             elif import_root in capability_names:
@@ -845,8 +910,13 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
                 reject("capability names cannot be introduced through import aliases")
             if node.name in dynamic_names:
                 reject("dynamic namespace and code built-ins cannot be imported")
-        elif isinstance(node, ast.ExceptHandler) and node.name in capability_names:
-            reject("capability names cannot be introduced as exception aliases")
+            elif imported_name in forbidden_dynamic_names or node.asname in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name in capability_names:
+                reject("capability names cannot be introduced as exception aliases")
+            elif node.name in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
 
     if len(errors) > policy_error_count:
         return
