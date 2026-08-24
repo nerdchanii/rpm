@@ -427,12 +427,18 @@ root manifest operation. Drains at the root snapshot boundary, after each
 directory enumeration, and after final validation must each return quiet. The
 final validation rechecks every retained ancestor parent/name edge, root/member
 directory identity, and root/member manifest identity, link count, size,
-permissions, and content-change metadata before the last drain. Any
-role-relevant mutation event observed by a retained watch fails the full
-discovery; unrelated ancestor entries remain drain-only events after their
-complete records are parsed, subject to the per-attempt event and byte
-budgets above. The last quiet result after all final checks is
-the single global linearization cut.
+permissions, and content-change metadata before the last drain. Each retained
+manifest descriptor must also participate in an atomic stable-content snapshot
+or monotonic content-version primitive spanning that final validation through
+the last quiet poll; it must detect writes through a pre-existing shared
+writable mapping and any other path that does not enqueue `IN_MODIFY`.
+Descriptor metadata plus inotify silence alone cannot establish the cut. A
+Linux adapter without this primitive is unsupported and fails closed before
+publishing. Any role-relevant mutation event observed by a retained watch
+fails the full discovery; unrelated ancestor entries remain drain-only events
+after their complete records are parsed, subject to the per-attempt event and
+byte budgets above. The last quiet result after all final checks is the single
+global linearization cut.
 The adapter must provide a documented ordering guarantee that every watched
 mutation completed before that cut has a queued event; when the filesystem or
 kernel adapter cannot provide that guarantee, discovery fails closed.
@@ -676,6 +682,11 @@ workspace contract requires planned coverage for:
   snapshot boundary, member enumeration, candidate-manifest reads, and final
   validation; each pre-cut event fails the complete discovery with no parsed
   bytes or partial member table, and queue-drain retry exhaustion fails closed;
+- an adapter that performs a write through a pre-existing shared writable
+  mapping between final manifest metadata validation and the last quiet poll,
+  proving the stable-content snapshot/content-version primitive detects the
+  write or the Linux adapter fails closed before publication; inotify-only
+  revalidation is unsupported;
 - a Linux mount-topology adapter that places a replacement bind mount over the
   validated root, ancestor, or member pathname after final metadata checks and
   before the last quiet poll, proving the mount-aware linearization primitive
