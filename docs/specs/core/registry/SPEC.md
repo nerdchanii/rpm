@@ -295,6 +295,16 @@ must consume that same snapshot or generation without rereading mutable
 registry/cache state; if it cannot, resolution fails closed. External version
 selection continues to use the precedence below.
 
+Within one resolution operation, the boundary pins exactly one immutable
+registry-document generation (or equivalent immutable cache generation) per
+package name. All parents and all selected versions for that package name reuse
+the pinned generation for version metadata, dependency declarations, and `dist`
+metadata. If a later lookup for that package name returns a different immutable
+generation, the resolver must fail deterministically before adding or merging
+the node; metadata ownership must not depend on which parent arrives first.
+Reusing the same generation is valid when different parents select one version
+or when the name resolves to multiple versions.
+
 Version selection precedence at the registry boundary:
 
 1. An empty request or `latest` resolves to the root `version` fallback when

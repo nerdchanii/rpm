@@ -76,6 +76,17 @@ for the deduplication proofs in
 `docs/specs/core/install/performance/SPEC.md`, and it is the reason later
 installer phases may download and cache a selected version at most once.
 
+Each resolution operation pins one immutable registry-document generation (or
+equivalent immutable cache generation) per external package name. Every parent
+that reaches any external version of that name reuses the package-name
+snapshot for version metadata, dependency declarations, and `dist` metadata.
+The resolved nodes retain the generation that owns those fields. If a later
+lookup for the same package name supplies a different generation, the resolver
+fails deterministically before adding or merging that node; arrival order never
+selects a metadata owner. A lookup may reuse an equivalent generation,
+including when several parents select one version or when the name resolves to
+multiple versions.
+
 Version and range satisfaction rules are owned by
 `docs/specs/core/semver/SPEC.md`. Resolver strategies call the version
 selection abstraction and record its selected version; they must not duplicate
@@ -299,7 +310,11 @@ The first strategy is an iterative FIFO worklist:
    lacks the required fields, fail closed instead of rereading live state.
 5. Select an external version through the version selection abstraction using
    that same pinned snapshot.
-6. Add or merge the resolved external package into the graph.
+6. Before adding or merging the resolved external package, compare its pinned
+   package-name generation with the operation's pinned generation. Reuse or
+   add the node only for that same generation; a differing generation fails the
+   operation deterministically instead of assigning dependencies or `dist`
+   metadata by first arrival.
 7. Enqueue that external package's dependency requests as transitive requests.
 8. Continue until the worklist is empty or resolution fails.
 
@@ -496,7 +511,12 @@ range, distinct direct request kind, and member origin after node deduplication.
 A shared-transitive-node fixture routes different requested ranges through two
 resolved external parents to the same selected
 `<name>@<version>` and proves both `Transitive` edges retain their own requested
-range and resolved parent. Coverage also keeps a local member node distinct
+range and resolved parent. A paired registry-generation fixture has two
+parents resolve the same package name to two versions through one pinned
+generation, proving both nodes use that generation for dependencies and `dist`
+metadata. A variant returns a different generation for the second version and
+fails deterministically before adding that second node. Coverage also keeps a
+local member node distinct
 from an external node with equal name and version text, preserves the same
 deterministic member ordering for external edges, rejects duplicate member
 names and root/member name collisions, and rejects a discovery result that
