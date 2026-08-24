@@ -84,6 +84,13 @@ unsigned UTF-8 bytes. Whether that resolved list is spawned sequentially or in
 parallel, and how its output is ordered, remain owned by #151 and the adopting
 command.
 
+Targeting modes use the invocation's current working directory as the supplied
+workspace root. The CLI does not search ancestor directories for a workspace
+root. An `--all` or `--workspace` invocation from a member directory or any
+nested descendant is rejected with a root-location error, even when an
+ancestor contains a valid workspace declaration. The caller must invoke the
+targeting mode from the workspace root that is supplied to #145 discovery.
+
 Targeting consumes only the validated #145 member table from the
 [`core/resolver` workspace boundary](../../core/resolver/SPEC.md). For
 `--all` and `--workspace`, #145 manifest discovery has already rejected
@@ -109,21 +116,41 @@ to the row's retained descriptor-validated native member identity and prepends
 contract. Dispatch must not reopen `package.json`, reconstruct a native path
 from `member_path_key`, or let a manifest-path or member-directory replacement
 substitute script text, the working directory, or a local `.bin`. If the child
-process interface cannot preserve that retained identity or an atomic
-equivalent through process creation, dispatch fails before the child starts.
-Immediately before spawning each selected member, the consumer must revalidate
-the retained #145 parent/name mapping and descriptor identity. A missing,
-renamed, replaced, or identity-mismatched entry fails before spawn. Retaining an
-old descriptor or changing directory through it does not satisfy this check:
-the command must not launch from a displaced directory or execute a replacement
-entry. Final revalidation and process creation form one atomic boundary. From a
-successful final revalidation through process creation, the retained
-descriptor/fd-bound working directory and target-local `.bin` identity must be
-preserved, or an atomic platform equivalent must be used. A path-based reopen,
-`current_dir` path lookup, or recomputation of the `.bin` location from
-`member_path_key` cannot establish that boundary and fails closed before the
-child starts. This is a per-target execution-time safety failure: it prevents
-that child from starting but does not claim that an earlier target did not run.
+process interface cannot preserve that retained identity through a descriptor-
+bound launch, dispatch fails before the child starts. Immediately before
+launching each selected member, the consumer validates the retained #145
+parent/name mapping and descriptor identity once as its final pathname-based
+check. A missing, renamed, replaced, or identity-mismatched entry fails before
+launch. After that check succeeds, the launch may use the exact retained member
+descriptor even if its pathname is displaced; the displacement cannot redirect
+execution because the launch performs no second pathname lookup. Retaining an
+old descriptor without this immediate validation is insufficient, while
+revalidating and then reopening by path is forbidden.
+
+The #223 launch adapter must use a descriptor-bound child setup (a fork/exec-
+style setup or a platform equivalent) that carries the retained member
+directory descriptor into the child and establishes its working directory from
+that descriptor (`fchdir` or an equivalent). `current_dir` path lookup,
+reopening the member, or recomputing a native path from `member_path_key` does
+not establish this boundary and fails closed. This is a per-target
+execution-time safety failure: it prevents that child from starting but does
+not claim that an earlier target did not run.
+
+The target-local `.bin` needs a separate shell-lookup guarantee. A directory
+descriptor alone does not protect a shell lookup that occurs after process
+creation. Before the final parent/name validation, the adapter must create or
+retain the view from the retained member descriptor and bind its entries to
+the validated binary identities. It must carry that process-private immutable
+`.bin` execution view through the shell `exec` and prepend an fd-backed view of
+it to `PATH` for every shell lookup. A platform-specific
+fd-backed path such as `/proc/self/fd/<fd>` or `/dev/fd/<fd>` is acceptable only
+after the adapter verifies that the selected shell resolves it to the same open
+view; an ordinary pathname, mutable temporary directory, symlink, or plain
+`PATH` entry is not an immutable view. If the host and shell cannot provide a
+verified descriptor-bound or immutable view for PATH lookup, #223 must gate
+member dispatch and fail closed before the child starts rather than fall back to
+path-based lookup. The adapter must record that platform capability boundary.
+
 Whether later targets run or failures aggregate remains owned by #151 and the
 adopting command. This command contract does not redefine #145 member identity
 or ordering and does not define how linker output or workspace links are
@@ -177,14 +204,17 @@ command execution:
   repeatable `--workspace <selector>`, enforcing exactly one selector value per
   `--workspace` occurrence (for StructOpt/Clap, an equivalent of
   `number_of_values(1)` rather than a greedy variadic argument), and dispatch
-  each target using its manifest, working directory, and target-local `.bin`
-  PATH rule;
+  each target using its manifest, descriptor-bound working directory, and the
+  process-private immutable or descriptor-bound target-local `.bin` PATH view;
+  member dispatch must be gated on a verified platform/shell capability and
+  fail closed when that view cannot be provided;
 - update `rpm run --help` in that same exposed CLI change to state the default
   root target and its workspace-discovery bypass, that `--all` excludes the
   root, exact package-name and portable root-relative `member_path_key`
   matching with `/` separators, mutual exclusion, stable member-table
   ordering, the attached `--workspace=<selector>` syntax for leading-hyphen
-  selectors, and unsupported filters; and
+  selectors, the requirement to invoke targeting modes from the supplied
+  workspace root without ancestor search, and unsupported filters; and
 - add an offline help regression check for those required facts without
   freezing incidental formatting or exact prose.
 
@@ -209,6 +239,8 @@ The following are input errors and must occur before any selected target runs:
   preflight before selector matching or execution;
 - a leading-hyphen selector supplied without the attached
   `--workspace=<selector>` syntax;
+- an `--all` or `--workspace` invocation whose current working directory is a
+  member or nested descendant instead of the supplied workspace root;
 - any target or filter option other than `--all` and `--workspace`, including
   `--filter`;
 - targeting options supplied to a command that has not opted in.
@@ -241,6 +273,9 @@ this contract is active. Planned coverage includes:
 - a leading-hyphen selector passed in separated form (`--workspace -pkg`),
   proving that form is rejected while the attached `--workspace=-pkg` form is
   accepted;
+- `--all` and `--workspace` invoked from a workspace member directory and from
+  a nested descendant, proving the CLI rejects those current directories
+  instead of searching ancestors for a workspace root;
 - exact-selector no-match and cross-kind ambiguity cases, including the rule
   that root and external identities cannot be selected;
 - a member whose native path uses decomposed Unicode while its table key is NFC,
@@ -262,10 +297,15 @@ this contract is active. Planned coverage includes:
   resolution but before final parent/name and descriptor revalidation, proving
   final revalidation rejects the replacement and prevents displaced or
   replacement script text and local `.bin` files from executing;
-- a process-creation race adapter that attempts a path-based reopen,
-  `current_dir` lookup, or `.bin` substitution after final revalidation,
-  proving the retained descriptor/fd-bound working directory and `.bin`
-  identity survive through process creation or dispatch fails closed;
+- a retained-identity launch fixture that displaces the member pathname after
+  the immediate parent/name and descriptor validation, proving a supported
+  descriptor-bound launch still executes the retained member and cannot be
+  redirected to the replacement, while a path-based adapter fails closed;
+- a shell-lookup race fixture that replaces the member `.bin` directory or a
+  binary entry after child creation but before a script resolves a command
+  through `PATH`, proving the process-private immutable or descriptor-bound
+  `.bin` view resolves the retained binary, or that dispatch is gated when the
+  host and shell cannot provide that guarantee;
 - a multi-target fixture where an earlier selected target has completed before
   a later target fails final identity revalidation, separating this late
   execution-time safety failure from the all-or-none missing-script preflight;

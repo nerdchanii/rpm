@@ -85,23 +85,40 @@ starts. Each `--workspace` occurrence consumes exactly one selector value, so a
 separated occurrence leaves the following script positional available to
 `rpm run`; a leading-hyphen selector uses the attached
 `--workspace=<selector>` form. Immediately before spawning a selected member,
-the consumer revalidates the retained #145 parent/name mapping and descriptor
-identity. A missing, renamed, replaced, or identity-mismatched entry fails
-before spawn; an old descriptor or `fchdir` alone cannot authorize launch from
-a displaced directory. Final revalidation and process creation form one
-atomic boundary: the retained descriptor/fd-bound working directory and
-target-local `.bin` identity remain preserved through process creation, or an
-atomic platform equivalent is required. Path-based reopen, `current_dir` path
-lookup, and `.bin` reconstruction from `member_path_key` fail closed. A late
-identity failure is an execution-time safety failure for that target; it may
-occur after an earlier target has run and does not imply that no child ran.
+the #223 launch adapter performs one final validation of the retained #145
+parent/name mapping and descriptor identity. A missing, renamed, replaced, or
+identity-mismatched entry fails before spawn; an old descriptor or `fchdir`
+alone cannot authorize launch without that immediate validation. The adapter
+then launches from the exact retained member descriptor.
+If the member pathname is displaced after that check, the retained descriptor
+still names the selected member and the displacement cannot redirect execution.
+The child setup must carry that descriptor through a fork/exec-style launch or
+platform equivalent and establish its working directory with `fchdir` or an
+equivalent descriptor operation. Path-based reopen, `current_dir` lookup, and
+`.bin` reconstruction from `member_path_key` fail closed.
+
+Shell PATH lookup occurs after process creation, so a member `.bin` directory
+descriptor alone is insufficient. Before the final parent/name validation,
+#223 must provide the view from the retained member descriptor and bind its
+entries to the validated binary identities. The adapter carries a
+process-private immutable `.bin` execution view through the child shell's
+`exec` and exposes an fd-backed view to its `PATH`. `/proc/self/fd/<fd>` or
+`/dev/fd/<fd>` may be used only after the adapter verifies that the selected
+shell resolves the path to the same open view; a normal pathname or mutable
+temporary directory is not sufficient. If the host and shell cannot provide
+this verified view, member dispatch is gated and fails closed before spawn. A
+late identity failure is an execution-time safety failure for that target; it
+may occur after an earlier target has run and does not imply that no child ran.
 Whether later targets continue or failures aggregate remains owned by #151 and
 the adopting command.
 
-A root-only invocation does not invoke workspace discovery or validate a
-`workspaces` declaration. Malformed workspace metadata cannot block the
-default root script; discovery is required only for the opted-in targeting
-modes.
+A root-only invocation uses its current working directory as the root and does
+not invoke workspace discovery or validate a `workspaces` declaration.
+Malformed workspace metadata cannot block the default root script. For
+`--all` and `--workspace`, the current working directory is the supplied
+workspace root; the CLI does not search ancestors, and a member or nested
+descendant current directory is rejected before workspace discovery or target
+selection.
 
 For `--all` and `--workspace`, #145 manifest discovery has already rejected
 duplicate member package names before publishing the table. Targeting preflight
@@ -139,6 +156,13 @@ implementation and its deterministic fixtures are owned by #223. Multi-target
 execution, diagnostic policy, sequential-versus-parallel spawning, and target
 output ordering remain gated on #151 and the adopting `run` decision as
 described above.
+
+Member-targeted fixtures must cover descriptor-bound launch after pathname
+displacement, shell PATH lookup through the process-private immutable or
+descriptor-bound `.bin` view, and fail-closed dispatch when the host/shell
+capability is unavailable. Root-location fixtures must cover invocation from a
+member directory and a nested descendant, proving that targeting does not
+perform ancestor search.
 
 A package binary produced by the install transaction (the `.bin` link owned by
 `docs/specs/core/linker/SPEC.md`) must be reachable through `rpm run` without

@@ -129,7 +129,10 @@ The `.bin` directory and its links are part of the install output transaction:
 they are created during the link phase and must be present before the install
 is reported as successful. `rpm run` consumes the resulting `node_modules/.bin`
 by prepending it to `PATH` (`docs/specs/cli/run/SPEC.md`); the linker owns how
-`.bin` is populated, `rpm run` owns how it is consumed.
+`.bin` is populated, `rpm run` owns how it is consumed. Any process-private
+descriptor-bound execution view needed for workspace-targeted shell lookup is
+owned by `cli/run` and #223; it does not change linker output or the #147/#149
+ownership of workspace-member binary-link creation.
 
 Lifecycle script execution (`preinstall`, `install`, `postinstall`, `prepare`)
 is not part of this contract. Lifecycle policy is owned separately
