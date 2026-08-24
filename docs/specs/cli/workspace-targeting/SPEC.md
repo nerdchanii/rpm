@@ -42,7 +42,12 @@ canonical-root confinement, member identity, or member ordering.
 ### Targeting modes
 
 With no targeting option, `rpm run <script>` targets the project root only. The
-root is the sole target and the script is read from the root manifest.
+root is the sole target and the script is read from the root manifest. This
+root-only path bypasses workspace discovery and does not validate the root
+manifest's `workspaces` declaration. A malformed or unsupported workspace
+declaration therefore cannot block a root-only run. Workspace discovery is
+required for `--all` and `--workspace`, and discovery errors block those modes
+before any script executes.
 
 `--all` targets every discovered workspace member in the #145 member table. It
 excludes the project root. An all-workspace invocation with zero discovered
@@ -61,7 +66,9 @@ The root identity and external-package identities are never selector
 candidates. A selector matching neither member identity is invalid. If the
 same selector matches a package-name row and a different path row, it is
 ambiguous and invalid. A selector matching both identities of one row resolves
-to that one member.
+to that one member. When selector text begins with `-`, it must use the
+attached `--workspace=<selector>` form so the parser cannot reinterpret it as
+another option.
 
 `--all` and `--workspace` cannot be used together. Repeated selectors and
 repeated resolved members are deduplicated. Selector argument order does not
@@ -128,9 +135,11 @@ command execution:
   target using its manifest, working directory, and target-local `.bin` PATH
   rule;
 - update `rpm run --help` in that same exposed CLI change to state the default
-  root target, that `--all` excludes the root, exact package-name and canonical
-  path selector matching, mutual exclusion, stable member-table ordering, and
-  unsupported filters; and
+  root target and its workspace-discovery bypass, that `--all` excludes the
+  root, exact package-name and portable root-relative `member_path_key`
+  matching with `/` separators, mutual exclusion, stable member-table
+  ordering, the attached `--workspace=<selector>` syntax for leading-hyphen
+  selectors, and unsupported filters; and
 - add an offline help regression check for those required facts without
   freezing incidental formatting or exact prose.
 
@@ -145,9 +154,11 @@ The following are input errors and must occur before any selected target runs:
 
 - `--all` combined with one or more `--workspace` selectors;
 - `--all` when the discovery table has no members;
-- a selector that is not an exact package-name or canonical root-relative path
-  match;
+- a selector that is not an exact package-name or portable root-relative
+  `member_path_key` match;
 - a selector whose package-name and path matches resolve to different rows;
+- a leading-hyphen selector supplied without the attached
+  `--workspace=<selector>` syntax;
 - any target or filter option other than `--all` and `--workspace`, including
   `--filter`;
 - targeting options supplied to a command that has not opted in.
@@ -161,10 +172,16 @@ codes, and output channels are owned by M8 #151.
 The implementation must add deterministic, offline fixtures before claiming
 this contract is active. Planned coverage includes:
 
-- a root-only project proving the default target is exactly the root;
+- a root-only project, including a malformed `workspaces` declaration, proving
+  the default target is exactly the root and bypasses workspace discovery;
 - a two-member project whose table order differs from selector argument order,
   proving `--all`, exact name selectors, exact path selectors, and duplicate
   selector deduplication;
+- a selector list naming one member by both its package name and its
+  `member_path_key`, plus repeated selectors, proving both identities resolve
+  to one table row and execute once;
+- a member whose package name or `member_path_key` begins with `-`, proving the
+  attached `--workspace=<selector>` syntax remains unambiguous to the parser;
 - exact-selector no-match and cross-kind ambiguity cases, including the rule
   that root and external identities cannot be selected;
 - `--all` plus `--workspace` conflict and zero-member all-mode validation,
@@ -177,7 +194,9 @@ this contract is active. Planned coverage includes:
 - a multi-target run with a failing script, pinning the resolved target set and
   table order. Whether later targets run, how the outcome aggregates, and
   numeric exit or diagnostic golden text wait for M8 #151 and the adopting
-  command SPEC; and
+  command SPEC;
+- a non-opted command invoked with `--all` or `--workspace`, proving parser
+  rejection occurs before command work and does not fall back to the root; and
 - an offline `rpm run --help` assertion covering the required targeting facts
   without pinning exact whitespace or prose.
 

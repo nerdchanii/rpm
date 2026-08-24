@@ -370,19 +370,20 @@ Findings:
   metadata and dependency-name traversal risks. #147 must confine workspace
   link targets and dependency-name writes. Workspace mutation, rollback, and
   recovery remain outside this PR and are owned by #222.
-- The delivery order records this contract as complete: (1) #145 owns the
-  completed manifest/discovery contract and gap audit; (2) #221 is the first
-  implementation, delivering the validated discovery table and resolver roots
-  with its executable fixtures; (3) the follow-up tracks then respect their
-  dependencies: the #147 linker track (contract first, implementation after)
-  requires #145 and #146, #223 (command targeting) requires #221 plus the #148
-  and #151 CLI/diagnostics contracts and is independent of #147 and #224, and
-  #224 may split parser/schema work after #146 from runtime/replay/publication;
-  the latter requires #221's graph/preflight implementation, the #147
-  linker/extraction-validation implementation, and #149's end-to-end fixture;
-  (4) #149's fixture follows the #145-#148 contracts and is a required input
-  to that #224 runtime slice and to lifecycle activation; (5) #222 is last and
-  requires #145, #146, #147, #149, #221, and the #224 runtime/replay/publication
-  slice before activating workspace lifecycle/recovery. #222 preserves its
-  existing ownership of lifecycle, staging, and recovery. No implementation
-  track treats completed #145 as a future delivery step.
+- The delivery order records the #145 discovery contract and this #148 command-
+  targeting contract as complete. (1) #221 is the first implementation,
+  delivering the validated discovery table and resolver roots with executable
+  fixtures. (2) The follow-up tracks then respect their dependencies: the #147
+  linker track (contract first, implementation after) requires #145 and #146;
+  #223 target resolution and dispatch requires #221 plus the #148 and #151
+  CLI/diagnostics contracts and is independent of #147 and #224; and #224 may
+  split parser/schema work after #146 from runtime/replay/publication, whose
+  implementation requires #221 graph/preflight, #147 linker/extraction
+  validation, and #149's end-to-end fixture. (3) #149 follows the #145-#148
+  contracts and is a required input to the #224 runtime slice and lifecycle
+  activation. (4) #222 is last and requires #145, #146, #147, #149, #221, and
+  the #224 runtime/replay/publication slice before activating workspace
+  lifecycle/recovery. #223 consumes #148 without redefining #145 member identity
+  or ordering or #151 failure/diagnostic ownership. #222 keeps lifecycle,
+  staging, and recovery ownership. No implementation track treats completed
+  #145 or #148 as a future delivery step.

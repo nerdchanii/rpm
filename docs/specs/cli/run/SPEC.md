@@ -74,6 +74,11 @@ filesystem identity from `member_path_key` during dispatch.
 The existing child-status rule applies to each target process; it does not
 settle how multiple target statuses are combined.
 
+A root-only invocation does not invoke workspace discovery or validate a
+`workspaces` declaration. Malformed workspace metadata cannot block the
+default root script; discovery is required only for the opted-in targeting
+modes.
+
 The workspace member table is consumed from the manifest and resolver
 contracts for #145. This SPEC does not redefine discovery, lockfile records,
 or linker output. Partial multi-target execution policy, aggregate exit codes,
