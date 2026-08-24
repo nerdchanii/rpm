@@ -67,20 +67,32 @@ The setup performs these steps in order:
    ancestors. Public locked setup does not accept source replacement or
    private credentials.
 3. Require `rustup`, inspect stable `rustfmt` and `clippy` components, and
-   install missing components.
+   install missing components. After the toolchain is available, resolve its
+   installed binaries with `rustup which --toolchain stable cargo` and
+   `rustup which --toolchain stable rustc`.
 4. Install `just` with `cargo install just --locked` when it is missing, then
    verify `rustfmt`, `cargo-clippy`, and `just` are discoverable.
 5. Verify that `jq`, `node`, and `python3` are available.
-6. Fetch the lockfile-resolved dependencies with `cargo fetch --quiet --locked`.
-7. Warm the compiler cache with
-   `cargo check --quiet --offline --locked --all-targets`.
+6. Fetch the lockfile-resolved dependencies with the resolved stable Cargo
+   binary using `cargo fetch --quiet --locked`.
+7. Warm the compiler cache with that same binary and its exact sibling Rustc
+   using `cargo check --quiet --offline --locked --all-targets`.
 
 Tool installation and locked dependency fetch are the setup operations that
-may require network access. The warm-up check is explicitly offline and uses
-the dependencies fetched in the preceding step. `--offline` constrains Cargo's
-network behavior; build scripts and procedural macros remain executable code,
-so their socket and file access is governed by the platform sandbox, network,
-and secret policies. Setup never runs the full test suite or `just validate`.
+may require network access. Cargo setup commands use the already installed
+stable toolchain paths returned by those two `rustup which` calls, with
+`RUSTUP_HOME` and both results resolved through the trusted system `realpath`
+utility. The canonical `cargo` and `rustc` files must be executable regular
+files under the same canonical toolchain `bin` directory; traversal components
+and symlinked parents or files fail setup. Exact Cargo runs omit
+`RUSTUP_TOOLCHAIN` and supply the matching `RUSTC` path. This avoids invoking a
+Rustup Cargo proxy that could synchronize the stable channel before an offline
+check.
+The warm-up check is explicitly offline and uses the dependencies fetched in
+the preceding step. `--offline` constrains Cargo's network behavior; build
+scripts and procedural macros remain executable code, so their socket and file
+access is governed by the platform sandbox, network, and secret policies.
+Setup never runs the full test suite or `just validate`.
 
 The checked-in environment also exposes a manual `Clean worktree artifacts`
 action. It runs `scripts/worktree-cleanup.sh`, which requires a clean worktree,

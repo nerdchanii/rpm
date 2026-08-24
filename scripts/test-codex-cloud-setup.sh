@@ -32,12 +32,19 @@ make_fake_environment() {
   local trusted_bin="${case_dir}/trusted/bin"
   local repo_dir="${case_dir}/repo"
   local home_dir="${case_dir}/home"
+  local canonical_rustup_home
+  local stable_toolchain_bin="${home_dir}/.rustup/toolchains/stable-fixture/bin"
+  local stable_canonical_toolchain_bin
+  local other_toolchain_bin="${home_dir}/.rustup/toolchains/other-fixture/bin"
   local ambient_tmp="${case_dir}/ambient-tmp"
   local log_file="${case_dir}/commands"
   local recipe_log="${case_dir}/recipes"
   local command_name
 
-  mkdir -p "${trusted_bin}" "${repo_dir}" "${home_dir}/.cargo/bin"
+  mkdir -p "${trusted_bin}" "${repo_dir}" "${home_dir}/.cargo/bin" \
+    "${stable_toolchain_bin}"
+  canonical_rustup_home="$(cd -- "${home_dir}/.rustup" && pwd -P)"
+  stable_canonical_toolchain_bin="$(cd -- "${stable_toolchain_bin}" && pwd -P)"
   mkdir -p "${case_dir}/shadow/bin"
   : >"${log_file}"
   : >"${recipe_log}"
@@ -46,6 +53,7 @@ make_fake_environment() {
 #!/bin/bash
 set -euo pipefail
 original_home='${home_dir}'
+canonical_rustup_home='${canonical_rustup_home}'
 for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy NO_PROXY no_proxy CARGO_HOME RUSTUP_HOME \
   CARGO_REGISTRIES_CRATES_IO_INDEX CARGO_HTTP_PROXY CARGO_NET_OFFLINE \
   CARGO_SOURCE_CRATES_IO_REPLACE_WITH CARGO_SOURCE_FOO_REPLACE_WITH \
@@ -58,7 +66,7 @@ do
   esac
 done
 [ "\${CARGO_HOME}" = "\${original_home}/.cargo" ] || exit 91
-[ "\${RUSTUP_HOME}" = "\${original_home}/.rustup" ] || exit 92
+[ "\${RUSTUP_HOME}" = "\${canonical_rustup_home}" ] || exit 92
 [ "\${RUSTUP_TOOLCHAIN}" = stable ] || exit 93
 [ "\${HOME}" != "\${original_home}" ] || exit 94
 case "\${HOME}" in '${ambient_tmp}'*) exit 95 ;; esac
@@ -80,6 +88,7 @@ set -euo pipefail
 log_file='${log_file}'
 mode='${mode}'
 original_home='${home_dir}'
+canonical_rustup_home='${canonical_rustup_home}'
 for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy \
   NO_PROXY no_proxy CARGO_REGISTRIES_CRATES_IO_INDEX CARGO_HTTP_PROXY CARGO_NET_OFFLINE \
   CARGO_SOURCE_CRATES_IO_REPLACE_WITH CARGO_SOURCE_FOO_REPLACE_WITH CARGO_REGISTRY_TOKEN RUSTUP_DIST_SERVER \
@@ -89,7 +98,7 @@ do
   [ -z "\${!variable+x}" ] || { printf 'env-leak=%s\\n' "\${variable}" >>"\${log_file}"; exit 90; }
 done
 [ "\${CARGO_HOME}" = "\${original_home}/.cargo" ] || exit 91
-[ "\${RUSTUP_HOME}" = "\${original_home}/.rustup" ] || exit 92
+[ "\${RUSTUP_HOME}" = "\${canonical_rustup_home}" ] || exit 92
 [ "\${RUSTUP_TOOLCHAIN}" = stable ] || exit 93
 [ "\${HOME}" != "\${original_home}" ] || exit 94
 case "\${HOME}" in '${ambient_tmp}'*) exit 95 ;; esac
@@ -98,6 +107,24 @@ case "\${HOME}" in '${ambient_tmp}'*) exit 95 ;; esac
 [ "\${GIT_CONFIG_NOSYSTEM}" = 1 ] || exit 98
 [ "\${GIT_TERMINAL_PROMPT}" = 0 ] || exit 99
 printf 'rustup %s\\n' "\$*" >>"\${log_file}"
+if [ "\${1:-}" = which ] && [ "\${2:-}" = --toolchain ] && \\
+  [ "\${3:-}" = stable ] && [ "\${4:-}" = cargo ]; then
+  case "\${mode}" in
+    dotdot) printf '%s\\n' '${stable_canonical_toolchain_bin}/../bin/cargo' ;;
+    *) printf '%s\\n' '${stable_canonical_toolchain_bin}/cargo' ;;
+  esac
+  exit 0
+fi
+if [ "\${1:-}" = which ] && [ "\${2:-}" = --toolchain ] && \\
+  [ "\${3:-}" = stable ] && [ "\${4:-}" = rustc ]; then
+  case "\${mode}" in
+    rustc-missing) exit 0 ;;
+    rustc-failure) printf 'fake rustc lookup failed\\n' >&2; exit 77 ;;
+    different-toolchain) printf '%s\\n' '${canonical_rustup_home}/toolchains/other-fixture/bin/rustc' ;;
+    *) printf '%s\\n' '${stable_canonical_toolchain_bin}/rustc' ;;
+  esac
+  exit 0
+fi
 if [ "\${1:-}" = component ] && [ "\${2:-}" = list ]; then
   if [ "\${mode}" = warm ] || [ "\${mode}" = missing-just ] || [ "\${mode}" = fetch-failure ]; then
     printf 'rustfmt-x86_64-unknown-linux-gnu\\nclippy-x86_64-unknown-linux-gnu\\n'
@@ -117,8 +144,18 @@ EOF
 #!/bin/bash
 set -euo pipefail
 log_file='${log_file}'
+printf 'cargo-proxy %s\\n' "\$*" >>"\${log_file}"
+printf 'rustup-proxy-network-attempt\\n' >>"\${log_file}"
+exit 88
+EOF
+
+cat >"${stable_toolchain_bin}/cargo" <<EOF
+#!/bin/bash
+set -euo pipefail
+log_file='${log_file}'
 mode='${mode}'
 original_home='${home_dir}'
+canonical_rustup_home='${canonical_rustup_home}'
 for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy \
   NO_PROXY no_proxy CARGO_HOME RUSTUP_HOME CARGO_REGISTRIES_CRATES_IO_INDEX \
   CARGO_HTTP_PROXY CARGO_NET_OFFLINE CARGO_SOURCE_CRATES_IO_REPLACE_WITH \
@@ -132,13 +169,13 @@ do
   esac
 done
 [ "\${CARGO_HOME}" = "\${original_home}/.cargo" ] || exit 91
-[ "\${RUSTUP_HOME}" = "\${original_home}/.rustup" ] || exit 92
-[ "\${RUSTUP_TOOLCHAIN}" = stable ] || exit 93
-[ "\${HOME}" != "\${original_home}" ] || exit 94
-case "\${HOME}" in '${ambient_tmp}'*) exit 95 ;; esac
-[ "\${GIT_CONFIG_GLOBAL}" = /dev/null ] || exit 96
-[ "\${GIT_CONFIG_SYSTEM}" = /dev/null ] || exit 97
-[ "\${GIT_CONFIG_NOSYSTEM}" = 1 ] || exit 98
+[ "\${RUSTUP_HOME}" = "\${canonical_rustup_home}" ] || exit 92
+[ -z "\${RUSTUP_TOOLCHAIN+x}" ] || { printf 'rustup-toolchain-leak\\n' >>"\${log_file}"; exit 93; }
+[ "\${RUSTC}" = '${stable_canonical_toolchain_bin}/rustc' ] || exit 94
+[ "\${HOME}" != "\${original_home}" ] || exit 95
+case "\${HOME}" in '${ambient_tmp}'*) exit 96 ;; esac
+[ "\${GIT_CONFIG_GLOBAL}" = /dev/null ] || exit 97
+[ "\${GIT_CONFIG_SYSTEM}" = /dev/null ] || exit 98
 [ "\${GIT_TERMINAL_PROMPT}" = 0 ] || exit 99
 printf 'cargo %s\\n' "\$*" >>"\${log_file}"
 printf 'env=scrubbed\\n' >>"\${log_file}"
@@ -158,6 +195,30 @@ case "\${1:-}" in
   check) ;;
 esac
 EOF
+
+  printf '#!/bin/bash\\nexit 0\\n' >"${stable_toolchain_bin}/rustc"
+  chmod +x "${stable_toolchain_bin}/cargo" "${stable_toolchain_bin}/rustc"
+
+  if [ "${mode}" = different-toolchain ]; then
+    mkdir -p "${other_toolchain_bin}"
+    printf '#!/bin/bash\\nexit 0\\n' >"${other_toolchain_bin}/rustc"
+    chmod +x "${other_toolchain_bin}/rustc"
+  fi
+  if [ "${mode}" = external-symlink ]; then
+    mkdir -p "${case_dir}/external"
+    printf '#!/bin/bash\\nexit 0\\n' >"${case_dir}/external/cargo"
+    chmod +x "${case_dir}/external/cargo"
+    rm -f "${stable_toolchain_bin}/cargo"
+    ln -s "${case_dir}/external/cargo" "${stable_toolchain_bin}/cargo"
+  fi
+  if [ "${mode}" = parent-symlink ]; then
+    parent_toolchain_dir="${case_dir}/external/stable-fixture"
+    mkdir -p "${parent_toolchain_dir}/bin"
+    mv "${stable_toolchain_bin}/cargo" "${parent_toolchain_dir}/bin/cargo"
+    mv "${stable_toolchain_bin}/rustc" "${parent_toolchain_dir}/bin/rustc"
+    rmdir "${stable_toolchain_bin}" "${home_dir}/.rustup/toolchains/stable-fixture"
+    ln -s "${parent_toolchain_dir}" "${home_dir}/.rustup/toolchains/stable-fixture"
+  fi
 
   for command_name in jq node python3; do
     [ "${command_name}" = "${omit_command}" ] && continue
@@ -266,13 +327,15 @@ run_setup "${fresh_case}" "${fresh_trusted_path}" "${fresh_case}/shadow/bin" \
   "${fresh_output}" "${fresh_status}"
 [ "$(<"${fresh_status}")" -eq 0 ]
 assert_contains "$(<"${fresh_output}")" 'codex-cloud-setup: ready ('
-expected_fresh=$'rustup component list --toolchain stable --installed\nrustup component add --toolchain stable rustfmt\nrustup component add --toolchain stable clippy\ncargo install just --locked\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
+expected_fresh=$'rustup component list --toolchain stable --installed\nrustup component add --toolchain stable rustfmt\nrustup component add --toolchain stable clippy\nrustup which --toolchain stable cargo\nrustup which --toolchain stable rustc\ncargo install just --locked\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
 actual_fresh="$(commands_without_environment_markers "${fresh_log}")"
 [ "${actual_fresh}" = "${expected_fresh}" ] || {
   printf 'unexpected fresh setup commands:\n%s\n' "${actual_fresh}" >&2
   exit 1
 }
 assert_contains "$(<"${fresh_log}")" 'env=scrubbed'
+assert_not_contains "$(<"${fresh_log}")" 'cargo-proxy'
+assert_not_contains "$(<"${fresh_log}")" 'rustup-proxy-network-attempt'
 assert_not_contains "$(<"${fresh_log}")" 'cargo test'
 assert_not_contains "$(<"${fresh_log}")" 'just validate'
 "${fresh_case}/home/.cargo/bin/just" check
@@ -295,12 +358,85 @@ warm_status="${warm_case}/status"
 run_setup "${warm_case}" "${warm_case}/trusted/bin" "${warm_case}/trusted/bin" \
   "${warm_output}" "${warm_status}"
 [ "$(<"${warm_status}")" -eq 0 ]
-expected_warm=$'rustup component list --toolchain stable --installed\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
+expected_warm=$'rustup component list --toolchain stable --installed\nrustup which --toolchain stable cargo\nrustup which --toolchain stable rustc\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
 actual_warm="$(commands_without_environment_markers "${warm_log}")"
 [ "${actual_warm}" = "${expected_warm}" ] || {
   printf 'unexpected warm setup commands:\n%s\n' "${actual_warm}" >&2
   exit 1
 }
+assert_not_contains "$(<"${warm_log}")" 'cargo-proxy'
+assert_not_contains "$(<"${warm_log}")" 'rustup-proxy-network-attempt'
+
+dotdot_case="$(new_case dotdot)"
+make_fake_environment "${dotdot_case}" dotdot
+dotdot_output="${dotdot_case}/output"
+dotdot_status="${dotdot_case}/status"
+run_setup "${dotdot_case}" "${dotdot_case}/home/.cargo/bin:${dotdot_case}/trusted/bin" \
+  "${dotdot_case}/trusted/bin" \
+  "${dotdot_output}" "${dotdot_status}"
+[ "$(<"${dotdot_status}")" -ne 0 ]
+assert_contains "$(<"${dotdot_output}")" 'traversal component'
+assert_not_contains "$(<"${dotdot_case}/commands")" 'cargo-proxy'
+
+external_symlink_case="$(new_case external-symlink)"
+make_fake_environment "${external_symlink_case}" external-symlink
+external_symlink_output="${external_symlink_case}/output"
+external_symlink_status="${external_symlink_case}/status"
+run_setup "${external_symlink_case}" \
+  "${external_symlink_case}/home/.cargo/bin:${external_symlink_case}/trusted/bin" \
+  "${external_symlink_case}/trusted/bin" "${external_symlink_output}" \
+  "${external_symlink_status}"
+[ "$(<"${external_symlink_status}")" -ne 0 ]
+assert_contains "$(<"${external_symlink_output}")" 'symlink path component'
+assert_not_contains "$(<"${external_symlink_case}/commands")" 'cargo-proxy'
+
+parent_symlink_case="$(new_case parent-symlink)"
+make_fake_environment "${parent_symlink_case}" parent-symlink
+parent_symlink_output="${parent_symlink_case}/output"
+parent_symlink_status="${parent_symlink_case}/status"
+run_setup "${parent_symlink_case}" \
+  "${parent_symlink_case}/home/.cargo/bin:${parent_symlink_case}/trusted/bin" \
+  "${parent_symlink_case}/trusted/bin" "${parent_symlink_output}" \
+  "${parent_symlink_status}"
+[ "$(<"${parent_symlink_status}")" -ne 0 ]
+assert_contains "$(<"${parent_symlink_output}")" 'symlink path component'
+assert_not_contains "$(<"${parent_symlink_case}/commands")" 'cargo-proxy'
+
+different_toolchain_case="$(new_case different-toolchain)"
+make_fake_environment "${different_toolchain_case}" different-toolchain
+different_toolchain_output="${different_toolchain_case}/output"
+different_toolchain_status="${different_toolchain_case}/status"
+run_setup "${different_toolchain_case}" \
+  "${different_toolchain_case}/home/.cargo/bin:${different_toolchain_case}/trusted/bin" \
+  "${different_toolchain_case}/trusted/bin" "${different_toolchain_output}" \
+  "${different_toolchain_status}"
+[ "$(<"${different_toolchain_status}")" -ne 0 ]
+assert_contains "$(<"${different_toolchain_output}")" 'different toolchains'
+assert_not_contains "$(<"${different_toolchain_case}/commands")" 'cargo-proxy'
+
+rustc_missing_case="$(new_case rustc-missing)"
+make_fake_environment "${rustc_missing_case}" rustc-missing
+rustc_missing_output="${rustc_missing_case}/output"
+rustc_missing_status="${rustc_missing_case}/status"
+run_setup "${rustc_missing_case}" \
+  "${rustc_missing_case}/home/.cargo/bin:${rustc_missing_case}/trusted/bin" \
+  "${rustc_missing_case}/trusted/bin" "${rustc_missing_output}" \
+  "${rustc_missing_status}"
+[ "$(<"${rustc_missing_status}")" -ne 0 ]
+assert_contains "$(<"${rustc_missing_output}")" 'did not return the stable rustc path'
+assert_not_contains "$(<"${rustc_missing_case}/commands")" 'cargo-proxy'
+
+rustc_failure_case="$(new_case rustc-failure)"
+make_fake_environment "${rustc_failure_case}" rustc-failure
+rustc_failure_output="${rustc_failure_case}/output"
+rustc_failure_status="${rustc_failure_case}/status"
+run_setup "${rustc_failure_case}" \
+  "${rustc_failure_case}/home/.cargo/bin:${rustc_failure_case}/trusted/bin" \
+  "${rustc_failure_case}/trusted/bin" "${rustc_failure_output}" \
+  "${rustc_failure_status}"
+[ "$(<"${rustc_failure_status}")" -ne 0 ]
+assert_contains "$(<"${rustc_failure_output}")" 'fake rustc lookup failed'
+assert_not_contains "$(<"${rustc_failure_case}/commands")" 'cargo-proxy'
 
 default_nvm_case="$(new_case default-nvm)"
 make_fake_environment "${default_nvm_case}" warm
