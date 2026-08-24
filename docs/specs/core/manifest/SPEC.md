@@ -432,11 +432,14 @@ drain, every retained root/member manifest descriptor performs the ordinary
 stable-read rule defined above: two complete descriptor-relative reads from
 offset zero require unchanged identity, link count, size, permissions, and
 content-change metadata before, between, and after the reads, and the bytes
-must be identical. A mismatch fails closed. The completion of the second
-identical read is the manifest-content linearization point. A write through a
-pre-existing shared writable mapping that completes before or during those
-reads therefore appears in the returned bytes or causes a mismatch; a write
-after that point is post-cut even when it precedes the final poll. The final
+must be identical to each other and to the exact captured bytes used for the
+immutable parsed snapshot. A mismatch against either comparison discards the
+complete discovery result and restarts discovery from fresh root/member
+descriptors; if one consistent restart cannot be completed, discovery fails
+closed. A write through a pre-existing shared writable mapping that completes
+before or during those reads therefore appears in the returned bytes or causes
+a mismatch; a write after the second identical read is post-cut even when it
+precedes the final poll. The final
 drain/poll follows the content point to check queued namespace, watch, and
 mount events. It may fail closed on role-relevant drift, but it need not be
 atomically coupled to the descriptor reads or observe a shared-mapping write.
@@ -545,8 +548,9 @@ stricter npm name-syntax checks. Duplicate member package names are rejected as
 an ambiguous declaration.
 
 Each member-table row carries the `member_path_key`, the descriptor-validated
-native member identity and parent/name mapping, and one immutable parsed snapshot
-from the same descriptor-validated manifest read. The snapshot includes every
+native member identity and parent/name mapping, one immutable parsed snapshot,
+and the exact captured manifest bytes from the same descriptor-validated read.
+The snapshot includes every
 supported manifest field, including package name, declared version text,
 `dependencies`, `devDependencies`, and `scripts`. Resolution consumes dependency
 declarations from this snapshot and must not perform a second path-based
@@ -690,11 +694,11 @@ workspace contract requires planned coverage for:
   validation; each pre-cut event fails the complete discovery with no parsed
   bytes or partial member table, and queue-drain retry exhaustion fails closed;
 - an adapter that performs a write through a pre-existing shared writable
-  mapping after final metadata validation and during each final descriptor
-  read, proving the ordinary two-read byte-identical rule returns the new
-  bytes or fails closed; a write after the second identical read and before
-  the final poll is post-cut, while role-relevant queue events still fail
-  closed;
+  mapping after the initial parsed snapshot and before or during each final
+  descriptor read, proving equal final reads that differ from the captured
+  bytes discard the whole discovery and restart or fail closed; a write after
+  the second identical read and before the final poll is post-cut, while
+  role-relevant queue events still fail closed;
 - a Linux mount-topology adapter that places a replacement bind mount over the
   validated root, ancestor, or member pathname after final metadata checks and
   before the last quiet poll, proving the mount-aware linearization primitive

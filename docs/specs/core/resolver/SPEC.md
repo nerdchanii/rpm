@@ -191,8 +191,9 @@ Every edge preserves its request kind, canonical `requested` text,
 `raw_selector`, selection-branch/classification provenance, and origin or
 resolved parent independently of node deduplication. The resolver owns this
 version-neutral provenance handoff: it records whether the edge followed a
-confirmed non-tag local branch, a matching dist-tag external branch, or an
-absent-member or missing/invalid/incompatible-member-version external branch,
+confirmed non-tag local branch, a matching dist-tag external branch, a
+`latest-root-version-fallback` external branch, or an absent-member or
+missing/invalid/incompatible-member-version external branch,
 without prescribing a lockfile field or format. Lockfile serialization, field
 naming, format version, and compatibility remain owned by #146 and
 `docs/specs/core/lockfile/SPEC.md`; that owner must receive this provenance
@@ -228,6 +229,12 @@ metadata to select a compatible package version. Invalid or unsupported request
 syntax still fails under its owning input contract; it is not converted into a
 workspace-local edge.
 
+A canonical `latest` request resolved by the registry's root `version` fallback
+is an external `latest-root-version-fallback` branch, including a legacy
+document with no `dist-tags.latest`, even when a same-name member exists with a
+valid declared version. This branch remains distinct from a matching `latest`
+dist-tag branch in selection provenance.
+
 Resolution-root creation and edge classification are separate operations. RPM
 creates every root/member resolution-root record and seeds that record's
 snapshot dependencies exactly once during the ordered initial root-set pass.
@@ -240,10 +247,10 @@ edge attaches to the already-created member node identified by
 metadata, select an external version, create another member root, enqueue the
 member snapshot again, or replay that member's dependency maps. Multiple
 incoming local edges share that existing member node. The absent-member,
-missing/invalid/incompatible-member-version, and matching-dist-tag branches
-must pass the same pinned snapshot to external metadata access and version
-selection; they must not reread mutable registry/cache state between tag
-classification and selection.
+missing/invalid/incompatible-member-version, matching-dist-tag, and
+latest-root-version-fallback branches must pass the same pinned snapshot to
+external metadata access and version selection; they must not reread mutable
+registry/cache state between tag classification and selection.
 
 Name collisions among members or between the root package and a member are
 invalid discovery input and must fail before graph traversal. A missing or
@@ -530,6 +537,11 @@ classification and external selection and proves the pinned snapshot keeps
 the selected version and metadata consistent. A tag-identity lookup failure
 fixture proves classification fails closed before
 local range matching and never falls back to a workspace-local edge.
+A legacy-latest fixture pairs a same-name member with a valid declared version
+and a legacy registry root `version`, no `versions` map, and no
+`dist-tags.latest`, proving external root-version fallback selection and
+`latest-root-version-fallback` provenance distinct from a matching `latest`
+dist-tag edge.
 Resolver workspace fixtures stop at graph construction. Lifecycle activation
 and its fixtures remain deferred to #222.
 
