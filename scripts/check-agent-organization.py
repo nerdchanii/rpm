@@ -455,6 +455,13 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
                 f"frontmatter field {key!r} must use YAML separation space after ':'",
             )
             continue
+        if key not in FRONTMATTER_ROOT_KEYS:
+            fail(
+                errors,
+                f"{path.relative_to(ROOT)}: line {line_number}: "
+                f"unsupported root frontmatter field {key!r}",
+            )
+            continue
         if key == "metadata":
             mapping_value = strip_ascii_space_inline_comment(value)
             if mapping_value not in {"", "{}"}:
@@ -476,7 +483,14 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
             description_seen = True
         parsed_value, scalar_error = parse_frontmatter_scalar(value, line_number)
         if scalar_error is not None:
-            fail(errors, f"{path.relative_to(ROOT)}: {scalar_error}")
+            if key in FRONTMATTER_NON_EMPTY_STRING_KEYS:
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    f"frontmatter field {key!r} must be a non-empty string",
+                )
+            else:
+                fail(errors, f"{path.relative_to(ROOT)}: {scalar_error}")
             continue
         if key == "description" and (
             not isinstance(parsed_value, str) or not parsed_value.strip()
@@ -485,6 +499,15 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
                 errors,
                 f"{path.relative_to(ROOT)}: line {line_number}: "
                 "frontmatter description must be a non-empty string",
+            )
+            continue
+        if key in FRONTMATTER_NON_EMPTY_STRING_KEYS and (
+            not isinstance(parsed_value, str) or not parsed_value.strip()
+        ):
+            fail(
+                errors,
+                f"{path.relative_to(ROOT)}: line {line_number}: "
+                f"frontmatter field {key!r} must be a non-empty string",
             )
             continue
         if key == "disable-model-invocation" and not isinstance(parsed_value, bool):
@@ -511,6 +534,21 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
 
 YAML_SEPARATOR_SPACE = " "
 FRONTMATTER_METADATA_KEYS = frozenset(("short-description",))
+# Hidden entry guards are repository-local extensions validated here.
+FRONTMATTER_ROOT_KEYS = frozenset((
+    "name",
+    "description",
+    "license",
+    "allowed-tools",
+    "metadata",
+    "argument-hint",
+    "disable-model-invocation",
+))
+FRONTMATTER_NON_EMPTY_STRING_KEYS = frozenset((
+    "license",
+    "argument-hint",
+    "allowed-tools",
+))
 FRONTMATTER_METADATA_VALUE_ERROR = (
     "metadata field 'short-description' must be a non-empty string"
 )
@@ -905,6 +943,14 @@ INTERFACE_METADATA_SCALAR_ERROR = (
     "ASCII space is the only separator, literal tabs are rejected, and "
     "single/double quotes with separation-space comments are supported)"
 )
+INTERFACE_METADATA_KEYS = frozenset((
+    "display_name",
+    "short_description",
+    "icon_small",
+    "icon_large",
+    "brand_color",
+    "default_prompt",
+))
 LITERAL_SCALAR_CONTROL_ERROR = (
     "literal C0 and DEL control characters are not allowed in interface metadata scalars; "
     "C1 controls and YAML noncharacters are also forbidden"
@@ -1168,6 +1214,8 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
             return [
                 f"line {line_number}: interface child {key!r} must use YAML separation space after ':'"
             ]
+        if key not in INTERFACE_METADATA_KEYS:
+            return [f"line {line_number}: unsupported interface child {key!r}"]
         if key in current:
             return [f"line {line_number}: duplicate interface child {key!r}"]
         parsed_value, scalar_error = parse_yaml_string_scalar(value, line_number)

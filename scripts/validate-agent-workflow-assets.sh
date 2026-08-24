@@ -454,6 +454,41 @@ if len(interface_errors) != 1 or unsupported_root_error not in interface_errors[
         f"misplaced interface metadata was accepted: errors={interface_errors!r}"
     )
 
+unknown_interface_child = """\
+interface:
+  display_nmae: Fixture Governance
+  short_description: Create deterministic fixtures.
+  default_prompt: Use $fixture-governance.
+"""
+interface_errors = checker.validate_skill_interface_metadata(
+    unknown_interface_child,
+    "fixture-governance",
+)
+if interface_errors != ["line 2: unsupported interface child 'display_nmae'"]:
+    raise SystemExit(
+        "unknown interface child was accepted: "
+        f"errors={interface_errors!r}"
+    )
+
+optional_interface_fields = """\
+interface:
+  display_name: Fixture Governance
+  short_description: Create deterministic fixtures.
+  icon_small: "icon-small"
+  icon_large: "icon-large"
+  brand_color: "#123456"
+  default_prompt: Use $fixture-governance.
+"""
+interface_errors = checker.validate_skill_interface_metadata(
+    optional_interface_fields,
+    "fixture-governance",
+)
+if interface_errors:
+    raise SystemExit(
+        "supported optional interface fields were rejected: "
+        f"errors={interface_errors!r}"
+    )
+
 invalid_interface_scalars = {
     "empty-display-name": ("display_name", '""', "display_name is missing", False),
     "null-display-name": (
@@ -857,6 +892,28 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             f"values={commented_values!r}, errors={frontmatter_errors!r}"
         )
 
+    scalar_root_fields_path = pathlib.Path(temp_dir) / "scalar-root-fields-SKILL.md"
+    scalar_root_fields_path.write_text(
+        "---\n"
+        "name: fixture-governance\n"
+        "description: A valid temporary skill fixture.\n"
+        "license: MIT\n"
+        "argument-hint: \"--workspace <path>\"\n"
+        "allowed-tools: \"Read, Bash\"\n"
+        "---\n"
+    )
+    frontmatter_errors = []
+    checker.validate_skill_frontmatter_name(
+        "fixture-governance",
+        scalar_root_fields_path,
+        frontmatter_errors,
+    )
+    if frontmatter_errors:
+        raise SystemExit(
+            "valid scalar root frontmatter fields were rejected: "
+            f"errors={frontmatter_errors!r}"
+        )
+
     malformed_frontmatter = {
         "nested-only-name": (
             "---\n"
@@ -1015,6 +1072,94 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             "description: [unterminated\n"
             "---\n",
             "frontmatter must be a non-empty YAML string scalar",
+        ),
+        "unsupported-root-field": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "argument-hnit: typo\n"
+            "---\n",
+            "unsupported root frontmatter field 'argument-hnit'",
+        ),
+        "allowed-tools-collection-deferred": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "allowed-tools: [Read, Bash]\n"
+            "---\n",
+            "frontmatter field 'allowed-tools' must be a non-empty string",
+        ),
+        "license-null": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "license: null\n"
+            "---\n",
+            "frontmatter field 'license' must be a non-empty string",
+        ),
+        "license-empty": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "license: \"\"\n"
+            "---\n",
+            "frontmatter field 'license' must be a non-empty string",
+        ),
+        "license-boolean": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "license: true\n"
+            "---\n",
+            "frontmatter field 'license' must be a non-empty string",
+        ),
+        "argument-hint-null": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "argument-hint: null\n"
+            "---\n",
+            "frontmatter field 'argument-hint' must be a non-empty string",
+        ),
+        "argument-hint-empty": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "argument-hint: \"\"\n"
+            "---\n",
+            "frontmatter field 'argument-hint' must be a non-empty string",
+        ),
+        "argument-hint-boolean": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "argument-hint: false\n"
+            "---\n",
+            "frontmatter field 'argument-hint' must be a non-empty string",
+        ),
+        "allowed-tools-null": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "allowed-tools: null\n"
+            "---\n",
+            "frontmatter field 'allowed-tools' must be a non-empty string",
+        ),
+        "allowed-tools-empty": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "allowed-tools: \"\"\n"
+            "---\n",
+            "frontmatter field 'allowed-tools' must be a non-empty string",
+        ),
+        "allowed-tools-boolean": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "allowed-tools: true\n"
+            "---\n",
+            "frontmatter field 'allowed-tools' must be a non-empty string",
         ),
         "control-in-comment": (
             "---\n"
