@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# safe-direct-merge.sh — gate-checked squash merge for PRs the scheduled
+# safe-direct-merge.sh — read-only gate audit for PRs the scheduled
 # merge-gatekeeper cannot reach (e.g. a PR with no closing issue, or issues
 # outside the agent lifecycle). Verifies the SAME conditions the gate checks
-# in .agents/workflows/backlog-policy.json `merge_gate`, blocks on unsafe linked
-# worktrees, squash-merges, and safely cleans up matching branches
-# without paying the full pre-push test gate on ref deletions.
+# in .agents/workflows/backlog-policy.json `merge_gate` and blocks on unsafe
+# linked worktrees. GitHub does not expose an atomic expected-base condition,
+# so the direct mutation path remains disabled.
 
 usage() {
   cat <<'USAGE'
-usage: safe-direct-merge.sh [--dry-run] [--allow-findings] <pr> [<pr> ...]
+usage: safe-direct-merge.sh --dry-run [--allow-findings] <pr>
 
-Gate-checked squash merge for one or more PRs, for the manual path the
-scheduled merge-gatekeeper cannot reach (a PR with no closing issue, or issues
-outside the agent lifecycle). Pass PRs in dependency-friendly order: land a
-referenced PR before one that references it.
+Read-only gate audit for one PR that the scheduled merge-gatekeeper cannot
+reach (a PR with no closing issue, or an issue outside the agent lifecycle).
 
 For each PR, verifies (mirroring merge_gate in backlog-policy.json):
   - state OPEN, not draft
@@ -28,18 +26,18 @@ Then, per PR:
   - rejects cross-repository PRs
   - rejects dirty git worktrees still holding the PR branch
   - preserves primary/current worktrees and blocks on any other linked checkout
-  - squash-merges via `gh pr merge --squash`
-  - deletes the merged remote branch through an encoded, pinned API endpoint
-  - deletes only an unreferenced local branch still matching the merged head
+  - reports the audited head and branch without mutating GitHub or Git refs
+  - blocks non-dry-run until a transactional expected-base primitive exists
 
 Options:
-  --dry-run          verify and report only; merge nothing
+  --dry-run          verify and report only; this is the only successful mode
   --allow-findings   override only the local unresolved-thread count; platform
                      conversation-resolution enforcement still applies
 
-Does NOT touch issue/PR labels, never force-pushes, never requests @codex,
-and never blocks on a fresh Automatic review. Execute only the clean-main
-launcher configured in rpm.safeDirectMergeTrustedCheckout; PR copies fail.
+Does NOT merge, delete refs, touch issue/PR labels, request @codex, or block on
+a fresh Automatic review. Execute only the clean-main launcher configured in
+rpm.safeDirectMergeTrustedCheckout; PR copies fail. The scheduled
+merge-gatekeeper is the sole mutation path.
 USAGE
 }
 
@@ -84,8 +82,10 @@ trusted_stage="${RPM_SAFE_DIRECT_MERGE_STAGE:-launcher}"
 # A shared worktree can create replace refs without dirtying the trusted main
 # checkout. Object identity for the trust root must ignore those refs.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
-  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE
-export GIT_NO_REPLACE_OBJECTS=1
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE GIT_CONFIG_PARAMETERS \
+  GIT_EXEC_PATH GIT_TEMPLATE_DIR
+export GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 \
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=0
 export GH_HOST=github.com
 
 if [ "$trusted_stage" = "launcher" ]; then
@@ -122,7 +122,8 @@ if [ "$trusted_stage" = "launcher" ]; then
     echo "safe-direct-merge.error=trusted-checkout-repository-mismatch" >&2
     exit 2
   fi
-  if [ -n "$(git -C "$trusted_checkout" -c core.fsmonitor=false \
+  if [ -n "$(GIT_OPTIONAL_LOCKS=0 git -C "$trusted_checkout" \
+    -c core.fsmonitor=false -c core.hooksPath=/dev/null \
     status --porcelain --untracked-files=all 2>/dev/null || printf 'status-failed')" ]; then
     echo "safe-direct-merge.error=trusted-checkout-dirty" >&2
     exit 2
@@ -221,7 +222,8 @@ if ! configured_checkout="$(git -C "$repo_root" config --local --path --get rpm.
   || [ "$(canonical_path "$configured_checkout")" != "$trusted_checkout" ] \
   || [ "$(git -C "$trusted_checkout" symbolic-ref --short HEAD 2>/dev/null || true)" != "main" ] \
   || [ "$(git -C "$trusted_checkout" rev-parse HEAD 2>/dev/null || true)" != "$trusted_main_sha" ] \
-  || [ -n "$(git -C "$trusted_checkout" -c core.fsmonitor=false \
+  || [ -n "$(GIT_OPTIONAL_LOCKS=0 git -C "$trusted_checkout" \
+       -c core.fsmonitor=false -c core.hooksPath=/dev/null \
        status --porcelain --untracked-files=all 2>/dev/null || printf 'status-failed')" ] \
   || [ "$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)" \
        != "$(git -C "$trusted_checkout" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)" ]; then
@@ -260,6 +262,10 @@ if [ "${#prs[@]}" -eq 0 ]; then
   usage >&2
   exit 2
 fi
+if [ "${#prs[@]}" -ne 1 ]; then
+  echo "safe-direct-merge.error=one-pr-per-invocation" >&2
+  exit 2
+fi
 
 if ! jq -e '
   (.merge_gate.required_checks | type == "array" and length > 0)
@@ -283,7 +289,7 @@ validate_merge_enforcement() {
   local required_checks_json
   required_checks_json="$(jq -cn --args '$ARGS.positional' "${required_checks[@]}")"
 
-  # A successful `gh pr merge` can mean queue admission. This direct path has
+  # A successful direct merge request can mean queue admission. This path has
   # no queue observer, so it must reject any applicable merge-queue rule and
   # prove the complete active-rule response before considering classic branch
   # protection or a ruleset sufficient.
@@ -351,9 +357,14 @@ validate_merge_enforcement() {
 
 validate_required_checks() {
   local pr="$1"
-  local checks_json bucket
+  local checks_json checks_rc bucket
   local failed=() pending=()
-  if ! checks_json="$(gh pr checks "$pr" --repo "$repo" --json name,bucket 2>/dev/null)"; then
+  checks_rc=0
+  checks_json="$(gh pr checks "$pr" --repo "$repo" --json name,bucket 2>/dev/null)" \
+    || checks_rc=$?
+  # gh returns 8 when any check on the PR is pending. The policy gate owns only
+  # required_checks, so a valid JSON payload must still be classified by name.
+  if [ "$checks_rc" -ne 0 ] && [ "$checks_rc" -ne 8 ]; then
     echo "skip: unable to inspect required checks"; return 1
   fi
   if ! printf '%s' "$checks_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
@@ -427,81 +438,16 @@ validate_expected_head() {
   fi
 }
 
-validate_completed_merge() {
-  local pr="$1" expected_head="$2" merged_json
-  if ! merged_json="$(gh pr view "$pr" --repo "$repo" \
-    --json number,url,state,headRefOid)"; then
-    echo "FAIL: merge command returned success but PR state could not be verified"
+validate_base_target() {
+  local pr="$1" base_branch
+  if ! base_branch="$(gh pr view "$pr" --repo "$repo" --json baseRefName -q .baseRefName)"; then
+    echo "skip: unable to recheck PR base branch; refusing to merge"
     return 1
   fi
-  if ! jq -e --argjson number "$pr" --arg expected_url "https://github.com/$repo/pull/$pr" \
-    --arg expected_head "$expected_head" '
-      type == "object"
-      and (.number == $number)
-      and ((.url | type == "string")
-           and ((.url | sub("/$"; "") | ascii_downcase)
-                == ($expected_url | ascii_downcase)))
-      and (.state == "MERGED")
-      and (.headRefOid == $expected_head)
-    ' <<<"$merged_json" >/dev/null 2>&1; then
-    echo "FAIL: merge command did not prove the expected PR reached MERGED state"
+  if [ "$base_branch" != "main" ]; then
+    echo "skip: base branch $base_branch is not protected main; refusing to merge"
     return 1
   fi
-}
-
-delete_remote_branch() {
-  local branch="$1" encoded_ref delete_output delete_rc http_status
-  if ! encoded_ref="$(jq -rn --arg ref "heads/$branch" '$ref | @uri')" \
-    || [ -z "$encoded_ref" ]; then
-    echo "FAIL: unable to encode remote branch ref $branch"
-    return 1
-  fi
-  set +e
-  delete_output="$(gh api --include -X DELETE \
-    "repos/$repo/git/refs/$encoded_ref" 2>&1)"
-  delete_rc=$?
-  set -e
-  if [ "$delete_rc" -eq 0 ]; then
-    echo "deleted remote branch $branch"
-    return 0
-  fi
-  http_status="$(printf '%s\n' "$delete_output" \
-    | sed -nE 's/^HTTP\/[^ ]+ ([0-9]{3}).*/\1/p' | tail -n 1)"
-  if [ "$http_status" = "404" ]; then
-    echo "remote branch $branch is already absent"
-    return 0
-  fi
-  echo "FAIL: unable to delete remote branch $branch (http=${http_status:-unknown})"
-  return 1
-}
-
-delete_matching_local_branch() {
-  local branch="$1" expected_head="$2" checked_out="$3"
-  local local_ref="refs/heads/$branch" local_oid show_ref_rc
-  set +e
-  local_oid="$(git show-ref --verify --hash "$local_ref" 2>/dev/null)"
-  show_ref_rc=$?
-  set -e
-  if [ "$show_ref_rc" -eq 1 ]; then
-    return 0
-  fi
-  if [ "$show_ref_rc" -ne 0 ]; then
-    echo "FAIL: unable to inspect local branch $branch"
-    return 1
-  fi
-  if [ "$checked_out" = "true" ]; then
-    echo "note: retained checked-out local branch $branch"
-    return 0
-  fi
-  if [ "$local_oid" != "$expected_head" ]; then
-    echo "note: retained divergent local branch $branch at $local_oid"
-    return 0
-  fi
-  if ! git -c core.hooksPath=/dev/null update-ref -d "$local_ref" "$expected_head"; then
-    echo "FAIL: unable to delete matching local branch $branch"
-    return 1
-  fi
-  echo "deleted matching local branch $branch"
 }
 
 merge_one() {
@@ -568,10 +514,9 @@ merge_one() {
     return 1
   fi
 
-  # Check every matching worktree before removing any of them. A dirty
-  # worktree may contain user changes, so it is never deleted implicitly.
+  # Check every matching worktree. A dirty worktree may contain user changes,
+  # and a clean linked checkout can change concurrently, so neither is removed.
   local wt wt_branch wt_status worktree_inventory primary_worktree
-  local branch_checked_out=false
   if ! worktree_inventory="$(git worktree list --porcelain 2>/dev/null)"; then
     echo "skip: unable to inventory git worktrees; refusing to merge"; return 1
   fi
@@ -588,8 +533,8 @@ merge_one() {
       echo "skip: unable to inspect branch for worktree $wt; refusing to merge"; return 1
     fi
     if [ "$wt_branch" = "$branch" ]; then
-      branch_checked_out=true
-      if ! wt_status="$(git -C "$wt" -c core.fsmonitor=false \
+      if ! wt_status="$(GIT_OPTIONAL_LOCKS=0 git -C "$wt" \
+        -c core.fsmonitor=false -c core.hooksPath=/dev/null \
         status --ignored --porcelain --untracked-files=all 2>/dev/null)"; then
         echo "skip: unable to inspect worktree $wt; refusing to merge"; return 1
       fi
@@ -619,47 +564,23 @@ merge_one() {
   if ! validate_expected_head "$pr" "$head_oid"; then
     return 1
   fi
+  if ! validate_base_target "$pr"; then
+    return 1
+  fi
 
   echo "OK: branch=$branch mergeable=$mergeable mergeState=$merge_state checks=green"
 
   if [ "$dry_run" = "true" ]; then
-    echo "(dry-run) would squash-merge and delete branch $branch"
+    echo "(dry-run) gates satisfied for branch $branch at head $head_oid"
     return 0
   fi
 
-  # Re-run every local observation at the final merge boundary while relying
-  # on the verified GitHub rule for transactional enforcement.
-  if ! validate_merge_enforcement \
-    || ! validate_required_checks "$pr" \
-    || ! validate_review_context "$pr" \
-    || ! validate_expected_head "$pr" "$head_oid"; then
-    return 1
-  fi
-
-  # Squash merge (non-interactive). No --delete-branch: cleanup uses the
-  # repository-pinned GitHub API endpoint below.
-  if ! gh pr merge "$pr" --repo "$repo" --squash --match-head-commit "$head_oid" < /dev/null; then
-    echo "FAIL: gh pr merge returned non-zero"; return 1
-  fi
-
-  # A successful CLI call may mean queue admission. Prove completion before
-  # deleting any ref, then use the repository-pinned and percent-encoded API
-  # endpoint so remote.origin.pushurl and URL fragments cannot redirect it.
-  if ! validate_completed_merge "$pr" "$head_oid"; then
-    return 1
-  fi
-  if ! delete_remote_branch "$branch"; then
-    echo "FAIL: PR #$pr merged but remote branch cleanup is incomplete"
-    return 1
-  fi
-  # Delete only an unreferenced local ref that still equals the merged head.
-  # Checked-out or divergent refs may contain local work and are retained.
-  if ! delete_matching_local_branch "$branch" "$head_oid" "$branch_checked_out"; then
-    echo "FAIL: PR #$pr merged but local branch cleanup is incomplete"
-    return 1
-  fi
-
-  echo "merged #$pr"
+  # GitHub's direct merge boundary can pin the head SHA, but it cannot pin the
+  # PR base. A concurrent base change would preserve the head while redirecting
+  # the mutation to another branch. No GitHub or Git mutation follows this
+  # point until an atomic expected-base condition is available.
+  echo "skip: transactional expected-base primitive is unavailable; diagnostic dry-run only; refusing merge or branch cleanup"
+  return 1
 }
 
 rc=0

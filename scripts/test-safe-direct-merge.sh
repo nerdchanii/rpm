@@ -107,17 +107,6 @@ case "$*" in
       && bypass='[{"actor_id":1,"actor_type":"RepositoryRole","bypass_mode":"always"}]'
     printf '{"enforcement":"active","bypass_actors":%s}\n' "$bypass"
     ;;
-  *"api --include -X DELETE repos/owner/repo/git/refs/"*)
-    if [ "${MOCK_GH_SCENARIO:-ok}" = "delete-404" ]; then
-      printf 'HTTP/2.0 404 Not Found\n\n'
-      exit 1
-    fi
-    if [ "${MOCK_GH_SCENARIO:-ok}" = "delete-failure" ]; then
-      printf 'HTTP/2.0 500 Internal Server Error\n\n'
-      exit 1
-    fi
-    printf 'HTTP/2.0 204 No Content\n\n'
-    ;;
   *"--json number,url,state,headRefOid"*)
     merged_state='MERGED'
     [ "${MOCK_GH_SCENARIO:-ok}" = "merge-not-completed" ] && merged_state='OPEN'
@@ -153,6 +142,11 @@ case "$*" in
     fi
     printf '%s\n' "$oid"
     ;;
+  *"--json baseRefName"*)
+    base_branch='main'
+    [ "${MOCK_GH_SCENARIO:-ok}" = "base-race" ] && base_branch='develop'
+    printf '%s\n' "$base_branch"
+    ;;
   *"pr checks"*)
     if [ "${MOCK_GH_SCENARIO:-ok}" = "check-race" ]; then
       count=0
@@ -166,11 +160,19 @@ case "$*" in
       fi
     elif [ "${MOCK_GH_SCENARIO:-ok}" = "duplicate-mixed" ]; then
       printf '[{"name":"metadata","bucket":"pass"},{"name":"metadata","bucket":"fail"},{"name":"verify","bucket":"pass"}]\n'
+    elif [ "${MOCK_GH_SCENARIO:-ok}" = "unrelated-pending" ]; then
+      printf '[{"name":"metadata","bucket":"pass"},{"name":"verify","bucket":"pass"},{"name":"optional","bucket":"pending"}]\n'
+      exit 8
     else
       printf '[{"name":"metadata","bucket":"pass"},{"name":"verify","bucket":"pass"}]\n'
     fi
     ;;
-  *"pr merge"*) printf 'merged\n' ;;
+  *"pr merge"*)
+    if [ "${MOCK_GH_SCENARIO:-ok}" = "base-race" ]; then
+      printf 'develop\n' >"${BASE_RACE_LOG}"
+    fi
+    printf 'merged\n'
+    ;;
   *) printf 'gh mock: unsupported command: %s\n' "$*" >&2; exit 1 ;;
 esac
 MOCK_GH
@@ -238,9 +240,9 @@ fi
 if [ "${1:-}" = "-C" ]; then
   worktree="$2"
   shift 2
-  if [ "${1:-}" = "-c" ] && [ "${2:-}" = "core.fsmonitor=false" ]; then
+  while [ "${1:-}" = "-c" ]; do
     shift 2
-  fi
+  done
   if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--show-toplevel" ]; then
     printf '%s\n' "${worktree}"
     exit 0
@@ -307,6 +309,44 @@ if [ "${1:-}" = "-C" ]; then
   printf 'git mock: unsupported -C command in %s\n' "${worktree}" >&2
   exit 1
 fi
+if [ "${1:-}" = "init" ] && [ "${2:-}" = "--bare" ]; then
+  exit 0
+fi
+if [[ "${1:-}" == --git-dir=* ]]; then
+  shift
+  while [ "${1:-}" = "-c" ]; do
+    shift 2
+  done
+  if [ "${1:-}" = "ls-remote" ]; then
+    remote_ref="${!#}"
+    case "${MOCK_REMOTE_BRANCH_SCENARIO:-matching}" in
+      absent) exit 2 ;;
+      network-error) exit 128 ;;
+      advanced)
+        printf 'fedcba9876543210fedcba9876543210fedcba98\t%s\n' "$remote_ref"
+        ;;
+      push-race)
+        if [ -f "${REMOTE_RACE_LOG}" ]; then
+          printf 'fedcba9876543210fedcba9876543210fedcba98\t%s\n' "$remote_ref"
+        else
+          printf '%s\t%s\n' "${EXPECTED_HEAD_OID}" "$remote_ref"
+        fi
+        ;;
+      *) printf '%s\t%s\n' "${EXPECTED_HEAD_OID}" "$remote_ref" ;;
+    esac
+    exit 0
+  fi
+  if [ "${1:-}" = "push" ]; then
+    printf '%s\n' "$*" >>"${PUSH_LOG}"
+    if [ "${MOCK_REMOTE_BRANCH_SCENARIO:-matching}" = "push-race" ]; then
+      : >"${REMOTE_RACE_LOG}"
+      exit 1
+    fi
+    exit 0
+  fi
+  printf 'git mock: unsupported isolated transport command: %s\n' "$*" >&2
+  exit 1
+fi
 if [ "${1:-}" = "worktree" ] && [ "${2:-}" = "list" ]; then
   if [ "${MOCK_GIT_SCENARIO:-}" = "inventory-failure" ]; then
     exit 1
@@ -330,24 +370,13 @@ if [ "${1:-}" = "worktree" ] && [ "${2:-}" = "remove" ]; then
   fi
   exit 0
 fi
-if [ "${1:-}" = "push" ]; then
-  printf '%s\n' "$*" >> "${PUSH_LOG}"
-  exit 0
-fi
 if [ "${1:-}" = "show-ref" ] && [ "${2:-}" = "--verify" ] && [ "${3:-}" = "--hash" ]; then
-  if [ "${MOCK_LOCAL_BRANCH_SCENARIO:-absent}" = "absent" ]; then
-    exit 1
-  fi
-  if [ "${MOCK_LOCAL_BRANCH_SCENARIO:-}" = "divergent" ]; then
-    printf 'fedcba9876543210fedcba9876543210fedcba98\n'
-  else
-    printf '0123456789abcdef0123456789abcdef01234567\n'
-  fi
-  exit 0
+  printf '%s\n' "$*" >>"${LOCAL_REF_LOG}"
+  exit 99
 fi
 if [ "${1:-}" = "update-ref" ] && [ "${2:-}" = "-d" ]; then
   printf '%s\n' "$*" >>"${LOCAL_REF_LOG}"
-  exit 0
+  exit 99
 fi
 if [ "${1:-}" = "branch" ]; then
   exit 0
@@ -363,7 +392,9 @@ export MOCK_REPO="${mock_repo}" GH_LOG="${tmp_dir}/gh.log" \
   COLLECTOR_LOG="${tmp_dir}/collector.log" WORKTREE_LOG="${tmp_dir}/worktree.log" \
   HEAD_OID_LOG="${tmp_dir}/head-oid.log" REVIEW_CALL_LOG="${tmp_dir}/review.log" \
   CHECK_CALL_LOG="${tmp_dir}/check.log" PUSH_LOG="${tmp_dir}/push.log" \
-  LOCAL_REF_LOG="${tmp_dir}/local-ref.log" \
+  LOCAL_REF_LOG="${tmp_dir}/local-ref.log" REMOTE_RACE_LOG="${tmp_dir}/remote-race.log" \
+  BASE_RACE_LOG="${tmp_dir}/base-race.log" \
+  EXPECTED_HEAD_OID="0123456789abcdef0123456789abcdef01234567" \
   TRUSTED_CHECKOUT="${trusted_source}" MOCK_COMMON_DIR="${tmp_dir}/common.git"
 
 fail() {
@@ -374,6 +405,14 @@ fail() {
 if grep -Eq 'git[[:space:]]+worktree[[:space:]]+remove' \
   "${repo_root}/scripts/safe-direct-merge.sh"; then
   fail 'worktree-removal-boundary: automatic worktree removal is present'
+fi
+if grep -Eq 'update-ref[[:space:]]+-d|git[[:space:]]+branch[[:space:]]+-D' \
+  "${repo_root}/scripts/safe-direct-merge.sh"; then
+  fail 'local-branch-boundary: automatic local branch deletion is present'
+fi
+if grep -Eq 'gh[[:space:]]+pr[[:space:]]+merge|remote_transport[[:space:]]+push|git[[:space:]].*push|gh[[:space:]]+api.*-X[[:space:]]+DELETE' \
+  "${repo_root}/scripts/safe-direct-merge.sh"; then
+  fail 'mutation-boundary: direct merge or remote ref mutation is present'
 fi
 
 # Build a real temporary repository and worktree for the ignored-file case.
@@ -400,6 +439,21 @@ git -C "${actual_repo}" commit -q -m 'test fixture'
 git -C "${actual_repo}" worktree add -q -b feature/mock "${actual_worktree}"
 printf 'generated content\n' > "${actual_worktree}/ignored-file"
 actual_trusted_sha="$(git -C "${actual_repo}" rev-parse HEAD)"
+hostile_hook_dir="${tmp_dir}/hostile-hooks"
+hostile_hook_log="${tmp_dir}/hostile-hook.log"
+mkdir -p "${hostile_hook_dir}"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "executed\\n" >"${HOSTILE_HOOK_LOG}"' \
+  >"${hostile_hook_dir}/post-index-change"
+chmod +x "${hostile_hook_dir}/post-index-change"
+git -C "${actual_repo}" config core.hooksPath "${hostile_hook_dir}"
+touch "${actual_repo}/tracked.txt"
+export HOSTILE_HOOK_LOG="${hostile_hook_log}"
+git -C "${actual_repo}" status --porcelain >/dev/null
+if [ ! -e "${hostile_hook_log}" ]; then
+  fail 'trusted-status-hook-fixture: hostile hook did not execute in the control case'
+fi
+rm -f "${hostile_hook_log}"
+touch "${actual_repo}/tracked.txt"
 export TRUSTED_MAIN_SHA="${trusted_main_sha}" ACTUAL_TRUSTED_SHA="${actual_trusted_sha}" \
   REAL_GIT="${real_git}" \
   TRUSTED_SOURCE="${trusted_source}" \
@@ -418,6 +472,8 @@ run_case() {
   : > "${WORKTREE_LOG}"
   : > "${HEAD_OID_LOG}"
   : > "${LOCAL_REF_LOG}"
+  : > "${PUSH_LOG}"
+  rm -f "${REMOTE_RACE_LOG}"
   output="$(MOCK_GH_SCENARIO="${scenario}" MOCK_COLLECTOR_SCENARIO="${collector_scenario}" \
     MOCK_WORKTREE_STATUS="${dirty}" MOCK_WORKTREE="${MOCK_WORKTREE_CASE:-}" \
     PATH="${mock_bin}:${system_path}" "${safe_merge}" --dry-run 1 2>&1)" || rc=$?
@@ -428,6 +484,20 @@ run_case() {
   fi
   printf '%s\n' "${output}"
 }
+
+# Each launch materializes one immutable main revision. Multiple PRs are
+# rejected before PR inspection so a later audit cannot inherit stale assets.
+: > "${GH_LOG}"
+set +e
+multiple_pr_output="$(PATH="${mock_bin}:${system_path}" "${safe_merge}" --dry-run 1 2 2>&1)"
+multiple_pr_rc=$?
+set -e
+if [ "${multiple_pr_rc}" -ne 2 ] \
+  || ! grep -q 'one-pr-per-invocation' <<<"${multiple_pr_output}" \
+  || grep -q 'pr view\|pr checks' "${GH_LOG}"; then
+  printf '%s\n' "${multiple_pr_output}" >&2
+  fail 'multiple-prs: stale trusted assets could reach a later PR'
+fi
 
 # The collector owns the paginated review-thread lookup. A collector failure
 # blocks the merge, and gh must never receive the unsupported reviewThreads
@@ -464,6 +534,13 @@ fi
 output="$(run_case duplicate-mixed-check 1 duplicate-mixed ok "" 2>&1)"
 if ! grep -q 'required checks failed: metadata=fail' <<<"${output}"; then
   fail 'duplicate-mixed-check: one failing duplicate did not block merge'
+fi
+
+MOCK_WORKTREE_CASE="${mock_worktree}"
+output="$(run_case unrelated-pending-check 0 unrelated-pending ok "" 2>&1)"
+unset MOCK_WORKTREE_CASE
+if ! grep -q '(dry-run) gates satisfied' <<<"${output}"; then
+  fail 'unrelated-pending-check: gh exit 8 blocked green policy checks'
 fi
 
 # A dirty worktree holding the PR branch is preserved and blocks the merge.
@@ -508,6 +585,9 @@ fi
 if [ ! -f "${actual_worktree}/ignored-file" ] || [ ! -d "${actual_worktree}" ]; then
   fail 'ignored-worktree: ignored file or worktree was removed'
 fi
+if [ -e "${hostile_hook_log}" ]; then
+  fail 'trusted-status-hook: repository-configured post-index-change hook executed'
+fi
 
 output="$(run_case cross-repository 1 cross-repo ok "" 2>&1)"
 if ! grep -q 'cross-repository PRs' <<<"${output}"; then
@@ -522,7 +602,7 @@ fi
 MOCK_WORKTREE_CASE="${mock_worktree}"
 output="$(run_case normal-dry-run 0 ok ok "" 2>&1)"
 unset MOCK_WORKTREE_CASE
-if ! grep -q '(dry-run) would squash-merge and delete branch feature/mock' <<<"${output}"; then
+if ! grep -q '(dry-run) gates satisfied for branch feature/mock' <<<"${output}"; then
   fail 'normal-dry-run: expected successful dry-run output'
 fi
 
@@ -545,7 +625,7 @@ mixed_input_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=ok \
 mixed_input_rc=$?
 set -e
 if [ "${mixed_input_rc}" -ne 0 ] \
-  || ! grep -q '(dry-run) would squash-merge' <<<"${mixed_input_output}"; then
+  || ! grep -q '(dry-run) gates satisfied' <<<"${mixed_input_output}"; then
   printf '%s\n' "${mixed_input_output}" >&2
   fail 'mixed-case-input-url: canonical repository identity was rejected'
 fi
@@ -553,7 +633,7 @@ fi
 MOCK_WORKTREE_CASE="${mock_worktree}"
 mixed_url_output="$(run_case mixed-case-url 0 mixed-url ok "" 2>&1)"
 unset MOCK_WORKTREE_CASE
-if ! grep -q '(dry-run) would squash-merge' <<<"${mixed_url_output}"; then
+if ! grep -q '(dry-run) gates satisfied' <<<"${mixed_url_output}"; then
   printf '%s\n' "${mixed_url_output}" >&2
   fail 'mixed-case-url: canonical URL comparison rejected same PR'
 fi
@@ -602,7 +682,7 @@ fi
 MOCK_WORKTREE_CASE="${mock_worktree}"
 ruleset_output="$(run_case ruleset-enforcement 0 ruleset ok "" 2>&1)"
 unset MOCK_WORKTREE_CASE
-if ! grep -q '(dry-run) would squash-merge' <<<"${ruleset_output}" \
+if ! grep -q '(dry-run) gates satisfied' <<<"${ruleset_output}" \
   || ! grep -q 'rulesets/42' "${GH_LOG}"; then
   printf '%s\n' "${ruleset_output}" >&2
   fail 'ruleset-enforcement: active no-bypass ruleset was not recognized'
@@ -683,7 +763,7 @@ for trust_asset in scripts/safe-direct-merge.sh \
   MOCK_WORKTREE_CASE="${mock_worktree}"
   trust_output="$(run_case "immutable-${trust_asset}" 0 ok ok "" 2>&1)"
   unset MOCK_WORKTREE_CASE
-  if ! grep -q '(dry-run) would squash-merge' <<<"${trust_output}" || grep -q 'pr merge' "${GH_LOG}"; then
+  if ! grep -q '(dry-run) gates satisfied' <<<"${trust_output}" || grep -q 'pr merge' "${GH_LOG}"; then
     printf '%s\n' "${trust_output}" >&2
     fail "immutable-${trust_asset}: mutable checkout asset was executed"
   fi
@@ -733,7 +813,7 @@ fi
 primary_clean_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=ok \
   MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_repo}" \
   MOCK_WORKTREE_STATUS='' "${safe_merge}" --dry-run 1 2>&1)"
-if ! grep -q '(dry-run) would squash-merge' <<<"${primary_clean_output}" || [ -s "${WORKTREE_LOG}" ]; then
+if ! grep -q '(dry-run) gates satisfied' <<<"${primary_clean_output}" || [ -s "${WORKTREE_LOG}" ]; then
   printf '%s\n' "${primary_clean_output}" >&2
   fail 'dry-run-primary-clean: clean primary worktree was not retained'
 fi
@@ -769,84 +849,65 @@ if grep -q 'pr merge' "${GH_LOG}"; then
   fail 'head-race: merge was invoked after head revision changed'
 fi
 
-# A stable head is passed through to the merge API as an explicit match.
+# GitHub can preserve the head while a concurrent actor changes the PR base.
+# The mock would record that base redirection if a merge call occurred. With no
+# atomic expected-base condition, non-dry-run must stop before every mutation.
+: > "${GH_LOG}"
 : > "${PUSH_LOG}"
-: > "${GH_LOG}"
-: > "${HEAD_OID_LOG}"
-normal_merge_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=ok \
-  MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" "${safe_merge}" 1 2>&1)"
-if ! grep -q 'merged #1' <<<"${normal_merge_output}" \
-  || ! grep -q -- '--match-head-commit 0123456789abcdef0123456789abcdef01234567' "${GH_LOG}"; then
-  printf '%s\n' "${normal_merge_output}" >&2
-  fail 'stable-head: merge did not receive the captured head SHA'
-fi
-if ! grep -q 'api --include -X DELETE repos/owner/repo/git/refs/heads%2Ffeature%2Fmock' "${GH_LOG}" || [ -s "${PUSH_LOG}" ]; then
-  fail 'remote-branch-delete: unpinned git push was invoked'
-fi
-
-# A successful gh invocation is insufficient when GitHub only queued or left
-# the PR open. No branch cleanup may run until MERGED is re-read.
-: > "${GH_LOG}"
+: > "${LOCAL_REF_LOG}"
+: > "${WORKTREE_LOG}"
+rm -f "${BASE_RACE_LOG}"
 set +e
-not_completed_output="$(PATH="${mock_bin}:${system_path}" \
-  MOCK_GH_SCENARIO=merge-not-completed MOCK_COLLECTOR_SCENARIO=ok \
-  MOCK_WORKTREE="${mock_worktree}" "${safe_merge}" 1 2>&1)"
-not_completed_rc=$?
+base_race_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=base-race \
+  MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
+  "${safe_merge}" 1 2>&1)"
+base_race_rc=$?
 set -e
-if [ "${not_completed_rc}" -ne 1 ] \
-  || ! grep -q 'did not prove the expected PR reached MERGED' <<<"${not_completed_output}" \
-  || grep -q 'api --include -X DELETE' "${GH_LOG}"; then
-  printf '%s\n' "${not_completed_output}" >&2
-  fail 'merge-not-completed: queued/open PR triggered branch cleanup'
+if [ "${base_race_rc}" -ne 1 ] \
+  || ! grep -q 'base branch develop is not protected main' <<<"${base_race_output}" \
+  || grep -q 'pr merge' "${GH_LOG}" \
+  || [ -e "${BASE_RACE_LOG}" ] \
+  || [ -s "${PUSH_LOG}" ] \
+  || [ -s "${LOCAL_REF_LOG}" ] \
+  || [ -s "${WORKTREE_LOG}" ]; then
+  printf '%s\n' "${base_race_output}" >&2
+  fail 'base-race: non-transactional target mutation was reachable'
 fi
 
-# The full Git ref is percent-encoded, and local deletion is atomic against
-# the captured PR head.
+# A stable main base still cannot reach mutation without the transactional
+# expected-base primitive. The final report is followed by a deterministic
+# fail-closed blocker, with no merge or remote cleanup invocation.
 : > "${GH_LOG}"
+: > "${PUSH_LOG}"
+: > "${LOCAL_REF_LOG}"
+set +e
+non_dry_run_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=ok \
+  MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
+  "${safe_merge}" 1 2>&1)"
+non_dry_run_rc=$?
+set -e
+if [ "${non_dry_run_rc}" -ne 1 ] \
+  || ! grep -q 'transactional expected-base primitive is unavailable' <<<"${non_dry_run_output}" \
+  || grep -q 'pr merge' "${GH_LOG}" \
+  || [ -s "${PUSH_LOG}" ] || [ -s "${LOCAL_REF_LOG}" ]; then
+  printf '%s\n' "${non_dry_run_output}" >&2
+  fail 'non-dry-run-blocker: mutation was reachable without expected-base primitive'
+fi
+
+# Branch names with URL fragment characters remain read-only audit data.
+: > "${GH_LOG}"
+: > "${PUSH_LOG}"
 : > "${LOCAL_REF_LOG}"
 hash_branch_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=hash-branch \
   MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
-  MOCK_LOCAL_BRANCH_SCENARIO=matching "${safe_merge}" 1 2>&1)"
-if ! grep -q 'merged #1' <<<"${hash_branch_output}" \
-  || ! grep -q 'git/refs/heads%2Ffeature%23probe' "${GH_LOG}" \
-  || ! grep -q 'update-ref -d refs/heads/feature#probe 0123456789abcdef0123456789abcdef01234567' \
-    "${LOCAL_REF_LOG}"; then
-  printf '%s\n' "${hash_branch_output}" >&2
-  fail 'encoded-branch-cleanup: remote or local ref boundary was unsafe'
-fi
-
-: > "${GH_LOG}"
-: > "${LOCAL_REF_LOG}"
-divergent_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=hash-branch \
-  MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
-  MOCK_LOCAL_BRANCH_SCENARIO=divergent "${safe_merge}" 1 2>&1)"
-if ! grep -q 'retained divergent local branch' <<<"${divergent_output}" \
+  "${safe_merge}" --dry-run 1 2>&1)"
+if ! grep -q '(dry-run) gates satisfied for branch feature#probe' \
+    <<<"${hash_branch_output}" \
+  || grep -q 'pr merge' "${GH_LOG}" \
+  || [ -s "${PUSH_LOG}" ] \
   || [ -s "${LOCAL_REF_LOG}" ]; then
-  printf '%s\n' "${divergent_output}" >&2
-  fail 'divergent-local-branch: unpushed local ref was deleted'
-fi
-
-: > "${GH_LOG}"
-already_absent_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=delete-404 \
-  MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
-  "${safe_merge}" 1 2>&1)"
-if ! grep -q 'remote branch feature/mock is already absent' <<<"${already_absent_output}" \
-  || ! grep -q 'merged #1' <<<"${already_absent_output}"; then
-  printf '%s\n' "${already_absent_output}" >&2
-  fail 'remote-delete-404: an already absent branch was not distinguished'
-fi
-
-: > "${GH_LOG}"
-set +e
-delete_failure_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=delete-failure \
-  MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
-  "${safe_merge}" 1 2>&1)"
-delete_failure_rc=$?
-set -e
-if [ "${delete_failure_rc}" -ne 1 ] \
-  || ! grep -q 'merged but remote branch cleanup is incomplete' <<<"${delete_failure_output}"; then
-  printf '%s\n' "${delete_failure_output}" >&2
-  fail 'remote-delete-failure: a real cleanup failure was reported as success'
+  printf '%s\n' "${hash_branch_output}" >&2
+  fail 'fragment-branch: audit attempted a ref mutation'
 fi
 
 # The primary checkout is the first inventory record, even when the current
@@ -856,10 +917,11 @@ fi
 : > "${WORKTREE_LOG}"
 primary_merge_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=ok \
   MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
-  MOCK_WORKTREE_STATUS='' "${safe_merge}" 1 2>&1)"
-if ! grep -q 'merged #1' <<<"${primary_merge_output}" || [ -s "${WORKTREE_LOG}" ]; then
+  MOCK_WORKTREE_STATUS='' "${safe_merge}" --dry-run 1 2>&1)"
+if ! grep -q '(dry-run) gates satisfied' <<<"${primary_merge_output}" \
+  || [ -s "${WORKTREE_LOG}" ]; then
   printf '%s\n' "${primary_merge_output}" >&2
-  fail 'primary-worktree: clean primary was removed or merge did not proceed'
+  fail 'primary-worktree: clean primary was removed or audit did not proceed'
 fi
 
 # Both the inventory primary and the current checkout are preserved when the
@@ -870,8 +932,9 @@ fi
 primary_current_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=ok \
   MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
   MOCK_CURRENT_WORKTREE="${mock_repo}" MOCK_WORKTREE_STATUS='' \
-  "${safe_merge}" 1 2>&1)"
-if ! grep -q 'merged #1' <<<"${primary_current_output}" || [ -s "${WORKTREE_LOG}" ]; then
+  "${safe_merge}" --dry-run 1 2>&1)"
+if ! grep -q '(dry-run) gates satisfied' <<<"${primary_current_output}" \
+  || [ -s "${WORKTREE_LOG}" ]; then
   printf '%s\n' "${primary_current_output}" >&2
   fail 'primary-and-current-worktrees: one of the protected paths was removed'
 fi
