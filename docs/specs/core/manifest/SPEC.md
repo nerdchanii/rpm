@@ -340,15 +340,21 @@ or in-root symlink cannot opt an artifact tree into discovery.
 Discovery serializes each member path into a portable `member_path_key`. Every
 native path component must decode losslessly to Unicode scalar values; an
 unpaired surrogate, invalid UTF-8 byte sequence, or any other non-Unicode
-component makes the declaration invalid. Each component is normalized to
-Unicode NFC, the normalized components are joined with the literal `/`
-character, and the result is encoded as UTF-8. Discovery performs no locale
-collation or case folding. It deduplicates and sorts keys by unsigned UTF-8 byte
-order. Two distinct validated filesystem identities that serialize to the same
-key are an ambiguous declaration and are rejected instead of being silently
-deduplicated. Filesystem access continues through the descriptor-validated
-native identity captured during discovery; an implementation must not reopen a
-member by reparsing the serialized key.
+component makes the declaration invalid. Lossy `OsStr` conversion, replacement
+characters introduced by such conversion, WTF-8, and host-private surrogate
+encodings are not accepted. Each
+component is normalized to Unicode NFC, the normalized components are joined
+with the literal `/` character, and the result is encoded as valid UTF-8. The
+complete key must decode and re-encode byte-for-byte under the same rule on
+every supported host. Discovery rejects a native component or completed key
+that cannot satisfy this portable round trip before returning any member table
+or handing input to the resolver. Discovery performs no locale collation or
+case folding. It deduplicates and sorts keys by unsigned UTF-8 byte order. Two
+distinct validated filesystem identities that serialize to the same key are an
+ambiguous declaration and are rejected instead of being silently deduplicated.
+Filesystem access continues through the descriptor-validated native identity
+captured during discovery; an implementation must not reopen a member by
+reparsing the serialized key.
 
 Discovery also retains the exact descriptor-relative native component chain and
 parent-directory identities that produced each key. The chain is filesystem
@@ -454,6 +460,11 @@ workspace contract requires planned coverage for:
   NFC `member_path_key` serialization and unsigned UTF-8 byte ordering produce
   the same order on every host; an injected non-Unicode native component and a
   normalized-key collision are rejected without a partial table;
+- a cross-host UTF-8 portability fixture injects invalid Unix path bytes,
+  unpaired Windows surrogate input, WTF-8, and lossy replacement conversion in
+  separate cases, proving each fails before resolver handoff while every
+  accepted `member_path_key` round-trips as identical valid UTF-8 on POSIX and
+  Windows adapters;
 - equivalent POSIX and Windows native component sequences, proving both
   serialize to the same `/`-separated `member_path_key` without leaking `\` or
   drive spelling into graph identity; a literal backslash in a declaration

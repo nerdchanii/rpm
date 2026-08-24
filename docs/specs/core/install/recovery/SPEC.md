@@ -83,19 +83,23 @@ Neither points at a live root/member source directory or a previously published
 `node_modules` tree. An external hook runs only from its staged resolved-package
 directory. The validated member manifest snapshots remain immutable transaction
 input. Root, member, and external hook processes are confined to the staging root
-for both reads and writes. The boundary covers every descendant and retained
-handle for the hook lifetime, and post-hook validation starts only after no hook
-descendant survives. If the execution platform cannot enforce that isolation,
-the transaction fails closed before any workspace hook runs.
+for writes and may read only that view plus the pinned approved read-only
+runtime/tool capability defined by the scripts SPEC. They receive its explicit
+empty-origin environment allowlist and no RPM control or unrelated parent
+handle. The boundary covers every descendant and retained handle for the hook
+lifetime, and post-hook validation starts only after no hook descendant
+survives. If the execution platform cannot enforce that isolation, the
+transaction fails closed before any workspace hook runs.
 Workspace linking under #147 is a prerequisite for that transaction; #147 does
 not own lifecycle execution, which remains disabled until #222.
 
 The only publishable managed output is the transaction-owned root/member
-`node_modules` set. The staged root `package.json` and `rpm.lock` are separate
-write-phase state and publish only after scripts reconciliation and validation.
-All other staged root/member source-overlay writes are discarded after the
-scripts phase even on success and are never copied to live source. This
-publication boundary is owned jointly with
+`node_modules` set. The staged root `package.json` and hidden v2 `rpm.lock`
+candidate are separate write-phase state and publish only after scripts
+reconciliation and validation; the hook-visible prior-live lockfile snapshot is
+validation input and never publishes. All other staged root/member
+source-overlay writes are discarded after the scripts phase even on success and
+are never copied to live source. This publication boundary is owned jointly with
 `docs/specs/core/install/scripts/SPEC.md`.
 
 Before processing an active recovery journal, discovery, staging, hooks, or any
@@ -108,6 +112,20 @@ with its parent when first created, and never renamed or removed by transaction
 cleanup. If the lock is contended, has the wrong path/type/identity, or is
 unsupported, RPM fails closed without staging, backing up, renaming, or
 publishing a live target.
+
+The control directory is owned by the invoking RPM principal and is accessible
+only to that owner: POSIX directories use mode `0700` and lock/journal files use
+mode `0600`; other platforms require an equivalent owner-only ACL. RPM opens the
+directory and every control entry through retained no-follow descriptors,
+requires regular single-link files where applicable, and revalidates ownership,
+mode/ACL, type, parent/name mapping, and native identity before each lock or
+journal operation. An existing directory or entry with broader access or drift
+fails closed; RPM does not repair or adopt it during an install. Every control
+descriptor or handle is non-inheritable/close-on-exec, and the hook confinement
+namespace exposes neither the control directory nor transaction backup paths,
+including for read-only access. Their paths and handles are absent from hook
+arguments and environment. A platform that cannot enforce these ownership,
+access, and handle rules cannot execute workspace hooks.
 
 The lock is a cooperative process boundary. It excludes other conforming RPM
 transactions; it cannot reserve a heterogeneous target set against an unrelated
@@ -133,14 +151,57 @@ where applicable, and native identity through descriptor-relative no-follow
 operations. This is the transaction-start baseline; a later live value must not
 silently replace it.
 
+Every expected-state or journal row that represents a directory tree uses the
+canonical `rpm-managed-tree-v1` digest. RPM traverses from the retained tree
+descriptor with descriptor-relative no-follow operations, records the root as
+an empty relative path, and rejects an entry whose component cannot decode as
+Unicode scalar values, whose NFC UTF-8 `/`-separated relative path collides with
+another entry, or whose type is unsupported. It sorts all records by unsigned
+bytes of that normalized relative path before hashing, independently of
+filesystem enumeration order. The transaction record itself orders the root
+output first, member outputs by unsigned UTF-8 `member_path_key`, and remaining
+managed-output keys by the same normalized unsigned-byte rule.
+
+The digest is SHA-256 over the ASCII domain prefix
+`rpm-managed-tree-v1\0`, an unsigned 64-bit big-endian record count, and the
+sorted records. Every length is an unsigned 64-bit big-endian integer. A record
+is path length plus normalized path bytes, one type byte (`0x01` directory,
+`0x02` regular, `0x03` symlink), permission-record length plus bytes, and content
+length plus bytes. A POSIX permission record is `0x01` followed by the unsigned
+32-bit big-endian `st_mode & 0o7777`. A Windows permission record is `0x02`, an
+unsigned 32-bit big-endian value of `1` when `FILE_ATTRIBUTE_READONLY` is set
+and `0` otherwise, then the length and exact canonical self-relative
+security-descriptor bytes. A platform adapter that cannot produce that stable
+permission encoding fails closed. A directory has zero content bytes, a regular
+file has its exact bytes, and a symlink has
+its exact no-follow link-text bytes. Timestamps, traversal order, and native
+inode/device identity are excluded because identity is pinned separately. Thus
+the same tree produces the same digest under every enumeration order, while any
+normalized path, type, permissions, regular-file content, or link-text change
+changes the hashed record stream.
+
+The transaction keeps that immutable baseline separate from a journaled current
+phase-state table. The baseline is never advanced and is the sole authority for
+rollback. Each current-state row records the presence, type, permissions,
+identity, bytes or tree digest, symlink target where applicable, and retained
+parent/name relationship expected immediately before the next operation. The
+current-state table begins equal to the baseline. A transaction-owned mutation
+may advance only its affected row to the operation's verified post-state through
+the durable intent/completion protocol below; observed live state never rewrites
+either table.
+
 After staged hooks complete and before final live validation or the first live
 backup, rename, or write, RPM repeats every expected-state lookup while holding
-the lock and compares live root/member manifests and outputs for presence or
-absence, type, native identity,
-exact bytes/tree, symlink target, and permissions. It repeats the relevant target
-and retained-parent checks immediately before each backup, rename, publication,
-restore, or cleanup operation. Drift observed at either check fails before that
-operation and must not be adopted as a new baseline. The lock remains held
+the lock and compares live root/member manifests and outputs to the immutable
+baseline for presence or absence, type, native identity, exact bytes/tree,
+symlink target, and permissions. Once the journal is active, it repeats the
+relevant target and retained-parent checks immediately before each backup,
+rename, publication, restore, or cleanup operation and compares them to the
+last durable current phase state for that operation. A check after RPM has
+backed up or published a target therefore expects the recorded transaction-owned
+state instead of comparing that target to its original baseline. Drift observed
+at either boundary fails before the next operation and must not be adopted as a
+new baseline or phase state. The lock remains held
 through journal recovery, staging, hooks, backup preparation, every publication
 step, all final postconditions, and either successful backup cleanup or verified
 rollback; releasing it is the transaction's last live-state action.
@@ -149,16 +210,21 @@ Only after the locked revalidation succeeds does RPM create one workspace
 transaction record covering the root and every member `node_modules` tree, the
 root `package.json`, `rpm.lock`, and every other path classified as managed
 output by the operation. The record binds to the verified expected-state rows,
-deterministic backup paths, and staged publication identities and digests.
+the separately journaled current phase-state rows, deterministic backup paths,
+and staged publication identities and digests.
 
 Before the first backup rename, RPM durably writes that record as a recovery
 journal in a descriptor-confined RPM control directory outside every publication
 target. It writes and fsyncs a temporary journal file, atomically renames it to
 the active name, and fsyncs the containing directory. Before each later backup,
 publication, restore, or cleanup operation, RPM durably records and fsyncs the
-intent. After the filesystem operation it fsyncs affected file/directory state
-and durably records completion before advancing. Journal serialization and
-recorded paths are deterministic and must not contain a host-absolute path.
+intent together with that operation's expected pre-state and intended
+post-state. After the filesystem operation it validates the affected target and
+parent against the intended post-state, fsyncs affected file/directory state,
+and durably records completion plus the advanced current-state row before
+proceeding. Neither intent nor completion changes the immutable rollback
+baseline. Journal serialization and recorded paths are deterministic and must
+not contain a host-absolute path.
 
 Every existing output is moved to a distinct same-filesystem transaction backup
 so restoring it preserves the original identity; an originally absent path is
@@ -176,11 +242,14 @@ retains the journal and all remaining backups, and never reports install success
 
 On every later invocation, RPM acquires the cooperative per-workspace RPM lock and
 processes an active recovery journal before discovery or new transaction state.
-An uncommitted journal is rolled back from its recorded backups. A committed
-journal is validated against published identities/digests before remaining
-backup cleanup completes. Corrupt, incomplete, missing-backup, path-confinement,
-or identity-ambiguous state fails closed, preserves every journal and backup
-artifact, and blocks a new install for that workspace. The active journal is
+The last durable current-state row and operation intent/completion state decide
+which transaction-owned operations completed; the immutable baseline and its
+recorded backups remain the rollback authority. An uncommitted journal is
+rolled back from those backups. A committed journal is validated against
+published identities/digests before remaining backup cleanup completes.
+Corrupt, incomplete, missing-backup, path-confinement, or identity-ambiguous
+state fails closed, preserves every journal and backup artifact, and blocks a
+new install for that workspace. The active journal is
 removed only after recovery or committed cleanup is durably complete and its
 control directory has been fsynced; releasing the lock is the last transaction
 action.
@@ -224,14 +293,25 @@ immutable discovery snapshot. Any graph-field change, including a root/member
 name collision, fails before later hooks or publication. Only non-graph root
 manifest changes may enter the scripts SPEC's reconciliation path.
 
-Before the first hook, RPM opens staged `rpm.lock` descriptor-relative without
-following links and pins its regular single-link type, native identity, exact
-bytes, and permissions. Immediately before and after every root, member, and
-external hook and immediately before publication, the descriptor and path entry
-must still match all pinned values. Any mutation or replacement fails without
-reading a new target. Publication copies the pinned bytes through the retained
-descriptor into a newly materialized, fsynced, single-link regular file with a
-distinct identity; it never publishes the staged inode or a link to that inode.
+Before the first hook, RPM keeps the freshly resolved workspace-aware v2
+`rpm.lock` candidate outside every hook capability and pins its descriptor,
+regular single-link type, native identity, exact bytes, and permissions. The
+hook-visible staged root contains a separately materialized snapshot of the
+prior live lockfile's exact bytes and permissions, or preserves its prior-live
+absence. Immediately before and after every root, member, and external hook,
+the hook-visible entry must retain its pinned prior-live absence or state, and
+the hidden candidate must retain all pinned values. Any mutation or replacement
+fails without reading a new target.
+
+Immediately before publication, recovery applies the same acceptance predicate
+as the scripts SPEC: the live `rpm.lock` still matches the immutable prior-live
+expected-state row, the hook-visible prior-live snapshot is unchanged, and the
+hidden v2 candidate is unchanged. A prior v1 lockfile is expected to differ from
+the v2 candidate and is never compared to the candidate as a precondition.
+Publication copies the candidate's pinned bytes through its retained descriptor
+into a newly materialized, fsynced, single-link regular file with a distinct
+identity; it never publishes the candidate inode, the hook-visible snapshot, or
+a link to either inode.
 
 Discovery's immutable root snapshot is the only root-manifest input to resolver,
 staging, and hook selection. While the cooperative per-workspace RPM lock is held
@@ -357,8 +437,9 @@ Findings:
 
 ## M6 Lifecycle Phase Audit
 
-The 2026-08-11 M6 audit adds the `scripts` phase to the recovery pipeline
-between `link` and `write`, so lifecycle hook execution has a contracted home.
+The M6 audit, refreshed on 2026-08-24, adds the `scripts` phase to the recovery
+pipeline between `link` and `write`, so lifecycle hook execution has a contracted
+home.
 The phase label and its position are part of this recovery contract; the
 active execution is owned by `docs/specs/core/install/scripts/SPEC.md` (#141),
 and the `preinstall` hook landed via #142.
@@ -378,6 +459,12 @@ Findings:
   cannot publish partial successful install state) are owned by
   `docs/specs/core/install/scripts/SPEC.md`. This recovery SPEC owns only the
   phase label, its position, and the staged-tree discard guarantee.
+- The active root-only cross-package order is root first and registry-resolved
+  packages in sorted lock-key order. The planned workspace order is root first,
+  members in unsigned UTF-8 `member_path_key` order, and external packages in
+  sorted lock-key order. Both are sequential and deterministic. The workspace
+  order remains inactive until #222 implements its staging and recovery
+  prerequisites.
 - No existing M3 or M4 phase is changed by adding the `scripts` phase. The
   `resolve`, `fetch`, `extract`, `link`, and `write` labels and their
   side-effect classifications stand unchanged.
@@ -431,7 +518,9 @@ root/member/external hook-created symlink, hard-link, inode/device, and
 published-tree aliases; root/member published-tree absolute-write; staged
 escaping/dangling/cyclic-link; staged manifest symlink/directory/mode
 replacement; staged hard-link alias; source-overlay link confinement; external
-hook confinement; root graph-field mutation; staged lockfile integrity; and
+hook confinement; approved transitive runtime reads and alias rejection;
+environment, loader/config, and inherited-handle sanitization; root graph-field
+mutation from every hook source; staged v1-to-v2 lockfile integrity; and
 lockfile materialization cases owned by the scripts SPEC.
 
 `workspace-publication-cooperative-lock` uses two conforming RPM processes and
@@ -439,6 +528,20 @@ phase barriers. The second process must be unable to enter recovery, hooks,
 backup, or publication while the first process holds the workspace lock. Lock
 contention, a linked or malformed lock path, and an unsupported lock primitive
 all fail with zero target mutation.
+
+`workspace-publication-control-directory-isolation` creates control directories
+and lock/journal entries with wrong owner, broad mode/ACL, symlink, hard-link,
+and replacement identities in separate cases, proving each fails before hooks
+or live mutation without being repaired. Hook cases attempt a guessed control
+path and inherited descriptor/handle and prove root, member, external, and
+descendant processes cannot read, list, or write control or backup state.
+
+`workspace-publication-tree-digest-order` presents the same root/member managed
+trees through many injected enumeration orders and proves every run emits the
+same `rpm-managed-tree-v1` digest and transaction-row order. Paired cases change
+one normalized path, entry type, permission record, regular-file byte, and
+symlink target; inject invalid Unicode and NFC path collisions; and prove each
+change is rejected or changes the canonical digest before journal mutation.
 
 The paired `workspace-publication-observed-external-drift` fixture injects a
 non-cooperating mutation before the locked initial revalidation and before each
@@ -472,3 +575,8 @@ uncommitted state or finish validated committed cleanup, and preserve exact
 bytes, types, modes, identities, and original absence. Corrupt journals, missing
 backups, path escape, identity drift, and injected recovery failure must block
 the new install while preserving all remaining journal and backup artifacts.
+The fixture also verifies that each post-mutation check uses the last durable
+current phase state, so RPM's own backup or publication does not appear as
+external drift, while rollback always restores the unchanged immutable
+baseline. Separate tamper cases mutate a target between completion and the next
+operation and must fail against the journaled phase state without advancing it.
