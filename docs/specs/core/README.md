@@ -131,7 +131,7 @@ criteria.
 | missing `.bin` directory behavior in `rpm run` | `cli/run/SPEC.md` | the run SPEC assumes `.bin` is populated and does not own how it is populated (that is linker work), but it already owns the absent-binary case: a binary that is missing from `PATH` (including when `node_modules/.bin` is absent) must surface the shell's readable error and non-zero status (`cli/run/SPEC.md` Error Cases); #143 proves project-local binaries are reachable without mutating install output rather than redefining that existing behavior | #143 |
 | lifecycle script fields (`preinstall`, `install`, `postinstall`, `prepare`, ...) | `registry/SPEC.md` (per-version read/preserve), `manifest/SPEC.md` (root read/preserve), `install/scripts/SPEC.md` (active execution) | per-version `scripts` is now read and preserved as a `string -> string` map at the registry boundary (moved out of the ignored list, with tolerant wrong-type handling kept) and the root `scripts` map is read and preserved by the manifest SPEC; active lifecycle execution is owned by `install/scripts/SPEC.md`, which fixes the supported hook names (`preinstall`, `install`, `postinstall`, `prepare`), the `string -> string` value type, and the working-directory and PATH policy | delivered: #141 |
 | script command parsing | `cli/run/SPEC.md` (shell invocation model), `install/scripts/SPEC.md` (lifecycle reuse) | lifecycle hook values are strings-only and reuse the `rpm run` shell invocation model (`/bin/sh -c` on Unix, `cmd /C` on Windows) and the same `node_modules/.bin` PATH prepend, so there is a single script-execution contract rather than two; the relationship is made explicit in both `cli/run/SPEC.md` and `install/scripts/SPEC.md` | delivered: #141 |
-| lifecycle execution as an install phase | `install/recovery/SPEC.md`, `install/scripts/SPEC.md` | the recovery phase pipeline includes a `scripts` phase between `link` and `write`; within-package order is `preinstall`, `install`, `postinstall`, `prepare`; the active root-only cross-package order is root then external packages by sorted lock key, while the planned #222 workspace order is root, members by unsigned UTF-8 `member_path_key`, then external packages by sorted lock key | delivered: #141 (contract); #142 (root-only execution); #222 (planned workspace activation) |
+| lifecycle execution as an install phase | `install/recovery/SPEC.md`, `install/scripts/SPEC.md` | the recovery phase pipeline now includes a `scripts` phase between `link` and `write`, with the phase label and position contracted in `install/recovery/SPEC.md`; the within-package ordering (`preinstall`, `install`, `postinstall`, `prepare`) is owned by `install/scripts/SPEC.md`; active execution is deferred to #142 | delivered: #141 (contract); #142 (execution) |
 | lifecycle script failure preserving install state | `install/recovery/SPEC.md`, `install/scripts/SPEC.md` | a failed `scripts` phase cannot publish partial successful install state: it runs between `link` and `write`, so the staged tree is discarded and the previous `node_modules`, `rpm.lock`, and `package.json` remain unchanged; the invariant is stated in both SPECs and an M6 lifecycle row is added to the recovery side-effect audit | delivered: #141 |
 
 Findings:
@@ -161,11 +161,11 @@ Findings:
   `scripts` out of the ignored list to read-and-preserve (with tolerant
   wrong-type handling kept), the recovery SPEC adds a `scripts` phase between
   `link` and `write` plus an M6 lifecycle side-effect row, and the run SPEC
-  records that lifecycle execution reuses the `rpm run` shell invocation model.
-  Root-only execution landed through #142. Cross-package order is now fixed for
-  both the active root-only path and planned workspace path; #222 owns workspace
-  activation. npm-specific environment variables and any opt-in
-  skip-on-failure policy remain Open Questions in `install/scripts/SPEC.md`.
+  records that lifecycle execution reuses the `rpm run` shell invocation model
+  rather than defining a second one. Active execution of the first phase is
+  tracked by #142; cross-package ordering, npm-specific environment variables,
+  and any opt-in skip-on-failure policy remain Open Questions in
+  `install/scripts/SPEC.md`.
 - `rpm run` integration is mostly owned: `cli/run/SPEC.md` already prepends
   `node_modules/.bin` to PATH and propagates exit codes without reinstalling. The
   one remaining gap — behavior when `.bin` is absent — is owned by #143, which
@@ -297,25 +297,26 @@ Workspace implementation remains a greenfield gap: no code path reads the
 lockfile, the linker creates only registry-resolved dependency links, and no
 CLI flag targets a workspace. The planned manifest-discovery and resolver
 boundary contracts are now defined by #145; their implementation and fixtures
-remain deferred to #221. Issues #146-#149 own later lockfile, linker, CLI, and
-integration-fixture work. Workspace lifecycle/recovery activation remains
-disabled and is owned separately by #222.
+remain deferred to #221. The lockfile contract is tracked by #146 in PR #217,
+CLI targeting by #148 in PR #216, linker/integration work by #147/#149, and
+workspace lifecycle/recovery activation by #222. Workspace lifecycle remains
+disabled.
 
 | M7 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
 | workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, descriptor-rooted root/member snapshots, single-link manifest identity, preservation-before-write, and planned replacement/hard-link coverage are specified; current manifest code still does not read or preserve the field | #221 |
 | workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect uses host-independent case-sensitive Unicode-scalar matching; candidate selection, canonical-root and symlink confinement, install-artifact exclusions, and portable NFC `/`-separated keys are specified; every accepted `member_path_key` must round-trip as identical valid UTF-8 on every host, and non-Unicode/WTF-8/lossy native paths fail before resolver handoff | #221 |
 | root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: immutable root/member dependency snapshots, portable `member_path_key` graph origin, production-over-development overlap precedence, branch-before-metadata local classification, single-pass member-root seeding, external fallback, and native identity restricted to filesystem validation are specified | #221 |
-| workspace package lockfile records | `lockfile/SPEC.md` | absent: lockfile v1 keys every entry by `<name>@<version>` with registry metadata and records no local-path or workspace-origin marker; local workspace records need not require tarball or integrity, while external records may use `shasum` when integrity is absent; whether v1 extends safely or a version bump is required is an open question for #146 | #146 |
+| workspace package lockfile records | `lockfile/SPEC.md` | absent on this branch: lockfile v1 has no local-path or workspace-origin marker; #146 owns the contract in PR #217 | #146 / PR #217; #224 implementation |
 | external dependency edges under a workspace root | `lockfile/SPEC.md`, `resolver/SPEC.md` | partially owned in the non-workspace case: the resolver already deduplicates by `<name>@<version>` and the lockfile records requested range and resolved version distinctly, but neither owns how a shared external transitive reached from several workspace members is represented when each member requests a different range | #146 |
 | workspace-to-workspace linking (local symlink) | `linker/SPEC.md` | absent: the linker creates symlinks whose targets are extracted registry packages under `node_modules/`; there is no contract for linking a workspace member that exists as a local source directory rather than a downloaded tarball, or for confining that target to the canonical workspace root | #147 |
 | workspace-to-external linking | `linker/SPEC.md` | code and SPEC currently diverge on strict per-package dependency visibility; #147 must reconcile the implementation first, then extend the strict contract to workspace members so a member's `node_modules` exposes only that member's declared dependencies, with regression coverage | #147 |
 | missing workspace link target | `linker/SPEC.md` | absent: the linker already fails when a registry dependency target is not extracted, but there is no contract for a workspace dependency whose declared local path does not exist or does not contain the expected package | #147 |
-| workspace member writes and recovery | `install/recovery/SPEC.md`, `install/scripts/SPEC.md`, `linker/SPEC.md` | planned split defined: #147 owns workspace link construction; #222 owns pre-baseline member-manifest validation, one all-output transaction record, a durable per-workspace cooperative RPM lock, guarded descriptor revalidation against journaled current phase state, an immutable rollback baseline, canonical enumeration-independent tree digests, an owner-only non-inheritable control directory, a fsynced recovery journal, startup recovery, backup retention through final verification, exact multi-output rollback, and crash fixtures; non-cooperating external writers and already-open external handles are an explicit unsupported concurrency boundary | #147; #222 |
-| workspace member lifecycle scripts | `install/scripts/SPEC.md`, `install/recovery/SPEC.md` | planned contract defined, implementation disabled: immutable root/member snapshot sourcing, portable order/origin, exact staged-member parent/name mapping, root graph-field freezing after every hook, a prior-live hook-visible lock snapshot plus hidden v2 candidate, full no-follow managed-tree scans, staged writable confinement, pinned transitive read-only runtime/tool inputs, and an explicit empty-origin child environment for root/member/external hooks are specified | #222; #147 is a staging prerequisite and #149 does not own these fixtures |
+| workspace member writes and recovery | `install/recovery/SPEC.md`, `install/scripts/SPEC.md`, `linker/SPEC.md` | implementation and workspace contract deferred: #147 owns link construction; #222 owns workspace transaction, mutation, rollback, and recovery behavior | #147; #222 |
+| workspace member lifecycle scripts | `install/scripts/SPEC.md`, `install/recovery/SPEC.md` | contract and implementation deferred: current behavior remains root-only; workspace hook provenance, order, working directory, environment/runtime boundary, staged read/write isolation, lockfile visibility, and failure recovery must remain disabled until #222 defines and tests them | #222 |
 | package-name and dependency-name root confinement | `resolver/SPEC.md`, `linker/SPEC.md` | existing package metadata and lockfile names are not fully confined before extraction and dependency linking; names such as `../../outside` can escape the staged tree, so the resolver/linker boundary must reject traversal and verify canonical destinations before any write; #147 must include this regression coverage for workspace and external edges | #147 |
 | workspace member binary links | `linker/SPEC.md` | absent: the existing `.bin` contract does not state whether a workspace member's `bin` field is exposed; #147 must decide the link layout and cover it in the minimal workspace fixture (#149) | #147; #149 |
-| workspace command targeting (`--workspace`, `--all`, root) | `cli/run/SPEC.md` and future CLI command SPECs | absent: no command targeting contract exists; `rpm run` reads only the root manifest, and there is no rule for root-only, all-workspace, or selected-workspace command scope | #148 |
+| workspace command targeting (`--workspace`, `--all`, root) | `cli/run/SPEC.md` and future CLI command SPECs | absent on this branch: `rpm run` reads only the root manifest; #148 owns the targeting contract in PR #216 | #148 / PR #216 |
 | partial workspace failure and exit behavior | `cli/run/SPEC.md` (deferred to M8 for stable exit codes) | absent: no contract for how a command behaves when one workspace member fails and others succeed; stable exit codes and stdout/stderr ownership for this are owned by the M8 diagnostics contract (#150, #151) before they become public | #148 (targeting); M8 (exit-code stability) |
 
 Findings:
@@ -335,30 +336,14 @@ Findings:
   reseeding. #221 owns its implementation and executable fixtures. #146,
   #147, and #148 must consume the same member table and origin model without
   redefining them.
-- Workspace-member lifecycle activation is owned by #222. The install-script
-  and recovery contracts fix validated snapshot sourcing, deterministic order,
-  isolated staged directories with exact key-to-parent/name validation, full
-  hook-boundary managed-tree scans, process-confined root/member/external hooks,
-  frozen workspace graph fields, pinned and separately materialized `rpm.lock`,
-  pre-baseline live-manifest checks, one multi-output transaction record, a
-  durable per-workspace cooperative RPM lock, guarded descriptor revalidation,
-  separate immutable rollback-baseline and journaled current-phase state, a
-  canonical tree digest, owner-only non-inheritable control state, durable
-  recovery journal, prior-live lock snapshot acceptance, staged writes, pinned
-  transitive read-only runtime/tool inputs, an empty-origin child environment,
-  PATH, and crash recovery. The lock serializes
-  conforming RPM invocations. Non-cooperating external writers and already-open
-  external handles remain outside the supported concurrency contract; the SPEC
-  requires fail-closed behavior for drift observed at a guarded check and does
-  not claim an unavailable cross-process filesystem transaction. #222 consumes
-  the staged link construction from #147 and owns the order/cwd, mutation,
-  publication, crash, and recovery fixtures before any member hook runs. #149's
-  minimal install fixture does not absorb this lifecycle coverage.
-- Lockfile representation (#146) carries one open compatibility decision:
-  whether workspace package records can extend lockfile v1 with a local-origin
-  marker, or whether a workspace-aware lockfile requires a version bump and a
-  migration note. That decision belongs to #146, not to this audit; the audit
-  only records that v1 has no such marker today.
+- Workspace-member lifecycle and recovery remain deferred to #222. Its research
+  must disposition root-manifest write provenance, immutable runtime inputs,
+  lockfile-candidate visibility, descriptor-confined source materialization,
+  workspace-root relocation, and cross-owner staged read/write isolation before
+  activation. This PR does not change the install scripts or recovery contracts.
+- Lockfile representation and compatibility are outside this PR. #146 and PR
+  #217 own that contract, and #224 owns its later implementation; this audit
+  records only that current lockfile v1 has no workspace-origin marker.
 - Linker ownership (#147) splits cleanly: workspace-to-external linking must
   first reconcile the current code/SPEC mismatch on strict dependency
   visibility, while workspace-to-workspace linking is new and must define
@@ -374,13 +359,9 @@ Findings:
   exit codes or stdout/stderr ownership for workspace commands, because that
   ownership belongs to the diagnostics contract.
 - Root safety rules remain an explicit constraint and include existing package
-  metadata and dependency-name traversal risks. The M3/M4 staged-replacement
-  and side-effect audit guarantees (`install/recovery/SPEC.md`) apply to a
-  workspace install, while the current resolver/linker escape paths require
-  follow-up hardening before that guarantee is complete. A workspace install
-  is still intended to be one staged root/member transaction; the added risks
-  are member-controlled local paths reaching the linker and lifecycle writes
-  escaping the staged execution views, which #147/#222 must confine and recover.
+  metadata and dependency-name traversal risks. #147 must confine workspace
+  link targets and dependency-name writes. Workspace mutation, rollback, and
+  recovery remain outside this PR and are owned by #222.
 - The delivery order follows the issue: (1) this contract and gap audit, (2)
   #145 workspace discovery and root boundaries, (3) #146 lockfile records and
   external edges, (4) #147 workspace dependency linking, (5) #148 command

@@ -205,14 +205,8 @@ links are owned by #147, and workspace command targeting is owned by #148.
 Those follow-up contracts must consume the same member table and must not
 redefine member order, root confinement, or local-versus-external identity.
 
-Making a member a resolution root does not schedule its lifecycle scripts or
-imply that workspace installation is active. Workspace-member hook sourcing,
-cross-package order, working directory, PATH, failure, and rollback are owned by
-`docs/specs/core/install/scripts/SPEC.md` together with the install recovery
-contract. Resolver implementation and fixtures must remain free of script side
-effects. Workspace installation must not execute member lifecycle hooks until
-that planned contract has an open implementation owner and its ordering,
-working-directory, and failure fixtures exist.
+Resolver graph construction does not schedule lifecycle scripts. Workspace
+lifecycle activation remains disabled and is owned by #222.
 
 Traversal policy is behind a replaceable `ResolutionStrategy` boundary, or an
 equivalent internal abstraction, owned by the `src/core/resolver` root module.
@@ -226,11 +220,17 @@ The first strategy is an iterative FIFO worklist:
    sequence defined by the workspace boundary; a root-only project supplies
    only the project-root sequence.
 2. Pop the oldest pending request.
-3. Read package metadata through the metadata abstraction.
-4. Select a version through the version selection abstraction.
-5. Add or merge the resolved package into the graph.
-6. Enqueue that package's dependency requests as transitive requests.
-7. Continue until the worklist is empty or resolution fails.
+3. Apply the workspace-local classification branch defined above. When a
+   compatible member satisfies the request, attach the edge to that existing
+   member resolution-root node and continue with the next pending request. This
+   branch performs no registry/cache metadata read, external version selection,
+   member-root creation, or member dependency reseeding.
+4. For an external branch only, read package metadata through the metadata
+   abstraction.
+5. Select an external version through the version selection abstraction.
+6. Add or merge the resolved external package into the graph.
+7. Enqueue that external package's dependency requests as transitive requests.
+8. Continue until the worklist is empty or resolution fails.
 
 Future strategies may replace FIFO traversal with priority-based, heuristic,
 peer-aware, or backtracking behavior without changing fetch, extract, link, or
@@ -432,10 +432,8 @@ request and fails if queried for a compatible member; multiple root/member
 edges target the same compatible member and prove that its resolution root and
 snapshot dependency seeds are created exactly once. Paired incompatible and
 dist-tag cases prove only those external branches reach metadata lookup.
-Resolver workspace fixtures do not execute lifecycle scripts.
-Lockfile snapshots, filesystem trees, and lifecycle execution fixtures are
-deferred to their lockfile, linker, and install-script owners; this SPEC does
-not require workspace installation behavior.
+Resolver workspace fixtures stop at graph construction. Lifecycle activation
+and its fixtures remain deferred to #222.
 
 ### Optional-dependency non-enqueue guard fixture
 
