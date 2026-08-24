@@ -60,10 +60,10 @@ merged into a single node, so a shared transitive package/version is represented
 once even when it is reached through different requested ranges. Under the
 planned workspace boundary, root and member resolution roots use origin
 identities in a separate key domain: the project root uses the root identity and
-each member uses its canonical root-relative path. A local member and an
-external package must never merge, including when their package names and
-version text are equal. This node-uniqueness invariant is the basis for the
-deduplication proofs in
+each member uses its validated portable NFC UTF-8 `member_path_key`. A local
+member and an external package must never merge, including when their package
+names and version text are equal. This node-uniqueness invariant is the basis
+for the deduplication proofs in
 `docs/specs/core/install/performance/SPEC.md`, and it is the reason later
 installer phases may download and cache a selected version at most once.
 
@@ -179,6 +179,18 @@ metadata to select a compatible package version. Registry dist-tags have no
 local member mapping and remain external selectors. Invalid or unsupported
 request syntax still fails under its owning input contract; it is not converted
 into a workspace-local edge.
+
+Resolution-root creation and edge classification are separate operations. RPM
+creates every root/member resolution-root record and seeds that record's
+snapshot dependencies exactly once during the ordered initial root-set pass.
+For each later edge, it performs the member-name and range-compatibility branch
+before calling a registry cache or metadata provider. A compatible local edge
+attaches to the already-created member node identified by `member_path_key`; it
+does not read external metadata, create another member root, enqueue the member
+snapshot again, or replay that member's dependency maps. Multiple incoming
+local edges share that existing member node. Only the absent-member,
+missing/invalid/incompatible-member-version, and registry-dist-tag branches may
+enter external metadata lookup and version selection.
 
 Name collisions among members or between the root package and a member are
 invalid discovery input and must fail before graph traversal. A missing or
@@ -415,7 +427,12 @@ ordering use the same NFC `/`-separated `member_path_key` and never a native
 canonical path or separator. Overlapping `dependencies` and `devDependencies`
 cases use ranges that would otherwise select different local/external targets
 and prove the production declaration wins with exactly one `DirectProduction`
-request. Resolver workspace fixtures do not execute lifecycle scripts.
+request. A local-branch fixture uses a metadata provider that records every
+request and fails if queried for a compatible member; multiple root/member
+edges target the same compatible member and prove that its resolution root and
+snapshot dependency seeds are created exactly once. Paired incompatible and
+dist-tag cases prove only those external branches reach metadata lookup.
+Resolver workspace fixtures do not execute lifecycle scripts.
 Lockfile snapshots, filesystem trees, and lifecycle execution fixtures are
 deferred to their lockfile, linker, and install-script owners; this SPEC does
 not require workspace installation behavior.

@@ -106,11 +106,35 @@ rules:
   is immutable input for the transaction.
 - An external resolved-package hook runs from that package's transaction-owned
   directory in the staged replacement tree. Root, member, and external hook
-  processes all use the same staging-root process confinement: live source and
-  previously published install trees are not exposed as read or write targets.
-  The boundary covers the hook's complete descendant process tree; RPM does not
-  advance to post-hook validation while a descendant survives or retains a
-  writable handle outside transaction control.
+  processes all use the same staging-root process confinement. Their writable
+  filesystem view is limited to the transaction-owned staged view. Before a
+  hook starts, RPM may expose an explicit read-only runtime/tool set needed to
+  invoke the configured platform shell and approved commands, including their
+  required interpreter, loader, runtime-library, and explicitly approved
+  read-only configuration inputs. RPM computes the complete transitive runtime
+  read set before execution; an undeclared interpreter, loader, library, or
+  configuration read fails instead of expanding the set while a hook runs. For
+  each file-backed input, RPM resolves a canonical host-absolute source path by
+  descriptor, pins every symlink-chain entry and target without cycles or
+  dangling links, and pins the final regular file's retained parent/name chain,
+  native identity, permissions, link count, and exact byte digest. A hard-linked
+  final file is rejected unless the platform provides an equivalent immutable
+  system-object guarantee. RPM revalidates all pinned values before every hook
+  and exposes only the final approved object or its pinned read-only alias
+  through the capability. A platform-owned loader or shared runtime that is not
+  a regular file must provide an equivalent immutable platform identity;
+  otherwise RPM cannot approve that tool and fails closed. The parent `PATH`
+  and other environment text do not authorize an additional path or input.
+
+  A live root/member source, previously published install tree, transaction
+  control or backup path, ambient cache, parent home directory, credential path,
+  and unapproved tool or configuration path cannot enter the approved set.
+  Every other live workspace read and every write outside the staged view is
+  denied. Read-only runtime/tool inputs are execution capabilities only and
+  never become staged or published install input. The boundary covers the
+  hook's complete descendant process tree; RPM does not advance to post-hook
+  validation while a descendant survives or retains a writable handle outside
+  transaction control.
   If the execution platform cannot enforce this boundary, RPM fails closed
   before running any workspace root, member, or external hook. The transaction's
   staged root `.bin` directory remains prepended to `PATH`, and the lexical
@@ -163,32 +187,49 @@ rules:
   `rpm.lock` are explicit write state with the dedicated snapshot checks in this
   SPEC. Temporary source-overlay paths are outside the managed-tree scan because
   they are discarded and never enter the publication transaction record. Their
-  link safety is owned by hook-process confinement: every hook filesystem
-  lookup, link, rename, and reparse resolution remains rooted in the retained
-  staging capability, including when a later hook observes an earlier hook's
-  source-overlay entry. A source-overlay symlink, hard link, or reparse entry
-  cannot resolve or alias into a live source or previously published tree. A
-  platform that cannot enforce this process-wide boundary fails closed before
-  workspace hooks run.
+  link safety is owned by hook-process confinement: every filesystem lookup,
+  link, rename, and reparse resolution that originates through a source-overlay
+  entry remains rooted in the retained staging capability, including when a
+  later hook observes an earlier hook's entry. A source-overlay symlink, hard
+  link, or reparse entry cannot resolve or alias into a live source, previously
+  published tree, or the approved runtime/tool set. Hooks may still execute or
+  read that approved set through its separate read-only capability; no staged
+  or source-overlay link grants that access. A platform that cannot enforce
+  this process-wide boundary fails closed before workspace hooks run.
 - When staged views are materialized and before the root hook runs, RPM records
   each staged member manifest's regular-file identity and requires its bytes and
   permissions to equal the immutable discovery snapshot. Every later check
   compares against this transaction-start identity and the discovery bytes and
   permissions; a fresh snapshot is not taken after an earlier hook can write the
   shared view.
-- After resolution/linking produces the staged `rpm.lock` and before the first
-  hook, RPM opens it descriptor-relative without following links and requires a
-  regular file with exactly one link. RPM pins its descriptor identity, exact
-  bytes, and permissions. Immediately before and after every root, member, and
-  external hook and immediately before publication, the same descriptor and
-  no-follow path entry must retain that type, one-link count, identity, bytes,
-  and permissions. A byte or mode change, replacement, symlink, hard link, or
-  special file fails the scripts phase without reading a replacement target.
+- After resolution/linking produces a fresh workspace-aware v2 `rpm.lock`
+  candidate, RPM keeps that candidate in hook-inaccessible transaction state.
+  The hook-visible staged root instead reflects the prior live `rpm.lock`: RPM
+  snapshots the live entry through the recovery contract's retained
+  descriptor-relative no-follow lookup, then materializes its exact bytes and
+  permissions as a distinct regular single-link file in the staged view, or
+  preserves its absence when no live lockfile existed. Before and after every
+  root, member, and external hook, RPM requires that hook-visible prior-live
+  snapshot to retain its initial absence or its pinned type, one-link count,
+  identity, bytes, and permissions. A creation, deletion, byte or mode change,
+  replacement, symlink, hard link, or special file fails the scripts phase
+  without reading a replacement target.
+
+  Separately, RPM pins the hidden v2 candidate's regular single-link descriptor,
+  identity, exact bytes, and permissions before the first hook and revalidates
+  them after every hook and immediately before publication. The acceptance
+  predicate is exact: the live entry still equals the prior-live recovery
+  baseline, the hook-visible prior-live snapshot is unchanged, and the hidden
+  candidate is unchanged. When all three hold, `write` retains and publishes the
+  candidate. A prior live v1 lockfile is expected to differ from the fresh v2
+  candidate; RPM never requires those bytes or identities to match.
 - The staged workspace view has two explicit publication classes. Managed
   install output consists only of the transaction-owned root/member
   `node_modules` trees and may be published atomically by `write`. The staged
-  root `package.json` and `rpm.lock` are explicit write-phase state and may be
-  published only after the reconciliation and validation rules below succeed.
+  root `package.json` and hidden v2 `rpm.lock` candidate are explicit write-phase
+  state and may be published only after the reconciliation and validation rules
+  below succeed. The hook-visible prior-live lockfile snapshot is immutable
+  validation input and is never a publication candidate.
   Every other root/member source path in the execution view is a temporary
   source overlay: hook-created, modified, or deleted ordinary files remain
   visible to later hooks in that same staged view, then are discarded after the
@@ -199,13 +240,14 @@ rules:
   governed by the stricter validation below. Publication uses the recovery
   SPEC's single multi-output transaction record; this SPEC does not permit
   per-member success or early backup deletion.
-- `write` never publishes the staged `rpm.lock` inode or any link to it. After
-  the final descriptor validation, RPM reads the pinned bytes through that
-  descriptor and materializes them into a new transaction-owned, single-link
-  regular temporary file on the lockfile target filesystem. It fsyncs the file,
-  verifies the materialized bytes, permissions, distinct identity, and one-link
-  count, then publishes that file through the recovery protocol. The staged
-  inode remains staging-only and is discarded.
+- `write` never publishes the hidden candidate `rpm.lock` inode or any link to
+  it. After the final acceptance predicate, RPM reads the candidate's pinned
+  bytes through that descriptor and materializes them into a new
+  transaction-owned, single-link regular temporary file on the lockfile target
+  filesystem. It fsyncs the file, verifies the materialized bytes, permissions,
+  distinct identity, and one-link count, then publishes that file through the
+  recovery protocol. The candidate and hook-visible snapshot remain
+  staging-only and are discarded.
 - Any workspace root/member hook failure or post-hook validation failure fails
   the single `scripts` phase and the whole workspace install transaction. RPM
   discards every staged root/member install output and preserves the previously
@@ -331,13 +373,44 @@ npm's. This contract defines only what RPM guarantees today:
   tree, which becomes the corresponding directory under `node_modules/` after
   the `write` phase. These staged directories keep the previous install and
   live workspace sources untouched during failure handling.
-- **PATH.** Lifecycle hooks receive the same PATH prepend policy as `rpm run`:
-  the staged replacement tree's `.bin` directory is prepended to the inherited
-  `PATH`. For resolved-package hooks, `.bin` generation
-  (`docs/specs/core/linker/SPEC.md`) has already run in the preceding `link`
-  phase, so the staged project `.bin` is populated before any hook runs. Root
-  hooks use the same staged directory; the published layout is equivalent after
-  a successful `write` phase.
+- **PATH.** In the active root-only path, lifecycle hooks receive the same PATH
+  prepend policy as `rpm run`: the staged replacement tree's `.bin` directory
+  is prepended to the inherited `PATH`. For resolved-package hooks, `.bin`
+  generation (`docs/specs/core/linker/SPEC.md`) has already run in the preceding
+  `link` phase, so the staged project `.bin` is populated before any hook runs.
+  Root hooks use the same staged directory; the published layout is equivalent
+  after a successful `write` phase. In the planned workspace path, RPM instead
+  synthesizes `PATH` from the staged `.bin` directory followed by a
+  transaction-owned read-only projection containing only approved executable
+  entries. Command lookup may select only an entry in those two locations; the
+  parent `PATH` is not inherited. The active root-only path keeps its current
+  inherited-`PATH` behavior until #222 activates the confined workspace path.
+- **Child environment.** The planned workspace path starts every root, member,
+  and external hook child from an empty environment and copies no parent entry.
+  RPM synthesizes exactly `PATH`; `PWD` set to the staged hook working directory;
+  `HOME`, `USERPROFILE`, and `XDG_CONFIG_HOME` set to transaction-owned empty
+  per-hook directories inside the staged source-overlay view; `TMPDIR`, `TMP`,
+  and `TEMP` set to a separate transaction-owned per-hook temporary directory
+  inside that view; and `LANG` and `LC_ALL` set to `C`. Those home/config/temp
+  directories start empty for each hook and are discarded afterward. On Windows
+  only, RPM also synthesizes `COMSPEC` as the pinned approved shell,
+  `SystemRoot` and `WINDIR` as the pinned approved runtime root when required by
+  the platform, and fixed `PATHEXT=.COM;.EXE;.BAT;.CMD`.
+  Platform-inapplicable names are omitted. These are the only entries RPM passes
+  at process creation; a shell may create its own documented internal variables,
+  but none may derive from the parent environment.
+
+  This empty-origin allowlist removes every parent credential and injection
+  channel. In particular, names beginning with `LD_`, `DYLD_`, or
+  `GIT_CONFIG_`, and the exact names `BASH_ENV`, `ENV`, `PYTHONPATH`,
+  `NODE_OPTIONS`, and `RUBYOPT`, are absent; matching is ASCII-case-insensitive
+  on platforms whose environment is case-insensitive. RPM passes no inherited
+  file descriptor or handle: every RPM control, discovery, source, backup, and
+  unrelated parent descriptor is close-on-exec or explicitly closed before the
+  child starts. Only the staged-view and approved read-only capabilities needed
+  by process confinement cross the boundary. If RPM cannot construct exactly
+  this environment and descriptor set for the hook and all descendants, the
+  planned workspace `scripts` phase fails before execution.
 - **Child status propagation.** The child process exit status is propagated per
   `docs/specs/cli/run/SPEC.md`: a hook that exits non-zero fails the phase with
   that status; a hook that cannot be spawned surfaces a readable run error.
@@ -380,11 +453,13 @@ subsequent install.
 
 The planned workspace path is stricter. It reloads only accepted non-graph root
 manifest fields after the frozen-field validation above. The staged `rpm.lock`
-is immutable hook input, so a root, member, or external hook change fails instead
-of being merged or reloaded. Resolved-package hooks run once against the final
-staged graph. If the scripts phase fails, the staged manifest and lockfile are
-discarded before any live write; the active root-only restoration behavior and
-original permissions remain unchanged.
+visible to hooks is the immutable prior-live snapshot, while the fresh v2
+candidate remains inaccessible and pinned separately. A root, member, or
+external hook change fails instead of being merged or reloaded. Resolved-package
+hooks run once against the final staged graph. If the scripts phase fails, the
+staged manifest, prior-live snapshot, and candidate lockfile are discarded
+before any live write; the active root-only restoration behavior and original
+permissions remain unchanged.
 
 Lifecycle hooks execute arbitrary user/registry-controlled commands. In the
 active root-only path, RPM cannot guarantee that a root hook's writes outside
@@ -476,9 +551,10 @@ offline fixtures before production execution is enabled:
   change the staged declaration and exit zero, proving frozen-declaration
   validation fails before member/external hooks without rediscovery,
   re-resolution, or publication;
-- `workspace-lifecycle-root-graph-field-mutation` changes root `name`, `version`,
-  `dependencies`, and `devDependencies` in separate zero-exit cases, including a
-  root/member name collision, and proves every case fails before later hooks or
+- `workspace-lifecycle-root-graph-field-mutation` has root, member, and external
+  hooks change root `name`, `version`, `dependencies`, and `devDependencies` in
+  separate zero-exit cases, including a root/member name collision, and proves
+  the boundary after the responsible hook fails before any later hook or
   publication without reloading graph identity;
 - `workspace-lifecycle-root-manifest-replacement` replaces the live root
   manifest after discovery and replaces the staged root manifest during the
@@ -496,13 +572,17 @@ offline fixtures before production execution is enabled:
   member `node_modules`, then proves a successful `write` publishes only the
   managed install proof while the ordinary source-overlay file never appears in
   the live member source;
-- `workspace-lifecycle-staged-lockfile-integrity` has root, member, and external
-  hooks change staged `rpm.lock` bytes, mode, identity, file type, symlink target,
-  and link count in separate cases, proving the next boundary fails without
-  reading or publishing a replacement;
+- `workspace-lifecycle-staged-lockfile-integrity` starts with a live v1 lockfile
+  and a distinct fresh staged v2 candidate. Root, member, and external hooks see
+  only the prior-live v1 snapshot and change its presence, bytes, mode, identity,
+  file type, symlink target, and link count in separate cases, proving the next
+  boundary fails without reading or publishing a replacement. The success case
+  leaves the v1 snapshot unchanged, retains the inaccessible v2 candidate, and
+  proves publication does not require the live v1 bytes to equal v2;
 - `workspace-lifecycle-lockfile-materialization` proves a successful install
-  publishes the pinned staged lockfile bytes through a new single-link regular
-  inode with the expected permissions and no identity/link alias to staging;
+  publishes the pinned hidden v2 candidate bytes through a new single-link
+  regular inode with the expected permissions and no identity/link alias to
+  either candidate or hook-visible snapshot;
 - `workspace-lifecycle-published-tree-write` makes a member hook attempt an
   absolute write to a previously published `node_modules` path, proving the
   staged-root boundary denies the target and fails closed without publishing
@@ -512,6 +592,27 @@ offline fixtures before production execution is enabled:
   root/member sources and previously published install trees, proving
   staging-root process confinement denies every target, leaves no surviving
   descendant, and prevents publication;
+- `workspace-lifecycle-read-only-runtime-tool-access` runs the configured
+  platform shell and one explicitly approved external tool through the pinned
+  read-only runtime/tool set, including an interpreter, loader, transitive
+  library, and approved configuration read. Required runtime reads and staged
+  writes succeed. Missing or unapproved transitive reads, writes to the set,
+  reads from live workspace or published trees, and execution of an unapproved
+  parent-`PATH` entry are denied for the hook and its descendants. Paired cases
+  pin and revalidate an approved symlink chain, reject a changed chain and a
+  hard-linked final file without an immutable-system guarantee, and prove a
+  staged symlink/hardlink alias cannot grant runtime capability access;
+- `workspace-lifecycle-secret-environment` starts RPM with distinct sentinel
+  credentials and unrelated parent variables, then has root, member, external,
+  and descendant helpers record their environments. Every sentinel is absent;
+  RPM's spawn input contains exactly the synthesized allowlist and staged values,
+  with no parent `PATH`, home, cache, credential, or configuration value;
+- `workspace-lifecycle-loader-config-environment` supplies payload-bearing
+  `LD_*`, `DYLD_*`, `BASH_ENV`, `ENV`, `PYTHONPATH`, `NODE_OPTIONS`, `RUBYOPT`,
+  and `GIT_CONFIG_*` values plus inheritable sentinel descriptors/handles. Root,
+  member, external, and descendant cases prove none is inherited or executed,
+  no sentinel handle is usable, and only pinned approved runtime/config inputs
+  can be read;
 - `workspace-lifecycle-staged-link-boundary` supplies escaping, dangling,
   cyclic, live-source, and previously published-tree staged symlink/link
   targets, proving each is rejected before a member hook starts;
