@@ -306,25 +306,85 @@ def check_role_contracts(
                 )
 
 
-def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str]:
+def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
+    """Parse the complete, deliberately flat SKILL.md frontmatter subset."""
     try:
-        text = path.read_text()
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as error:
+        fail(errors, f"{path.relative_to(ROOT)}: frontmatter is not valid UTF-8: {error}")
+        return {}
     except OSError as error:
         fail(errors, f"{path.relative_to(ROOT)}: cannot read: {error}")
         return {}
     if not text.startswith("---\n"):
         fail(errors, f"{path.relative_to(ROOT)}: missing frontmatter")
         return {}
+    lines = text.split("\n")
     try:
-        frontmatter = text.split("---\n", 2)[1]
-    except IndexError:
+        closing_line = lines.index("---", 1)
+    except ValueError:
         fail(errors, f"{path.relative_to(ROOT)}: unterminated frontmatter")
         return {}
-    values: dict[str, str] = {}
-    for line in frontmatter.splitlines():
-        if ":" in line:
-            key, value = line.split(":", 1)
-            values[key.strip()] = value.strip()
+    frontmatter_source = "\n".join(lines[1:closing_line])
+    if (
+        "\r" in frontmatter_source
+        or contains_unsupported_yaml_structure_separator(frontmatter_source)
+        or contains_literal_yaml_control(frontmatter_source)
+        or contains_unsupported_yaml_line_separator(frontmatter_source)
+    ):
+        fail(
+            errors,
+            f"{path.relative_to(ROOT)}: frontmatter contains an unsupported control "
+            "or line separator",
+        )
+        return {}
+    values: dict[str, str | bool] = {}
+    for line_number, line in enumerate(lines[1:closing_line], 2):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if line[:1].isspace():
+            fail(
+                errors,
+                f"{path.relative_to(ROOT)}: line {line_number}: "
+                "nested frontmatter fields are not supported",
+            )
+            continue
+        key, separator, value = line.partition(":")
+        key = key.strip()
+        if separator != ":" or re.fullmatch(r"[a-z][a-z0-9-]*", key) is None:
+            fail(
+                errors,
+                f"{path.relative_to(ROOT)}: line {line_number}: invalid root frontmatter field",
+            )
+            continue
+        if value and not value.startswith(YAML_SEPARATOR_SPACE):
+            fail(
+                errors,
+                f"{path.relative_to(ROOT)}: line {line_number}: "
+                f"frontmatter field {key!r} must use YAML separation space after ':'",
+            )
+            continue
+        parsed_value, scalar_error = parse_frontmatter_scalar(value, line_number)
+        if scalar_error is not None:
+            fail(errors, f"{path.relative_to(ROOT)}: {scalar_error}")
+            continue
+        if key == "disable-model-invocation" and not isinstance(parsed_value, bool):
+            fail(
+                errors,
+                f"{path.relative_to(ROOT)}: line {line_number}: "
+                "disable-model-invocation must be boolean",
+            )
+            continue
+        if key in values:
+            if key == "name":
+                message = "expected exactly one root frontmatter name"
+            else:
+                message = f"duplicate root frontmatter field {key!r}"
+            fail(errors, f"{path.relative_to(ROOT)}: {message}")
+            continue
+        if parsed_value is not None:
+            values[key] = parsed_value
     return values
 
 
@@ -695,7 +755,7 @@ def parse_yaml_string_scalar(value: str, line_number: int) -> tuple[str | None, 
         len(plain) == 1 or plain[1] == YAML_SEPARATOR_SPACE
     ):
         return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
-    if re.search(r":[ \t]", plain):
+    if re.search(r":(?:[ \t]|$)", plain):
         return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
     if plain.lower() in {"null", "true", "false", "yes", "no", "on", "off", "~"}:
         return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
@@ -709,6 +769,21 @@ def parse_yaml_string_scalar(value: str, line_number: int) -> tuple[str | None, 
     if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[Tt ].*)?", plain):
         return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
     return plain, None
+
+
+def parse_frontmatter_scalar(
+    value: str, line_number: int
+) -> tuple[str | bool | None, str | None]:
+    """Parse a scalar in the supported SKILL.md frontmatter subset."""
+    stripped = value.strip(YAML_SEPARATOR_SPACE)
+    if stripped in {"true", "false"}:
+        return stripped == "true", None
+    parsed, error = parse_yaml_string_scalar(value, line_number)
+    if error is not None:
+        return None, error.replace("interface metadata", "frontmatter")
+    if parsed is None:
+        return None, f"line {line_number}: frontmatter values must be non-empty scalars"
+    return parsed, None
 
 
 def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
@@ -860,7 +935,7 @@ def check_entries_and_assets(errors: list[str]) -> None:
     for skill_name in ("take-ticket", "prepare-backlog"):
         path = ROOT / ".agents" / "skills" / skill_name / "SKILL.md"
         values = parse_frontmatter(path, errors)
-        if values.get("disable-model-invocation") != "true":
+        if values.get("disable-model-invocation") is not True:
             fail(errors, f"{path.relative_to(ROOT)}: entry must be hidden from model invocation")
         try:
             text = path.read_text()
@@ -889,7 +964,7 @@ def check_entries_and_assets(errors: list[str]) -> None:
 
     gatekeeper = ROOT / ".agents" / "skills" / "merge-gatekeeper" / "SKILL.md"
     values = parse_frontmatter(gatekeeper, errors)
-    if values.get("disable-model-invocation") != "true":
+    if values.get("disable-model-invocation") is not True:
         fail(errors, f"{gatekeeper.relative_to(ROOT)}: entry must be hidden from model invocation")
     try:
         text = gatekeeper.read_text()

@@ -522,6 +522,12 @@ invalid_interface_scalars = {
         "literal tabs are not supported in interface metadata",
         False,
     ),
+    "plain-trailing-colon": (
+        "display_name",
+        "Fixture Governance:",
+        "interface metadata must be a non-empty YAML string scalar",
+        False,
+    ),
     **{
         f"plain-{name}-indicator": (
             "display_name",
@@ -637,6 +643,86 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             "mismatched SKILL.md name was accepted: "
             f"errors={frontmatter_errors!r}"
         )
+
+    malformed_frontmatter = {
+        "nested-only-name": (
+            "---\n"
+            "metadata:\n"
+            "  name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "---\n",
+            "frontmatter name is missing",
+        ),
+        "duplicate-root-name": (
+            "---\n"
+            "name: fixture-governance\n"
+            "name: fixture-governance\n"
+            "---\n",
+            "expected exactly one root frontmatter name",
+        ),
+        "duplicate-invocation-control": (
+            "---\n"
+            "name: fixture-governance\n"
+            "disable-model-invocation: false\n"
+            "disable-model-invocation: true\n"
+            "---\n",
+            "duplicate root frontmatter field 'disable-model-invocation'",
+        ),
+        "quoted-invocation-control": (
+            "---\n"
+            "name: fixture-governance\n"
+            'disable-model-invocation: "true"\n'
+            "---\n",
+            "disable-model-invocation must be boolean",
+        ),
+        "quoted-duplicate-root-name": (
+            "---\n"
+            '"name": other-skill\n'
+            "name: fixture-governance\n"
+            "---\n",
+            "invalid root frontmatter field",
+        ),
+        "unterminated-collection": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: [unterminated\n"
+            "---\n",
+            "frontmatter must be a non-empty YAML string scalar",
+        ),
+        "control-in-comment": (
+            "---\n"
+            "name: fixture-governance\n"
+            "# first\u000b# second\n"
+            "---\n",
+            "frontmatter contains an unsupported control or line separator",
+        ),
+        "carriage-return-in-comment": (
+            "---\n"
+            "name: fixture-governance\n"
+            "# first\rname: other-skill\n"
+            "---\n",
+            "frontmatter contains an unsupported control or line separator",
+        ),
+        "unterminated": (
+            "---\n"
+            "name: fixture-governance\n",
+            "unterminated frontmatter",
+        ),
+    }
+    for name, (text, expected_error) in malformed_frontmatter.items():
+        malformed_skill_path = pathlib.Path(temp_dir) / f"{name}.md"
+        malformed_skill_path.write_text(text)
+        frontmatter_errors = []
+        checker.validate_skill_frontmatter_name(
+            "fixture-governance",
+            malformed_skill_path,
+            frontmatter_errors,
+        )
+        if not any(expected_error in error for error in frontmatter_errors):
+            raise SystemExit(
+                f"{name} SKILL.md frontmatter was accepted: "
+                f"errors={frontmatter_errors!r}"
+            )
 
 nbspace_value = "Fixture" + chr(0xA0) + "#Governance"
 parsed, parse_error = checker.parse_yaml_string_scalar(nbspace_value, 1)
