@@ -6,6 +6,41 @@ trusted_temp_root=/tmp
 temp_dir="$(/usr/bin/mktemp -d "${trusted_temp_root}/rpm-codex-cloud-setup.XXXXXX")"
 trap 'rm -rf -- "${temp_dir}"' EXIT
 
+fixture_ca_input=
+for candidate in /etc/ssl/cert.pem /etc/ssl/certs/ca-certificates.crt \
+  /etc/pki/tls/certs/ca-bundle.crt; do
+  if [ -f "${candidate}" ] && [ ! -L "${candidate}" ]; then
+    fixture_ca_input="${candidate}"
+    break
+  fi
+done
+[ -n "${fixture_ca_input}" ] || {
+  printf 'no platform CA fixture file is available\n' >&2
+  exit 1
+}
+fixture_canonicalizer=
+for candidate in /usr/bin/realpath /bin/realpath /usr/local/bin/realpath \
+  /opt/homebrew/bin/realpath; do
+  if [ -f "${candidate}" ] && [ -x "${candidate}" ]; then
+    fixture_canonicalizer="${candidate}"
+    break
+  fi
+done
+[ -n "${fixture_canonicalizer}" ] || {
+  printf 'no trusted realpath canonicalizer is available\n' >&2
+  exit 1
+}
+fixture_ca_file="$("${fixture_canonicalizer}" -- "${fixture_ca_input}")"
+fixture_ca_dir=
+for candidate in /etc/ssl/certs /etc/pki/tls/certs \
+  /usr/local/share/ca-certificates; do
+  if [ -d "${candidate}" ] && [ ! -L "${candidate}" ]; then
+    fixture_ca_dir="$("${fixture_canonicalizer}" -- "${candidate}")"
+    break
+  fi
+done
+[ -n "${fixture_ca_dir}" ] || fixture_ca_dir="${fixture_ca_file%/*}"
+
 run_tmpdir_regression() {
   local regression_root
   local marker_name
@@ -16,7 +51,9 @@ run_tmpdir_regression() {
 
   regression_root="$(/usr/bin/mktemp -d "${trusted_temp_root}/rpm-codex-cloud-setup-regression.XXXXXX")"
   marker_name="rpm-codex-cloud-setup-marker-${RANDOM}-${RANDOM}"
-  malicious_tmpdir="${regression_root}/tmp'; echo \$(printf x >${marker_name}); #"
+  marker_path="${regression_root}/${marker_name}"
+  malicious_tmpdir="${regression_root}/tmp'; echo \$(printf x >${marker_path}); #"
+  mkdir -p -- "${malicious_tmpdir%/*}"
   printf 'TMPDIR must be ignored by the fixture harness\n' >"${malicious_tmpdir}"
   output_file="${regression_root}/output"
   set +e
@@ -29,9 +66,7 @@ run_tmpdir_regression() {
     rm -rf -- "${regression_root}"
     exit 1
   fi
-  marker_path="$(/usr/bin/find "${trusted_temp_root}" -type f -name "${marker_name}" \
-    -print -quit 2>/dev/null)"
-  if [ -n "${marker_path}" ]; then
+  if [ -e "${marker_path}" ]; then
     printf 'malicious TMPDIR executed a fake shim payload: %s\n' "${marker_path}" >&2
     rm -f -- "${marker_path}"
     rm -rf -- "${regression_root}"
@@ -39,10 +74,6 @@ run_tmpdir_regression() {
   fi
   rm -rf -- "${regression_root}"
 }
-
-if [ "${RPM_CLOUD_TEST_TMPDIR_REGRESSION:-}" != 1 ]; then
-  run_tmpdir_regression
-fi
 
 assert_contains() {
   local actual="$1"
@@ -75,6 +106,7 @@ make_fake_environment() {
   local stable_toolchain_bin="${home_dir}/.rustup/toolchains/stable-fixture/bin"
   local stable_canonical_toolchain_bin
   local other_toolchain_bin="${home_dir}/.rustup/toolchains/other-fixture/bin"
+  local other_canonical_toolchain_bin="${home_dir}/.rustup/toolchains/other-fixture/bin"
   local ambient_tmp="${case_dir}/ambient-tmp"
   local log_file="${case_dir}/commands"
   local recipe_log="${case_dir}/recipes"
@@ -84,6 +116,10 @@ make_fake_environment() {
     "${stable_toolchain_bin}"
   canonical_rustup_home="$(cd -- "${home_dir}/.rustup" && pwd -P)"
   stable_canonical_toolchain_bin="$(cd -- "${stable_toolchain_bin}" && pwd -P)"
+  if [ "${mode}" = different-toolchain ] || [ "${mode}" = unselected-toolchain ]; then
+    mkdir -p "${other_toolchain_bin}"
+    other_canonical_toolchain_bin="$(cd -- "${other_toolchain_bin}" && pwd -P)"
+  fi
   mkdir -p "${case_dir}/shadow/bin"
   : >"${log_file}"
   : >"${recipe_log}"
@@ -98,7 +134,8 @@ for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_prox
   CARGO_SOURCE_CRATES_IO_REPLACE_WITH CARGO_SOURCE_FOO_REPLACE_WITH \
   CARGO_REGISTRY_TOKEN RUSTUP_DIST_SERVER RUSTUP_UPDATE_ROOT RUSTC_WRAPPER \
   RUSTFLAGS RPM_CLOUD_TEST_SECRET NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH \
-  RUSTDOCFLAGS RUSTC_WORKSPACE_WRAPPER
+  RUSTDOCFLAGS RUSTC_WORKSPACE_WRAPPER SSL_CERT_FILE SSL_CERT_DIR \
+  CURL_CA_BUNDLE CARGO_HTTP_CAINFO
 do
   case "\${variable}" in
     CARGO_HOME|RUSTUP_HOME|RUSTUP_TOOLCHAIN) ;;
@@ -107,7 +144,7 @@ do
 done
 [ "\${CARGO_HOME}" = "\${original_home}/.cargo" ] || exit 91
 [ "\${RUSTUP_HOME}" = "\${canonical_rustup_home}" ] || exit 92
-[ "\${RUSTUP_TOOLCHAIN}" = stable ] || exit 93
+[ "\${RUSTUP_TOOLCHAIN}" = stable-fixture ] || exit 93
 [ "\${HOME}" != "\${original_home}" ] || exit 94
 case "\${HOME}" in '${ambient_tmp}'*) exit 95 ;; esac
 [ "\${GIT_CONFIG_GLOBAL}" = /dev/null ] || exit 96
@@ -129,18 +166,48 @@ log_file='${log_file}'
 mode='${mode}'
 original_home='${home_dir}'
 canonical_rustup_home='${canonical_rustup_home}'
-for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy \
-  NO_PROXY no_proxy CARGO_REGISTRIES_CRATES_IO_INDEX CARGO_HTTP_PROXY CARGO_NET_OFFLINE \
+for variable in CARGO_REGISTRIES_CRATES_IO_INDEX CARGO_HTTP_PROXY CARGO_NET_OFFLINE \
   CARGO_SOURCE_CRATES_IO_REPLACE_WITH CARGO_SOURCE_FOO_REPLACE_WITH CARGO_REGISTRY_TOKEN RUSTUP_DIST_SERVER \
   RUSTUP_UPDATE_ROOT RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER RUSTFLAGS \
-  RPM_CLOUD_TEST_SECRET NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH RUSTDOCFLAGS \
-  RUSTC_WORKSPACE_WRAPPER
+  RPM_CLOUD_TEST_SECRET NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH RUSTDOCFLAGS RUSTC_WORKSPACE_WRAPPER
 do
   [ -z "\${!variable+x}" ] || { printf 'env-leak=%s\\n' "\${variable}" >>"\${log_file}"; exit 90; }
 done
+assert_no_transport() {
+  local variable
+  for variable in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+    http_proxy https_proxy all_proxy no_proxy SSL_CERT_FILE SSL_CERT_DIR \
+    CURL_CA_BUNDLE CARGO_HTTP_CAINFO
+  do
+    [ -z "\${!variable+x}" ] || { printf 'transport-leak=%s\\n' "\${variable}" >>"\${log_file}"; exit 100; }
+  done
+}
+assert_online_transport() {
+  [ "\${HTTP_PROXY:-}" = http://ambient.invalid ] || exit 101
+  [ "\${HTTPS_PROXY:-}" = https://ambient.invalid ] || exit 102
+  [ "\${ALL_PROXY:-}" = http://ambient.invalid ] || exit 103
+  [ "\${NO_PROXY:-}" = ambient.invalid ] || exit 104
+  [ "\${http_proxy:-}" = http://ambient.invalid ] || exit 105
+  [ "\${https_proxy:-}" = https://ambient.invalid ] || exit 106
+  [ "\${all_proxy:-}" = http://ambient.invalid ] || exit 107
+  [ "\${no_proxy:-}" = ambient.invalid ] || exit 108
+  [ "\${SSL_CERT_FILE:-}" = '${fixture_ca_file}' ] || exit 109
+  [ "\${SSL_CERT_DIR:-}" = '${fixture_ca_dir}' ] || exit 110
+  [ "\${CURL_CA_BUNDLE:-}" = '${fixture_ca_file}' ] || exit 111
+  [ "\${CARGO_HTTP_CAINFO:-}" = '${fixture_ca_file}' ] || exit 112
+}
+if [ "\${1:-}" = component ] && [ "\${2:-}" = add ]; then
+  assert_online_transport
+else
+  assert_no_transport
+fi
 [ "\${CARGO_HOME}" = "\${original_home}/.cargo" ] || exit 91
 [ "\${RUSTUP_HOME}" = "\${canonical_rustup_home}" ] || exit 92
-[ "\${RUSTUP_TOOLCHAIN}" = stable ] || exit 93
+if [ "\${1:-}" = toolchain ] && [ "\${2:-}" = list ]; then
+  [ -z "\${RUSTUP_TOOLCHAIN+x}" ] || exit 93
+else
+  [ "\${RUSTUP_TOOLCHAIN}" = stable-fixture ] || exit 93
+fi
 [ "\${HOME}" != "\${original_home}" ] || exit 94
 case "\${HOME}" in '${ambient_tmp}'*) exit 95 ;; esac
 [ "\${GIT_CONFIG_GLOBAL}" = /dev/null ] || exit 96
@@ -148,20 +215,44 @@ case "\${HOME}" in '${ambient_tmp}'*) exit 95 ;; esac
 [ "\${GIT_CONFIG_NOSYSTEM}" = 1 ] || exit 98
 [ "\${GIT_TERMINAL_PROMPT}" = 0 ] || exit 99
 printf 'rustup %s\\n' "\$*" >>"\${log_file}"
+if [ "\${1:-}" = toolchain ] && [ "\${2:-}" = list ] && \
+  [ "\${3:-}" = --verbose ]; then
+  case "\${mode}" in
+    tracking-stable)
+      printf 'stable (default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      ;;
+    multiple-stable)
+      printf 'stable-fixture (active, default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      printf 'stable-secondary (default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      ;;
+    custom-stable)
+      printf 'stable-custom (active, default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      ;;
+    host-mismatch)
+      printf 'stable-foreign (active, default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      ;;
+    *)
+      printf 'stable-fixture (active, default) %s\\n' '${canonical_rustup_home}/toolchains/stable-fixture'
+      ;;
+  esac
+  exit 0
+fi
 if [ "\${1:-}" = which ] && [ "\${2:-}" = --toolchain ] && \\
-  [ "\${3:-}" = stable ] && [ "\${4:-}" = cargo ]; then
+  [ "\${3:-}" = stable-fixture ] && [ "\${4:-}" = cargo ]; then
   case "\${mode}" in
     dotdot) printf '%s\\n' '${stable_canonical_toolchain_bin}/../bin/cargo' ;;
+    unselected-toolchain) printf '%s\\n' '${other_canonical_toolchain_bin}/cargo' ;;
     *) printf '%s\\n' '${stable_canonical_toolchain_bin}/cargo' ;;
   esac
   exit 0
 fi
 if [ "\${1:-}" = which ] && [ "\${2:-}" = --toolchain ] && \\
-  [ "\${3:-}" = stable ] && [ "\${4:-}" = rustc ]; then
+  [ "\${3:-}" = stable-fixture ] && [ "\${4:-}" = rustc ]; then
   case "\${mode}" in
     rustc-missing) exit 0 ;;
     rustc-failure) printf 'fake rustc lookup failed\\n' >&2; exit 77 ;;
     different-toolchain) printf '%s\\n' '${canonical_rustup_home}/toolchains/other-fixture/bin/rustc' ;;
+    unselected-toolchain) printf '%s\\n' '${other_canonical_toolchain_bin}/rustc' ;;
     *) printf '%s\\n' '${stable_canonical_toolchain_bin}/rustc' ;;
   esac
   exit 0
@@ -197,8 +288,7 @@ log_file='${log_file}'
 mode='${mode}'
 original_home='${home_dir}'
 canonical_rustup_home='${canonical_rustup_home}'
-for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy \
-  NO_PROXY no_proxy CARGO_HOME RUSTUP_HOME CARGO_REGISTRIES_CRATES_IO_INDEX \
+for variable in CARGO_HOME RUSTUP_HOME CARGO_REGISTRIES_CRATES_IO_INDEX \
   CARGO_HTTP_PROXY CARGO_NET_OFFLINE CARGO_SOURCE_CRATES_IO_REPLACE_WITH \
   CARGO_SOURCE_FOO_REPLACE_WITH CARGO_REGISTRY_TOKEN \
   RUSTUP_DIST_SERVER RUSTUP_UPDATE_ROOT RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER \
@@ -210,6 +300,34 @@ do
     *) [ -z "\${!variable+x}" ] || { printf 'env-leak=%s\\n' "\${variable}" >>"\${log_file}"; exit 90; } ;;
   esac
 done
+assert_no_transport() {
+  local variable
+  for variable in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+    http_proxy https_proxy all_proxy no_proxy SSL_CERT_FILE SSL_CERT_DIR \
+    CURL_CA_BUNDLE CARGO_HTTP_CAINFO
+  do
+    [ -z "\${!variable+x}" ] || { printf 'transport-leak=%s\\n' "\${variable}" >>"\${log_file}"; exit 100; }
+  done
+}
+assert_online_transport() {
+  [ "\${HTTP_PROXY:-}" = http://ambient.invalid ] || exit 101
+  [ "\${HTTPS_PROXY:-}" = https://ambient.invalid ] || exit 102
+  [ "\${ALL_PROXY:-}" = http://ambient.invalid ] || exit 103
+  [ "\${NO_PROXY:-}" = ambient.invalid ] || exit 104
+  [ "\${http_proxy:-}" = http://ambient.invalid ] || exit 105
+  [ "\${https_proxy:-}" = https://ambient.invalid ] || exit 106
+  [ "\${all_proxy:-}" = http://ambient.invalid ] || exit 107
+  [ "\${no_proxy:-}" = ambient.invalid ] || exit 108
+  [ "\${SSL_CERT_FILE:-}" = '${fixture_ca_file}' ] || exit 109
+  [ "\${SSL_CERT_DIR:-}" = '${fixture_ca_dir}' ] || exit 110
+  [ "\${CURL_CA_BUNDLE:-}" = '${fixture_ca_file}' ] || exit 111
+  [ "\${CARGO_HTTP_CAINFO:-}" = '${fixture_ca_file}' ] || exit 112
+}
+case "\${1:-}" in
+  install|fetch) assert_online_transport ;;
+  check) assert_no_transport ;;
+  *) assert_no_transport ;;
+esac
 [ "\${CARGO_HOME}" = "\${original_home}/.cargo" ] || exit 91
 [ "\${RUSTUP_HOME}" = "\${canonical_rustup_home}" ] || exit 92
 [ -z "\${RUSTUP_TOOLCHAIN+x}" ] || { printf 'rustup-toolchain-leak\\n' >>"\${log_file}"; exit 93; }
@@ -241,10 +359,14 @@ EOF
   printf '#!/bin/bash\\nexit 0\\n' >"${stable_toolchain_bin}/rustc"
   chmod +x "${stable_toolchain_bin}/cargo" "${stable_toolchain_bin}/rustc"
 
-  if [ "${mode}" = different-toolchain ]; then
+  if [ "${mode}" = different-toolchain ] || [ "${mode}" = unselected-toolchain ]; then
     mkdir -p "${other_toolchain_bin}"
     printf '#!/bin/bash\\nexit 0\\n' >"${other_toolchain_bin}/rustc"
     chmod +x "${other_toolchain_bin}/rustc"
+  fi
+  if [ "${mode}" = unselected-toolchain ]; then
+    cp "${stable_toolchain_bin}/cargo" "${other_toolchain_bin}/cargo"
+    chmod +x "${other_toolchain_bin}/cargo"
   fi
   if [ "${mode}" = external-symlink ]; then
     mkdir -p "${case_dir}/external"
@@ -297,6 +419,7 @@ run_setup() {
   local status_file="$5"
   local home_override="${6:-${case_dir}/home}"
   local nvm_bin_override="${7:-}"
+  local transport_override="${8:-}"
   local -a env_args
 
   mkdir -p "${case_dir}/outside" "${case_dir}/ambient-tmp"
@@ -327,6 +450,10 @@ run_setup() {
     CARGO_BUILD_RUSTC_WRAPPER=/tmp/ambient-wrapper
     RUSTFLAGS='--cfg ambient_secret'
     RUSTUP_TOOLCHAIN=ambient-toolchain
+    "SSL_CERT_FILE=${fixture_ca_input}"
+    "SSL_CERT_DIR=${fixture_ca_dir}"
+    "CURL_CA_BUNDLE=${fixture_ca_input}"
+    "CARGO_HTTP_CAINFO=${fixture_ca_input}"
     "TMPDIR=${case_dir}/ambient-tmp"
     "BASH_ENV=${case_dir}/bash-env"
     RPM_CLOUD_TEST_SECRET=ambient-secret
@@ -334,8 +461,11 @@ run_setup() {
   if [ "${trusted_path}" != __DEFAULT__ ]; then
     env_args+=("RPM_CODEX_CLOUD_TRUSTED_PATH=${trusted_path}")
   fi
-  if [ "$#" -ge 7 ]; then
+  if [ "$#" -ge 7 ] && [ "${nvm_bin_override}" != __NO_NVM__ ]; then
     env_args+=("NVM_BIN=${nvm_bin_override}")
+  fi
+  if [ "$#" -ge 8 ]; then
+    env_args+=("${transport_override}")
   fi
   NVM_BIN=/tmp/ambient-nvm-bin \
   RPM_CODEX_CLOUD_TRUSTED_PATH=/tmp/ambient-trusted/bin \
@@ -355,6 +485,24 @@ new_case() {
   printf '%s\n' "${case_dir}"
 }
 
+if [ "${RPM_CLOUD_TEST_TMPDIR_REGRESSION:-}" = 1 ]; then
+  tmpdir_probe_case="$(new_case tmpdir-probe)"
+  make_fake_environment "${tmpdir_probe_case}" warm
+  make_shadow_environment "${tmpdir_probe_case}"
+  tmpdir_probe_output="${tmpdir_probe_case}/output"
+  tmpdir_probe_status="${tmpdir_probe_case}/status"
+  run_setup "${tmpdir_probe_case}" "${tmpdir_probe_case}/trusted/bin" \
+    "${tmpdir_probe_case}/trusted/bin" "${tmpdir_probe_output}" \
+    "${tmpdir_probe_status}"
+  if [ "$(<"${tmpdir_probe_status}")" -ne 0 ]; then
+    cat "${tmpdir_probe_output}" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+run_tmpdir_regression
+
 commands_without_environment_markers() {
   local line
   while IFS= read -r line; do
@@ -373,7 +521,7 @@ run_setup "${fresh_case}" "${fresh_trusted_path}" "${fresh_case}/shadow/bin" \
   "${fresh_output}" "${fresh_status}"
 [ "$(<"${fresh_status}")" -eq 0 ]
 assert_contains "$(<"${fresh_output}")" 'codex-cloud-setup: ready ('
-expected_fresh=$'rustup component list --toolchain stable --installed\nrustup component add --toolchain stable rustfmt\nrustup component add --toolchain stable clippy\nrustup which --toolchain stable cargo\nrustup which --toolchain stable rustc\ncargo install just --locked\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
+expected_fresh=$'rustup toolchain list --verbose\nrustup component list --toolchain stable-fixture --installed\nrustup component add --toolchain stable-fixture rustfmt\nrustup component add --toolchain stable-fixture clippy\nrustup which --toolchain stable-fixture cargo\nrustup which --toolchain stable-fixture rustc\ncargo install just --locked\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
 actual_fresh="$(commands_without_environment_markers "${fresh_log}")"
 [ "${actual_fresh}" = "${expected_fresh}" ] || {
   printf 'unexpected fresh setup commands:\n%s\n' "${actual_fresh}" >&2
@@ -404,7 +552,7 @@ warm_status="${warm_case}/status"
 run_setup "${warm_case}" "${warm_case}/trusted/bin" "${warm_case}/trusted/bin" \
   "${warm_output}" "${warm_status}"
 [ "$(<"${warm_status}")" -eq 0 ]
-expected_warm=$'rustup component list --toolchain stable --installed\nrustup which --toolchain stable cargo\nrustup which --toolchain stable rustc\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
+expected_warm=$'rustup toolchain list --verbose\nrustup component list --toolchain stable-fixture --installed\nrustup which --toolchain stable-fixture cargo\nrustup which --toolchain stable-fixture rustc\ncargo fetch --quiet --locked\ncargo check --quiet --offline --locked --all-targets'
 actual_warm="$(commands_without_environment_markers "${warm_log}")"
 [ "${actual_warm}" = "${expected_warm}" ] || {
   printf 'unexpected warm setup commands:\n%s\n' "${actual_warm}" >&2
@@ -412,6 +560,144 @@ actual_warm="$(commands_without_environment_markers "${warm_log}")"
 }
 assert_not_contains "$(<"${warm_log}")" 'cargo-proxy'
 assert_not_contains "$(<"${warm_log}")" 'rustup-proxy-network-attempt'
+
+multiple_stable_case="$(new_case multiple-stable)"
+make_fake_environment "${multiple_stable_case}" multiple-stable
+multiple_stable_output="${multiple_stable_case}/output"
+multiple_stable_status="${multiple_stable_case}/status"
+run_setup "${multiple_stable_case}" \
+  "${multiple_stable_case}/home/.cargo/bin:${multiple_stable_case}/trusted/bin" \
+  "${multiple_stable_case}/trusted/bin" "${multiple_stable_output}" \
+  "${multiple_stable_status}"
+[ "$(<"${multiple_stable_status}")" -ne 0 ]
+assert_contains "$(<"${multiple_stable_output}")" 'exactly one active/default stable host toolchain'
+
+custom_stable_case="$(new_case custom-stable)"
+make_fake_environment "${custom_stable_case}" custom-stable
+custom_stable_output="${custom_stable_case}/output"
+custom_stable_status="${custom_stable_case}/status"
+run_setup "${custom_stable_case}" \
+  "${custom_stable_case}/home/.cargo/bin:${custom_stable_case}/trusted/bin" \
+  "${custom_stable_case}/trusted/bin" "${custom_stable_output}" \
+  "${custom_stable_status}"
+[ "$(<"${custom_stable_status}")" -ne 0 ]
+assert_contains "$(<"${custom_stable_output}")" 'does not match its active host name'
+
+host_mismatch_case="$(new_case host-mismatch)"
+make_fake_environment "${host_mismatch_case}" host-mismatch
+host_mismatch_output="${host_mismatch_case}/output"
+host_mismatch_status="${host_mismatch_case}/status"
+run_setup "${host_mismatch_case}" \
+  "${host_mismatch_case}/home/.cargo/bin:${host_mismatch_case}/trusted/bin" \
+  "${host_mismatch_case}/trusted/bin" "${host_mismatch_output}" \
+  "${host_mismatch_status}"
+[ "$(<"${host_mismatch_status}")" -ne 0 ]
+assert_contains "$(<"${host_mismatch_output}")" 'does not match its active host name'
+
+tracking_stable_case="$(new_case tracking-stable)"
+make_fake_environment "${tracking_stable_case}" tracking-stable
+tracking_stable_output="${tracking_stable_case}/output"
+tracking_stable_status="${tracking_stable_case}/status"
+run_setup "${tracking_stable_case}" \
+  "${tracking_stable_case}/home/.cargo/bin:${tracking_stable_case}/trusted/bin" \
+  "${tracking_stable_case}/trusted/bin" "${tracking_stable_output}" \
+  "${tracking_stable_status}"
+[ "$(<"${tracking_stable_status}")" -eq 1 ]
+assert_contains "$(<"${tracking_stable_output}")" 'tracking stable channel entry'
+
+proxy_userinfo_case="$(new_case proxy-userinfo)"
+make_fake_environment "${proxy_userinfo_case}" warm
+proxy_userinfo_output="${proxy_userinfo_case}/output"
+proxy_userinfo_status="${proxy_userinfo_case}/status"
+run_setup "${proxy_userinfo_case}" \
+  "${proxy_userinfo_case}/home/.cargo/bin:${proxy_userinfo_case}/trusted/bin" \
+  "${proxy_userinfo_case}/trusted/bin" "${proxy_userinfo_output}" \
+  "${proxy_userinfo_status}" "${proxy_userinfo_case}/home" __NO_NVM__ \
+  HTTP_PROXY=http://user:password@ambient.invalid
+[ "$(<"${proxy_userinfo_status}")" -eq 1 ]
+assert_contains "$(<"${proxy_userinfo_output}")" 'proxy userinfo'
+
+proxy_newline_case="$(new_case proxy-newline)"
+make_fake_environment "${proxy_newline_case}" warm
+proxy_newline_output="${proxy_newline_case}/output"
+proxy_newline_status="${proxy_newline_case}/status"
+proxy_newline_override=$'HTTP_PROXY=http://ambient.invalid\nunsafe'
+run_setup "${proxy_newline_case}" \
+  "${proxy_newline_case}/home/.cargo/bin:${proxy_newline_case}/trusted/bin" \
+  "${proxy_newline_case}/trusted/bin" "${proxy_newline_output}" \
+  "${proxy_newline_status}" "${proxy_newline_case}/home" __NO_NVM__ \
+  "${proxy_newline_override}"
+[ "$(<"${proxy_newline_status}")" -eq 1 ]
+assert_contains "$(<"${proxy_newline_output}")" 'must not contain a newline'
+
+unsafe_no_proxy_case="$(new_case unsafe-no-proxy)"
+make_fake_environment "${unsafe_no_proxy_case}" warm
+unsafe_no_proxy_output="${unsafe_no_proxy_case}/output"
+unsafe_no_proxy_status="${unsafe_no_proxy_case}/status"
+run_setup "${unsafe_no_proxy_case}" \
+  "${unsafe_no_proxy_case}/home/.cargo/bin:${unsafe_no_proxy_case}/trusted/bin" \
+  "${unsafe_no_proxy_case}/trusted/bin" "${unsafe_no_proxy_output}" \
+  "${unsafe_no_proxy_status}" "${unsafe_no_proxy_case}/home" __NO_NVM__ \
+  NO_PROXY='ambient.invalid;curl'
+[ "$(<"${unsafe_no_proxy_status}")" -eq 1 ]
+assert_contains "$(<"${unsafe_no_proxy_output}")" 'unsafe NO_PROXY value'
+
+ca_outside_case="$(new_case ca-outside)"
+make_fake_environment "${ca_outside_case}" warm
+ca_outside_path="${ca_outside_case}/outside-ca.pem"
+printf 'outside trusted CA root\n' >"${ca_outside_path}"
+ca_outside_output="${ca_outside_case}/output"
+ca_outside_status="${ca_outside_case}/status"
+run_setup "${ca_outside_case}" \
+  "${ca_outside_case}/home/.cargo/bin:${ca_outside_case}/trusted/bin" \
+  "${ca_outside_case}/trusted/bin" "${ca_outside_output}" \
+  "${ca_outside_status}" "${ca_outside_case}/home" __NO_NVM__ \
+  "SSL_CERT_FILE=${ca_outside_path}"
+[ "$(<"${ca_outside_status}")" -eq 1 ]
+assert_contains "$(<"${ca_outside_output}")" 'outside the trusted CA roots'
+
+ca_symlink_case="$(new_case ca-symlink)"
+make_fake_environment "${ca_symlink_case}" warm
+ca_symlink_path="${ca_symlink_case}/ca-link.pem"
+ln -s "${fixture_ca_input}" "${ca_symlink_path}"
+ca_symlink_output="${ca_symlink_case}/output"
+ca_symlink_status="${ca_symlink_case}/status"
+run_setup "${ca_symlink_case}" \
+  "${ca_symlink_case}/home/.cargo/bin:${ca_symlink_case}/trusted/bin" \
+  "${ca_symlink_case}/trusted/bin" "${ca_symlink_output}" \
+  "${ca_symlink_status}" "${ca_symlink_case}/home" __NO_NVM__ \
+  "SSL_CERT_FILE=${ca_symlink_path}"
+[ "$(<"${ca_symlink_status}")" -eq 1 ]
+assert_contains "$(<"${ca_symlink_output}")" 'regular trusted CA file'
+
+shadow_symlink_case="$(new_case shadow-symlink)"
+make_fake_environment "${shadow_symlink_case}" warm
+mkdir -p "${shadow_symlink_case}/outside"
+printf '#!/bin/bash\nexit 0\n' >"${shadow_symlink_case}/outside/cargo"
+chmod +x "${shadow_symlink_case}/outside/cargo"
+ln -s "${shadow_symlink_case}/outside/cargo" \
+  "${shadow_symlink_case}/home/.cargo/bin/cargo"
+shadow_symlink_output="${shadow_symlink_case}/output"
+shadow_symlink_status="${shadow_symlink_case}/status"
+run_setup "${shadow_symlink_case}" \
+  "${shadow_symlink_case}/home/.cargo/bin:${shadow_symlink_case}/trusted/bin" \
+  "${shadow_symlink_case}/trusted/bin" "${shadow_symlink_output}" \
+  "${shadow_symlink_status}"
+[ "$(<"${shadow_symlink_status}")" -eq 1 ]
+assert_contains "$(<"${shadow_symlink_output}")" 'symlink path component'
+
+shadow_writable_case="$(new_case shadow-writable)"
+make_fake_environment "${shadow_writable_case}" warm
+printf '#!/bin/bash\nexit 0\n' >"${shadow_writable_case}/home/.cargo/bin/cargo"
+chmod 777 "${shadow_writable_case}/home/.cargo/bin/cargo"
+shadow_writable_output="${shadow_writable_case}/output"
+shadow_writable_status="${shadow_writable_case}/status"
+run_setup "${shadow_writable_case}" \
+  "${shadow_writable_case}/home/.cargo/bin:${shadow_writable_case}/trusted/bin" \
+  "${shadow_writable_case}/trusted/bin" "${shadow_writable_output}" \
+  "${shadow_writable_status}"
+[ "$(<"${shadow_writable_status}")" -eq 1 ]
+assert_contains "$(<"${shadow_writable_output}")" 'writable by a group or other user'
 
 dotdot_case="$(new_case dotdot)"
 make_fake_environment "${dotdot_case}" dotdot
@@ -459,6 +745,18 @@ run_setup "${different_toolchain_case}" \
 [ "$(<"${different_toolchain_status}")" -ne 0 ]
 assert_contains "$(<"${different_toolchain_output}")" 'different toolchains'
 assert_not_contains "$(<"${different_toolchain_case}/commands")" 'cargo-proxy'
+
+unselected_toolchain_case="$(new_case unselected-toolchain)"
+make_fake_environment "${unselected_toolchain_case}" unselected-toolchain
+unselected_toolchain_output="${unselected_toolchain_case}/output"
+unselected_toolchain_status="${unselected_toolchain_case}/status"
+run_setup "${unselected_toolchain_case}" \
+  "${unselected_toolchain_case}/home/.cargo/bin:${unselected_toolchain_case}/trusted/bin" \
+  "${unselected_toolchain_case}/trusted/bin" "${unselected_toolchain_output}" \
+  "${unselected_toolchain_status}"
+[ "$(<"${unselected_toolchain_status}")" -ne 0 ]
+assert_contains "$(<"${unselected_toolchain_output}")" 'unexpected toolchain'
+assert_not_contains "$(<"${unselected_toolchain_case}/commands")" 'cargo-proxy'
 
 rustc_missing_case="$(new_case rustc-missing)"
 make_fake_environment "${rustc_missing_case}" rustc-missing

@@ -186,6 +186,89 @@ validate_trusted_path() {
 validate_trusted_path "${trusted_path}"
 export PATH="${trusted_path}"
 
+trusted_path_root_for() {
+  local requested_path="$1"
+  local path_value="${trusted_path}"
+  local entry
+
+  while :; do
+    case "${path_value}" in
+      *:*)
+        entry="${path_value%%:*}"
+        path_value="${path_value#*:}"
+        ;;
+      *)
+        entry="${path_value}"
+        path_value=
+        ;;
+    esac
+    case "${requested_path}" in
+      "${entry}"|"${entry}"/*)
+        printf '%s\n' "${entry}"
+        return 0
+        ;;
+    esac
+    [ -n "${path_value}" ] || break
+  done
+  die "executable is outside the trusted PATH roots: ${requested_path}"
+}
+
+file_metadata() {
+  local path="$1"
+  local metadata
+
+  if metadata="$(/usr/bin/stat -c '%a %u' -- "${path}" 2>/dev/null)"; then
+    printf '%s\n' "${metadata}"
+  elif metadata="$(/usr/bin/stat -f '%Lp %u' "${path}" 2>/dev/null)"; then
+    printf '%s\n' "${metadata}"
+  else
+    die "cannot inspect executable ownership and mode: ${path}"
+  fi
+}
+
+validate_owner_and_mode() {
+  local label="$1"
+  local path="$2"
+  local metadata
+  local mode
+  local owner
+
+  metadata="$(file_metadata "${path}")"
+  mode="${metadata%% *}"
+  owner="${metadata#* }"
+  case "${path}" in
+    /bin/*|/usr/bin/*|/sbin/*|/usr/sbin/*|/usr/local/bin/*|/usr/local/sbin/*)
+      [ "${owner}" = 0 ] || die "${label} is not owned by the platform owner: ${path}"
+      ;;
+    *)
+      [ "${owner}" = "${EUID}" ] || die "${label} is not owned by the setup user: ${path}"
+      ;;
+  esac
+  if (( 8#${mode} & 022 )); then
+    die "${label} is writable by a group or other user: ${path}"
+  fi
+}
+
+validate_executable_path() {
+  local label="$1"
+  local executable_path="$2"
+  local trusted_root
+
+  reject_unsafe_path "${label}" "${executable_path}"
+  case "${executable_path}" in
+    *:*|*$'\n'*) die "${label} contains an unsafe separator: ${executable_path}" ;;
+  esac
+  trusted_root="$(trusted_path_root_for "${executable_path}")"
+  reject_symlink_components "${label}" "${trusted_root}" "${executable_path}"
+  [ -d "${trusted_root}" ] || die "trusted PATH root is not a directory: ${trusted_root}"
+  validate_owner_and_mode "trusted PATH root" "${trusted_root}"
+  [ -f "${executable_path}" ] && [ ! -L "${executable_path}" ] && \
+    [ -x "${executable_path}" ] || \
+    die "${label} must be an executable regular file: ${executable_path}"
+
+  validate_owner_and_mode "${label}" "${executable_path}"
+}
+
 has_trusted_path_entry() {
   local expected="$1"
   local path_value="${trusted_path}"
@@ -215,13 +298,24 @@ find_command() {
   command_path="$(command -v "${command_name}" 2>/dev/null || true)"
   [ -n "${command_path}" ] || die "${command_name} is required on the trusted PATH"
   case "${command_path}" in
-    /*) printf '%s\n' "${command_path}" ;;
+    /*) validate_executable_path "${command_name}" "${command_path}" ;;
     *) die "${command_name} resolved outside the trusted PATH: ${command_path}" ;;
   esac
+  printf '%s\n' "${command_path}"
 }
 
 find_optional_command() {
-  command -v "$1" 2>/dev/null || true
+  local command_name="$1"
+  local command_path
+
+  command_path="$(command -v "${command_name}" 2>/dev/null || true)"
+  if [ -n "${command_path}" ]; then
+    case "${command_path}" in
+      /*) validate_executable_path "${command_name}" "${command_path}" ;;
+      *) die "${command_name} resolved outside the trusted PATH: ${command_path}" ;;
+    esac
+    printf '%s\n' "${command_path}"
+  fi
 }
 
 git_command="$(find_command git)"
@@ -248,10 +342,100 @@ canonical_rustup_home="$(canonicalize_path RUSTUP_HOME "${rustup_home}")"
 [ -d "${canonical_rustup_home}" ] || die "RUSTUP_HOME is not a directory: ${rustup_home}"
 [ ! -L "${canonical_rustup_home}" ] || die "canonical RUSTUP_HOME must not be a symlink: ${canonical_rustup_home}"
 
+online_transport_env=()
+# Cloud owner contract: only these platform-managed transport variables may
+# cross the clean environment boundary, and only for online setup commands.
+trusted_ca_roots=(/etc/ssl /etc/pki/tls /usr/local/share/ca-certificates)
+
+canonicalize_ca_transport() {
+  local variable="$1"
+  local value="$2"
+  local canonical_value
+  local root
+  local canonical_root
+  local is_directory=0
+
+  case "${variable}" in
+    SSL_CERT_DIR) is_directory=1 ;;
+  esac
+  reject_unsafe_path "${variable}" "${value}"
+  if [ "${is_directory}" -eq 1 ]; then
+    [ -d "${value}" ] && [ ! -L "${value}" ] || \
+      die "${variable} must be a regular trusted CA directory: ${value}"
+  else
+    [ -f "${value}" ] && [ ! -L "${value}" ] || \
+      die "${variable} must be a regular trusted CA file: ${value}"
+  fi
+  canonical_value="$(canonicalize_path "${variable}" "${value}")"
+
+  for root in "${trusted_ca_roots[@]}"; do
+    [ -d "${root}" ] && [ ! -L "${root}" ] || continue
+    canonical_root="$(canonicalize_path "trusted CA root" "${root}")"
+    case "${canonical_value}" in
+      "${canonical_root}"|"${canonical_root}"/*)
+        case "${value}" in
+          "${root}"|"${root}"/*)
+            reject_symlink_components "${variable}" "${root}" "${value}"
+            ;;
+          *)
+            reject_symlink_components "${variable}" "${canonical_root}" "${canonical_value}"
+            ;;
+        esac
+        printf '%s\n' "${canonical_value}"
+        return 0
+        ;;
+    esac
+  done
+  die "${variable} is outside the trusted CA roots: ${value}"
+}
+
+capture_online_transport() {
+  local variable
+  local value
+
+  for variable in \
+    HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY \
+    http_proxy https_proxy all_proxy no_proxy \
+    SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE CARGO_HTTP_CAINFO
+  do
+    if [ "${!variable+x}" != x ]; then
+      continue
+    fi
+    value="${!variable}"
+    [ -n "${value}" ] || continue
+    case "${variable}" in
+      HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|http_proxy|https_proxy|all_proxy)
+        case "${value}" in
+          http://*|https://*|socks5://*|socks5h://*) ;;
+          *) die "unsupported ${variable} transport URL" ;;
+        esac
+        case "${value}" in
+          *@*) die "${variable} must not contain proxy userinfo" ;;
+        esac
+        ;;
+      NO_PROXY|no_proxy)
+        case "${value}" in
+          ,*|*,|*,,*|*[!A-Za-z0-9._,:\[\]-]*)
+            die "unsafe ${variable} value" ;;
+        esac
+        ;;
+      *)
+        value="$(canonicalize_ca_transport "${variable}" "${value}")"
+        ;;
+    esac
+    case "${value}" in
+      *$'\n'*) die "${variable} must not contain a newline" ;;
+    esac
+    online_transport_env+=("${variable}=${value}")
+  done
+}
+capture_online_transport
+
 run_clean_env() {
   local toolchain="$1"
   local rustc_command="$2"
-  shift 2
+  local transport_mode="$3"
+  shift 3
   local -a clean_env=(
     "HOME=${setup_home}"
     "PATH=${trusted_path}"
@@ -263,6 +447,11 @@ run_clean_env() {
     GIT_TERMINAL_PROMPT=0
   )
 
+  case "${transport_mode}" in
+    online) clean_env+=("${online_transport_env[@]}") ;;
+    offline) ;;
+    *) die "unknown setup transport mode: ${transport_mode}" ;;
+  esac
   if [ -n "${toolchain}" ]; then
     clean_env+=("RUSTUP_TOOLCHAIN=${toolchain}")
   fi
@@ -273,12 +462,72 @@ run_clean_env() {
 }
 
 run_clean() {
-  run_clean_env stable '' "$@"
+  run_clean_env "${stable_toolchain}" '' offline "$@"
 }
 
-run_clean_exact() {
-  run_clean_env '' "${stable_rustc_command}" "$@"
+run_clean_online() {
+  run_clean_env "${stable_toolchain}" '' online "$@"
 }
+
+run_clean_exact_online() {
+  run_clean_env '' "${stable_rustc_command}" online "$@"
+}
+
+run_clean_exact_offline() {
+  run_clean_env '' "${stable_rustc_command}" offline "$@"
+}
+
+resolve_installed_stable_toolchain() {
+  local installed_toolchains
+  local line
+  local candidate
+  local remainder
+  local canonical_toolchain_path
+  local expected_toolchain_path
+  local stable_count=0
+  local active_default_count=0
+  local selected_toolchain=
+  local selected_toolchain_path=
+
+  installed_toolchains="$(run_clean_env '' '' offline "${rustup_command}" toolchain list --verbose)"
+  while IFS= read -r line; do
+    candidate="${line%% *}"
+    case "${candidate}" in
+      stable) die 'rustup returned a tracking stable channel entry' ;;
+      stable-*)
+        case "${candidate}" in
+          *[!A-Za-z0-9._-]*) die "rustup returned an invalid stable toolchain name: ${candidate}" ;;
+          *) ;;
+        esac
+        stable_count=$((stable_count + 1))
+        remainder="${line#"${candidate}"}"
+        case "${remainder}" in
+          ' (active, default) '*|' (default, active) '*|' (active) '*|' (default) '*)
+            active_default_count=$((active_default_count + 1))
+            selected_toolchain="${candidate}"
+            selected_toolchain_path="${remainder##* }"
+            ;;
+        esac
+        ;;
+    esac
+  done <<<"${installed_toolchains}"
+  [ "${stable_count}" -eq 1 ] && [ "${active_default_count}" -eq 1 ] || \
+    die 'rustup must expose exactly one active/default stable host toolchain'
+  [ -n "${selected_toolchain_path}" ] || \
+    die 'rustup active/default stable toolchain has no installation path'
+  reject_unsafe_path 'stable toolchain path' "${selected_toolchain_path}"
+  reject_symlink_components 'stable toolchain path' "${canonical_rustup_home}" \
+    "${selected_toolchain_path}"
+  expected_toolchain_path="${canonical_rustup_home}/toolchains/${selected_toolchain}"
+  canonical_toolchain_path="$(canonicalize_path 'stable toolchain path' "${selected_toolchain_path}")"
+  [ "${canonical_toolchain_path}" = "${expected_toolchain_path}" ] || \
+    die 'rustup stable toolchain path does not match its active host name'
+  [ -d "${canonical_toolchain_path}" ] && [ ! -L "${canonical_toolchain_path}" ] || \
+    die 'active/default stable toolchain root is unsafe'
+  printf '%s\n' "${selected_toolchain}"
+}
+
+stable_toolchain="$(resolve_installed_stable_toolchain)"
 
 check_cargo_control_file() {
   local path="$1"
@@ -333,7 +582,7 @@ resolve_stable_binary() {
   local binary_path
   local canonical_binary_path
 
-  binary_path="$(run_clean "${rustup_command}" which --toolchain stable "${binary_name}")"
+  binary_path="$(run_clean "${rustup_command}" which --toolchain "${stable_toolchain}" "${binary_name}")"
   [ -n "${binary_path}" ] || die "rustup did not return the stable ${binary_name} path"
   reject_unsafe_path "stable ${binary_name}" "${binary_path}"
   reject_symlink_components "stable ${binary_name}" "${canonical_rustup_home}" "${binary_path}"
@@ -375,12 +624,12 @@ validate_stable_binary() {
   printf '%s\n' "${toolchain_root}"
 }
 
-installed_components="$(run_clean "${rustup_command}" component list --toolchain stable --installed)"
+installed_components="$(run_clean "${rustup_command}" component list --toolchain "${stable_toolchain}" --installed)"
 if ! has_component rustfmt "${installed_components}"; then
-  run_clean "${rustup_command}" component add --toolchain stable rustfmt
+  run_clean_online "${rustup_command}" component add --toolchain "${stable_toolchain}" rustfmt
 fi
 if ! has_component clippy "${installed_components}"; then
-  run_clean "${rustup_command}" component add --toolchain stable clippy
+  run_clean_online "${rustup_command}" component add --toolchain "${stable_toolchain}" clippy
 fi
 
 stable_cargo_command="$(resolve_stable_binary cargo)"
@@ -389,9 +638,14 @@ stable_cargo_toolchain_root="$(validate_stable_binary cargo "${stable_cargo_comm
 stable_rustc_toolchain_root="$(validate_stable_binary rustc "${stable_rustc_command}")"
 [ "${stable_cargo_toolchain_root}" = "${stable_rustc_toolchain_root}" ] || \
   die "stable cargo and rustc resolve to different toolchains"
+expected_stable_toolchain_root="${canonical_rustup_home}/toolchains/${stable_toolchain}"
+[ "${stable_cargo_toolchain_root}" = "${expected_stable_toolchain_root}" ] || \
+  die "stable cargo resolved to an unexpected toolchain: ${stable_cargo_toolchain_root}"
+[ "${stable_rustc_toolchain_root}" = "${expected_stable_toolchain_root}" ] || \
+  die "stable rustc resolved to an unexpected toolchain: ${stable_rustc_toolchain_root}"
 
 if [ -z "${just_command}" ]; then
-  run_clean_exact "${stable_cargo_command}" install just --locked
+  run_clean_exact_online "${stable_cargo_command}" install just --locked
 fi
 
 rustfmt_command="$(find_command rustfmt)"
@@ -401,7 +655,7 @@ find_command jq >/dev/null
 find_command node >/dev/null
 find_command python3 >/dev/null
 
-run_clean_exact "${stable_cargo_command}" fetch --quiet --locked
-run_clean_exact "${stable_cargo_command}" check --quiet --offline --locked --all-targets
+run_clean_exact_online "${stable_cargo_command}" fetch --quiet --locked
+run_clean_exact_offline "${stable_cargo_command}" check --quiet --offline --locked --all-targets
 
 printf 'codex-cloud-setup: ready (%s)\n' "${repo_root}"

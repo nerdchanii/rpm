@@ -54,9 +54,16 @@ PATH override must include the exact `${HOME}/.cargo/bin` entry before setup
 will run `cargo install`. The install and subsequent lookup use the same
 `CARGO_HOME/bin` directory. An override that omits that directory fails before
 Rustup component installation or any Cargo network operation starts.
-The public setup assumes direct access to public package sources; it does not
-forward proxy, registry-authentication, compiler-wrapper, or task-secret
-variables.
+The public setup forwards only vetted HTTP(S)/SOCKS proxy and CA variables for
+the online component-install, Cargo-install, and locked-fetch steps. Unsupported
+proxy schemes, relative CA paths, registry-authentication, compiler-wrapper, and
+task-secret variables are rejected or omitted.
+The Cloud owner contract supplies the transport variables listed by the setup;
+task code cannot add transport variables to the clean environment. Proxy values
+cannot contain userinfo or newlines, and `NO_PROXY` accepts only host, address,
+port, and comma-list characters. CA file and directory values are canonical
+regular non-symlink paths under the platform roots `/etc/ssl`, `/etc/pki/tls`,
+or `/usr/local/share/ca-certificates`.
 
 The setup performs these steps in order:
 
@@ -66,10 +73,13 @@ The setup performs these steps in order:
    `.cargo/` directory from the repository root through its filesystem-root
    ancestors. Public locked setup does not accept source replacement or
    private credentials.
-3. Require `rustup`, inspect stable `rustfmt` and `clippy` components, and
-   install missing components. After the toolchain is available, resolve its
-   installed binaries with `rustup which --toolchain stable cargo` and
-   `rustup which --toolchain stable rustc`.
+3. Require `rustup`, resolve the unique active/default concrete installed
+   `stable-<host>` toolchain with local `rustup toolchain list --verbose`
+   inspection, and reject custom, multiple, or host-mismatched entries. Inspect
+   its `rustfmt` and `clippy` components without channel synchronization. Install
+   missing components through the vetted online transport, then resolve its
+   installed binaries with `rustup which --toolchain <concrete-toolchain> cargo`
+   and `rustup which --toolchain <concrete-toolchain> rustc`.
 4. Install `just` with `cargo install just --locked` when it is missing, then
    verify `rustfmt`, `cargo-clippy`, and `just` are discoverable.
 5. Verify that `jq`, `node`, and `python3` are available.
@@ -80,19 +90,28 @@ The setup performs these steps in order:
 
 Tool installation and locked dependency fetch are the setup operations that
 may require network access. Cargo setup commands use the already installed
-stable toolchain paths returned by those two `rustup which` calls, with
+concrete toolchain paths returned by those two `rustup which` calls, with
 `RUSTUP_HOME` and both results resolved through the trusted system `realpath`
 utility. The canonical `cargo` and `rustc` files must be executable regular
-files under the same canonical toolchain `bin` directory; traversal components
-and symlinked parents or files fail setup. Exact Cargo runs omit
-`RUSTUP_TOOLCHAIN` and supply the matching `RUSTC` path. This avoids invoking a
-Rustup Cargo proxy that could synchronize the stable channel before an offline
-check.
-The warm-up check is explicitly offline and uses the dependencies fetched in
-the preceding step. `--offline` constrains Cargo's network behavior; build
-scripts and procedural macros remain executable code, so their socket and file
-access is governed by the platform sandbox, network, and secret policies.
+files under the selected concrete toolchain's canonical `bin` directory;
+traversal components and symlinked parents or files fail setup. Exact Cargo
+runs omit `RUSTUP_TOOLCHAIN` and supply the matching `RUSTC` path. Stable channel
+inspection and the offline warm-up omit proxy and CA transport variables, so
+Rustup cannot synchronize a tracking channel during cached setup.
+The online component-install, Cargo-install, and locked-fetch steps receive
+only the vetted transport allowlist. The warm-up check is explicitly offline
+and uses the dependencies fetched in the preceding step. `--offline` constrains
+Cargo's network behavior; build scripts and procedural macros remain executable
+code, so their socket and file access is governed by the platform sandbox,
+network, and secret policies.
 Setup never runs the full test suite or `just validate`.
+
+Every executable discovered on the trusted PATH must be a regular non-symlink
+file without traversal components. Executables under immutable platform paths
+must be platform-owned and non-writable by group or other users. Other trusted
+executables, including `${HOME}/.cargo/bin`, must be owned by the setup user and
+must also be non-writable by group or other users. This prevents a Cargo-bin
+shadow executable from replacing a platform command.
 
 The checked-in environment also exposes a manual `Clean worktree artifacts`
 action. It runs `scripts/worktree-cleanup.sh`, which requires a clean worktree,
@@ -118,11 +137,11 @@ for only the required domains, then disable it again for ordinary validation.
 
 The setup phase may need network access for tool installation and
 `cargo fetch --locked`; this is separate from task-time agent internet access.
-The setup runs external tools with a minimal environment containing only the
+The setup runs external tools with a minimal environment containing the
 temporary setup `HOME`, the trusted PATH, the actual Cargo/Rustup homes, the
-stable toolchain, and disabled Git global/system config. It is therefore
-unsuitable for environments whose setup requires a proxy or private registry
-credentials.
+concrete installed toolchain, disabled Git global/system config, and the
+allowlisted proxy/CA transport only for online steps. It does not forward
+private registry credentials.
 
 The checked-in `.codex/environments/environment.toml` configures Codex desktop
 worktrees. Codex Cloud environment setup is stored in Codex environment
