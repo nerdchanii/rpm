@@ -244,24 +244,30 @@ path, the `workspaces` field, and the reason. A missing `workspaces` field means
 that the project is root-only. Nested `workspaces` declarations in a member
 manifest are not recursively discovered by this contract.
 
-For workspace discovery, the root `package.json` is opened descriptor-relative
-to the canonical project-root directory with no symlink following. The path
-itself must be a regular, non-symlink file, and its pre-open native identity must
-match the opened descriptor. Discovery pins that descriptor identity, exact
-bytes, and permissions and parses one immutable root snapshot containing at
-least `name`, `version`, `scripts`, `dependencies`, `devDependencies`, and
-`workspaces`. The declaration is read from this snapshot.
+For workspace discovery, RPM first opens the canonical project-root directory
+descriptor-relative from its retained canonical parent/name chain without
+following links. Every parent identity and the root directory's pre-open native
+identity must match the opened descriptor; a rename, replacement, mount/reparse
+substitution, or platform without an atomic equivalent fails before a manifest
+is read. Discovery retains the root directory descriptor, identity, and exact
+parent/name chain as filesystem-validation state.
 
-The root snapshot and member table form one discovery result. Resolver seeding,
-workspace staging, and root lifecycle-script selection consume that result and
-must not reopen the live root manifest by path. The live root descriptor/native
-identity is filesystem-validation state only. Immediately before any workspace
-publication, while holding the cooperative per-workspace RPM lock and following
-the guarded descriptor protocol in
-`docs/specs/core/install/recovery/SPEC.md`, the transaction verifies through the
-retained descriptor and a descriptor-relative no-follow lookup that the live root
-manifest still has the pinned identity, exact bytes, and permissions. Detected
-replacement or byte/mode drift fails before the next backup or publication step.
+The root `package.json` is then opened descriptor-relative to that retained
+project-root descriptor with no symlink following. The path itself must be a
+regular, non-symlink file, and its pre-open native identity must match the opened
+descriptor. Discovery pins that descriptor identity, exact bytes, and
+permissions and parses one immutable root snapshot containing at least `name`,
+`version`, `scripts`, `dependencies`, `devDependencies`, and `workspaces`. The
+declaration is read from this snapshot.
+
+The root snapshot and member table form one discovery result. Resolver seeding
+and later authorized consumers use that result and must not reopen the live root
+manifest by path. The live root descriptor/native identity is filesystem
+validation state only. Immediately before any later root-manifest write, the
+writer verifies through the retained descriptor and a descriptor-relative
+no-follow lookup that the live root manifest still has the pinned identity,
+exact bytes, and permissions. Detected replacement or byte/mode drift fails
+before the write.
 
 Each workspace pattern is normalized relative to the canonical project root
 before expansion. Absolute patterns, patterns that can escape through `..`, and
@@ -359,8 +365,8 @@ reparsing the serialized key.
 Discovery also retains the exact descriptor-relative native component chain and
 parent-directory identities that produced each key. The chain is filesystem
 validation state and must serialize to that row's `member_path_key`; it is not a
-second graph identity. Staging and lifecycle validation consume this retained
-parent/name mapping instead of reconstructing a host path from the portable key.
+second graph identity. Later filesystem consumers use this retained parent/name
+mapping instead of reconstructing a host path from the portable key.
 
 This serialization makes member order independent of host path representation,
 filesystem enumeration order, and locale, including for non-ASCII names.
@@ -443,9 +449,13 @@ workspace contract requires planned coverage for:
 - an injected descriptor-relative validate-open path swap and identity mismatch,
   including a platform without an atomic equivalent, proving the candidate
   target is not read and the full discovery fails without a partial table;
-- a root-manifest replacement between discovery and resolver/staging plus a
-  second replacement immediately before publication, proving every consumer
-  uses the immutable root snapshot and final identity/bytes/permissions
+- a canonical root-directory rename, parent/name replacement, mount/reparse
+  substitution, and root path swap between validation and descriptor open,
+  proving discovery rejects the changed root identity before reading its
+  `package.json`;
+- a root-manifest replacement between discovery and a later consumer plus a
+  second replacement immediately before a root-manifest write, proving every
+  consumer uses the immutable root snapshot and final identity/bytes/permissions
   validation fails before overwriting the replacement;
 - root and member `package.json` files hard-linked to an external alias, plus an
   injected platform without descriptor link-count support, proving discovery
