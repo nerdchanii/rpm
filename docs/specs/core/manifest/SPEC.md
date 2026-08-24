@@ -252,13 +252,23 @@ substitution, or platform without an atomic equivalent fails before a manifest
 is read. Discovery retains the root directory descriptor, identity, and exact
 parent/name chain as filesystem-validation state.
 
-The root `package.json` is then opened descriptor-relative to that retained
-project-root descriptor with no symlink following. The path itself must be a
-regular, non-symlink file, and its pre-open native identity must match the opened
-descriptor. Discovery pins that descriptor identity, exact bytes, and
-permissions and parses one immutable root snapshot containing at least `name`,
-`version`, `scripts`, `dependencies`, `devDependencies`, and `workspaces`. The
-declaration is read from this snapshot.
+When the root `package.json` is absent, discovery follows the existing manifest
+initialization contract: it returns one immutable empty root snapshot and an
+empty member table, with no `workspaces` declaration to expand. It does not
+invent a manifest file or fail merely because the file is absent. Before a later
+initializer creates the manifest, it revalidates the retained project-root
+descriptor and requires a descriptor-relative no-follow lookup to prove that
+`package.json` is still absent, then uses descriptor-relative exclusive creation
+or an atomic equivalent. A concurrently created entry fails the operation
+instead of being truncated or replaced.
+
+When the root `package.json` is present, it is opened descriptor-relative to
+that retained project-root descriptor with no symlink following. The path
+itself must be a regular, non-symlink file, and its pre-open native identity must
+match the opened descriptor. Discovery pins that descriptor identity, exact
+bytes, permissions, and single-link guarantee and parses one immutable root
+snapshot containing at least `name`, `version`, `scripts`, `dependencies`,
+`devDependencies`, and `workspaces`. The declaration is read from this snapshot.
 
 The root snapshot and member table form one discovery result. Resolver seeding
 and later authorized consumers use that result and must not reopen the live root
@@ -266,8 +276,10 @@ manifest by path. The live root descriptor/native identity is filesystem
 validation state only. Immediately before any later root-manifest write, the
 writer verifies through the retained descriptor and a descriptor-relative
 no-follow lookup that the live root manifest still has the pinned identity,
-exact bytes, and permissions. Detected replacement or byte/mode drift fails
-before the write.
+exact bytes, permissions, and exactly one filesystem link (or the same
+platform-equivalent atomic single-path guarantee required at discovery).
+Detected replacement, byte/mode drift, a newly created hard-link alias, or loss
+of link-count support fails before the write.
 
 Each workspace pattern is normalized relative to the canonical project root
 before expansion. Absolute patterns, patterns that can escape through `..`, and
@@ -275,15 +287,20 @@ matched member paths whose resolved symlink target is outside the canonical
 root are rejected before a discovery result is returned.
 
 Glob expansion distinguishes traversal directories from member candidates.
-Directories consumed only while a `**` segment matches zero or more descendant
-segments are traversal nodes; a traversal node without a direct `package.json`
-entry is incidental and is not an error. A directory selected by a terminal
-literal or `*` segment is an explicit match and must contain a direct
-`package.json` entry. A pattern must produce at least one member candidate after
-this distinction or the declaration is invalid. This lets `packages/**` pass
-through `packages`, member subdirectories, and source subdirectories without
-treating each directory as a package, while a misspelled explicit member path
-still fails.
+Directories consumed by a non-terminal `**` segment are traversal nodes; a
+traversal node without a direct `package.json` entry is incidental and is not an
+error. A terminal `**` evaluates the zero-segment directory and every descendant
+directory it visits: each directory with a direct `package.json` entry becomes
+a member candidate, while each directory without one remains incidental. When
+the zero-segment result is the canonical project root itself, it remains the
+already-known root package and is skipped rather than promoted to a member. A
+directory selected by a terminal literal or `*` segment is an explicit match
+and must contain a direct `package.json` entry; an explicit selection equal to
+the project root remains invalid. A pattern must produce at least one member
+candidate after this distinction or the declaration is invalid. This lets
+`packages/**` discover package directories at any depth while passing through
+`packages` and ordinary source directories without treating them as packages,
+and a misspelled explicit member path still fails.
 
 The expansion walker inspects directory-symlink entries but never descends
 through them. A symlink path that the complete pattern selects is a terminal
@@ -311,12 +328,12 @@ identity mismatch, or platform without an atomic equivalent for this operation
 fails the entire discovery before the candidate bytes are read; discovery must
 not fall back to a path-based open.
 
-Both root and member manifest descriptors must report exactly one filesystem
-link (`st_nlink == 1`) or a platform-equivalent atomic guarantee that no second
-pathname aliases the opened file identity. A hard-linked manifest is invalid
-even when every known link is inside the canonical root, because an unobserved
-alias could mutate the validated bytes. If the platform cannot obtain the link
-count or an equivalent guarantee from the opened descriptor, workspace
+Every present root or member manifest descriptor must report exactly one
+filesystem link (`st_nlink == 1`) or a platform-equivalent atomic guarantee that
+no second pathname aliases the opened file identity. A hard-linked manifest is
+invalid even when every known link is inside the canonical root, because an
+unobserved alias could mutate the validated bytes. If the platform cannot obtain
+the link count or an equivalent guarantee from the opened descriptor, workspace
 discovery fails closed before reading or returning manifest data.
 
 Directory traversal uses descriptor-relative, no-follow directory handles for
@@ -421,6 +438,9 @@ workspace contract requires planned coverage for:
 - a simple root with two workspace packages;
 - the array declaration and the object `{ "packages": [...] }` declaration;
 - a root-only project with no `workspaces` field;
+- an absent root `package.json`, proving discovery returns the existing empty
+  root-only initialization snapshot and a concurrent manifest creation is
+  rejected before an initializer writes;
 - malformed, unsupported, wrong-type, `[]`, and `{ "packages": [] }`
   declarations, proving only a missing field is root-only;
 - supported `*` and `**` patterns plus rejected brace, character-class,
@@ -431,8 +451,10 @@ workspace contract requires planned coverage for:
   exact Unicode-scalar matching returns identical results on simulated
   case-sensitive and case-insensitive hosts without locale or normalization;
 - `packages/**` over ordinary intermediate and source directories, proving
-  zero-segment and descendant traversal nodes without `package.json` are
-  ignored while direct member candidates are returned;
+  the zero-segment directory and nested directories with direct `package.json`
+  entries become candidates while directories without one are ignored; a
+  terminal root `**` case proves the canonical project root is skipped and only
+  descendant package directories become members;
 - a declaration whose pattern matches no member path;
 - a member without a valid `package.json`;
 - `..` or absolute path escape attempts;
@@ -457,6 +479,9 @@ workspace contract requires planned coverage for:
   second replacement immediately before a root-manifest write, proving every
   consumer uses the immutable root snapshot and final identity/bytes/permissions
   validation fails before overwriting the replacement;
+- a hard-link alias created for the root manifest after discovery but before a
+  later write, proving the final single-link recheck fails before either alias
+  is modified;
 - root and member `package.json` files hard-linked to an external alias, plus an
   injected platform without descriptor link-count support, proving discovery
   rejects each case before parsing or returning a snapshot;
