@@ -270,16 +270,16 @@ bytes, permissions, and single-link guarantee and parses one immutable root
 snapshot containing at least `name`, `version`, `scripts`, `dependencies`,
 `devDependencies`, and `workspaces`. The declaration is read from this snapshot.
 
-The root snapshot and member table form one discovery result. Resolver seeding
-and later authorized consumers use that result and must not reopen the live root
-manifest by path. The live root descriptor/native identity is filesystem
-validation state only. Immediately before any later root-manifest write, the
-writer verifies through the retained descriptor and a descriptor-relative
-no-follow lookup that the live root manifest still has the pinned identity,
-exact bytes, permissions, and exactly one filesystem link (or the same
-platform-equivalent atomic single-path guarantee required at discovery).
-Detected replacement, byte/mode drift, a newly created hard-link alias, or loss
-of link-count support fails before the write.
+The root snapshot and member table form one read-only discovery result. Resolver
+seeding and other consumers of workspace discovery use that result and must not
+reopen or publish the live root manifest by path. This contract does not
+authorize truncation, replacement, or any other write to a present root
+manifest after workspace discovery. Existing root-only flows that do not
+consume workspace discovery remain governed by their owning contracts.
+Workspace-aware manifest mutation and lifecycle adoption remain disabled and
+are owned by #222, which must select and prove a publication primitive supported
+by the target platform before enabling either behavior. The retained root
+descriptor and native identity are validation state for read-only consumers.
 
 Each workspace pattern is normalized relative to the canonical project root
 before expansion. Absolute patterns, patterns that can escape through `..`, and
@@ -475,13 +475,12 @@ workspace contract requires planned coverage for:
   substitution, and root path swap between validation and descriptor open,
   proving discovery rejects the changed root identity before reading its
   `package.json`;
-- a root-manifest replacement between discovery and a later consumer plus a
-  second replacement immediately before a root-manifest write, proving every
-  consumer uses the immutable root snapshot and final identity/bytes/permissions
-  validation fails before overwriting the replacement;
-- a hard-link alias created for the root manifest after discovery but before a
-  later write, proving the final single-link recheck fails before either alias
-  is modified;
+- a root-manifest replacement between discovery and a later consumer, proving
+  every workspace-discovery consumer uses the immutable root snapshot and no
+  workspace-aware path publishes or truncates the replacement;
+- an attempted present-manifest write by a workspace-discovery consumer,
+  proving the operation is rejected before the root manifest or any alias is
+  modified and remains deferred to #222;
 - root and member `package.json` files hard-linked to an external alias, plus an
   injected platform without descriptor link-count support, proving discovery
   rejects each case before parsing or returning a snapshot;
