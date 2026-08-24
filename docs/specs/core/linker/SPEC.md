@@ -136,6 +136,18 @@ rejection. Two distinct raw names that only collide after host case folding,
 Unicode normalization, trailing-space/dot handling, or another filesystem
 equivalence are separate objects and remain invalid before linking.
 
+The v2 external record stores each selected external version's canonical bin
+map. #147 must derive and validate every external-package `.bin` destination
+from those locked maps before replay accesses a cache or network and, for a
+fresh writer, after #221-validated local/external classification and
+side-effect-free metadata resolution but before tarball download, cache
+mutation, extraction, or linking. If #147 enables workspace-member binary
+exposure, it combines these external destinations with bin inputs from #221's
+validated immutable member manifests. The stable verified archive descriptor
+must expose the same canonical external bin map during the lockfile SPEC's
+pre-extraction provenance gate; a mismatch fails before any archive entry or
+link is materialized.
+
 The `.bin` directory and its links are part of the install output transaction:
 they are created during the link phase and must be present before the install
 is reported as successful. `rpm run` consumes the resulting `node_modules/.bin`

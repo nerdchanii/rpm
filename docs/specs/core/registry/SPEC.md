@@ -170,12 +170,22 @@ reachable only through `rpm run` (`docs/specs/cli/run/SPEC.md`).
 Lockfile v2 records the selected registry origin together with the selected
 version's immutable replay facts. The provenance tuple consists of the
 canonical `registry_origin`, external `name` and selected `version`, `tarball`,
-required SHA-512 SRI `integrity`, optional legacy `shasum`, `scripts`, and the
-outgoing transitive dependency requests produced from that same per-version
-record. A writer must take the whole tuple from one selected version record. It
-must not combine a tarball or scripts map from root fallback fields, a different
-version, or a later metadata read. `docs/specs/core/lockfile/SPEC.md` owns the v2
-record shape and #224 owns its runtime implementation.
+required SHA-512 SRI `integrity`, optional legacy `shasum`, the canonicalized
+`bin` map, `scripts`, and the outgoing transitive dependency requests produced
+from that same per-version record. A writer must take the whole tuple from one
+selected version record. It must not combine a tarball, bin map, or scripts map
+from root fallback fields, a different version, or a later metadata read.
+`docs/specs/core/lockfile/SPEC.md` owns the v2 record shape and #224 owns its
+runtime implementation.
+
+The legacy single-version registry shape remains supported by current v1 paths,
+but it is ineligible as a source for v2 publication. Its authoritative root
+fallbacks supply version, dist, and dependencies without the required
+per-version bin/scripts provenance tuple. A fresh v2 writer rejects that shape
+after the side-effect-free metadata read and before tarball download, cache
+mutation, extraction, or publication, including when the root dist carries valid
+SHA-512 integrity. A future policy that admits legacy metadata must first define
+the root bin/scripts source and update this SPEC and the lockfile SPEC together.
 
 The initial v2 transport policy is fail-closed:
 
@@ -207,9 +217,9 @@ lockfile alone.
 The planned v2 packument fields have no npm signature or attestation primitive.
 A digest stored beside a URL in the same lockfile binds archive bytes to that
 record after the record is trusted; it cannot independently prove that the URL,
-digest, scripts, or dependency facts came from npm. Fresh resolution obtains the
-tuple over the configured HTTPS registry policy above. Later no-refetch replay
-uses it only from the exact lockfile byte snapshot already established as a
+digest, bin map, scripts, or dependency facts came from npm. Fresh resolution
+obtains the tuple over the configured HTTPS registry policy above. Later
+no-refetch replay uses it only from the exact lockfile byte snapshot established as a
 reviewed trusted execution input under the lockfile SPEC. An untrusted
 downloaded, generated, or replaced lockfile is not eligible for replay.
 
@@ -452,6 +462,9 @@ content. Failures must be returned to callers as typed errors:
   tarball URL or redirect, mixed-version metadata, an untrusted lockfile source,
   or missing/invalid SHA-512 SRI fails before extraction and before any install
   output is published. A valid SHA-1 shasum does not make that v2 tuple eligible.
+- A legacy single-version root record is ineligible for v2 publication even when
+  its root dist contains valid SHA-512 integrity; rejection occurs before tarball
+  download or cache mutation. Existing v1 interpretation remains unchanged.
 
 Registry metadata **read and interpretation** failures (parsing, version
 selection, dist lookup) must be reported before installer side effects and must
@@ -479,9 +492,11 @@ Fixture expectations are defined by the owning scenario and documented in
   as `dist-tag` rather than reclassified as `semver` during replay
 - missing dist rejected before fetch
 - integrity verification of supported, mismatched, invalid, and absent variants
-- planned v2 provenance cases covering same-version fact capture, rejection of
-  mixed-version fields, configured/recorded origin mismatch, untrusted lockfile
-  input, missing or unsupported integrity, shasum-only metadata, non-HTTPS and
+- planned v2 provenance cases covering same-version bin/scripts fact capture,
+  rejection of mixed-version fields, and a legacy single-version root record
+  carrying valid SHA-512 integrity rejected with zero tarball requests and zero
+  cache writes; configured/recorded origin mismatch, untrusted lockfile input,
+  missing or unsupported integrity, shasum-only metadata, non-HTTPS and
   cross-origin tarballs, HTTPS downgrade, cross-origin redirect, and
   redirect-limit overflow
 - wrong-type values on every ignored metadata field are discarded as absent

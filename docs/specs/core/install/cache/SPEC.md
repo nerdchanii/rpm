@@ -80,7 +80,7 @@ The linker must resolve cached tarballs using the same filename contract.
 
 ### Planned v2 destination preflight
 
-Before a v2 fetch or replay opens or creates a cache entry, the installer
+Before a v2 tarball fetch or replay opens or creates a cache entry, the installer
 derives every final cache destination and compares its filesystem projection
 key under the actual host filesystem's equivalence rules. The key accounts for
 case folding, Unicode normalization, trailing-space and trailing-dot behavior,
@@ -88,14 +88,17 @@ and reserved-name semantics in addition to the lexical `/` to `-` mapping. Two
 distinct external identities that project to the same cache destination are an
 input error even when their UTF-8 spellings differ. A component that the host
 treats as reserved is also an input error. The complete set is checked before
-download, extraction, linking, or creation of a final or staged cache file. If
+tarball download, extraction, linking, or creation of a final or staged cache file. If
 RPM cannot determine a conservative projection for the approved cache root, v2
 replay fails closed.
 
 The corresponding workspace and `node_modules` destination projections are
-owned by workspace discovery (#221) and the linker (#147). The lockfile replay
-gate consumes their validated results, including the linker's narrow exact-name
-`.bin` precedence rule; this cache SPEC does not define the linker's path layout.
+owned by workspace discovery (#221) and the linker (#147). V2 external records
+carry the selected version's canonical bin map, so #147 can enumerate every
+`.bin` destination during this preflight without fetching or opening a tarball.
+The lockfile replay and fresh-publication gates consume the bound validated
+results, including the linker's narrow exact-name `.bin` precedence rule; this
+cache SPEC does not define the linker's path layout.
 
 ### Planned v2 verified replay reads
 
@@ -120,8 +123,9 @@ unlinked after opening or lives in a transaction-private directory, is not
 published through a mutable pathname, and has no other writable handle during
 verification or extraction. RPM rewinds and reads that stable descriptor to
 validate the required supported SHA-512 `integrity` value, then uses the same
-descriptor to inspect the archive package manifest. The manifest `name` and
-`version` must exactly match the v2 external identity under the lockfile SPEC.
+descriptor to inspect the archive package manifest. The manifest `name`,
+`version`, canonical bin map, and scripts map must exactly match the v2 external
+record under the lockfile SPEC.
 RPM rewinds the descriptor again and passes it directly to extraction only after
 both checks succeed, keeping it open throughout. Extraction must not resolve or
 reopen the cache path. Failure to obtain a stable descriptor, a descriptor
@@ -132,7 +136,8 @@ A newly downloaded v2 archive follows the same rule: bytes are staged under an
 exclusive transaction-owned descriptor, SHA-512 verified there, inspected for
 the exact external package-manifest identity, and extracted from that same
 descriptor. Final cache publication may occur only after both verification and
-identity inspection succeed. RPM retains the originally approved cache-root
+identity/bin/scripts inspection succeed. RPM retains the originally approved
+cache-root
 directory descriptor through publication. The staged entry is created relative
 to that descriptor, and the final same-directory rename is performed relative
 to the same descriptor with no-follow final-component semantics. The publisher
@@ -195,6 +200,8 @@ Planned v2 fixtures must additionally cover:
   guaranteed, proving the transaction-owned verified descriptor is used or the
   replay fails closed; and
 - digest-valid archives with matching identity plus missing, wrong-type,
-  mismatching, duplicate, and ambiguous package-manifest name/version cases,
-  proving no cache or install output is published and extraction never starts
-  unless the exact identity gate succeeds.
+  mismatching, duplicate, and ambiguous required package-manifest name/version
+  cases, plus canonical bin/scripts mismatches; absent and wrong-type optional
+  bin/scripts normalize to `{}` on both sides. No cache or install output is
+  published and extraction never starts unless the exact provenance gate
+  succeeds.

@@ -207,7 +207,8 @@ without normalization. The recorded roots must have unique origins and names,
 and a root/member name collision is invalid.
 
 An external package record requires `identity`, `name`, `version`,
-`registry_origin`, `tarball`, `integrity`, and `scripts`; `shasum` is optional.
+`registry_origin`, `tarball`, `integrity`, `bin`, and `scripts`; `shasum` is
+optional.
 `identity` must be an external identity whose `name` and `version` exactly equal
 the record fields. `registry_origin` is the normalized HTTPS origin from which
 the selected packument was obtained. `tarball` is the non-empty resolved
@@ -223,15 +224,18 @@ omitted URL or verifier, so a missing or empty `registry_origin`, `tarball`, or
 v2 document invalid and blocks extraction. The initial v2 schema has no
 verifier-free or SHA-1-only authenticated-provenance alternative.
 
-`scripts` is always present as a `string -> string` map and is `{}` when the
-selected version has no lifecycle scripts. The registry origin, external
-identity fields, tarball, verifier fields, scripts map, and outgoing transitive
-dependency requests form one selected-version provenance snapshot. A fresh
-writer captures them from one metadata record without mixing versions or later
-reads. Before an external lifecycle hook runs, the locked scripts map must also
-match the scripts map read from `package.json` inside the already verified
-archive under `docs/specs/core/install/scripts/SPEC.md`; a mismatch fails
-closed. External identities are unique. Dependency relationships are
+`bin` is always present as a canonical `string -> string` map and is `{}` when
+the selected version has no usable `bin` metadata. A string-form registry value
+becomes the one binary-name/target entry defined by the linker SPEC; an
+object-form value retains its entries. `scripts` is also always present as a
+`string -> string` map and is `{}` when the selected version has no lifecycle
+scripts. The registry origin, external identity fields, tarball, verifier
+fields, canonical bin map, scripts map, and outgoing transitive dependency
+requests form one selected-version provenance snapshot. A fresh writer captures
+them from one per-version metadata record without mixing versions or later
+reads. This recorded bin map lets #147 enumerate every planned `.bin`
+destination before tarball download, cache mutation, extraction, or linking.
+External identities are unique. Dependency relationships are
 represented by `edges`, not duplicated inside this package record. A package
 fact is written once even when several parents reach the same name and version.
 Local workspace members have no external package record and do not require a
@@ -241,12 +245,17 @@ Before any external archive entry is extracted or published, #147's archive
 inspection boundary reads the single package manifest from the stable
 SHA-512-verified descriptor without materializing archive output. Its `name` and
 `version` must both be strings and must exactly equal the external record's
-`name`, `version`, and structured identity fields. A missing, duplicate,
-ambiguous, malformed, wrong-type, or mismatching package manifest fails before
-extraction, lifecycle hooks, cache publication, lockfile publication, or install
-publication. The descriptor is rewound for extraction only after this identity
-gate succeeds. #147 owns safe archive-entry selection and symlink/hardlink
-handling; this SPEC owns the exact identity predicate consumed by v2 replay.
+`name`, `version`, and structured identity fields. Archive `bin` and `scripts`
+use the same tolerant normalization as selected registry metadata: absence or a
+wrong top-level type becomes `{}`, while supported forms produce canonical
+maps. Both maps must exactly equal the locked maps during this same
+pre-extraction inspection. A missing, duplicate, ambiguous, malformed,
+wrong-type, or mismatching required name/version field, or a canonical bin or
+scripts map mismatch, fails before extraction, lifecycle hooks, cache
+publication, lockfile publication, or install publication. The descriptor is
+rewound for extraction only after this provenance gate succeeds. #147 owns safe
+archive-entry selection and symlink/hardlink handling; this SPEC owns the exact
+identity/bin/scripts predicate consumed by v2 replay.
 
 Before a v2 identity can drive a cache, fetch, extraction, link, or script
 operation, its external `name` and `version` must pass a platform-independent
@@ -297,7 +306,11 @@ Each edge is a separate record whose six fields are all required:
 - `target`: a workspace identity for a compatible local member, or an
   external identity containing the resolved name and version.
 
-Root and member manifest requests use `direct` or `dev` according to their
+Root and member manifest requests consume #145's production-over-development
+precedence unchanged: when one manifest declares the same requested name in
+both maps, the production request emits one `direct` edge and the overlapping
+development declaration emits no `dev` edge, regardless of selector or target.
+All other root/member requests use `direct` or `dev` according to their
 manifest. Requests from an external package use `transitive`. The source
 identity and requested fields remain distinct from the resolved target, so two
 parents requesting different ranges can share one external target without
@@ -332,11 +345,10 @@ package record. `requested_name` must equal the target workspace record's name
 or the target external identity's name. Exactly one edge is allowed for each
 `(source, relationship, requested_name)` tuple. An exact duplicate or a second
 edge with the same tuple and a different `requested` or `target` is invalid
-rather than silently deduplicated. All edges sharing one realizable
-`(source, requested_name)` link slot must have the same target. A root or member
-may therefore retain distinct `direct` and `dev` edges, as required by #145,
-only when both selectors resolve to that one target; conflicting production and
-development targets are invalid before linking.
+rather than silently deduplicated. A root or workspace source must also have at
+most one edge for each `(source, requested_name)` pair; a lockfile containing
+both `direct` and `dev` edges for an overlapping manifest declaration is invalid
+instead of recovering by precedence during replay.
 
 Starting from every root and workspace identity in `resolution_roots`, a reader
 must traverse outgoing edges and reach every external package record. An
@@ -378,6 +390,7 @@ version = "4.17.21"
 registry_origin = "https://registry.npmjs.org"
 tarball = "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
 integrity = "sha512-..."
+bin = {}
 scripts = {}
 
 [[edges]]
@@ -408,9 +421,9 @@ requested name, requested text, selector-kind rank `empty`, `latest`,
 Identity fields are emitted in the order `kind`, `path` or `name`, then `version`.
 Resolution-root fields use `origin`, `manifest_path`,
 `name`, `declared_version`; external-package fields use `identity`, `name`,
-`version`, `registry_origin`, `tarball`, `integrity`, `shasum`, `scripts`; edge
+`version`, `registry_origin`, `tarball`, `integrity`, `shasum`, `bin`, `scripts`; edge
 fields use the order shown in the example. Optional fields retain their listed
-position when present. Every nested map, including `scripts`, is emitted with
+position when present. Every nested map, including `bin` and `scripts`, is emitted with
 UTF-8 bytewise ascending keys. Empty maps use `{}`. A serializer must not expose
 HashMap iteration order. Consequently, serializing the same graph twice
 produces byte-identical lockfiles, independent of filesystem enumeration,
@@ -452,9 +465,10 @@ fact, or script and authenticate that change with its own fields.
 On accepted v2 replay, the reader first discovers the current root/member table
 and compares origin, manifest path, name, and declared version (including
 omission) against the ordered recorded roots. It then derives current
-`dependencies` and `devDependencies` requests from every root manifest and
-compares their exact `(source, relationship, requested_name, requested)` tuples
-with the recorded `direct` and `dev` edges. Root/member identity drift or direct
+`dependencies` and `devDependencies` requests from every root manifest, applies
+#145's production-over-development overlap precedence, and compares the
+resulting exact `(source, relationship, requested_name, requested)` tuples with
+the recorded `direct` and `dev` edges. Root/member identity drift or direct
 request drift makes the lockfile ineligible for replay. Locked replay must fail
 before mutation and preserve the existing install state; it must not ignore the
 drift or combine new selectors with recorded targets. A higher-level updating
@@ -467,13 +481,16 @@ selected-version provenance; it does not rerun range or dist-tag selection.
 Before extraction, cache replay must open a regular non-symlink entry relative
 to the approved cache root with no-follow semantics, verify the recorded
 SHA-512 SRI over the bytes of a stable open descriptor, pass that descriptor
-through the external package-manifest identity gate, and then pass the same
+through the external package-manifest identity/bin/scripts gate, and then pass
+the same
 descriptor to the extractor without a pathname reopen, as specified by the
-cache SPEC. No archive entry is extracted before the identity gate succeeds.
+cache SPEC. No archive entry is extracted before the complete provenance gate
+succeeds.
 Missing or duplicate records, unknown fields or identity kinds, malformed
 fields, unsafe external path components, disallowed provenance URLs, absent
 or unsupported SHA-512 integrity, shasum-only records, untrusted lockfile bytes,
-archive-manifest identity mismatches, cache or linker projection collisions,
+archive-manifest identity, bin, or scripts mismatches, cache or linker projection
+collisions,
 and equality, uniqueness, reachability, selector/target, or
 referential-integrity failures are load failures before mutation.
 
@@ -498,10 +515,22 @@ boundary; #222 must not expose an extracted package to lifecycle hooks until
 that boundary has accepted it.
 
 A syntactically valid v2 document, structurally non-empty local name, or
-self-asserted validation flag is insufficient evidence. Missing, stale,
-unsupported, or failed #221/#147 validation makes both replay and fresh v2
-publication fail before cache or network access, extraction, linking, scripts,
-lockfile publication, install publication, or any other live mutation. #224
+self-asserted validation flag is insufficient evidence. For replay, missing,
+stale, unsupported, or failed #221/#147 validation fails before cache or network
+access, extraction, linking, scripts, lockfile publication, install publication,
+or any other live mutation. A fresh writer first requires #221's validated
+immutable member table and uses it to apply #145 local/external classification;
+compatible-local branches perform no metadata access. It may then perform
+side-effect-free packument reads over the configured registry transport only
+for requests classified as external, selecting their versions and constructing
+the complete transitive edge set and external bin destinations. Before tarball
+download, cache access or mutation, extraction, linking, scripts, lockfile
+publication, install publication, or any other live mutation, it must obtain
+#147's graph/name/destination preflight result bound to that exact member table,
+external record set, and edge set, and must prove the #221 result is still bound
+to the unchanged table. Archive-entry confinement is a later descriptor-bound
+#147 staging result required after tarball verification and before extraction or
+cache/install publication. #224
 must not replace either prerequisite with a weaker local name check. A reader
 may decode inert fields only far enough to perform these validations; it must
 return a load failure instead of exposing an accepted v2 graph when either
@@ -556,8 +585,9 @@ Planned workspace snapshots must cover:
   reinterpreted as semver;
 - one shared external target reached through distinct requested ranges and
   origins;
-- compatible direct and dev selectors from one source sharing a single target,
-  plus conflicting direct/dev targets rejected before linking;
+- a name present in both dependency maps emitting only the production `direct`
+  edge under #145 precedence, plus a crafted overlapping `direct`/`dev` pair
+  rejected during replay even when both target the same identity;
 - distinct local and external identities with equal name and version text;
 - top-level/root metadata mismatch, external identity/field mismatch, missing
   or empty registry origin or tarball, missing/empty/unsupported SHA-512
@@ -572,21 +602,26 @@ Planned workspace snapshots must cover:
 - a regular no-follow cache hit verified and extracted through one stable
   descriptor, plus symlink, special-file, pathname-swap, and concurrent-mutation
   cases rejected before extraction;
-- selected registry metadata whose external facts, transitive requests, and
-  scripts come from one version, plus rejection when the verified archive's
-  `package.json` name, version, or scripts map differs, is absent or wrong-type,
-  or is ambiguous, proving failure before extraction, hooks, or publication;
+- selected registry metadata whose external facts, transitive requests, bin map,
+  and scripts come from one version, with external `.bin` destinations
+  preflighted before tarball download; plus required archive name/version
+  absence, wrong type, mismatch, duplication, or ambiguity rejected and
+  canonical archive bin/scripts mismatches rejected before extraction, hooks,
+  or publication; absent or wrong-type optional bin/scripts normalize to `{}` on
+  both sides;
 - reviewed trusted lockfile bytes accepted without metadata refetch, plus an
   otherwise valid untrusted or post-approval replaced lockfile rejected before
   network access or mutation;
 - cross-contract #221/#147/#222 prerequisite fixtures with missing or failed
   validation results; local member names and requested dependency names that use
   traversal, unsupported separator, absolute, drive, UNC, device, reserved, or
-  trailing-space/dot forms; local/local and local/external names that collide
-  only after host case folding or Unicode normalization; and escaping archive
-  symlink and hardlink entries, proving #224 blocks both replay and fresh v2
-  publication before cache, network, extraction, linking, lifecycle hooks, or
-  live mutation;
+  trailing-space/dot forms; and local/local and local/external names that collide
+  only after host case folding or Unicode normalization, proving #224 blocks
+  replay before cache or network and blocks fresh external metadata results
+  before tarball download or cache mutation;
+- escaping archive symlink and hardlink entries rejected after tarball download
+  and stable-descriptor verification but before extraction, cache publication,
+  linking, lifecycle hooks, install publication, or other live mutation;
 - root/member manifest request drift rejected before replay, plus a fresh
   replacement resolution that preserves the prior file on failure;
 - v1-to-v2 migration and failure preservation without lifecycle execution,
