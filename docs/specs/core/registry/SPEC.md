@@ -285,10 +285,15 @@ side effects.
 
 For workspace classification, the boundary must expose whether a canonical
 request is a published dist-tag key, with the empty/`latest` bare-selector path
-handled by step 1, before semver range compatibility is considered. This
-classification is separate from version selection: it does not select a version
-or retrieve per-version metadata. External version selection continues to use
-the precedence below.
+handled by step 1, before semver range compatibility is considered. The
+classification result also returns or pins the immutable registry-document
+snapshot (or an equivalent immutable cache generation) from which tag identity
+was determined. This classification is separate from version selection: it does
+not select a version, while the pinned snapshot must retain every field needed
+for a possible external metadata read and version selection. An external branch
+must consume that same snapshot or generation without rereading mutable
+registry/cache state; if it cannot, resolution fails closed. External version
+selection continues to use the precedence below.
 
 Version selection precedence at the registry boundary:
 

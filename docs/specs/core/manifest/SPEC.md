@@ -427,18 +427,25 @@ root manifest operation. Drains at the root snapshot boundary, after each
 directory enumeration, and after final validation must each return quiet. The
 final validation rechecks every retained ancestor parent/name edge, root/member
 directory identity, and root/member manifest identity, link count, size,
-permissions, and content-change metadata before the last drain. Each retained
-manifest descriptor must also participate in an atomic stable-content snapshot
-or monotonic content-version primitive spanning that final validation through
-the last quiet poll; it must detect writes through a pre-existing shared
-writable mapping and any other path that does not enqueue `IN_MODIFY`.
-Descriptor metadata plus inotify silence alone cannot establish the cut. A
-Linux adapter without this primitive is unsupported and fails closed before
-publishing. Any role-relevant mutation event observed by a retained watch
-fails the full discovery; unrelated ancestor entries remain drain-only events
-after their complete records are parsed, subject to the per-attempt event and
-byte budgets above. The last quiet result after all final checks is the single
-global linearization cut.
+permissions, and content-change metadata before the last drain. Before that
+drain, every retained root/member manifest descriptor performs the ordinary
+stable-read rule defined above: two complete descriptor-relative reads from
+offset zero require unchanged identity, link count, size, permissions, and
+content-change metadata before, between, and after the reads, and the bytes
+must be identical. A mismatch fails closed. The completion of the second
+identical read is the manifest-content linearization point. A write through a
+pre-existing shared writable mapping that completes before or during those
+reads therefore appears in the returned bytes or causes a mismatch; a write
+after that point is post-cut even when it precedes the final poll. The final
+drain/poll follows the content point to check queued namespace, watch, and
+mount events. It may fail closed on role-relevant drift, but it need not be
+atomically coupled to the descriptor reads or observe a shared-mapping write.
+Ordinary Linux descriptor reads and metadata checks with the retained inotify
+watch satisfy this content guarantee; no general filesystem-wide content-
+version primitive is required. Unrelated ancestor entries remain drain-only
+events after their complete records are parsed, subject to the per-attempt
+event and byte budgets above. The final quiet result is required before
+publication, while the manifest-content point remains the single content cut.
 The adapter must provide a documented ordering guarantee that every watched
 mutation completed before that cut has a queued event; when the filesystem or
 kernel adapter cannot provide that guarantee, discovery fails closed.
@@ -683,10 +690,11 @@ workspace contract requires planned coverage for:
   validation; each pre-cut event fails the complete discovery with no parsed
   bytes or partial member table, and queue-drain retry exhaustion fails closed;
 - an adapter that performs a write through a pre-existing shared writable
-  mapping between final manifest metadata validation and the last quiet poll,
-  proving the stable-content snapshot/content-version primitive detects the
-  write or the Linux adapter fails closed before publication; inotify-only
-  revalidation is unsupported;
+  mapping after final metadata validation and during each final descriptor
+  read, proving the ordinary two-read byte-identical rule returns the new
+  bytes or fails closed; a write after the second identical read and before
+  the final poll is post-cut, while role-relevant queue events still fail
+  closed;
 - a Linux mount-topology adapter that places a replacement bind mount over the
   validated root, ancestor, or member pathname after final metadata checks and
   before the last quiet poll, proving the mount-aware linearization primitive
