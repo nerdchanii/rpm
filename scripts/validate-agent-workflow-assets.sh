@@ -866,6 +866,33 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             "---\n",
             "frontmatter name is missing",
         ),
+        "missing-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            "---\n",
+            "frontmatter description is missing",
+        ),
+        "null-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: null\n"
+            "---\n",
+            "frontmatter must be a non-empty YAML string scalar",
+        ),
+        "empty-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: \"\"\n"
+            "---\n",
+            "frontmatter description must be a non-empty string",
+        ),
+        "non-string-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: true\n"
+            "---\n",
+            "frontmatter description must be a non-empty string",
+        ),
         "unsupported-metadata-child": (
             "---\n"
             "name: fixture-governance\n"

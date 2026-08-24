@@ -309,6 +309,7 @@ def check_role_contracts(
 def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
     """Read the root fields needed by the repository policy.
 
+    Root ``description`` is required and must be a non-empty string.
     The supported forms are an empty ``metadata:`` block, an empty
     ``metadata: {}`` flow mapping, or a block mapping with one direct,
     non-empty ``short-description`` string child.  We keep that child out of
@@ -348,6 +349,7 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
         return {}
     values: dict[str, str | bool] = {}
     root_keys: set[str] = set()
+    description_seen = False
     active_nested_mapping: str | None = None
     metadata_flow_mapping = False
     metadata_keys: set[str] = set()
@@ -470,9 +472,20 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
             active_nested_mapping = None if metadata_flow_mapping else key
             metadata_keys.clear()
             continue
+        if key == "description":
+            description_seen = True
         parsed_value, scalar_error = parse_frontmatter_scalar(value, line_number)
         if scalar_error is not None:
             fail(errors, f"{path.relative_to(ROOT)}: {scalar_error}")
+            continue
+        if key == "description" and (
+            not isinstance(parsed_value, str) or not parsed_value.strip()
+        ):
+            fail(
+                errors,
+                f"{path.relative_to(ROOT)}: line {line_number}: "
+                "frontmatter description must be a non-empty string",
+            )
             continue
         if key == "disable-model-invocation" and not isinstance(parsed_value, bool):
             fail(
@@ -491,6 +504,8 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
         root_keys.add(key)
         if parsed_value is not None:
             values[key] = parsed_value
+    if not description_seen:
+        fail(errors, f"{path.relative_to(ROOT)}: frontmatter description is missing")
     return values
 
 
