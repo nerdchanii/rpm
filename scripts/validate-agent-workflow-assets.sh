@@ -2493,12 +2493,15 @@ for script in \
   scripts/check-agent-backlog-access.sh \
   scripts/collect-pr-review-context.sh \
   scripts/create-review-followup-issue.sh \
+  scripts/test-codex-cloud-setup.sh \
   scripts/ticket-gen
 do
   [ -f "${script}" ] || continue
   name="$(basename "${script}")"
   check "script_${name}_syntax" bash -n "${script}"
 done
+
+check "codex_cloud_setup_contract" bash scripts/test-codex-cloud-setup.sh
 
 check "script_check_agent_issue_readiness_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-agent-issue-readiness.py").read_text())'
