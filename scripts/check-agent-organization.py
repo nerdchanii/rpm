@@ -339,6 +339,13 @@ YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR = (
     "U+0085, U+2028, and U+2029 are not supported in openai.yaml"
 )
 YAML_UNSUPPORTED_LINE_SEPARATORS = frozenset(("\u0085", "\u2028", "\u2029"))
+YAML_UNSUPPORTED_STRUCTURE_SEPARATOR_ERROR = (
+    "U+000B, U+000C, U+001C, U+001D, and U+001E are not supported "
+    "as YAML line separators in openai.yaml"
+)
+YAML_UNSUPPORTED_STRUCTURE_SEPARATORS = frozenset(
+    ("\u000B", "\u000C", "\u001C", "\u001D", "\u001E")
+)
 YAML_TOKEN_ASCII_CONTINUATIONS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 )
@@ -363,6 +370,10 @@ YAML_TOKEN_EXPLICIT_CONTINUATIONS = frozenset((0x200C, 0x200D))
 
 def contains_unsupported_yaml_line_separator(text: str) -> bool:
     return any(character in text for character in YAML_UNSUPPORTED_LINE_SEPARATORS)
+
+
+def contains_unsupported_yaml_structure_separator(text: str) -> bool:
+    return any(character in text for character in YAML_UNSUPPORTED_STRUCTURE_SEPARATORS)
 
 
 def is_supported_root_mapping_line(stripped: str) -> bool:
@@ -456,6 +467,8 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
     alongside the optional ``interface:`` mapping. Every non-comment root line
     must use one of those two supported mapping keys.
     """
+    if contains_unsupported_yaml_structure_separator(text):
+        return None, YAML_UNSUPPORTED_STRUCTURE_SEPARATOR_ERROR
     if contains_unsupported_yaml_line_separator(text):
         return None, YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR
     if text.startswith("\ufeff"):
@@ -463,6 +476,7 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
 
     blocks: list[list[tuple[int, str, int]]] = []
     current: list[tuple[int, str, int]] | None = None
+    active_root: str | None = None
     for line_number, raw_line in enumerate(text.splitlines(), 1):
         leading = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
         if "\t" in leading:
@@ -481,12 +495,20 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
                 return None, f"line {line_number}: {YAML_UNSUPPORTED_ROOT_MAPPING_ERROR}"
             if not is_supported_root_mapping_header(stripped, root_key):
                 return None, f"line {line_number}: {root_key} must be a root mapping"
+            active_root = root_key
             if root_key == "policy":
                 blocks.append([])
                 current = blocks[-1]
             else:
                 current = None
             continue
+        if active_root is None:
+            return None, f"line {line_number}: {YAML_ROOT_MAPPING_ERROR}"
+        if indent != 2:
+            return None, (
+                f"line {line_number}: {active_root} descendants must be direct children "
+                "at two-space indentation"
+            )
         if current is not None:
             current.append((indent, stripped, line_number))
 
@@ -681,6 +703,8 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
 
     The only supported root mapping keys are ``interface:`` and ``policy:``.
     """
+    if contains_unsupported_yaml_structure_separator(text):
+        return [YAML_UNSUPPORTED_STRUCTURE_SEPARATOR_ERROR]
     if contains_unsupported_yaml_line_separator(text):
         return [YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR]
     if text.startswith("\ufeff"):
@@ -688,6 +712,7 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
 
     blocks: list[dict[str, tuple[str | None, int]]] = []
     current: dict[str, tuple[str | None, int]] | None = None
+    active_root: str | None = None
     for line_number, raw_line in enumerate(text.splitlines(), 1):
         leading = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
         if "\t" in leading:
@@ -706,6 +731,7 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
             root_key = supported_root_mapping_key(stripped)
             if root_key not in YAML_SUPPORTED_ROOT_MAPPING_KEYS:
                 return [f"line {line_number}: {YAML_UNSUPPORTED_ROOT_MAPPING_ERROR}"]
+            active_root = root_key
             if root_key == "interface":
                 if not is_supported_root_mapping_header(stripped, "interface"):
                     return [f"line {line_number}: interface must be a root mapping"]
@@ -716,7 +742,14 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
                     return [f"line {line_number}: policy must be a root mapping"]
                 current = None
             continue
-        if current is None or indent != 2:
+        if active_root is None:
+            return [f"line {line_number}: {YAML_ROOT_MAPPING_ERROR}"]
+        if indent != 2:
+            return [
+                f"line {line_number}: {active_root} descendants must be direct children "
+                "at two-space indentation"
+            ]
+        if current is None:
             continue
         key, separator, value = stripped.partition(":")
         if separator != ":":

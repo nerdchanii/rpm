@@ -166,6 +166,96 @@ for name, child_value in {
             f"value={policy_value!r}, error={policy_error!r}"
         )
 
+nested_policy = (
+    "policy:\n"
+    "  allow_implicit_invocation: false\n"
+    "    unexpected: value\n"
+)
+policy_value, policy_error = checker.parse_skill_invocation_policy(nested_policy)
+if (
+    policy_value is not None
+    or policy_error is None
+    or "policy descendants must be direct children" not in policy_error
+):
+    raise SystemExit(
+        "over-indented policy descendant was accepted: "
+        f"value={policy_value!r}, error={policy_error!r}"
+    )
+
+nested_interface = (
+    "interface:\n"
+    "  display_name: Fixture Governance\n"
+    "    unexpected: value\n"
+    "  short_description: Create deterministic fixtures.\n"
+    "  default_prompt: Use $fixture-governance.\n"
+)
+interface_errors = checker.validate_skill_interface_metadata(
+    nested_interface,
+    "fixture-governance",
+)
+if (
+    len(interface_errors) != 1
+    or "interface descendants must be direct children" not in interface_errors[0]
+):
+    raise SystemExit(
+        "over-indented interface descendant was accepted: "
+        f"errors={interface_errors!r}"
+    )
+
+policy_parser_nested_interface = (
+    "interface:\n"
+    "  display_name: Fixture Governance\n"
+    "    unexpected: value\n"
+    "policy:\n"
+    "  allow_implicit_invocation: false\n"
+)
+policy_value, policy_error = checker.parse_skill_invocation_policy(
+    policy_parser_nested_interface
+)
+if (
+    policy_value is not None
+    or policy_error is None
+    or "interface descendants must be direct children" not in policy_error
+):
+    raise SystemExit(
+        "policy parser accepted an over-indented interface descendant: "
+        f"value={policy_value!r}, error={policy_error!r}"
+    )
+
+interface_parser_nested_policy = (
+    "policy:\n"
+    "  allow_implicit_invocation: false\n"
+    "    unexpected: value\n"
+    "interface:\n"
+    "  display_name: Fixture Governance\n"
+    "  short_description: Create deterministic fixtures.\n"
+    "  default_prompt: Use $fixture-governance.\n"
+)
+interface_errors = checker.validate_skill_interface_metadata(
+    interface_parser_nested_policy,
+    "fixture-governance",
+)
+if (
+    len(interface_errors) != 1
+    or "policy descendants must be direct children" not in interface_errors[0]
+):
+    raise SystemExit(
+        "interface parser accepted an over-indented policy descendant: "
+        f"errors={interface_errors!r}"
+    )
+
+nested_comment_policy = (
+    "policy:\n"
+    "  allow_implicit_invocation: false\n"
+    "    # nested comments remain comments\n"
+)
+policy_value, policy_error = checker.parse_skill_invocation_policy(nested_comment_policy)
+if policy_value is not False or policy_error is not None:
+    raise SystemExit(
+        "valid indented policy comment was rejected: "
+        f"value={policy_value!r}, error={policy_error!r}"
+    )
+
 root_mapping_error = "root-level YAML nodes must be supported mappings"
 for root_line in ("policy:\u00a0# comment", "interface:\u00a0# comment"):
     policy_value, policy_error = checker.parse_skill_invocation_policy(
@@ -187,6 +277,33 @@ for root_line in ("policy:\u00a0# comment", "interface:\u00a0# comment"):
         raise SystemExit(
             f"non-ASCII interface root comment separator was accepted: "
             f"line={root_line!r}, errors={interface_errors!r}"
+        )
+
+unsupported_structure_separator_error = (
+    "U+000B, U+000C, U+001C, U+001D, and U+001E are not supported "
+    "as YAML line separators in openai.yaml"
+)
+for separator in ("\u000B", "\u000C", "\u001C", "\u001D", "\u001E"):
+    policy_value, policy_error = checker.parse_skill_invocation_policy(
+        "policy:"
+        f"{separator}  allow_implicit_invocation: false\n"
+    )
+    if policy_value is not None or policy_error != unsupported_structure_separator_error:
+        raise SystemExit(
+            f"policy structure separator U+{ord(separator):04X} was accepted: "
+            f"value={policy_value!r}, error={policy_error!r}"
+        )
+    interface_errors = checker.validate_skill_interface_metadata(
+        "interface:"
+        f"{separator}  display_name: Fixture Governance\n"
+        "  short_description: Create deterministic fixtures.\n"
+        "  default_prompt: Use $fixture-governance.\n",
+        "fixture-governance",
+    )
+    if interface_errors != [unsupported_structure_separator_error]:
+        raise SystemExit(
+            f"interface structure separator U+{ord(separator):04X} was accepted: "
+            f"errors={interface_errors!r}"
         )
 
 for marker in ("---", "..."):
@@ -454,6 +571,13 @@ interface: # interface mapping comment
   default_prompt: Use $fixture-governance.
 policy: # policy mapping comment
 """,
+    "indented-comment": """\
+interface:
+  display_name: Fixture Governance
+    # nested comments remain comments
+  short_description: Create safe fixtures.
+  default_prompt: Use $fixture-governance.
+""",
     "bom-prefix": "\ufeffinterface:\n"
     "  display_name: Fixture Governance\n"
     "  short_description: Create deterministic fixtures.\n"
@@ -543,6 +667,30 @@ for scalar in (
             f"escaped line separator {scalar!r} was not rejected: "
             f"parsed={parsed!r}, error={parse_error!r}"
         )
+
+for separator in ("\u000B", "\u000C", "\u001C", "\u001D", "\u001E"):
+    parsed, parse_error = checker.parse_yaml_string_scalar(
+        f"Fixture{separator}Governance",
+        1,
+    )
+    if (
+        parsed is not None
+        or parse_error is None
+        or checker.LITERAL_SCALAR_CONTROL_ERROR not in parse_error
+        or unsupported_structure_separator_error in parse_error
+    ):
+        raise SystemExit(
+            f"literal scalar separator U+{ord(separator):04X} used the wrong contract: "
+            f"parsed={parsed!r}, error={parse_error!r}"
+        )
+
+escaped_structure_separator = r'"Fixture\u000bGovernance"'
+parsed, parse_error = checker.parse_yaml_string_scalar(escaped_structure_separator, 1)
+if parse_error is not None or parsed != "Fixture\u000bGovernance":
+    raise SystemExit(
+        "escaped structure separator was not decoded as a scalar escape: "
+        f"parsed={parsed!r}, error={parse_error!r}"
+    )
 
 escaped_control = '"Fixture ' + chr(92) + "u0001Governance\""
 parsed, parse_error = checker.parse_yaml_string_scalar(escaped_control, 1)
