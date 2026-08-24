@@ -17,6 +17,201 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENTS_DIR = ROOT / ".codex" / "agents"
 POLICY_PATH = ROOT / ".agents" / "workflows" / "backlog-policy.json"
 
+# Issue #193 role-audit contract: this is the complete role taxonomy.
+# Keep one entry per TOML role so that a
+# newly added or accidentally orphaned agent fails validation before it can be
+# invoked. ``write_scope`` describes the mutation surface, while
+# ``coordination`` describes the dependency boundary for the same task.
+ROLE_TAXONOMY = {
+    "rpm_workflow_manager": {
+        "category": "backlog",
+        "responsibility": "routes one requested workflow mode to one manager",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "coordinator",
+    },
+    "rpm_backlog_manager": {
+        "category": "backlog",
+        "responsibility": "coordinates one bounded backlog mode and its handoffs",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "coordinator",
+    },
+    "rpm_issue_manager": {
+        "category": "reconciliation",
+        "responsibility": "coordinates one issue state machine and writer handoffs",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "coordinator",
+    },
+    "rpm_backlog_scout": {
+        "category": "discovery/research",
+        "responsibility": "inventories one candidate source and duplicate evidence",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "independent-read",
+    },
+    "rpm_issue_fetcher": {
+        "category": "discovery/research",
+        "responsibility": "fetches one canonical issue packet and linked context",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "independent-read",
+    },
+    "rpm_issue_researcher": {
+        "category": "discovery/research",
+        "responsibility": "builds one evidence-backed implementation research packet",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "independent-read",
+    },
+    "rpm_spec_reviewer": {
+        "category": "review",
+        "responsibility": "classifies the owning SPEC impact for one issue",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "independent-read",
+    },
+    "rpm_issue_readiness_reviewer": {
+        "category": "review",
+        "responsibility": "judges whether one researched issue is actionable",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "sequential-read",
+    },
+    "rpm_adversarial_reviewer": {
+        "category": "review",
+        "responsibility": "tries to falsify one validated change against its evidence",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "sequential-read",
+    },
+    "rpm_issue_spec_reconciler": {
+        "category": "reconciliation",
+        "responsibility": "compares one issue intent with its active SPEC decision",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "sequential-read",
+    },
+    "pr-review-resolver": {
+        "category": "reconciliation",
+        "responsibility": "classifies review feedback and applies accepted fixes",
+        "sandbox_mode": "workspace-write",
+        "write_scope": "local",
+        "coordination": "single-writer",
+    },
+    "rpm_spec_updater": {
+        "category": "implementation",
+        "responsibility": "writes one already-approved contract update",
+        "sandbox_mode": "workspace-write",
+        "write_scope": "local",
+        "coordination": "single-writer",
+    },
+    "rpm_implementer": {
+        "category": "implementation",
+        "responsibility": "writes one approved production behavior change",
+        "sandbox_mode": "workspace-write",
+        "write_scope": "local",
+        "coordination": "single-writer",
+    },
+    "rpm_test_author": {
+        "category": "testing",
+        "responsibility": "writes focused regression tests and deterministic fixtures",
+        "sandbox_mode": "workspace-write",
+        "write_scope": "local",
+        "coordination": "single-writer",
+    },
+    "rpm_test_runner": {
+        "category": "testing",
+        "responsibility": "runs supplied targeted tests and reports exact evidence",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "sequential-read",
+    },
+    "rpm_verifier": {
+        "category": "testing",
+        "responsibility": "runs the full repository validation gate",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "coordination": "sequential-read",
+    },
+    "rpm_idea_issue_creator": {
+        "category": "mutation",
+        "responsibility": "creates one authorized idea issue and registration",
+        "sandbox_mode": "read-only",
+        "write_scope": "github",
+        "coordination": "single-writer",
+    },
+    "rpm_issue_refiner": {
+        "category": "mutation",
+        "responsibility": "updates one managed research section and lifecycle state",
+        "sandbox_mode": "read-only",
+        "write_scope": "github",
+        "coordination": "single-writer",
+    },
+    "rpm_ready_ticket_claimer": {
+        "category": "mutation",
+        "responsibility": "claims one ready issue through the allowed state transition",
+        "sandbox_mode": "read-only",
+        "write_scope": "github",
+        "coordination": "single-writer",
+    },
+    "rpm_followup_issue_creator": {
+        "category": "mutation",
+        "responsibility": "creates one explicitly authorized deferred follow-up issue",
+        "sandbox_mode": "read-only",
+        "write_scope": "github",
+        "coordination": "single-writer",
+    },
+}
+
+# Retained role-overlap dispositions. These pairs are intentionally retained
+# because their inputs, authority, or mutation boundary differs.
+ADJACENT_ROLE_PAIRS = (
+    (
+        "rpm_backlog_scout",
+        "rpm_issue_researcher",
+        "scout inventories candidates; researcher investigates one selected issue",
+    ),
+    (
+        "rpm_spec_reviewer",
+        "rpm_issue_spec_reconciler",
+        "SPEC reviewer classifies the owning contract; SPEC reconciler compares issue intent with that classification",
+    ),
+    (
+        "rpm_test_runner",
+        "rpm_verifier",
+        "targeted runner executes supplied commands; verifier runs the full repository gate",
+    ),
+    (
+        "rpm_workflow_manager",
+        "rpm_issue_manager",
+        "workflow manager routes a top-level mode; issue manager owns one issue state machine",
+    ),
+    (
+        "rpm_adversarial_reviewer",
+        "pr-review-resolver",
+        "adversarial reviewer finds correctness gaps; PR resolver classifies actionable feedback and applies accepted fixes",
+    ),
+    (
+        "rpm_spec_updater",
+        "rpm_implementer",
+        "SPEC updater writes approved contract text; implementer writes production behavior",
+    ),
+)
+COORDINATOR_ROLES = {
+    "rpm_workflow_manager",
+    "rpm_backlog_manager",
+    "rpm_issue_manager",
+}
+SEQUENTIAL_READ_ROLES = {
+    "rpm_issue_readiness_reviewer",
+    "rpm_issue_spec_reconciler",
+    "rpm_test_runner",
+    "rpm_verifier",
+    "rpm_adversarial_reviewer",
+}
+
 MANAGER_REPORTS = {
     "rpm_workflow_manager": {
         "rpm_backlog_manager",
@@ -304,6 +499,190 @@ def check_role_contracts(
                     errors,
                     f".codex/agents/rpm_backlog_manager.toml: missing batch contract {required!r}",
                 )
+
+
+# Issue #193: validate the complete role taxonomy separately from the #189
+# manager/leaf contract so later role-audit changes rebase cleanly.
+def check_role_taxonomy(
+    agents: dict[str, tuple[Path, dict[str, object]]], errors: list[str]
+) -> None:
+    taxonomy_roles = set(ROLE_TAXONOMY)
+    agent_roles = set(agents)
+    if taxonomy_roles != agent_roles:
+        missing = ", ".join(sorted(taxonomy_roles - agent_roles)) or "none"
+        unexpected = ", ".join(sorted(agent_roles - taxonomy_roles)) or "none"
+        fail(
+            errors,
+            "role taxonomy must exactly match TOML roles "
+            f"(missing: {missing}; unexpected: {unexpected})",
+        )
+
+    responsibilities = [
+        str(metadata.get("responsibility", ""))
+        for metadata in ROLE_TAXONOMY.values()
+    ]
+    duplicates = sorted(
+        responsibility
+        for responsibility in set(responsibilities)
+        if responsibilities.count(responsibility) > 1
+    )
+    if duplicates:
+        fail(
+            errors,
+            "role taxonomy responsibilities must be unique: "
+            + ", ".join(repr(item) for item in duplicates),
+        )
+
+    allowed_categories = {
+        "discovery/research",
+        "implementation",
+        "testing",
+        "review",
+        "reconciliation",
+        "backlog",
+        "mutation",
+    }
+    allowed_write_scopes = {"none", "local", "github"}
+    allowed_coordination = {
+        "independent-read",
+        "sequential-read",
+        "single-writer",
+        "coordinator",
+    }
+    used_categories = {
+        str(metadata.get("category")) for metadata in ROLE_TAXONOMY.values()
+    }
+    if used_categories != allowed_categories:
+        fail(
+            errors,
+            "role taxonomy must represent every category "
+            f"(missing: {', '.join(sorted(allowed_categories - used_categories)) or 'none'}; "
+            f"unexpected: {', '.join(sorted(used_categories - allowed_categories)) or 'none'})",
+        )
+    for role, metadata in ROLE_TAXONOMY.items():
+        category = metadata.get("category")
+        write_scope = metadata.get("write_scope")
+        coordination = metadata.get("coordination")
+        if category not in allowed_categories:
+            fail(errors, f"role taxonomy {role!r}: invalid category {category!r}")
+        if write_scope not in allowed_write_scopes:
+            fail(errors, f"role taxonomy {role!r}: invalid write_scope {write_scope!r}")
+        if coordination not in allowed_coordination:
+            fail(errors, f"role taxonomy {role!r}: invalid coordination {coordination!r}")
+        if write_scope != "none" and coordination != "single-writer":
+            fail(errors, f"role taxonomy {role!r}: writer must be single-writer")
+        if write_scope == "none" and role in COORDINATOR_ROLES and coordination != "coordinator":
+            fail(errors, f"role taxonomy {role!r}: manager must be coordinator")
+        if role in SEQUENTIAL_READ_ROLES and coordination != "sequential-read":
+            fail(errors, f"role taxonomy {role!r}: dependent read role must be sequential-read")
+        if (
+            write_scope == "none"
+            and role not in COORDINATOR_ROLES
+            and role not in SEQUENTIAL_READ_ROLES
+            and coordination != "independent-read"
+        ):
+            fail(errors, f"role taxonomy {role!r}: read-only judgment role must be independent-read")
+        if role not in agents:
+            continue
+        sandbox = agents[role][1].get("sandbox_mode")
+        if sandbox != metadata.get("sandbox_mode"):
+            fail(
+                errors,
+                f"{role}: taxonomy sandbox {metadata.get('sandbox_mode')!r} "
+                f"does not match TOML sandbox {sandbox!r}",
+            )
+        if write_scope == "local" and sandbox != "workspace-write":
+            fail(errors, f"{role}: local writer must use workspace-write sandbox")
+        if write_scope == "github" and sandbox != "read-only":
+            fail(errors, f"{role}: GitHub-only writer must use read-only sandbox")
+
+
+def check_role_organization_docs(
+    agents: dict[str, tuple[Path, dict[str, object]]], errors: list[str]
+) -> None:
+    required_documents = {
+        ROOT / ".agents" / "docs" / "issue-agent-workflow.md": (
+            "Read-only exploration and independent review may run in parallel.",
+            "Each task has at most one active write owner.",
+            "Writer handoffs are sequential",
+            "validator checks this static inventory",
+            "coordinator enforces runtime sequencing",
+        ),
+        ROOT / ".agents" / "docs" / "backlog-agent-workflow.md": (
+            "Independent read-only evidence collection may run in parallel",
+            "Readiness review starts only after",
+            "Each backlog task has at most one active write owner",
+            "Mutation handoffs are sequential",
+            "coordinator enforces runtime ordering",
+        ),
+        ROOT / "AGENTS.md": (
+            "Independent read-only discovery and review may run in parallel; each task has one active write owner, and writer handoffs are sequential.",
+        ),
+    }
+    for path, required_phrases in required_documents.items():
+        try:
+            text = path.read_text()
+        except OSError as error:
+            fail(errors, f"{path.relative_to(ROOT)}: cannot read: {error}")
+            continue
+        for phrase in required_phrases:
+            if phrase not in text:
+                fail(errors, f"{path.relative_to(ROOT)}: missing organization contract {phrase!r}")
+    issue_doc = ROOT / ".agents" / "docs" / "issue-agent-workflow.md"
+    try:
+        issue_text = issue_doc.read_text()
+    except OSError:
+        issue_text = ""
+    for role, metadata in ROLE_TAXONOMY.items():
+        row = (
+            f"| `{role}` | {metadata['category']} | {metadata['coordination']} | "
+            f"{metadata['responsibility']} |"
+        )
+        if row not in issue_text:
+            fail(errors, f"{issue_doc.relative_to(ROOT)}: taxonomy row mismatch for {role!r}")
+    for left, right, boundary in ADJACENT_ROLE_PAIRS:
+        if left not in agents or right not in agents:
+            fail(errors, f"adjacent role pair references missing TOML role: {left}, {right}")
+            continue
+        if ROLE_TAXONOMY[left]["responsibility"] == ROLE_TAXONOMY[right]["responsibility"]:
+            fail(errors, f"adjacent role pair has duplicate responsibility: {left}, {right}")
+        if boundary not in issue_text:
+            fail(errors, f"{issue_doc.relative_to(ROOT)}: missing adjacent boundary {boundary!r}")
+
+    role_documents = {
+        "rpm_issue_manager": (
+            "Each task has at most one active write owner",
+            "Writer handoffs are sequential",
+        ),
+        "rpm_backlog_manager": (
+            "active write",
+            "handoffs run sequentially",
+        ),
+        "pr-review-resolver": (
+            "sole repository write owner",
+            "serialize this handoff",
+            "Do not spawn/contact other agents.",
+            "Return only the `review_resolution_result` JSONL shape defined in `templates.md`.",
+        ),
+    }
+    for role, phrases in role_documents.items():
+        text = _load_role_text(role)
+        if not text:
+            fail(errors, f".codex/agents/{role}.toml: cannot read role configuration")
+            continue
+        for phrase in phrases:
+            if phrase not in text:
+                fail(errors, f".codex/agents/{role}.toml: missing organization contract {phrase!r}")
+
+
+def _load_role_text(role: str) -> str:
+    path = AGENTS_DIR / (
+        "pr-review-resolver.toml" if role == "pr-review-resolver" else f"{role}.toml"
+    )
+    try:
+        return path.read_text()
+    except OSError:
+        return ""
 
 
 def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
@@ -1875,6 +2254,8 @@ def main() -> int:
     check_policy(errors)
     check_role_contracts(agents, errors)
     check_skill_inventory(errors)
+    check_role_taxonomy(agents, errors)
+    check_role_organization_docs(agents, errors)
     check_entries_and_assets(errors)
     check_deterministic_assets(errors)
     check_tool_policy_runtime(errors)
@@ -1884,7 +2265,8 @@ def main() -> int:
         return 1
     print(
         "agent_organization.status=ok "
-        f"agents={len(agents)} rpm_roles={len(EXPECTED_SANDBOX)}"
+        f"agents={len(agents)} rpm_roles={len(EXPECTED_SANDBOX)} "
+        f"taxonomy_roles={len(ROLE_TAXONOMY)}"
     )
     return 0
 

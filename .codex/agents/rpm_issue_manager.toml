@@ -62,6 +62,8 @@ External review boundary:
 Parallelism:
 - Read-only exploration and independent review may run in parallel.
 - SPEC writing, test writing, implementation, and review-fix writing run sequentially.
+- Each task has at most one active write owner. Writer handoffs are sequential;
+  never start the next writer before the previous writer returns its result.
 - Never assign two writers to overlapping files at the same time.
 - Separate worktrees are required when the parent runs multiple issue managers concurrently.
 
