@@ -382,7 +382,9 @@ and final pre-return validation. Workspace discovery treats the root manifest
 snapshot and the member table as one result, so all of those operations share
 one global watcher and final linearization cut.
 
-On Linux, the supported primitive is descriptor-scoped inotify revalidation.
+On Linux, the base revalidation primitive is descriptor-scoped inotify;
+final publication additionally requires the mount-aware linearization cut
+defined below, so descriptor-scoped inotify alone is insufficient.
 Discovery creates one nonblocking inotify descriptor before walking the
 retained root parent/name chain. For each ancestor edge, it installs a watch
 through the already validated ancestor's `/proc/self/fd/<dirfd>` path before
@@ -403,16 +405,15 @@ nonblocking loop: (1) read repeatedly until `EAGAIN`, requiring every returned
 buffer to contain complete event records; (2) call `poll` with a zero timeout;
 (3) return a quiet result only when `poll` reports no readable event, otherwise
 return to step 1. Each drain invocation has fixed starvation bounds:
-`DRAIN_EVENT_BUDGET = 4096` complete event records, `DRAIN_BYTE_BUDGET =
-1_048_576` bytes returned by `read`, and `DRAIN_TIME_BUDGET = 10 ms` measured
-by a monotonic clock from invocation start. Every complete record, including an
-unrelated ancestor entry, counts toward both the event and byte budgets; the
-counters are not reset by a successful read or by ignoring an unrelated event.
-The implementation checks the monotonic deadline before each read or poll and
-after each such call. Reaching or exceeding any budget fails closed before a
-quiet result can be returned; a clock failure also fails closed. These budgets
-bound drain work and do not establish quiet by elapsed time. If that readable
-poll is followed by `EAGAIN` again, it is a readiness/read retry; three
+`DRAIN_EVENT_BUDGET = 4096` complete event records and
+`DRAIN_BYTE_BUDGET = 1_048_576` bytes returned by `read`. Every complete
+record, including an unrelated ancestor entry, counts toward both the event
+and byte budgets; the counters are not reset by a successful read or by
+ignoring an unrelated event. The implementation checks the event and byte
+counters before each read or poll and after each such call. Reaching or
+exceeding any budget fails closed before a quiet result can be returned. These
+budgets bound drain work and do not establish quiet by elapsed time. If that
+readable poll is followed by `EAGAIN` again, it is a readiness/read retry; three
 consecutive such retries (`DRAIN_RETRY_LIMIT = 3`) fail closed, and any
 successful event read resets the retry count. A zero-return `poll` with
 `revents == 0` is the only quiet result. A nonzero
@@ -429,12 +430,22 @@ directory identity, and root/member manifest identity, link count, size,
 permissions, and content-change metadata before the last drain. Any
 role-relevant mutation event observed by a retained watch fails the full
 discovery; unrelated ancestor entries remain drain-only events after their
-complete records are parsed, subject to the per-attempt event, byte, and
-monotonic-time budgets above. The last quiet result after all final checks is
+complete records are parsed, subject to the per-attempt event and byte
+budgets above. The last quiet result after all final checks is
 the single global linearization cut.
 The adapter must provide a documented ordering guarantee that every watched
 mutation completed before that cut has a queued event; when the filesystem or
 kernel adapter cannot provide that guarantee, discovery fails closed.
+
+The final validation and last quiet poll must also form a mount-aware
+linearization cut. Descriptor and inotify watches that remain attached to an
+underlying directory do not observe a bind mount or other mount substitution
+placed over the validated root, ancestor, or member pathname. On Linux, the
+adapter must use a mount namespace isolated for the operation or an equivalent
+mount-aware primitive that prevents or observes such substitution atomically;
+ordinary descriptor revalidation and inotify silence are insufficient. A
+platform without this guarantee fails closed before publishing the discovery
+result.
 
 The queue parser binds each watch descriptor to its role. For a root or member
 directory watch, `IN_CREATE`, `IN_DELETE`, `IN_MOVED_FROM`, `IN_MOVED_TO`,
@@ -647,10 +658,10 @@ workspace contract requires planned coverage for:
   are read, while unrelated ancestor entries are drained without changing the
   result;
 - a sustained unrelated-ancestor-event adapter that keeps the inotify queue
-  readable with irrelevant entries while avoiding overflow; event-count,
-  byte-count, and monotonic-deadline variants each exceed one per-attempt drain
-  budget and fail closed before root manifest bytes or a partial member table
-  are returned, while an under-budget burst reaches the exact quiet poll;
+  readable with irrelevant entries while avoiding overflow; event-count and
+  byte-count variants each exceed one per-attempt drain budget and fail closed
+  before root manifest bytes or a partial member table are returned, while an
+  under-budget burst reaches the exact quiet poll;
 - injected `pollfd.revents` values of `POLLERR`, `POLLPRI`, `POLLHUP`,
   `POLLNVAL`, each unknown bit, each combination with `POLLIN`, and
   return-zero/nonzero inconsistencies fail closed; only `revents == 0` with a
@@ -665,6 +676,11 @@ workspace contract requires planned coverage for:
   snapshot boundary, member enumeration, candidate-manifest reads, and final
   validation; each pre-cut event fails the complete discovery with no parsed
   bytes or partial member table, and queue-drain retry exhaustion fails closed;
+- a Linux mount-topology adapter that places a replacement bind mount over the
+  validated root, ancestor, or member pathname after final metadata checks and
+  before the last quiet poll, proving the mount-aware linearization primitive
+  prevents publication or fails the complete discovery; a descriptor/inotify
+  adapter without that primitive is unsupported;
 - a broad pattern with pre-existing `node_modules`, `.rpm`, and RPM-managed
   staging or backup paths plus ASCII case aliases of those reserved components,
   proving artifacts do not change discovery on case-sensitive or

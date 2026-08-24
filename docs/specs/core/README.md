@@ -306,9 +306,9 @@ disabled.
 | --- | --- | --- | --- |
 | workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, duplicate declaration keys rejected before parser selection, descriptor-rooted root/ancestor/member/inode snapshots, read-only absent-root handling, single-link manifest identity, preservation-before-write, and planned replacement/hard-link coverage are specified; current manifest code still does not read or preserve the field | #221 |
 | workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect uses host-independent case-sensitive whole-result NFC matching; candidate selection, ancestor-chain and mount-aware canonical-root/symlink confinement, stable global manifest/directory snapshots, canonical-target keys for directory-symlink members, portable managed-path exclusions, and NFC `/`-separated keys are specified; every accepted `member_path_key` must round-trip as identical valid UTF-8 on every host, and non-Unicode/WTF-8/lossy native paths fail before resolver handoff | #221 |
-| root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: immutable root/member dependency snapshots preserve exact raw selector provenance alongside canonical request text, portable `member_path_key` graph origin, production-over-development overlap precedence, branch-before-metadata local classification, single-pass member-root seeding, external fallback, and native identity restricted to filesystem validation are specified | #221 |
+| root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: immutable root/member dependency snapshots preserve exact raw selector provenance alongside canonical request text, portable `member_path_key` graph origin, production-over-development overlap precedence, registry-owned tag precedence before confirmed non-tag local classification, single-pass member-root seeding, external fallback, and native identity restricted to filesystem validation are specified | #221 |
 | workspace package lockfile records | `lockfile/SPEC.md` | absent on this branch: lockfile v1 has no local-path or workspace-origin marker; #146 owns the contract in PR #217 | #146 / PR #217; #224 parser/schema after #146, then runtime/replay/publication after #221 + #147 implementation + #149 |
-| external dependency edges under a workspace root | `lockfile/SPEC.md`, `resolver/SPEC.md` | resolver contract defined, implementation deferred: external nodes deduplicate by `<name>@<version>`, while every incoming edge preserves canonical request text, exact raw selector provenance, request kind, and origin or resolved parent; #146 owns lockfile serialization of those per-parent edges | #146; #221 |
+| external dependency edges under a workspace root | `lockfile/SPEC.md`, `resolver/SPEC.md` | resolver contract defined, implementation deferred: external nodes deduplicate by `<name>@<version>`, while every incoming edge preserves canonical request text, exact raw selector provenance, selection-branch/classification provenance, request kind, and origin or resolved parent; #146 owns lockfile serialization of those per-parent edges | #146; #221 |
 | workspace-to-workspace linking (local symlink) | `linker/SPEC.md` | absent: the linker creates symlinks whose targets are extracted registry packages under `node_modules/`; there is no contract for linking a workspace member that exists as a local source directory rather than a downloaded tarball, or for confining that target to the canonical workspace root | #147 |
 | workspace-to-external linking | `linker/SPEC.md` | code and SPEC currently diverge on strict per-package dependency visibility; #147 must reconcile the implementation first, then extend the strict contract to workspace members so a member's `node_modules` exposes only that member's declared dependencies, with regression coverage | #147 |
 | missing workspace link target | `linker/SPEC.md` | absent: the linker already fails when a registry dependency target is not extracted, but there is no contract for a workspace dependency whose declared local path does not exist or does not contain the expected package | #147 |
@@ -331,12 +331,13 @@ Findings:
   Unicode member keys with valid UTF-8 round-trip rejection before resolver
   handoff, no-follow single-link root/ancestor/member snapshots with retained
   descriptor/inode watches, read-only absent-root handling, portable graph
-  origins, one-time member resolution-root seeding, and
-  local-versus-external edge classification before metadata lookup. Compatible
-  local edges attach to the existing member node without metadata access or
-  reseeding. #221 owns its implementation and executable fixtures. #146,
-  #147, and #148 must consume the same member table and origin model without
-  redefining them.
+  origins, one-time member resolution-root seeding, and registry-owned
+  dist-tag classification first, followed by confirmed non-tag local
+  classification or external fallback. Compatible confirmed-local edges attach
+  to the existing member node without external version selection or
+  package-metadata lookup or reseeding. #221 owns its implementation and
+  executable fixtures. #146, #147, and #148 must consume the same member table
+  and origin model without redefining them.
 - Workspace-member lifecycle and recovery remain deferred to #222. Its research
   must disposition root-manifest write provenance, immutable runtime inputs,
   lockfile-candidate visibility, descriptor-confined source materialization,

@@ -188,11 +188,17 @@ root or the member's portable `member_path_key`. Requests read from selected
 external metadata remain `Transitive`, identify their resolved parent, and
 retain the exact metadata selector as `raw_selector` before canonicalization.
 Every edge preserves its request kind, canonical `requested` text,
-`raw_selector`, and origin or resolved parent independently of node
-deduplication. The resolver owns this provenance through the lockfile handoff;
-the planned workspace lockfile v2 owner (#146 / PR #217) serializes `raw_selector`
-as its edge `requested` field and must not substitute canonical `latest` for an
-empty raw selector. When several root/member/transitive requests select
+`raw_selector`, selection-branch/classification provenance, and origin or
+resolved parent independently of node deduplication. The resolver owns this
+version-neutral provenance handoff: it records whether the edge followed a
+confirmed non-tag local branch, a matching dist-tag external branch, or an
+absent-member or missing/invalid/incompatible-member-version external branch,
+without prescribing a lockfile field or format. Lockfile serialization, field
+naming, format version, and compatibility remain owned by #146 and
+`docs/specs/core/lockfile/SPEC.md`; that owner must receive this provenance
+unchanged and must not substitute canonical `latest` for an empty raw selector
+when it defines the workspace format. When several root/member/transitive
+requests select
 one external `<name>@<version>` node, merging the node must not merge or
 discard those per-edge fields. A dependency reachable only from a member
 therefore cannot be omitted or mistaken for a root-manifest entry.
@@ -204,28 +210,35 @@ text is normalized to `latest` before workspace classification, matching
 workspace branch therefore examines the canonical request text: an empty-range
 declaration such as `"foo": ""` is the `latest` selector, not an any-version
 semver range, and remains external because registry dist-tags have no local
-member mapping. A dependency edge is classified against the discovered member
-table before external metadata lookup. A name absent from the table is an
+member mapping. Registry-owned dist-tag identity has precedence over local
+range matching. A dependency edge is classified against the discovered member
+table only after the registry boundary determines whether the canonical
+request matches a published dist-tag. A name absent from the table is an
 external edge. A name present in the table is workspace-local only when the
-member has a valid declared semantic version and that version satisfies the
-canonical, non-empty requested range under
-`docs/specs/core/semver/SPEC.md`. A missing, invalid, or range-incompatible
-member version leaves that edge external, allowing external metadata to select
-a compatible package version. Registry dist-tags have no local member mapping
-and remain external selectors. Invalid or unsupported request syntax still
-fails under its owning input contract; it is not converted into a
+request is confirmed to be a non-tag, the member has a valid declared semantic
+version, and that version satisfies the canonical range under
+`docs/specs/core/semver/SPEC.md`. A semver-shaped request such as `*` or `1`
+does not prove that it is not a tag because registry tag names have no lexical
+restriction. A matching tag remains external; if tag identity cannot be
+determined, the resolver follows the registry-boundary result or failure and
+must not silently choose a local edge. A missing, invalid, or
+range-incompatible member version leaves that edge external, allowing external
+metadata to select a compatible package version. Invalid or unsupported request
+syntax still fails under its owning input contract; it is not converted into a
 workspace-local edge.
 
 Resolution-root creation and edge classification are separate operations. RPM
 creates every root/member resolution-root record and seeds that record's
 snapshot dependencies exactly once during the ordered initial root-set pass.
-For each later edge, it performs the member-name and range-compatibility branch
-before calling a registry cache or metadata provider. A compatible local edge
-attaches to the already-created member node identified by `member_path_key`; it
-does not read external metadata, create another member root, enqueue the member
-snapshot again, or replay that member's dependency maps. Multiple incoming
-local edges share that existing member node. Only the absent-member,
-missing/invalid/incompatible-member-version, and registry-dist-tag branches may
+For each later edge, registry-owned tag classification runs first when tag
+identity is not already available; only a confirmed non-tag proceeds to the
+member-name and range-compatibility branch. A compatible local edge attaches to
+the already-created member node identified by `member_path_key`; after the
+non-tag result it does not read external package metadata, select an external
+version, create another member root, enqueue the member snapshot again, or
+replay that member's dependency maps. Multiple incoming local edges share that
+existing member node. The absent-member,
+missing/invalid/incompatible-member-version, and matching-dist-tag branches may
 enter external metadata lookup and version selection.
 
 Name collisions among members or between the root package and a member are
@@ -435,8 +448,9 @@ RPM's user-facing or API-facing contract.
 
 Resolver tests should use offline registry metadata fixtures. Each fixture
 should represent one graph scenario and include expected resolved package
-records with selected versions and expected edges with requested ranges and
-request kinds. Integration fixtures may add
+records with selected versions and expected edges with canonical requested
+text, raw selectors where present, request kinds, and selection-branch/
+classification provenance. Integration fixtures may add
 expected lockfile snapshots or filesystem trees for later installer phases, but
 resolver fixtures should not mutate the repository root, `.rpm`, `rpm.lock`, or
 `node_modules`.
@@ -478,11 +492,25 @@ semver range for the same member is classified local. A paired root/member
 fixture uses direct selectors `"foo": ""` and `"foo": "latest"`; both
 classify as external through canonical `latest` while retaining distinct raw
 selectors (`""` and `"latest"`) alongside their source origins. A local-branch
-fixture uses a metadata provider that records every
+fixture uses a tag-aware registry boundary that proves the selector is not a
+dist-tag, plus a package-metadata provider that records every
 request and fails if queried for a compatible member; multiple root/member
 edges target the same compatible member and prove that its resolution root and
 snapshot dependency seeds are created exactly once. Paired incompatible and
-dist-tag cases prove only those external branches reach metadata lookup.
+dist-tag cases prove only those external branches reach metadata lookup. A
+semver-shaped-dist-tag fixture supplies custom registry metadata with tags such
+as `"*"` and `"1"` while compatible same-name member versions exist; requests
+matching those tags remain external and select the tag targets instead of local
+members, while a confirmed non-tag range may still classify local. Each branch
+records its selection-branch/classification provenance together with canonical
+requested text and raw selector; this handoff remains version-neutral for the
+lockfile owner. A paired registry-context fixture reaches the same external
+`<name>@<version>` target with the same raw and canonical selector text once
+through a matching dist-tag and once through a confirmed non-tag semver
+external fallback; the expected edges retain distinct selection provenance,
+proving it is not inferred from the target or selector text alone. A
+tag-identity lookup failure fixture proves classification fails closed before
+local range matching and never falls back to a workspace-local edge.
 Resolver workspace fixtures stop at graph construction. Lifecycle activation
 and its fixtures remain deferred to #222.
 
