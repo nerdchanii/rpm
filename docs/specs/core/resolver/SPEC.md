@@ -40,23 +40,28 @@ implementation can stay simple without becoming the long-term installer shape.
 ## Contract
 
 The resolver consumes dependency requests and package metadata through explicit
-abstractions. A dependency request includes the package name, the requested
-range or version text, and a request kind. Request kinds distinguish direct
-production dependencies, direct development dependencies, and transitive
-dependencies discovered from package metadata. Only direct request kinds may
-drive manifest dependency updates; transitive requests are graph inputs and must
-not be treated as root manifest entries. Package metadata access supplies
-available versions, dist metadata, and dependency declarations without
-downloading or extracting tarballs as part of traversal.
+abstractions. A dependency request includes the package name, its canonical
+requested range or version text, and a request kind. Request kinds distinguish
+direct production dependencies, direct development dependencies, and transitive
+dependencies discovered from package metadata. Workspace root/member requests
+also carry a `raw_selector` provenance field containing the exact string value
+from the immutable dependency snapshot; this field is distinct from the
+canonical requested text used for classification and selection. Only direct
+request kinds may drive manifest dependency updates; transitive requests are
+graph inputs and must not be treated as root manifest entries. Package metadata
+access supplies available versions, dist metadata, and dependency declarations
+without downloading or extracting tarballs as part of traversal.
 
 The resolver produces a resolved dependency graph. Each dependency edge
-preserves its requested range or version text and request kind. Each resolved
-package record continues to preserve its requested range and selected version;
-the per-edge fields retain every incoming request when node deduplication leaves
-one package record. Direct edges also preserve their root or member origin, and
-transitive edges preserve their resolved parent. The graph is the input to later
-installer phases that download tarballs, verify integrity, extract packages,
-link `node_modules`, and write lockfile or manifest state.
+preserves its canonical requested range or version text, its `raw_selector`
+provenance where the edge came from a dependency map, and its request kind. Each
+resolved package record continues to preserve its canonical requested range and
+selected version; the per-edge fields retain every incoming request when node
+deduplication leaves one package record. Direct edges also preserve their root
+or member origin, and transitive edges preserve their resolved parent. The graph
+is the input to later installer phases that download tarballs, verify
+integrity, extract packages, link `node_modules`, and write lockfile or manifest
+state.
 
 The external-package portion of the resolved graph contains at most one record
 per `<name>@<version>`. An external package reached through several parents is
@@ -122,11 +127,21 @@ Workspace discovery is owned by
 result containing the immutable parsed root-manifest snapshot and an ordered
 table of NFC-normalized UTF-8 `member_path_key` values with immutable parsed
 member snapshots. Each snapshot includes the package name, declared version text
-when present, and the parsed dependency maps used for request seeding. Native
-paths, directory handles, and file identities remain manifest/filesystem-layer
-validation data and are not resolver graph inputs. The resolver does not
-re-expand globs, follow a second root, reopen a root or member manifest by path,
-or infer members from registry metadata. The table must already satisfy
+when present, and the parsed dependency maps used for request seeding. Each
+dependency-map entry in a snapshot carries both `raw_selector`, the exact
+UTF-8 string value from the manifest with no trimming or canonicalization, and
+`requested`, the canonical text produced by the existing `DependencyRequest`
+normalization boundary. The manifest discovery boundary supplies this exact
+value as part of the immutable snapshot; the resolver owns the paired field and
+its propagation into graph edges. The resolver must never reconstruct
+`raw_selector` from canonical `requested`.
+This additional workspace handoff field does not change the current root-only
+runtime or lockfile v1 behavior.
+Native paths, directory handles, and file identities remain
+manifest/filesystem-layer validation data and are not resolver graph inputs.
+The resolver does not re-expand globs, follow a second root, reopen a root or
+member manifest by path, or infer members from registry metadata. The table must
+already satisfy
 canonical-root confinement, structurally accepted non-empty and unique package
 names, valid manifest snapshots, deduplicated portable keys, and stable unsigned
 UTF-8 byte ordering.
@@ -162,20 +177,25 @@ then members in discovery order; within each manifest, production requests
 precede development requests and package names are ordered by unsigned UTF-8
 byte order without locale collation or case folding. When the same package name
 appears in both maps of one manifest, the `dependencies` entry has precedence:
-RPM emits exactly one `DirectProduction` request using its requested text and
-does not emit the overlapping development entry. This precedence is applied
-before workspace-local versus external classification, so two maps cannot send
-one package name to conflicting local and external targets.
+RPM emits exactly one `DirectProduction` request using its canonical `requested`
+text and retains the winning entry's `raw_selector`; it does not emit the
+overlapping development entry. This precedence is applied before
+workspace-local versus external classification, so two maps cannot send one
+package name to conflicting local and external targets.
 Production and development seeds retain `DirectProduction` and
 `DirectDevelopment` request kinds respectively and carry a separate origin of
 root or the member's portable `member_path_key`. Requests read from selected
-external metadata remain `Transitive` and identify their resolved parent. Every
-edge preserves that request kind, its requested range or version text, and its
-origin or resolved parent independently of node deduplication. When several
-root/member/transitive requests select one external `<name>@<version>` node,
-merging the node must not merge or discard those per-edge fields. A dependency
-reachable only from a member therefore cannot be omitted or mistaken for a
-root-manifest entry.
+external metadata remain `Transitive`, identify their resolved parent, and
+retain the exact metadata selector as `raw_selector` before canonicalization.
+Every edge preserves its request kind, canonical `requested` text,
+`raw_selector`, and origin or resolved parent independently of node
+deduplication. The resolver owns this provenance through the lockfile handoff;
+the planned workspace lockfile v2 owner (#146 / PR #217) serializes `raw_selector`
+as its edge `requested` field and must not substitute canonical `latest` for an
+empty raw selector. When several root/member/transitive requests select
+one external `<name>@<version>` node, merging the node must not merge or
+discard those per-edge fields. A dependency reachable only from a member
+therefore cannot be omitted or mistaken for a root-manifest entry.
 
 A dependency-map declaration first becomes a `DependencyRequest` through the
 resolver's existing parsing and request-normalization boundary. Empty range
@@ -454,8 +474,11 @@ cases use ranges that would otherwise select different local/external targets
 and prove the production declaration wins with exactly one `DirectProduction`
 request. An empty-range request such as `"foo": ""` is normalized to `latest`
 before classification and remains external, while an explicit satisfying
-semver range for the same member is classified local. A local-branch fixture
-uses a metadata provider that records every
+semver range for the same member is classified local. A paired root/member
+fixture uses direct selectors `"foo": ""` and `"foo": "latest"`; both
+classify as external through canonical `latest` while retaining distinct raw
+selectors (`""` and `"latest"`) alongside their source origins. A local-branch
+fixture uses a metadata provider that records every
 request and fails if queried for a compatible member; multiple root/member
 edges target the same compatible member and prove that its resolution root and
 snapshot dependency seeds are created exactly once. Paired incompatible and
