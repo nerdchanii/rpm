@@ -86,10 +86,12 @@ command.
 
 Targeting modes use the invocation's current working directory as the supplied
 workspace root. The CLI does not search ancestor directories for a workspace
-root. An `--all` or `--workspace` invocation from a member directory or any
-nested descendant is rejected with a root-location error, even when an
-ancestor contains a valid workspace declaration. The caller must invoke the
-targeting mode from the workspace root that is supplied to #145 discovery.
+root or reject a current directory because it happens to be below another
+workspace. Every current directory is treated as the root supplied to #145
+discovery, including a workspace member or nested descendant. Targeting can
+therefore select only members discovered from that supplied directory; it never
+selects members from an ancestor workspace. A future explicit-root option would
+need its own owning CLI contract.
 
 Targeting consumes only the validated #145 member table from the
 [`core/resolver` workspace boundary](../../core/resolver/SPEC.md). For
@@ -213,8 +215,8 @@ command execution:
   root, exact package-name and portable root-relative `member_path_key`
   matching with `/` separators, mutual exclusion, stable member-table
   ordering, the attached `--workspace=<selector>` syntax for leading-hyphen
-  selectors, the requirement to invoke targeting modes from the supplied
-  workspace root without ancestor search, and unsupported filters; and
+  selectors, that the invocation current directory is the supplied workspace
+  root without ancestor search, and unsupported filters; and
 - add an offline help regression check for those required facts without
   freezing incidental formatting or exact prose.
 
@@ -239,8 +241,6 @@ The following are input errors and must occur before any selected target runs:
   preflight before selector matching or execution;
 - a leading-hyphen selector supplied without the attached
   `--workspace=<selector>` syntax;
-- an `--all` or `--workspace` invocation whose current working directory is a
-  member or nested descendant instead of the supplied workspace root;
 - any target or filter option other than `--all` and `--workspace`, including
   `--filter`;
 - targeting options supplied to a command that has not opted in.
@@ -277,9 +277,11 @@ this contract is active. Planned coverage includes:
 - a leading-hyphen selector passed in separated form (`--workspace -pkg`),
   proving that form is rejected while the attached `--workspace=-pkg` form is
   accepted;
-- `--all` and `--workspace` invoked from a workspace member directory and from
-  a nested descendant, proving the CLI rejects those current directories
-  instead of searching ancestors for a workspace root;
+- `--all` and `--workspace` invoked from a member directory and from a nested
+  descendant whose local metadata is standalone-like while an ancestor has a
+  valid workspace, proving the current directory is treated as the supplied
+  root, ancestor paths are not inspected, and ancestor members are never
+  selected;
 - exact-selector no-match and cross-kind ambiguity cases, including the rule
   that root and external identities cannot be selected;
 - a member whose native path uses decomposed Unicode while its table key is NFC,

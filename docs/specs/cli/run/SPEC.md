@@ -115,10 +115,10 @@ the adopting command.
 A root-only invocation uses its current working directory as the root and does
 not invoke workspace discovery or validate a `workspaces` declaration.
 Malformed workspace metadata cannot block the default root script. For
-`--all` and `--workspace`, the current working directory is the supplied
-workspace root; the CLI does not search ancestors, and a member or nested
-descendant current directory is rejected before workspace discovery or target
-selection.
+`--all` and `--workspace`, the current working directory is always the supplied
+workspace root; the CLI does not search ancestors or reject the directory
+because it lies below another workspace. Discovery and target selection use
+only the supplied current directory, so ancestor members are never selected.
 
 For `--all` and `--workspace`, #145 manifest discovery has already rejected
 duplicate member package names before publishing the table. Targeting preflight
@@ -161,8 +161,9 @@ Member-targeted fixtures must cover descriptor-bound launch after pathname
 displacement, shell PATH lookup through the process-private immutable or
 descriptor-bound `.bin` view, and fail-closed dispatch when the host/shell
 capability is unavailable. Root-location fixtures must cover invocation from a
-member directory and a nested descendant, proving that targeting does not
-perform ancestor search.
+member directory and a nested descendant with a valid ancestor workspace,
+proving that the current directory is used as the supplied root and ancestor
+members are not selected.
 
 A package binary produced by the install transaction (the `.bin` link owned by
 `docs/specs/core/linker/SPEC.md`) must be reachable through `rpm run` without
