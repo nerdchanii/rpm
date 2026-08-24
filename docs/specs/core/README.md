@@ -307,7 +307,7 @@ disabled.
 | workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, duplicate declaration keys rejected before parser selection, descriptor-rooted root/member snapshots, single-link manifest identity, preservation-before-write, and planned replacement/hard-link coverage are specified; current manifest code still does not read or preserve the field | #221 |
 | workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect uses host-independent case-sensitive whole-result NFC matching; candidate selection, mount-aware canonical-root and symlink confinement, stable manifest/directory snapshots, canonical-target keys for directory-symlink members, portable managed-path exclusions, and NFC `/`-separated keys are specified; every accepted `member_path_key` must round-trip as identical valid UTF-8 on every host, and non-Unicode/WTF-8/lossy native paths fail before resolver handoff | #221 |
 | root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: immutable root/member dependency snapshots, portable `member_path_key` graph origin, production-over-development overlap precedence, branch-before-metadata local classification, single-pass member-root seeding, external fallback, and native identity restricted to filesystem validation are specified | #221 |
-| workspace package lockfile records | `lockfile/SPEC.md` | absent on this branch: lockfile v1 has no local-path or workspace-origin marker; #146 owns the contract in PR #217 | #146 / PR #217; #224 implementation |
+| workspace package lockfile records | `lockfile/SPEC.md` | absent on this branch: lockfile v1 has no local-path or workspace-origin marker; #146 owns the contract in PR #217 | #146 / PR #217; #224 parser/schema after #146, then runtime/replay/publication after #221 + #147 implementation + #149 |
 | external dependency edges under a workspace root | `lockfile/SPEC.md`, `resolver/SPEC.md` | resolver contract defined, implementation deferred: external nodes deduplicate by `<name>@<version>`, while every incoming edge preserves its requested range, request kind, and origin or resolved parent; #146 owns lockfile serialization of those per-parent edges | #146; #221 |
 | workspace-to-workspace linking (local symlink) | `linker/SPEC.md` | absent: the linker creates symlinks whose targets are extracted registry packages under `node_modules/`; there is no contract for linking a workspace member that exists as a local source directory rather than a downloaded tarball, or for confining that target to the canonical workspace root | #147 |
 | workspace-to-external linking | `linker/SPEC.md` | code and SPEC currently diverge on strict per-package dependency visibility; #147 must reconcile the implementation first, then extend the strict contract to workspace members so a member's `node_modules` exposes only that member's declared dependencies, with regression coverage | #147 |
@@ -342,8 +342,12 @@ Findings:
   workspace-root relocation, and cross-owner staged read/write isolation before
   activation. This PR does not change the install scripts or recovery contracts.
 - Lockfile representation and compatibility are outside this PR. #146 and PR
-  #217 own that contract, and #224 owns its later implementation; this audit
-  records only that current lockfile v1 has no workspace-origin marker.
+  #217 own that contract, and #224 owns its later implementation in two slices:
+  parser/schema work may proceed from #146, while runtime/replay/publication
+  requires #221's graph/preflight implementation, the #147
+  linker/extraction-validation implementation, and the #149 end-to-end
+  fixture. This audit records only that current lockfile v1 has no
+  workspace-origin marker.
 - Linker ownership (#147) splits cleanly: workspace-to-external linking must
   first reconcile the current code/SPEC mismatch on strict dependency
   visibility, while workspace-to-workspace linking is new and must define
@@ -362,12 +366,19 @@ Findings:
   metadata and dependency-name traversal risks. #147 must confine workspace
   link targets and dependency-name writes. Workspace mutation, rollback, and
   recovery remain outside this PR and are owned by #222.
-- The delivery order follows the issue: (1) this contract and gap audit, (2)
-  #145 workspace discovery and root boundaries, (3) #146 lockfile records and
-  external edges, (4) #147 workspace dependency linking, (5) #148 command
-  targeting, (6) a minimal two-package workspace fixture (#149) with
-  reviewable expected output, (7) discovery/resolver implementation under #221,
-  and (8) workspace lifecycle/recovery integration under #222 after its fixtures
-  exist. Discovery and lockfile work is kept separable from linker work so #221
-  and #146 can land without forcing #147, and CLI targeting (#148) can land
-  after the discovery contract lands.
+- The delivery order records this contract as complete: (1) #145 owns the
+  completed manifest/discovery contract and gap audit; (2) #221 is the first
+  implementation, delivering the validated discovery table and resolver roots
+  with its executable fixtures; (3) the follow-up tracks then respect their
+  dependencies: the #147 linker track (contract first, implementation after)
+  requires #145 and #146, #223 (command targeting) requires #221 plus the #148
+  and #151 CLI/diagnostics contracts and is independent of #147 and #224, and
+  #224 may split parser/schema work after #146 from runtime/replay/publication;
+  the latter requires #221's graph/preflight implementation, the #147
+  linker/extraction-validation implementation, and #149's end-to-end fixture;
+  (4) #149's fixture follows the #145-#148 contracts and is a required input
+  to that #224 runtime slice and to lifecycle activation; (5) #222 is last and
+  requires #145, #146, #147, #149, #221, and the #224 runtime/replay/publication
+  slice before activating workspace lifecycle/recovery. #222 preserves its
+  existing ownership of lifecycle, staging, and recovery. No implementation
+  track treats completed #145 as a future delivery step.

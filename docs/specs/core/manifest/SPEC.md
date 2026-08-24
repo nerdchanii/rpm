@@ -258,7 +258,12 @@ following links. Every parent identity and the root directory's pre-open native
 identity must match the opened descriptor; a rename, replacement, mount/reparse
 substitution, or platform without an atomic equivalent fails before a manifest
 is read. Discovery retains the root directory descriptor, identity, and exact
-parent/name chain as filesystem-validation state.
+parent/name chain as filesystem-validation state. On Linux, the global
+descriptor-scoped watcher is installed on this retained root descriptor before
+any root `package.json` lookup, open, or read, including the absent-manifest
+case. Watch setup and the initial queue drain must succeed before any manifest
+operation; the root watch remains installed through the root snapshot, complete
+member discovery, and the single final linearization cut below.
 
 When the root `package.json` is absent, discovery follows the existing manifest
 initialization contract: it returns one immutable empty root snapshot and an
@@ -365,15 +370,62 @@ mount, volume, or non-symlink reparse boundary: every opened descendant and
 every canonical target chain must retain the root's mount/volume identity, with
 a no-cross-device/mount primitive or platform equivalent that detects bind
 mounts even when ordinary device numbers are equal. Each directory enumeration
-must also provide a stable entry-set snapshot through an atomic enumeration
-snapshot or a reliable monotonic directory-content generation spanning the
-complete enumeration and final pre-return validation. Repeated equal
-enumerations without such a generation do not establish stability because an
-entry set can change and return to its earlier shape between observations. Any
-entry-set drift fails the full operation. A directory replacement,
-mount/reparse crossing, identity mismatch, entry-set mutation, or platform
-without a supported equivalent fails the entire discovery; discovery must not
-continue from a path-based handle or return a partial member table.
+must also provide a stable entry-set snapshot spanning the complete enumeration
+and final pre-return validation. Workspace discovery treats the root manifest
+snapshot and the member table as one result, so all of those operations share
+one global watcher and final linearization cut.
+
+On Linux, the supported primitive is descriptor-scoped inotify revalidation.
+After the validated root descriptor is opened and before the root manifest is
+looked up, discovery creates one nonblocking inotify descriptor and installs a
+watch for the root through `/proc/self/fd/<root-dirfd>`. Before every first
+read from a newly opened descendant directory, it installs that directory's
+watch through its retained descriptor path. The root watch and every descendant
+watch remain installed through root-manifest lookup and stable reads, the
+complete descriptor-relative walk, candidate-manifest reads, and final
+identity/metadata checks.
+
+The queue-drain operation owns the inotify descriptor and follows one exact
+nonblocking loop: (1) read repeatedly until `EAGAIN`, requiring every returned
+buffer to contain complete event records; (2) call `poll` with a zero timeout;
+(3) return a quiet result only when `poll` reports no readable event, otherwise
+return to step 1. If that readable poll is followed by `EAGAIN` again, it is a
+readiness/read retry; three consecutive such retries (`DRAIN_RETRY_LIMIT = 3`)
+fail closed, and any successful event read resets the retry count. A
+zero-return `poll` with `revents == 0` is the only quiet result. A nonzero
+`poll` return is accepted only when `revents == POLLIN` exactly; `POLLERR`,
+`POLLPRI`, `POLLHUP`, `POLLNVAL`, any unknown bit, any of those bits combined
+with `POLLIN`, or an inconsistent return/revents pair fails closed. Inotify
+setup/watch failure, read error or EOF, malformed or partial event record, or
+unavailable `/proc/self/fd` resolution also fails closed. No sleep or time-based
+quiet period is allowed. The initial root drain must return quiet before the
+root manifest operation. Drains at the root snapshot boundary, after each
+directory enumeration, and after final metadata validation must each return
+quiet; any mutation event observed by any retained watch fails the full
+discovery. The last quiet result after all final checks is the single global
+linearization cut.
+The adapter must provide a documented ordering guarantee that every watched
+mutation completed before that cut has a queued event; when the filesystem or
+kernel adapter cannot provide that guarantee, discovery fails closed.
+
+For a watched directory, `IN_CREATE`, `IN_DELETE`, `IN_MOVED_FROM`,
+`IN_MOVED_TO`, `IN_ATTRIB`, `IN_MODIFY`, `IN_CLOSE_WRITE`, `IN_DELETE_SELF`,
+`IN_MOVE_SELF`, `IN_UNMOUNT`, queue overflow, or a lost watch (`IN_Q_OVERFLOW`
+or `IN_IGNORED`) observed before that cut fails the full operation. The event is
+a drift signal even when later events restore the earlier names; discovery
+never interprets the event stream as a replacement entry set. A mutation
+delivered after the final cut belongs to a later filesystem state and is
+outside the returned snapshot. Before a consumer accesses an enumerated member
+again, its retained parent/name and descriptor identity must still validate; a
+missing or replaced selected entry fails that consumer operation. A fixed delay
+or repeated equal enumeration does not establish stability. Linux without the
+descriptor-scoped watch, a readable lossless queue, or the required
+`/proc/self/fd` resolution fails closed. Other hosts require an atomic
+enumeration snapshot, a reliable monotonic directory-content generation, or an
+equivalent lossless watcher/revalidation primitive; a platform without one
+fails the entire discovery. A directory replacement, mount/reparse crossing,
+identity mismatch, or entry-set mutation must never continue from a path-based
+handle or return a partial member table.
 
 Discovery fails closed on every filesystem I/O error that can affect the
 member table. This includes directory enumeration, directory or candidate
@@ -535,8 +587,26 @@ workspace contract requires planned coverage for:
 - an injected directory replacement during descriptor-relative enumeration or
   metadata validation, proving the traversal identity mismatch fails the full
   discovery without a partial table;
-- injected additions, removals, and renames during enumeration, proving entry-
-  set drift fails the full discovery without a timing-dependent member table;
+- a Linux descriptor-scoped inotify adapter proving the root watch is installed
+  before the root `package.json` lookup/read and every descendant watch before
+  its first directory read, with all watches retained through the final global
+  `EAGAIN` cut; injected additions, removals, renames, attribute/manifest
+  writes, self-moves, unmounts, queue overflow, lost watches, and
+  watch/poll/read/`/proc/self/fd` failures before that cut fail the full
+  discovery, while an unchanged queue accepts the cut and a post-cut
+  replacement is rejected by retained parent/name and descriptor validation
+  before consumer access; a post-cut addition remains outside the returned
+  snapshot; fixed delays and repeated equal enumerations are rejected as
+  stability evidence;
+- injected `pollfd.revents` values of `POLLERR`, `POLLPRI`, `POLLHUP`,
+  `POLLNVAL`, each unknown bit, each combination with `POLLIN`, and
+  return-zero/nonzero inconsistencies fail closed; only `revents == 0` with a
+  zero return or `revents == POLLIN` with a nonzero return is accepted;
+- a race adapter that replaces the root `package.json` or adds, removes, or
+  renames a selected member between root snapshot reads, the root-to-member
+  snapshot boundary, member enumeration, candidate-manifest reads, and final
+  validation; each pre-cut event fails the complete discovery with no parsed
+  bytes or partial member table, and queue-drain retry exhaustion fails closed;
 - a broad pattern with pre-existing `node_modules`, `.rpm`, and RPM-managed
   staging or backup paths plus ASCII case aliases of those reserved components,
   proving artifacts do not change discovery on case-sensitive or
