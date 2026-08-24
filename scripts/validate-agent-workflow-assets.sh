@@ -168,7 +168,18 @@ for name, child_value in {
         )
 
 literal_yaml_control_error = checker.YAML_LITERAL_CONTROL_ERROR
-for control in ("\x00", "\x01", "\x1f", "\x7f"):
+for control in (
+    "\x00",
+    "\x01",
+    "\x1f",
+    "\x7f",
+    "\x80",
+    "\x84",
+    "\x86",
+    "\x9f",
+    "\ufffe",
+    "\uffff",
+):
     policy_value, policy_error = checker.parse_skill_invocation_policy(
         "policy:\n"
         "  allow_implicit_invocation: false # comment"
@@ -390,7 +401,7 @@ for root_scalar in root_scalars:
             f"errors={interface_errors!r}"
         )
 
-unsupported_root_error = "only interface and policy root mappings are supported"
+unsupported_root_error = "only interface, dependencies, and policy root mappings are supported"
 for unknown_value in ("value", "[unclosed", '"unmatched', "{unclosed"):
     policy_with_unknown_root = (
         f"extra: {unknown_value}\n"
@@ -466,6 +477,18 @@ invalid_interface_scalars = {
         "display_name",
         '"Fixture Governance',
         "unterminated double-quoted scalar",
+        False,
+    ),
+    "surrogate-short-escape": (
+        "display_name",
+        r'"Fixture\uD800Governance"',
+        "surrogate Unicode code points are not allowed in YAML scalars",
+        False,
+    ),
+    "surrogate-long-escape": (
+        "display_name",
+        r'"Fixture\U0000D800Governance"',
+        "surrogate Unicode code points are not allowed in YAML scalars",
         False,
     ),
     "literal-c0-control": (
@@ -604,6 +627,21 @@ interface: # interface mapping comment
   default_prompt: Use $fixture-governance.
 policy: # policy mapping comment
 """,
+    "dependencies-tools": """\
+interface:
+  display_name: Fixture Governance
+  short_description: Create safe fixtures.
+  default_prompt: Use $fixture-governance.
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "github"
+      description: "GitHub MCP server"
+      transport: "streamable_http"
+      url: "https://api.githubcopilot.com/mcp/"
+policy:
+  allow_implicit_invocation: false
+""",
     "indented-comment": """\
 interface:
   display_name: Fixture Governance
@@ -623,6 +661,131 @@ for name, text in valid_interface_scalars.items():
     )
     if interface_errors:
         raise SystemExit(f"{name} was rejected: errors={interface_errors!r}")
+
+dependencies_policy_value, dependencies_policy_error = checker.parse_skill_invocation_policy(
+    valid_interface_scalars["dependencies-tools"]
+)
+if dependencies_policy_value is not False or dependencies_policy_error is not None:
+    raise SystemExit(
+        "supported dependencies.tools declaration was rejected by policy parser: "
+        f"value={dependencies_policy_value!r}, error={dependencies_policy_error!r}"
+    )
+
+figma_dependencies = valid_interface_scalars["dependencies-tools"].replace(
+    'value: "github"',
+    'value: "figma"',
+)
+figma_interface_errors = checker.validate_skill_interface_metadata(
+    figma_dependencies,
+    "fixture-governance",
+)
+if figma_interface_errors:
+    raise SystemExit(
+        "Figma-style dependencies.tools declaration was rejected by interface parser: "
+        f"errors={figma_interface_errors!r}"
+    )
+figma_policy_value, figma_policy_error = checker.parse_skill_invocation_policy(
+    figma_dependencies
+)
+if figma_policy_value is not False or figma_policy_error is not None:
+    raise SystemExit(
+        "Figma-style dependencies.tools declaration was rejected by policy parser: "
+        f"value={figma_policy_value!r}, error={figma_policy_error!r}"
+    )
+
+empty_tools_dependencies = valid_interface_scalars["dependencies-tools"].replace(
+    "  tools:\n"
+    "    - type: \"mcp\"\n"
+    "      value: \"github\"\n"
+    "      description: \"GitHub MCP server\"\n"
+    "      transport: \"streamable_http\"\n"
+    "      url: \"https://api.githubcopilot.com/mcp/\"\n",
+    "  tools: []\n",
+)
+empty_tools_interface_errors = checker.validate_skill_interface_metadata(
+    empty_tools_dependencies,
+    "fixture-governance",
+)
+if empty_tools_interface_errors:
+    raise SystemExit(
+        "empty dependencies.tools sequence was rejected by interface parser: "
+        f"errors={empty_tools_interface_errors!r}"
+    )
+empty_tools_policy_value, empty_tools_policy_error = checker.parse_skill_invocation_policy(
+    empty_tools_dependencies
+)
+if empty_tools_policy_value is not False or empty_tools_policy_error is not None:
+    raise SystemExit(
+        "empty dependencies.tools sequence was rejected by policy parser: "
+        f"value={empty_tools_policy_value!r}, error={empty_tools_policy_error!r}"
+    )
+
+invalid_dependencies = {
+    "shell-type": (
+        valid_interface_scalars["dependencies-tools"].replace(
+            'type: "mcp"',
+            'type: "shell"',
+        ),
+        "dependency tool type must be 'mcp'",
+    ),
+    "command-field": (
+        valid_interface_scalars["dependencies-tools"].replace(
+            '      value: "github"\n',
+            '      value: "github"\n      command: "npx"\n',
+        ),
+        checker.YAML_DEPENDENCY_ERROR,
+    ),
+    "unknown-field": (
+        valid_interface_scalars["dependencies-tools"].replace(
+            '      value: "github"\n',
+            '      value: "github"\n      executable: "npx"\n',
+        ),
+        checker.YAML_DEPENDENCY_ERROR,
+    ),
+    "empty-value": (
+        valid_interface_scalars["dependencies-tools"].replace(
+            'value: "github"',
+            'value: ""',
+        ),
+        "dependency tool field 'value' must be a non-empty string",
+    ),
+    "missing-value": (
+        valid_interface_scalars["dependencies-tools"].replace(
+            '      value: "github"\n',
+            '',
+        ),
+        "dependency tool requires type and value",
+    ),
+    "flow-sequence": (
+        empty_tools_dependencies.replace(
+            "tools: []",
+            'tools: [{type: "mcp", value: "figma"}]',
+        ),
+        checker.YAML_DEPENDENCY_ERROR,
+    ),
+}
+for name, (text, expected_error) in invalid_dependencies.items():
+    dependency_error = checker.validate_supported_dependencies(text)
+    if dependency_error is None or expected_error not in dependency_error:
+        raise SystemExit(
+            f"invalid dependency fixture {name} was accepted: "
+            f"error={dependency_error!r}"
+        )
+    interface_errors = checker.validate_skill_interface_metadata(
+        text,
+        "fixture-governance",
+    )
+    if len(interface_errors) != 1 or expected_error not in interface_errors[0]:
+        raise SystemExit(
+            f"interface parser accepted invalid dependency fixture {name}: "
+            f"errors={interface_errors!r}"
+        )
+    policy_value, policy_error = checker.parse_skill_invocation_policy(text)
+    if policy_value is not None or policy_error is None or expected_error not in policy_error:
+        raise SystemExit(
+            f"policy parser accepted invalid dependency fixture {name}: "
+            f"value={policy_value!r}, error={policy_error!r}"
+        )
 
 with tempfile.TemporaryDirectory(dir=".") as temp_dir:
     mismatched_skill_path = pathlib.Path(temp_dir) / "SKILL.md"
@@ -652,6 +815,93 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             "description: A valid temporary skill fixture.\n"
             "---\n",
             "frontmatter name is missing",
+        ),
+        "unsupported-metadata-child": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "metadata:\n"
+            "  name: fixture-governance\n"
+            "---\n",
+            "unsupported metadata field 'name'",
+        ),
+        "duplicate-metadata-child": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "metadata:\n"
+            "  short-description: first\n"
+            "  short-description: second\n"
+            "---\n",
+            "duplicate metadata field 'short-description'",
+        ),
+        "missing-metadata-short-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "metadata:\n"
+            "  short-description:\n"
+            "---\n",
+            "metadata field 'short-description' must be a non-empty string",
+        ),
+        "null-metadata-short-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "metadata:\n"
+            "  short-description: null\n"
+            "---\n",
+            "metadata field 'short-description' must be a non-empty string",
+        ),
+        "quoted-empty-metadata-short-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "metadata:\n"
+            "  short-description: \"\"\n"
+            "---\n",
+            "metadata field 'short-description' must be a non-empty string",
+        ),
+        "quoted-whitespace-metadata-short-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "metadata:\n"
+            "  short-description: \"   \"\n"
+            "---\n",
+            "metadata field 'short-description' must be a non-empty string",
+        ),
+        "flow-metadata-child": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "metadata: {}\n"
+            "  short-description: child\n"
+            "---\n",
+            "metadata flow mapping cannot contain indented children",
+        ),
+        "leading-tab": (
+            "---\n"
+            "\tname: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "---\n",
+            "frontmatter indentation must use ASCII spaces",
+        ),
+        "leading-nbsp": (
+            "---\n"
+            + chr(0xA0)
+            + "name: fixture-governance\n"
+            + "description: A valid temporary skill fixture.\n"
+            + "---\n",
+            "frontmatter indentation must use ASCII spaces",
+        ),
+        "leading-unicode-space": (
+            "---\n"
+            + chr(0x2003)
+            + "name: fixture-governance\n"
+            + "description: A valid temporary skill fixture.\n"
+            + "---\n",
+            "frontmatter indentation must use ASCII spaces",
         ),
         "duplicate-root-name": (
             "---\n"
@@ -696,6 +946,20 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             "---\n",
             "frontmatter contains an unsupported control or line separator",
         ),
+        "c1-control-in-comment": (
+            "---\n"
+            "name: fixture-governance\n"
+            "# first" + chr(0x80) + "# second\n"
+            "---\n",
+            "frontmatter contains an unsupported control or line separator",
+        ),
+        "yaml-noncharacter-in-comment": (
+            "---\n"
+            "name: fixture-governance\n"
+            "# first" + chr(0xFFFE) + "# second\n"
+            "---\n",
+            "frontmatter contains an unsupported control or line separator",
+        ),
         "carriage-return-in-comment": (
             "---\n"
             "name: fixture-governance\n"
@@ -723,6 +987,147 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
                 f"{name} SKILL.md frontmatter was accepted: "
                 f"errors={frontmatter_errors!r}"
             )
+
+    for space_name, space in (
+        ("ascii-space", " "),
+        ("nbsp", "\u00a0"),
+        ("em-space", "\u2003"),
+    ):
+        root_key_path = pathlib.Path(temp_dir) / f"root-key-{space_name}.md"
+        root_key_path.write_text(
+            "---\n"
+            f"name{space}: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "---\n"
+        )
+        frontmatter_errors = []
+        checker.validate_skill_frontmatter_name(
+            "fixture-governance",
+            root_key_path,
+            frontmatter_errors,
+        )
+        if not any("invalid root frontmatter field" in error for error in frontmatter_errors):
+            raise SystemExit(
+                f"root key with {space_name} before ':' was accepted: "
+                f"errors={frontmatter_errors!r}"
+            )
+
+        metadata_key_path = pathlib.Path(temp_dir) / f"metadata-key-{space_name}.md"
+        metadata_key_path.write_text(
+            "---\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\n"
+            "metadata:\n"
+            f"  short-description{space}: Fixture metadata\n"
+            "---\n"
+        )
+        frontmatter_errors = []
+        checker.validate_skill_frontmatter_name(
+            "fixture-governance",
+            metadata_key_path,
+            frontmatter_errors,
+        )
+        if not any("invalid metadata field" in error for error in frontmatter_errors):
+            raise SystemExit(
+                f"metadata key with {space_name} before ':' was accepted: "
+                f"errors={frontmatter_errors!r}"
+            )
+
+        for dependency_field in ("type", "value"):
+            dependency_text = valid_interface_scalars["dependencies-tools"].replace(
+                f"{dependency_field}: ",
+                f"{dependency_field}{space}: ",
+                1,
+            )
+            dependency_error = checker.validate_supported_dependencies(dependency_text)
+            if dependency_error is None or checker.YAML_DEPENDENCY_ERROR not in dependency_error:
+                raise SystemExit(
+                    f"dependency {dependency_field} key with {space_name} before ':' "
+                    f"was accepted: error={dependency_error!r}"
+                )
+
+    nested_metadata_skill_path = pathlib.Path(temp_dir) / "nested-metadata.md"
+    nested_metadata_skill_path.write_text(
+        "---\n"
+        "name: fixture-governance\n"
+        "description: A valid temporary skill fixture.\n"
+        "metadata:\n"
+        "  short-description: Fixture metadata\n"
+        "---\n"
+    )
+    frontmatter_errors = []
+    checker.validate_skill_frontmatter_name(
+        "fixture-governance",
+        nested_metadata_skill_path,
+        frontmatter_errors,
+    )
+    if frontmatter_errors:
+        raise SystemExit(
+            "supported nested SKILL.md metadata was rejected: "
+            f"errors={frontmatter_errors!r}"
+        )
+
+    empty_flow_metadata_skill_path = pathlib.Path(temp_dir) / "empty-flow-metadata.md"
+    empty_flow_metadata_skill_path.write_text(
+        "---\n"
+        "name: fixture-governance\n"
+        "description: A valid temporary skill fixture.\n"
+        "metadata: {}\n"
+        "---\n"
+    )
+    frontmatter_errors = []
+    checker.validate_skill_frontmatter_name(
+        "fixture-governance",
+        empty_flow_metadata_skill_path,
+        frontmatter_errors,
+    )
+    if frontmatter_errors:
+        raise SystemExit(
+            "empty flow-map SKILL.md metadata was rejected: "
+            f"errors={frontmatter_errors!r}"
+        )
+
+    empty_block_metadata_skill_path = pathlib.Path(temp_dir) / "empty-block-metadata.md"
+    empty_block_metadata_skill_path.write_text(
+        "---\n"
+        "name: fixture-governance\n"
+        "description: A valid temporary skill fixture.\n"
+        "metadata:\n"
+        "---\n"
+    )
+    frontmatter_errors = []
+    checker.validate_skill_frontmatter_name(
+        "fixture-governance",
+        empty_block_metadata_skill_path,
+        frontmatter_errors,
+    )
+    if frontmatter_errors:
+        raise SystemExit(
+            "empty block SKILL.md metadata was rejected: "
+            f"errors={frontmatter_errors!r}"
+        )
+
+    nested_name_metadata_skill_path = pathlib.Path(temp_dir) / "nested-name-metadata.md"
+    nested_name_metadata_skill_path.write_text(
+        "---\n"
+        "metadata:\n"
+        "  name: fixture-governance\n"
+        "description: A valid temporary skill fixture.\n"
+        "---\n"
+    )
+    frontmatter_errors = []
+    checker.validate_skill_frontmatter_name(
+        "fixture-governance",
+        nested_name_metadata_skill_path,
+        frontmatter_errors,
+    )
+    if not any("unsupported metadata field 'name'" in error for error in frontmatter_errors) or not any(
+        "frontmatter name is missing" in error for error in frontmatter_errors
+    ):
+        raise SystemExit(
+            "nested metadata name incorrectly satisfied root skill identity: "
+            f"errors={frontmatter_errors!r}"
+        )
 
 nbspace_value = "Fixture" + chr(0xA0) + "#Governance"
 parsed, parse_error = checker.parse_yaml_string_scalar(nbspace_value, 1)

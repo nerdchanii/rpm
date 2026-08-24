@@ -307,7 +307,14 @@ def check_role_contracts(
 
 
 def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
-    """Parse the complete, deliberately flat SKILL.md frontmatter subset."""
+    """Read the root fields needed by the repository policy.
+
+    The supported forms are an empty ``metadata:`` block, an empty
+    ``metadata: {}`` flow mapping, or a block mapping with one direct,
+    non-empty ``short-description`` string child.  We keep that child out of
+    the root identity map, so a nested ``name`` can never satisfy the
+    inventory check.
+    """
     try:
         text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as error:
@@ -328,6 +335,7 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
     frontmatter_source = "\n".join(lines[1:closing_line])
     if (
         "\r" in frontmatter_source
+        or contains_yaml_surrogate(frontmatter_source)
         or contains_unsupported_yaml_structure_separator(frontmatter_source)
         or contains_literal_yaml_control(frontmatter_source)
         or contains_unsupported_yaml_line_separator(frontmatter_source)
@@ -339,19 +347,99 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
         )
         return {}
     values: dict[str, str | bool] = {}
+    root_keys: set[str] = set()
+    active_nested_mapping: str | None = None
+    metadata_flow_mapping = False
+    metadata_keys: set[str] = set()
     for line_number, line in enumerate(lines[1:closing_line], 2):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if line[:1].isspace():
+        leading_whitespace = line[: len(line) - len(line.lstrip())]
+        if any(character != YAML_SEPARATOR_SPACE for character in leading_whitespace):
             fail(
                 errors,
                 f"{path.relative_to(ROOT)}: line {line_number}: "
-                "nested frontmatter fields are not supported",
+                "frontmatter indentation must use ASCII spaces",
             )
             continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent != 0:
+            if metadata_flow_mapping:
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    "metadata flow mapping cannot contain indented children",
+                )
+                continue
+            if active_nested_mapping != "metadata":
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    "nested frontmatter fields are not supported",
+                )
+                continue
+            if indent != 2:
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    "metadata descendants must be direct children at two-space indentation",
+                )
+                continue
+            key, separator, value = stripped.partition(":")
+            if separator != ":" or re.fullmatch(r"[a-z][a-z0-9-]*", key) is None:
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: invalid metadata field",
+                )
+                continue
+            if value and not value.startswith(YAML_SEPARATOR_SPACE):
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    f"metadata field {key!r} must use YAML separation space after ':'",
+                )
+                continue
+            if key not in FRONTMATTER_METADATA_KEYS:
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    f"unsupported metadata field {key!r}",
+                )
+                continue
+            if key in metadata_keys:
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    f"duplicate metadata field {key!r}",
+                )
+                continue
+            metadata_keys.add(key)
+            if value.strip(YAML_SEPARATOR_SPACE).startswith("#"):
+                parsed_value, scalar_error = None, None
+            else:
+                parsed_value, scalar_error = parse_yaml_string_scalar(value, line_number)
+            if scalar_error is not None:
+                if INTERFACE_METADATA_SCALAR_ERROR in scalar_error:
+                    fail(
+                        errors,
+                        f"{path.relative_to(ROOT)}: line {line_number}: "
+                        f"{FRONTMATTER_METADATA_VALUE_ERROR}",
+                    )
+                else:
+                    fail(errors, f"{path.relative_to(ROOT)}: {scalar_error}")
+                continue
+            if parsed_value is None or not parsed_value.strip():
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    f"{FRONTMATTER_METADATA_VALUE_ERROR}",
+                )
+            continue
+
+        active_nested_mapping = None
+        metadata_flow_mapping = False
         key, separator, value = line.partition(":")
-        key = key.strip()
         if separator != ":" or re.fullmatch(r"[a-z][a-z0-9-]*", key) is None:
             fail(
                 errors,
@@ -365,6 +453,23 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
                 f"frontmatter field {key!r} must use YAML separation space after ':'",
             )
             continue
+        if key == "metadata":
+            mapping_value = strip_ascii_space_inline_comment(value)
+            if mapping_value not in {"", "{}"}:
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    f"{FRONTMATTER_METADATA_SHAPE_ERROR}",
+                )
+                continue
+            if key in root_keys:
+                fail(errors, f"{path.relative_to(ROOT)}: duplicate root frontmatter field 'metadata'")
+                continue
+            root_keys.add(key)
+            metadata_flow_mapping = mapping_value == "{}"
+            active_nested_mapping = None if metadata_flow_mapping else key
+            metadata_keys.clear()
+            continue
         parsed_value, scalar_error = parse_frontmatter_scalar(value, line_number)
         if scalar_error is not None:
             fail(errors, f"{path.relative_to(ROOT)}: {scalar_error}")
@@ -376,25 +481,33 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
                 "disable-model-invocation must be boolean",
             )
             continue
-        if key in values:
+        if key in root_keys:
             if key == "name":
                 message = "expected exactly one root frontmatter name"
             else:
                 message = f"duplicate root frontmatter field {key!r}"
             fail(errors, f"{path.relative_to(ROOT)}: {message}")
             continue
+        root_keys.add(key)
         if parsed_value is not None:
             values[key] = parsed_value
     return values
 
 
 YAML_SEPARATOR_SPACE = " "
+FRONTMATTER_METADATA_KEYS = frozenset(("short-description",))
+FRONTMATTER_METADATA_VALUE_ERROR = (
+    "metadata field 'short-description' must be a non-empty string"
+)
+FRONTMATTER_METADATA_SHAPE_ERROR = (
+    "metadata must be an empty flow mapping or a block mapping"
+)
 YAML_DOCUMENT_MARKER_ERROR = "YAML document markers are not supported in openai.yaml"
 YAML_ROOT_MAPPING_ERROR = "root-level YAML nodes must be supported mappings"
 YAML_UNSUPPORTED_ROOT_MAPPING_ERROR = (
-    "only interface and policy root mappings are supported"
+    "only interface, dependencies, and policy root mappings are supported"
 )
-YAML_SUPPORTED_ROOT_MAPPING_KEYS = frozenset(("interface", "policy"))
+YAML_SUPPORTED_ROOT_MAPPING_KEYS = frozenset(("interface", "dependencies", "policy"))
 YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR = (
     "U+0085, U+2028, and U+2029 are not supported in openai.yaml"
 )
@@ -407,8 +520,13 @@ YAML_UNSUPPORTED_STRUCTURE_SEPARATORS = frozenset(
     ("\u000B", "\u000C", "\u001C", "\u001D", "\u001E")
 )
 YAML_LITERAL_CONTROL_ERROR = (
-    "literal C0 and DEL control characters are not allowed in openai.yaml"
+    "literal C0 and DEL control characters are not allowed in openai.yaml; "
+    "C1 controls and YAML noncharacters are also forbidden"
 )
+YAML_SURROGATE_ERROR = "surrogate Unicode code points are not allowed in YAML scalars"
+YAML_DEPENDENCY_ERROR = "dependencies.tools must be a sequence of supported tool mappings"
+YAML_DEPENDENCY_TOOL_KEYS = frozenset(("type", "value", "description", "transport", "url"))
+YAML_DEPENDENCY_TOOL_TYPE = "mcp"
 YAML_TOKEN_ASCII_CONTINUATIONS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 )
@@ -443,15 +561,22 @@ def contains_literal_yaml_control(text: str) -> bool:
     return any(
         (ord(character) <= 0x1F and character not in "\t\r\n")
         or ord(character) == 0x7F
+        or 0x80 <= ord(character) <= 0x84
+        or 0x86 <= ord(character) <= 0x9F
+        or ord(character) in {0xFFFE, 0xFFFF}
         for character in text
     )
+
+
+def contains_yaml_surrogate(text: str) -> bool:
+    return any(0xD800 <= ord(character) <= 0xDFFF for character in text)
 
 
 def is_supported_root_mapping_line(stripped: str) -> bool:
     key, separator, value = stripped.partition(":")
     return bool(
         separator
-        and key.strip(" \t")
+        and re.fullmatch(r"[a-z][a-z0-9-]*", key) is not None
         and (not value or value.startswith(YAML_SEPARATOR_SPACE))
     )
 
@@ -459,7 +584,7 @@ def is_supported_root_mapping_line(stripped: str) -> bool:
 def supported_root_mapping_key(stripped: str) -> str | None:
     if not is_supported_root_mapping_line(stripped):
         return None
-    return stripped.partition(":")[0].strip(" \t")
+    return stripped.partition(":")[0]
 
 
 def is_supported_root_mapping_header(stripped: str, key: str) -> bool:
@@ -530,14 +655,153 @@ def is_yaml_document_marker(stripped: str) -> bool:
     )
 
 
+def parse_dependency_tool_field(
+    stripped: str, line_number: int, keys: set[str]
+) -> str | None:
+    key, separator, value = stripped.partition(":")
+    if separator != ":" or key not in YAML_DEPENDENCY_TOOL_KEYS:
+        return f"line {line_number}: {YAML_DEPENDENCY_ERROR}"
+    if value and not value.startswith(YAML_SEPARATOR_SPACE):
+        return (
+            f"line {line_number}: dependency tool field {key!r} must use "
+            "YAML separation space after ':'"
+        )
+    parsed_value, scalar_error = parse_yaml_string_scalar(value, line_number)
+    if scalar_error is not None:
+        return scalar_error
+    if parsed_value is None:
+        return f"line {line_number}: dependency tool field {key!r} must be a string"
+    if key == "type" and parsed_value != YAML_DEPENDENCY_TOOL_TYPE:
+        return (
+            f"line {line_number}: dependency tool type must be "
+            f"{YAML_DEPENDENCY_TOOL_TYPE!r}"
+        )
+    if key == "value" and not parsed_value.strip():
+        return f"line {line_number}: dependency tool field 'value' must be a non-empty string"
+    if key in keys:
+        return f"line {line_number}: duplicate dependency tool field {key!r}"
+    keys.add(key)
+    return None
+
+
+def validate_supported_dependencies(text: str) -> str | None:
+    """Validate the dependency shape supported by Codex's ``openai.yaml`` loader.
+
+    The installed OpenAI schema supports ``type: mcp`` and a non-empty string
+    ``value``, with optional ``description``, ``transport``, and ``url``
+    strings.  This validator intentionally accepts only ``tools: []`` or the
+    block sequence form with four-space items and six-space child fields (the
+    first field may follow ``-`` on the same line).  Flow sequences and inline
+    mapping forms remain unsupported.  A narrow structural check keeps this
+    repository validator aligned with that contract while allowing the other
+    root mappings to be validated by their dedicated checks.
+    """
+    if text.startswith("\ufeff"):
+        text = text[1:]
+
+    active_root: str | None = None
+    dependencies_seen = False
+    tools_seen = False
+    tools_mode: str | None = None
+    tool_keys: set[str] | None = None
+
+    def finish_tool(line_number: int) -> str | None:
+        if tool_keys is None:
+            return None
+        if not {"type", "value"}.issubset(tool_keys):
+            return f"line {line_number}: dependency tool requires type and value"
+        return None
+
+    for line_number, raw_line in enumerate(text.splitlines(), 1):
+        leading = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
+        if "\t" in leading:
+            return f"line {line_number}: tabs are not allowed for dependency indentation"
+        stripped = raw_line.strip(" \t")
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "\t" in raw_line and active_root == "dependencies":
+            return f"line {line_number}: literal tabs are not supported in dependencies"
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if indent == 0:
+            if tool_error := finish_tool(line_number):
+                return tool_error
+            tool_keys = None
+            if not is_supported_root_mapping_line(stripped):
+                active_root = None
+                continue
+            root_key = supported_root_mapping_key(stripped)
+            active_root = root_key
+            if root_key != "dependencies":
+                continue
+            if not is_supported_root_mapping_header(stripped, "dependencies"):
+                return f"line {line_number}: dependencies must be a root mapping"
+            if dependencies_seen:
+                return f"line {line_number}: duplicate root dependencies mapping"
+            dependencies_seen = True
+            tools_seen = False
+            tools_mode = None
+            continue
+
+        if active_root != "dependencies":
+            continue
+        if indent == 2:
+            if tool_error := finish_tool(line_number):
+                return tool_error
+            tool_keys = None
+            key, separator, value = stripped.partition(":")
+            if separator != ":" or key != "tools":
+                return f"line {line_number}: {YAML_DEPENDENCY_ERROR}"
+            if tools_seen:
+                return f"line {line_number}: duplicate dependencies.tools mapping"
+            if value and not value.startswith(YAML_SEPARATOR_SPACE):
+                return f"line {line_number}: dependencies.tools must use YAML separation space after ':'"
+            tools_seen = True
+            tools_value = strip_ascii_space_inline_comment(value)
+            if tools_value == "[]":
+                tools_mode = "empty"
+            elif tools_value:
+                return f"line {line_number}: {YAML_DEPENDENCY_ERROR}"
+            else:
+                tools_mode = "sequence"
+            continue
+        if not tools_seen or tools_mode == "empty":
+            return f"line {line_number}: {YAML_DEPENDENCY_ERROR}"
+        if indent == 4:
+            if tool_error := finish_tool(line_number):
+                return tool_error
+            tool_keys = None
+            if stripped == "-":
+                tool_keys = set()
+                continue
+            if not stripped.startswith("- "):
+                return f"line {line_number}: {YAML_DEPENDENCY_ERROR}"
+            tool_keys = set()
+            inline_field = stripped[2:].strip()
+            if inline_field and not inline_field.startswith("#"):
+                if field_error := parse_dependency_tool_field(
+                    inline_field, line_number, tool_keys
+                ):
+                    return field_error
+            continue
+        if indent == 6 and tool_keys is not None:
+            if field_error := parse_dependency_tool_field(stripped, line_number, tool_keys):
+                return field_error
+            continue
+        return f"line {line_number}: {YAML_DEPENDENCY_ERROR}"
+
+    return finish_tool(len(text.splitlines()) + 1)
+
+
 def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
     """Parse the deliberately small policy mapping in an openai.yaml file.
 
     A full YAML dependency is unnecessary here. The supported policy shape is
     intentionally strict: one root ``policy:`` mapping with one direct child,
-    alongside the optional ``interface:`` mapping. Every non-comment root line
-    must use one of those two supported mapping keys.
+    alongside the optional ``interface:`` and ``dependencies:`` mappings. Every
+    non-comment root line must use one of the supported mapping keys.
     """
+    if contains_yaml_surrogate(text):
+        return None, YAML_SURROGATE_ERROR
     if contains_unsupported_yaml_structure_separator(text):
         return None, YAML_UNSUPPORTED_STRUCTURE_SEPARATOR_ERROR
     if contains_literal_yaml_control(text):
@@ -546,6 +810,8 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
         return None, YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR
     if text.startswith("\ufeff"):
         text = text[1:]
+    if dependency_error := validate_supported_dependencies(text):
+        return None, dependency_error
 
     blocks: list[list[tuple[int, str, int]]] = []
     current: list[tuple[int, str, int]] | None = None
@@ -577,6 +843,8 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
             continue
         if active_root is None:
             return None, f"line {line_number}: {YAML_ROOT_MAPPING_ERROR}"
+        if active_root == "dependencies":
+            continue
         if indent != 2:
             return None, (
                 f"line {line_number}: {active_root} descendants must be direct children "
@@ -594,7 +862,7 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
     if indent != 2:
         return None, f"line {line_number}: policy child must be directly indented by two spaces"
     key, separator, value = child.partition(":")
-    if separator != ":" or key.strip() != "allow_implicit_invocation":
+    if separator != ":" or key != "allow_implicit_invocation":
         return None, f"line {line_number}: unexpected policy child"
     boolean_value = strip_ascii_space_inline_comment(value)
     if boolean_value not in {"true", "false"}:
@@ -609,7 +877,8 @@ INTERFACE_METADATA_SCALAR_ERROR = (
     "single/double quotes with separation-space comments are supported)"
 )
 LITERAL_SCALAR_CONTROL_ERROR = (
-    "literal C0 and DEL control characters are not allowed in interface metadata scalars"
+    "literal C0 and DEL control characters are not allowed in interface metadata scalars; "
+    "C1 controls and YAML noncharacters are also forbidden"
 )
 
 
@@ -623,6 +892,8 @@ def parse_yaml_string_scalar(value: str, line_number: int) -> tuple[str | None, 
     rejected. Double-quoted YAML escapes remain supported; single-quoted and
     plain backslashes remain literal.
     """
+    if contains_yaml_surrogate(value):
+        return None, f"line {line_number}: {YAML_SURROGATE_ERROR}"
     if contains_unsupported_yaml_line_separator(value):
         return None, f"line {line_number}: {YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR}"
     source = value.strip(YAML_SEPARATOR_SPACE)
@@ -630,7 +901,14 @@ def parse_yaml_string_scalar(value: str, line_number: int) -> tuple[str | None, 
         return None, None
     # The control-character contract is for literal source characters; valid
     # double-quoted escape sequences are decoded below.
-    if any(ord(character) <= 0x1F or ord(character) == 0x7F for character in source):
+    if any(
+        (ord(character) <= 0x1F)
+        or ord(character) == 0x7F
+        or 0x80 <= ord(character) <= 0x84
+        or 0x86 <= ord(character) <= 0x9F
+        or ord(character) in {0xFFFE, 0xFFFF}
+        for character in source
+    ):
         return None, f"line {line_number}: {LITERAL_SCALAR_CONTROL_ERROR}"
 
     def validate_quoted_tail(tail: str) -> str | None:
@@ -710,6 +988,8 @@ def parse_yaml_string_scalar(value: str, line_number: int) -> tuple[str | None, 
                 continue
             return None, f"line {line_number}: invalid double-quoted scalar escape"
         decoded_value = "".join(decoded)
+        if contains_yaml_surrogate(decoded_value):
+            return None, f"line {line_number}: {YAML_SURROGATE_ERROR}"
         if contains_unsupported_yaml_line_separator(decoded_value):
             return None, f"line {line_number}: {YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR}"
         return decoded_value, None
@@ -789,8 +1069,11 @@ def parse_frontmatter_scalar(
 def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
     """Validate direct children of one interface mapping in the supported subset.
 
-    The only supported root mapping keys are ``interface:`` and ``policy:``.
+    The supported root mapping keys are ``interface:``, ``dependencies:``, and
+    ``policy:``.
     """
+    if contains_yaml_surrogate(text):
+        return [YAML_SURROGATE_ERROR]
     if contains_unsupported_yaml_structure_separator(text):
         return [YAML_UNSUPPORTED_STRUCTURE_SEPARATOR_ERROR]
     if contains_literal_yaml_control(text):
@@ -799,6 +1082,8 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
         return [YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR]
     if text.startswith("\ufeff"):
         text = text[1:]
+    if dependency_error := validate_supported_dependencies(text):
+        return [dependency_error]
 
     blocks: list[dict[str, tuple[str | None, int]]] = []
     current: dict[str, tuple[str | None, int]] | None = None
@@ -827,13 +1112,19 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
                     return [f"line {line_number}: interface must be a root mapping"]
                 blocks.append({})
                 current = blocks[-1]
-            else:
+            elif root_key == "policy":
                 if not is_supported_root_mapping_header(stripped, "policy"):
                     return [f"line {line_number}: policy must be a root mapping"]
+                current = None
+            else:
+                if not is_supported_root_mapping_header(stripped, "dependencies"):
+                    return [f"line {line_number}: dependencies must be a root mapping"]
                 current = None
             continue
         if active_root is None:
             return [f"line {line_number}: {YAML_ROOT_MAPPING_ERROR}"]
+        if active_root == "dependencies":
+            continue
         if indent != 2:
             return [
                 f"line {line_number}: {active_root} descendants must be direct children "
@@ -844,7 +1135,6 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
         key, separator, value = stripped.partition(":")
         if separator != ":":
             return [f"line {line_number}: invalid interface child"]
-        key = key.strip()
         if value and not value.startswith(YAML_SEPARATOR_SPACE):
             return [
                 f"line {line_number}: interface child {key!r} must use YAML separation space after ':'"
