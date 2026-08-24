@@ -269,11 +269,18 @@ The first strategy is an iterative FIFO worklist:
    sequence defined by the workspace boundary; a root-only project supplies
    only the project-root sequence.
 2. Pop the oldest pending request.
-3. Apply the workspace-local classification branch defined above. When a
-   compatible member satisfies the request, attach the edge to that existing
-   member resolution-root node and continue with the next pending request. This
-   branch performs no registry/cache metadata read, external version selection,
-   member-root creation, or member dependency reseeding.
+3. Before local range matching, use the registry boundary's dist-tag identity
+   classification for the canonical request, reusing an already available
+   result when present. This preceding tag-identity operation may read only the
+   registry or cache metadata needed to distinguish a published tag; it does
+   not select a version or retrieve per-version package metadata. A matching
+   tag enters the external branch. For a confirmed non-tag, apply the
+   workspace-local classification branch defined above. When a compatible
+   member satisfies the request, attach the edge to that existing member
+   resolution-root node and continue with the next pending request. This
+   confirmed-local branch performs no further registry/cache metadata read,
+   external version selection, member-root creation, or member dependency
+   reseeding.
 4. For an external branch only, read package metadata through the metadata
    abstraction.
 5. Select an external version through the version selection abstraction.
