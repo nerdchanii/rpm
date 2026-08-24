@@ -71,13 +71,21 @@ owned jointly with `docs/specs/core/install/scripts/SPEC.md` (#141).
 Workspace discovery and resolution do not change the active recovery pipeline.
 Before a workspace install may execute a member lifecycle hook, the installer
 must provide one workspace transaction that stages every root/member install
-output governed by the operation. Workspace linking under #147 is a prerequisite
+output governed by the operation and owns each member's staged execution view.
+The canonical root of a member execution view corresponds to that member's
+discovered path within the staged workspace root. It never points at the live
+member source directory or a previously published `node_modules` tree. The
+source member manifest remains immutable transaction input. The hook process is
+confined to the transaction staging root for both reads and writes; if the
+execution platform cannot enforce that isolation, member hooks are skipped and
+the transaction fails closed. Workspace linking under #147 is a prerequisite
 for that transaction; #147 does not own member lifecycle execution.
 
 The workspace `scripts` phase remains between `link` and `write`. Its source,
-root/member/external visit order, member working directory, PATH, and supported
-hook inventory are owned by `docs/specs/core/install/scripts/SPEC.md`. This SPEC
-owns the transaction result when any of those hooks fails:
+root/member/external visit order, staged member execution root, PATH, and
+supported hook inventory are owned by
+`docs/specs/core/install/scripts/SPEC.md`. This SPEC owns the transaction result
+when any of those hooks fails:
 
 - no staged root or member install output is published;
 - every previously published root/member `node_modules` tree remains unchanged;
@@ -86,11 +94,33 @@ owns the transaction result when any of those hooks fails:
 - the error retains the `scripts` phase label and the child exit status when one
   exists.
 
+After each member hook exits zero, the staged member `package.json` is checked
+against its pre-hook snapshot. A change is a post-hook validation failure. RPM
+does not reload or re-resolve from that staged change and does not write it to
+the source member manifest. A later hook failure or this validation failure
+discards every staged execution view, while the previously published root and
+member `node_modules` trees remain byte-identical.
+
+Before any member hook starts, staged symlinks and link targets are
+canonicalized and must be non-dangling, acyclic, and confined to the staging
+root. A target resolving to the live source or a previously published tree
+fails the `scripts` phase before execution. Link construction remains owned by
+#147; links created during a hook are checked by staging-root write confinement
+and post-hook validation. The member manifest snapshot uses no-follow
+`lstat`/`fstat`-equivalent checks for regular non-symlink type, identity, bytes,
+and permissions. Symlink, directory, special-file, identity, mode, or byte
+changes fail without reading the replacement target.
+The staged execution view also must not share hard-link inode/device identity
+with the live member source or a previously published install tree. The view
+uses materialized or copy-up regular files, and a shared alias fails the phase
+before hook execution.
+
 The guarantee covers RPM-owned install state and the manifest/lockfile snapshots
 named above. It does not claim to reverse arbitrary writes performed by a hook
-elsewhere in a member source tree or outside the workspace. Member hooks remain
-disabled until a dedicated lifecycle/recovery integration issue implements this
-boundary and its fixtures.
+to a live member source tree or outside the workspace; those writes are outside
+the transaction boundary and cannot weaken the protected published-tree
+guarantee. Member hooks remain disabled until a dedicated
+lifecycle/recovery integration issue implements this boundary and its fixtures.
 
 ## M3 Side-Effect Audit
 
@@ -205,3 +235,11 @@ Workspace lifecycle recovery additionally requires the planned
 `docs/specs/core/install/scripts/SPEC.md`. It must cover a member `preinstall`
 failure inside a copied two-member workspace and assert the full workspace
 transaction boundary above before production member-hook execution is enabled.
+The paired `workspace-lifecycle-member-manifest-mutation` fixture must cover a
+zero-exit member hook that changes its staged `package.json`, proving the
+post-hook validation failure, source-manifest immutability, and staged-view
+discard guarantee with the same byte and permission checks.
+The recovery fixture matrix also includes the published-tree absolute-write,
+staged escaping/dangling/cyclic-link, and staged manifest
+symlink/directory/mode-replacement and staged hard-link alias cases owned by the
+scripts SPEC.
