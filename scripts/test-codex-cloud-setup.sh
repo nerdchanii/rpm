@@ -37,8 +37,9 @@ make_fake_environment() {
   local recipe_log="${case_dir}/recipes"
   local command_name
 
-  mkdir -p "${trusted_bin}" "${repo_dir}" "${home_dir}"
+  mkdir -p "${trusted_bin}" "${repo_dir}" "${home_dir}/.cargo/bin"
   mkdir -p "${case_dir}/shadow/bin"
+  : >"${log_file}"
   : >"${recipe_log}"
 
   cat >"${trusted_bin}/git" <<EOF
@@ -65,6 +66,7 @@ case "\${HOME}" in '${ambient_tmp}'*) exit 95 ;; esac
 [ "\${GIT_CONFIG_SYSTEM}" = /dev/null ] || exit 97
 [ "\${GIT_CONFIG_NOSYSTEM}" = 1 ] || exit 98
 [ "\${GIT_TERMINAL_PROMPT}" = 0 ] || exit 99
+printf '%s\n' "\${PATH}" >'${case_dir}/observed-trusted-path'
 if [ "\${1:-}" = -C ] && [ "\${3:-}" = rev-parse ] && [ "\${4:-}" = --show-toplevel ]; then
   printf '%s\\n' '${repo_dir}'
   exit 0
@@ -146,8 +148,8 @@ case "\${1:-}" in
       printf '%s\\n' '#!/bin/bash' 'set -euo pipefail' \
         "printf 'just %s\\n' \"\\\$*\" >>'${recipe_log}'" \
         'case "\${1:-}" in' '  check|test|validate) exit 0 ;;' \
-        '  *) exit 64 ;;' 'esac' >"\${PATH%%:*}/just"
-      /bin/chmod +x "\${PATH%%:*}/just"
+        '  *) exit 64 ;;' 'esac' >"\${CARGO_HOME}/bin/just"
+      /bin/chmod +x "\${CARGO_HOME}/bin/just"
     fi
     ;;
   fetch)
@@ -191,41 +193,50 @@ run_setup() {
   local output_file="$4"
   local status_file="$5"
   local home_override="${6:-${case_dir}/home}"
+  local nvm_bin_override="${7:-}"
+  local -a env_args
 
   mkdir -p "${case_dir}/outside" "${case_dir}/ambient-tmp"
   printf 'printf leaked-bash-env >>%q\n' "${case_dir}/commands" >"${case_dir}/bash-env"
   set +e
-  /usr/bin/env \
-    PATH="${ambient_path}" \
-    HOME="${home_override}" \
-    RPM_CODEX_CLOUD_TRUSTED_PATH="${trusted_path}" \
-    HTTP_PROXY=http://ambient.invalid \
-    HTTPS_PROXY=https://ambient.invalid \
-    http_proxy=http://ambient.invalid \
-    https_proxy=https://ambient.invalid \
-    ALL_PROXY=http://ambient.invalid \
-    all_proxy=http://ambient.invalid \
-    NO_PROXY=ambient.invalid \
-    no_proxy=ambient.invalid \
-    CARGO_HOME=/tmp/ambient-cargo-home \
-    RUSTUP_HOME=/tmp/ambient-rustup-home \
-    CARGO_REGISTRIES_CRATES_IO_INDEX=https://ambient.invalid/index \
-    CARGO_HTTP_PROXY=http://ambient.invalid \
-    CARGO_NET_OFFLINE=true \
-    CARGO_SOURCE_CRATES_IO_REPLACE_WITH=ambient-source \
-    CARGO_SOURCE_FOO_REPLACE_WITH=ambient-source \
-    CARGO_REGISTRY_TOKEN=ambient-token \
-    RUSTUP_DIST_SERVER=https://ambient.invalid/dist \
-    RUSTUP_UPDATE_ROOT=https://ambient.invalid/update \
-    RUSTC_WRAPPER=/tmp/ambient-wrapper \
-    CARGO_BUILD_RUSTC_WRAPPER=/tmp/ambient-wrapper \
-    RUSTFLAGS='--cfg ambient_secret' \
-    RUSTUP_TOOLCHAIN=ambient-toolchain \
-    TMPDIR="${case_dir}/ambient-tmp" \
-    BASH_ENV="${case_dir}/bash-env" \
-    RPM_CLOUD_TEST_SECRET=ambient-secret \
+  env_args=(
+    "PATH=${ambient_path}"
+    "HOME=${home_override}"
+    HTTP_PROXY=http://ambient.invalid
+    HTTPS_PROXY=https://ambient.invalid
+    http_proxy=http://ambient.invalid
+    https_proxy=https://ambient.invalid
+    ALL_PROXY=http://ambient.invalid
+    all_proxy=http://ambient.invalid
+    NO_PROXY=ambient.invalid
+    no_proxy=ambient.invalid
+    CARGO_HOME=/tmp/ambient-cargo-home
+    RUSTUP_HOME=/tmp/ambient-rustup-home
+    CARGO_REGISTRIES_CRATES_IO_INDEX=https://ambient.invalid/index
+    CARGO_HTTP_PROXY=http://ambient.invalid
+    CARGO_NET_OFFLINE=true
+    CARGO_SOURCE_CRATES_IO_REPLACE_WITH=ambient-source
+    CARGO_SOURCE_FOO_REPLACE_WITH=ambient-source
+    CARGO_REGISTRY_TOKEN=ambient-token
+    RUSTUP_DIST_SERVER=https://ambient.invalid/dist
+    RUSTUP_UPDATE_ROOT=https://ambient.invalid/update
+    RUSTC_WRAPPER=/tmp/ambient-wrapper
+    CARGO_BUILD_RUSTC_WRAPPER=/tmp/ambient-wrapper
+    RUSTFLAGS='--cfg ambient_secret'
+    RUSTUP_TOOLCHAIN=ambient-toolchain
+    "TMPDIR=${case_dir}/ambient-tmp"
+    "BASH_ENV=${case_dir}/bash-env"
+    RPM_CLOUD_TEST_SECRET=ambient-secret
+  )
+  if [ "${trusted_path}" != __DEFAULT__ ]; then
+    env_args+=("RPM_CODEX_CLOUD_TRUSTED_PATH=${trusted_path}")
+  fi
+  if [ "$#" -ge 7 ]; then
+    env_args+=("NVM_BIN=${nvm_bin_override}")
+  fi
+  /usr/bin/env "${env_args[@]}" \
     /bin/sh -c 'cd "$1/outside" && exec "$2"' sh "${case_dir}" \
-      "${script_dir}/codex-cloud-setup.sh" >"${output_file}" 2>&1
+    "${script_dir}/codex-cloud-setup.sh" >"${output_file}" 2>&1
   printf '%s\n' "$?" >"${status_file}"
   set -e
 }
@@ -250,7 +261,8 @@ make_shadow_environment "${fresh_case}"
 fresh_log="${fresh_case}/commands"
 fresh_output="${fresh_case}/output"
 fresh_status="${fresh_case}/status"
-run_setup "${fresh_case}" "${fresh_case}/trusted/bin" "${fresh_case}/shadow/bin" \
+fresh_trusted_path="${fresh_case}/home/.cargo/bin:${fresh_case}/trusted/bin"
+run_setup "${fresh_case}" "${fresh_trusted_path}" "${fresh_case}/shadow/bin" \
   "${fresh_output}" "${fresh_status}"
 [ "$(<"${fresh_status}")" -eq 0 ]
 assert_contains "$(<"${fresh_output}")" 'codex-cloud-setup: ready ('
@@ -263,9 +275,9 @@ actual_fresh="$(commands_without_environment_markers "${fresh_log}")"
 assert_contains "$(<"${fresh_log}")" 'env=scrubbed'
 assert_not_contains "$(<"${fresh_log}")" 'cargo test'
 assert_not_contains "$(<"${fresh_log}")" 'just validate'
-"${fresh_case}/trusted/bin/just" check
-"${fresh_case}/trusted/bin/just" test
-"${fresh_case}/trusted/bin/just" validate
+"${fresh_case}/home/.cargo/bin/just" check
+"${fresh_case}/home/.cargo/bin/just" test
+"${fresh_case}/home/.cargo/bin/just" validate
 expected_recipes=$'just check\njust test\njust validate'
 [ "$(<"${fresh_case}/recipes")" = "${expected_recipes}" ] || {
   printf 'unexpected fresh recipe commands:\n%s\n' "$(<"${fresh_case}/recipes")" >&2
@@ -290,6 +302,65 @@ actual_warm="$(commands_without_environment_markers "${warm_log}")"
   exit 1
 }
 
+default_nvm_case="$(new_case default-nvm)"
+make_fake_environment "${default_nvm_case}" warm
+default_nvm_bin="${default_nvm_case}/home/.nvm/versions/node/vfixture/bin"
+mkdir -p "${default_nvm_bin}"
+cp "${default_nvm_case}/trusted/bin/"* "${default_nvm_case}/home/.cargo/bin/"
+cp "${default_nvm_case}/trusted/bin/node" "${default_nvm_bin}/node"
+chmod +x "${default_nvm_bin}/node"
+default_nvm_output="${default_nvm_case}/output"
+default_nvm_status="${default_nvm_case}/status"
+run_setup "${default_nvm_case}" __DEFAULT__ "${default_nvm_case}/shadow/bin" \
+  "${default_nvm_output}" "${default_nvm_status}" "${default_nvm_case}/home" \
+  "${default_nvm_bin}"
+[ "$(<"${default_nvm_status}")" -eq 0 ]
+default_canonical_nvm_bin="$(cd -- "${default_nvm_bin}" && pwd -P)"
+default_expected_path="${default_canonical_nvm_bin}:${default_nvm_case}/home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+[ "$(<"${default_nvm_case}/observed-trusted-path")" = "${default_expected_path}" ] || {
+  printf 'unexpected default trusted PATH:\n%s\n' \
+    "$(<"${default_nvm_case}/observed-trusted-path")" >&2
+  exit 1
+}
+
+default_unset_nvm_case="$(new_case default-unset-nvm)"
+make_fake_environment "${default_unset_nvm_case}" warm
+cp "${default_unset_nvm_case}/trusted/bin/"* \
+  "${default_unset_nvm_case}/home/.cargo/bin/"
+default_unset_nvm_output="${default_unset_nvm_case}/output"
+default_unset_nvm_status="${default_unset_nvm_case}/status"
+run_setup "${default_unset_nvm_case}" __DEFAULT__ \
+  "${default_unset_nvm_case}/shadow/bin" "${default_unset_nvm_output}" \
+  "${default_unset_nvm_status}"
+[ "$(<"${default_unset_nvm_status}")" -eq 0 ]
+default_unset_nvm_expected_path="${default_unset_nvm_case}/home/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+[ "$(<"${default_unset_nvm_case}/observed-trusted-path")" = \
+  "${default_unset_nvm_expected_path}" ] || {
+  printf 'unexpected default trusted PATH with unset NVM_BIN:\n%s\n' \
+    "$(<"${default_unset_nvm_case}/observed-trusted-path")" >&2
+  exit 1
+}
+
+empty_nvm_case="$(new_case empty-nvm)"
+make_fake_environment "${empty_nvm_case}" warm
+empty_nvm_output="${empty_nvm_case}/output"
+empty_nvm_status="${empty_nvm_case}/status"
+run_setup "${empty_nvm_case}" __DEFAULT__ "${empty_nvm_case}/shadow/bin" \
+  "${empty_nvm_output}" "${empty_nvm_status}" "${empty_nvm_case}/home" ''
+[ "$(<"${empty_nvm_status}")" -eq 1 ]
+assert_contains "$(<"${empty_nvm_output}")" 'NVM_BIN must not be empty'
+[ ! -s "${empty_nvm_case}/commands" ]
+
+invalid_nvm_case="$(new_case invalid-nvm)"
+make_fake_environment "${invalid_nvm_case}" warm
+invalid_nvm_output="${invalid_nvm_case}/output"
+invalid_nvm_status="${invalid_nvm_case}/status"
+run_setup "${invalid_nvm_case}" "${invalid_nvm_case}/trusted/bin" \
+  "${invalid_nvm_case}/trusted/bin" "${invalid_nvm_output}" "${invalid_nvm_status}" \
+  "${invalid_nvm_case}/home" "${invalid_nvm_case}/outside/node/bin"
+[ "$(<"${invalid_nvm_status}")" -eq 1 ]
+assert_contains "$(<"${invalid_nvm_output}")" 'NVM_BIN must be under HOME/.nvm/versions/node/<version>/bin'
+
 missing_tool_case="$(new_case missing-tool)"
 make_fake_environment "${missing_tool_case}" warm jq
 missing_tool_output="${missing_tool_case}/output"
@@ -309,7 +380,8 @@ run_setup "${rustup_absent_case}" "${rustup_absent_case}/trusted/bin" \
 assert_contains "$(<"${rustup_absent_output}")" 'rustup is required on the trusted PATH'
 
 no_tools_case="$(new_case no-tools)"
-make_fake_environment "${no_tools_case}" no-tools
+make_fake_environment "${no_tools_case}" warm
+rm -f "${no_tools_case}/trusted/bin/rustfmt" "${no_tools_case}/trusted/bin/cargo-clippy"
 no_tools_output="${no_tools_case}/output"
 no_tools_status="${no_tools_case}/status"
 run_setup "${no_tools_case}" "${no_tools_case}/trusted/bin" \
@@ -318,13 +390,17 @@ run_setup "${no_tools_case}" "${no_tools_case}/trusted/bin" \
 assert_contains "$(<"${no_tools_output}")" 'rustfmt is required on the trusted PATH'
 
 missing_just_case="$(new_case missing-just)"
-make_fake_environment "${missing_just_case}" missing-just
+make_fake_environment "${missing_just_case}" fresh
+missing_just_log="${missing_just_case}/commands"
 missing_just_output="${missing_just_case}/output"
 missing_just_status="${missing_just_case}/status"
 run_setup "${missing_just_case}" "${missing_just_case}/trusted/bin" \
   "${missing_just_case}/trusted/bin" "${missing_just_output}" "${missing_just_status}"
 [ "$(<"${missing_just_status}")" -eq 1 ]
-assert_contains "$(<"${missing_just_output}")" 'just is required on the trusted PATH'
+assert_contains "$(<"${missing_just_output}")" 'just is missing and trusted PATH must include '
+assert_not_contains "$(<"${missing_just_log}")" 'rustup component add'
+assert_not_contains "$(<"${missing_just_log}")" 'cargo install just --locked'
+assert_not_contains "$(<"${missing_just_log}")" 'cargo fetch'
 
 fetch_failure_case="$(new_case fetch-failure)"
 make_fake_environment "${fetch_failure_case}" fetch-failure

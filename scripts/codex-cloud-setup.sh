@@ -22,10 +22,49 @@ case "${original_home}" in
   *:*|*$'\n'*) die 'HOME must not contain colon or newline' ;;
 esac
 
+canonical_nvm_bin=
+if [ "${NVM_BIN+x}" = x ]; then
+  nvm_bin="${NVM_BIN}"
+  [ -n "${nvm_bin}" ] || die 'NVM_BIN must not be empty'
+  case "${nvm_bin}" in
+    /*) ;;
+    *) die 'NVM_BIN must be an absolute path' ;;
+  esac
+  case "${nvm_bin}" in
+    *:*|*$'\n'*) die 'NVM_BIN must not contain colon or newline' ;;
+  esac
+  nvm_root="${original_home}/.nvm/versions/node/"
+  canonical_home="$(cd -- "${original_home}" && pwd -P)" || die 'cannot canonicalize HOME'
+  canonical_nvm_root="${canonical_home}/.nvm/versions/node/"
+  case "${nvm_bin}" in
+    "${nvm_root}"*/bin) ;;
+    *) die 'NVM_BIN must be under HOME/.nvm/versions/node/<version>/bin' ;;
+  esac
+  nvm_version="${nvm_bin#"${nvm_root}"}"
+  nvm_version="${nvm_version%/bin}"
+  case "${nvm_version}" in
+    ''|*/*) die 'NVM_BIN must name one NVM version directory' ;;
+  esac
+  [ -d "${nvm_bin}" ] || die "NVM_BIN directory does not exist: ${nvm_bin}"
+  canonical_nvm_bin="$(cd -- "${nvm_bin}" && pwd -P)" || die 'cannot canonicalize NVM_BIN'
+  case "${canonical_nvm_bin}" in
+    "${canonical_nvm_root}"*/bin) ;;
+    *) die 'NVM_BIN resolves outside HOME/.nvm/versions/node/<version>/bin' ;;
+  esac
+  canonical_version="${canonical_nvm_bin#"${canonical_nvm_root}"}"
+  canonical_version="${canonical_version%/bin}"
+  case "${canonical_version}" in
+    ''|*/*) die 'NVM_BIN resolves to an invalid NVM version directory' ;;
+  esac
+fi
+
 if [ "${RPM_CODEX_CLOUD_TRUSTED_PATH+x}" = x ]; then
   trusted_path="${RPM_CODEX_CLOUD_TRUSTED_PATH}"
 else
   trusted_path="${original_home}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  if [ -n "${canonical_nvm_bin}" ]; then
+    trusted_path="${canonical_nvm_bin}:${trusted_path}"
+  fi
 fi
 
 validate_trusted_path() {
@@ -59,6 +98,28 @@ validate_trusted_path() {
 validate_trusted_path "${trusted_path}"
 export PATH="${trusted_path}"
 
+has_trusted_path_entry() {
+  local expected="$1"
+  local path_value="${trusted_path}"
+  local entry
+
+  while :; do
+    case "${path_value}" in
+      *:*)
+        entry="${path_value%%:*}"
+        path_value="${path_value#*:}"
+        ;;
+      *)
+        entry="${path_value}"
+        path_value=
+        ;;
+    esac
+    [ "${entry}" = "${expected}" ] && return 0
+    [ -n "${path_value}" ] || break
+  done
+  return 1
+}
+
 find_command() {
   local command_name="$1"
   local command_path
@@ -79,13 +140,19 @@ git_command="$(find_command git)"
 cargo_command="$(find_command cargo)"
 rustup_command="$(find_command rustup)"
 
+cargo_home="${original_home}/.cargo"
+cargo_bin="${cargo_home}/bin"
+just_command="$(find_optional_command just)"
+if [ -z "${just_command}" ]; then
+  has_trusted_path_entry "${cargo_bin}" || die "just is missing and trusted PATH must include ${cargo_bin} before tool installation"
+fi
+
 setup_home="$(/usr/bin/mktemp -d /tmp/rpm-codex-cloud-home.XXXXXX)"
 cleanup() {
   /bin/rm -rf -- "${setup_home}"
 }
 trap cleanup EXIT
 
-cargo_home="${original_home}/.cargo"
 rustup_home="${original_home}/.rustup"
 
 run_clean() {
@@ -158,7 +225,6 @@ if ! has_component clippy "${installed_components}"; then
   run_clean "${rustup_command}" component add --toolchain stable clippy
 fi
 
-just_command="$(find_optional_command just)"
 if [ -z "${just_command}" ]; then
   run_clean "${cargo_command}" install just --locked
 fi

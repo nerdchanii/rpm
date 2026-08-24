@@ -25,11 +25,23 @@ cache; task prompts do not need to repeat those installation steps.
    were cleared in the Cloud UI logs; those effects are platform behavior.
 
 The Cloud setup is intentionally independent from the shared desktop
-`scripts/worktree-setup.sh` entrypoint. It uses this trusted PATH by default:
+`scripts/worktree-setup.sh` entrypoint. The default trusted PATH starts with
+the platform-managed Cargo bin and the fixed system directories:
 
 ```text
 ${HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ```
+
+When the universal container exports `NVM_BIN`, setup accepts it only when it
+is an existing absolute canonical directory at
+`${HOME}/.nvm/versions/node/<version>/bin`. The canonical directory is
+prepended to the default trusted PATH, so a platform-managed Node binary is
+discovered before the fixed system directories. An exported empty value, a
+malformed or nonexistent directory, or an out-of-bound `NVM_BIN` fails setup.
+When `NVM_BIN` is unset, the fixed system directories remain the supported
+Node lookup path; ambient PATH entries are never used as a fallback. An
+explicit trusted PATH override is used exactly as supplied and does not
+receive an automatic NVM entry.
 
 `RPM_CODEX_CLOUD_TRUSTED_PATH` is an explicit trust assertion by the
 environment owner for a trusted Cloud environment setting. Every entry must be
@@ -37,24 +49,30 @@ an absolute, non-empty path. Ambient PATH entries are ignored and the override
 must not be supplied by task input. The default `${HOME}/.cargo/bin` entry
 trusts the platform-managed fresh/reset environment cache. If a task writes
 and then reuses `${HOME}`, repository code cannot guarantee binary integrity;
-that is a platform/cache residual.
+that is a platform/cache residual. When `just` is absent, an explicit trusted
+PATH override must include the exact `${HOME}/.cargo/bin` entry before setup
+will run `cargo install`. The install and subsequent lookup use the same
+`CARGO_HOME/bin` directory. An override that omits that directory fails before
+Rustup component installation or any Cargo network operation starts.
 The public setup assumes direct access to public package sources; it does not
 forward proxy, registry-authentication, compiler-wrapper, or task-secret
 variables.
 
 The setup performs these steps in order:
 
-1. Reject Cargo config and credentials files in the Cargo home and in every
+1. Validate the trusted PATH and, when `just` is missing, require its Cargo bin
+   installation destination before any tool installation or network operation.
+2. Reject Cargo config and credentials files in the Cargo home and in every
    `.cargo/` directory from the repository root through its filesystem-root
    ancestors. Public locked setup does not accept source replacement or
    private credentials.
-2. Require `rustup`, inspect stable `rustfmt` and `clippy` components, and
+3. Require `rustup`, inspect stable `rustfmt` and `clippy` components, and
    install missing components.
-3. Install `just` with `cargo install just --locked` when it is missing, then
+4. Install `just` with `cargo install just --locked` when it is missing, then
    verify `rustfmt`, `cargo-clippy`, and `just` are discoverable.
-4. Verify that `jq`, `node`, and `python3` are available.
-5. Fetch the lockfile-resolved dependencies with `cargo fetch --quiet --locked`.
-6. Warm the compiler cache with
+5. Verify that `jq`, `node`, and `python3` are available.
+6. Fetch the lockfile-resolved dependencies with `cargo fetch --quiet --locked`.
+7. Warm the compiler cache with
    `cargo check --quiet --offline --locked --all-targets`.
 
 Tool installation and locked dependency fetch are the setup operations that
