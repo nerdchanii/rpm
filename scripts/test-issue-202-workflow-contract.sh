@@ -47,6 +47,13 @@ require_contract_text .codex/agents/rpm_backlog_manager.toml 'selected_issue.*ex
 require_contract_text .codex/agents/rpm_backlog_manager.toml 'never substitute another candidate' 'no explicit candidate substitution'
 require_contract_text .codex/agents/rpm_ready_ticket_claimer.toml 'cloud_queue_contract' 'deterministic claim input'
 require_contract_text .codex/agents/rpm_ready_ticket_claimer.toml 'status.*claim.*status.*claimed|status.*claimed.*status.*claim' 'controller claim normalization'
+require_contract_text .codex/agents/rpm_ready_ticket_claimer.toml 'transition_required.:true.*already-claimed.*transition_required:false' 'claim transition boolean schema'
+require_contract_text .codex/agents/rpm_ready_ticket_claimer.toml 'resumed.:false.*already-claimed.*resumed:true' 'claim recovery boolean schema'
+require_contract_text .codex/agents/rpm_ready_ticket_claimer.toml 'hook.*(re-runs|authorization).*controller|controller.*authorization.*blocked' 'hook-bound claim authorization'
+require_contract_text .codex/agents/rpm_ready_ticket_claimer.toml 'parent-issued.*rpm_claim_authorization|rpm_claim_authorization.*parent-issued' 'parent-issued claim authorization'
+require_contract_text .codex/agents/rpm_backlog_manager.toml 'never place both.*phases.*one child transcript|one child transcript.*both.*phases' 'one-phase claimer handoff'
+require_contract_text .codex/agents/rpm_backlog_scout.toml 'normalized_snapshot.*snapshot_sha256|snapshot_sha256.*normalized_snapshot' 'scout snapshot digest handoff'
+python3 -c 'import json,tomllib; text=tomllib.load(open(".codex/agents/rpm_ready_ticket_claimer.toml","rb"))["developer_instructions"]; event=json.loads(next(line for line in text.splitlines() if line.startswith("{\"type\":\"ready_ticket_claim_result\""))); contract=event["data"]["claim_contract"]; assert isinstance(contract["transition_required"], bool); assert isinstance(contract["recovery"]["resumed"], bool); assert isinstance(event["data"]["verified"], bool)'
 require_contract_text .codex/agents/rpm_ready_ticket_claimer.toml 'idempotency_key' 'claim idempotency evidence'
 require_contract_text .codex/agents/rpm_ready_ticket_claimer.toml 'valid.*lease|lease.*valid' 'claim lease evidence'
 require_contract_text .codex/agents/rpm_backlog_manager.toml 'normalized candidate snapshot' 'claim snapshot handoff'
@@ -87,6 +94,7 @@ require_contract_text .codex/hooks.json '\[Gg\].*\[Ii\].*\[Tt\].*\[Hh\].*\[Uu\].
 require_contract_text .codex/hooks.json '\[Gg\]\[Hh\]_' 'gh alias PreToolUse matcher'
 require_contract_text .codex/hooks.json '\[Ii\].*\[Ss\].*\[Ss\].*\[Uu\].*\[Ee\]' 'case-insensitive issue alias PreToolUse matcher'
 require_contract_text .codex/hooks.json '\[Pp\].*\[Uu\].*\[Ll\].*\[Ll\].*\[Rr\].*\[Ee\].*\[Qq\].*\[Uu\].*\[Ee\].*\[Ss\].*\[Tt\]' 'case-insensitive pull-request alias PreToolUse matcher'
+require_contract_text .codex/hooks.json '\[Ll\].*\[Aa\].*\[Bb\].*\[Ee\].*\[Ll\]' 'case-insensitive label alias PreToolUse matcher'
 hook_matcher="$(jq -r '.hooks.PreToolUse[0].matcher' .codex/hooks.json)"
 for aliased_github_tool in \
   gh_pr_merge \
@@ -118,7 +126,15 @@ for aliased_github_tool in \
   providerProjectUpdate \
   hostProjectUpdate \
   connectorProjectUpdate \
-  apiProjectUpdate
+  apiProjectUpdate \
+  add_project_item \
+  update_project_item \
+  create_label \
+  add_labels \
+  get_project \
+  list_project_items \
+  get_label \
+  list_labels
 do
   python3 -c 'import re,sys; raise SystemExit(0 if re.fullmatch(sys.argv[1], sys.argv[2]) else 1)' \
     "$hook_matcher" "$aliased_github_tool"
@@ -168,6 +184,16 @@ require_contract_text .agents/skills/pr-review-resolution/SKILL.md 'may_create_f
 require_contract_text .agents/skills/pr-review-resolution/SKILL.md 'only.*(allowed|authorized)|authorization.*follow[- ]up|follow[- ]up.*authorization' 'review follow-up authorization gate'
 require_contract_text .codex/agents/rpm_implementer.toml 'risks' 'implementer risks output'
 require_contract_text .codex/agents/pr-review-resolver.toml 'decisions|follow[- ]up' 'resolver decisions and follow-up output'
+for deferred_followup_contract in \
+  .codex/agents/pr-review-resolver.toml \
+  .agents/skills/pr-review-resolution/SKILL.md \
+  .agents/skills/pr-review-resolution/references/resolution-workflow.md \
+  .agents/skills/pr-review-resolution/references/templates.md
+do
+  require_contract_text "$deferred_followup_contract" 'body_markdown' 'structured complete follow-up body'
+  require_contract_text "$deferred_followup_contract" 'path.*null|null.*path' 'resolver null draft path'
+  require_contract_text "$deferred_followup_contract" 'do not.*(write|create).*(file|/tmp)|never creates.*file|performs no file' 'resolver file delegation boundary'
+done
 require_contract_text .codex/agents/rpm_issue_manager.toml 'followup_issues' 'manager follow-up output'
 require_contract_text .codex/agents/rpm_issue_manager.toml 'status":"complete\|checkpoint\|no-work\|blocked' 'manager no-work result schema'
 require_contract_text .codex/agents/rpm_workflow_manager.toml 'no-work.*empty issue|empty issue.*no-work' 'workflow manager no-work protocol'
@@ -185,6 +211,25 @@ printf '%s\n' "$readiness_output" | jq -e '
   and .data.execution_metadata.executor == "cloud"
 ' >/dev/null
 
+claim_prepare_output="$(python3 scripts/check-cloud-queue-contract.py \
+  --issues-file .agents/fixtures/backlog/cloud-claim-prepare.json \
+  --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+  --executor cloud --plan-revision plan-3 \
+  --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --lease-owner cloud:executor)"
+printf '%s\n' "$claim_prepare_output" | jq -e '
+  .type == "cloud_queue_contract"
+  and .data.status == "persist"
+  and .data.issue == 3
+  and .data.before == "ready"
+  and .data.transition_required == false
+  and .data.claim_record.issue == 3
+  and .data.claim_record.lease.owner == "cloud:executor"
+  and (.data.issue_comment_marker | startswith("<!-- rpm-agent-claim: "))
+' >/dev/null
+claim_comment_marker="$(printf '%s\n' "$claim_prepare_output" | jq -r '.data.issue_comment_marker')"
+claim_prepare_token="$(printf '%s\n' "$claim_prepare_output" | jq -r '.data.authorization_token')"
+
 claim_output="$(python3 scripts/check-cloud-queue-contract.py \
   --issues-file .agents/fixtures/backlog/cloud-claim-ready.json \
   --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
@@ -197,9 +242,51 @@ printf '%s\n' "$claim_output" | jq -e '
   and .data.issue == 3
   and .data.before == "ready"
   and .data.after == "claimed"
+  and .data.transition_required == true
+  and .data.recovery == {
+    state:"ready",
+    resumed:false,
+    evidence:["durable-claim-record","exact-persistence-marker","refetched-runs-ledger"]
+  }
   and .data.lease.owner == "cloud:executor"
   and .data.preserved_labels == ["priority:high"]
 ' >/dev/null
+claim_token="$(printf '%s\n' "$claim_output" | jq -r '.data.authorization_token')"
+
+claim_restart_output="$(python3 scripts/check-cloud-queue-contract.py \
+  --issues-file .agents/fixtures/backlog/cloud-claim-restart.json \
+  --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+  --executor cloud --plan-revision plan-3 \
+  --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --lease-owner cloud:executor)"
+printf '%s\n' "$claim_restart_output" | jq -e '
+  .type == "cloud_queue_contract"
+  and .data.status == "claim"
+  and .data.issue == 3
+  and .data.before == "claimed"
+  and .data.after == "claimed"
+  and .data.transition_required == false
+  and .data.recovery.state == "claimed"
+  and .data.recovery.resumed == true
+' >/dev/null
+
+for invalid_claim_fixture in cloud-claim-conflict.json cloud-claim-malformed.json; do
+  set +e
+  invalid_claim_output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file "$fixture_dir/$invalid_claim_fixture" \
+    --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  invalid_claim_code=$?
+  set -e
+  [ "$invalid_claim_code" -eq 1 ]
+  printf '%s\n' "$invalid_claim_output" | jq -e '
+    .type == "cloud_queue_contract"
+    and .data.status == "blocked"
+    and (.data.reason | type) == "string"
+  ' >/dev/null
+done
 
 set +e
 expired_output="$(python3 scripts/check-cloud-queue-contract.py \
@@ -363,11 +450,56 @@ do
     "$project_mutation_alias project mutation denied" 2 "$project_mutation_alias" \
     '{"project_id":"pwn","body":"changed","labels":["agent:ready"]}'
 done
+for namespace_free_mutation in \
+  add_project_item \
+  addProjectItem \
+  project.add_item \
+  update_project_item \
+  updateProjectItem \
+  create_label \
+  createLabel \
+  label.create \
+  add_labels \
+  addLabels
+do
+  probe_hook_tool "$namespace_free_mutation namespace-free mutation denied" 2 \
+    "$namespace_free_mutation" \
+    '{"issue_number":202,"project_id":"pwn","labels":["agent:ready"]}'
+done
+for namespace_free_read in \
+  get_project \
+  list_project_items \
+  get_label \
+  list_labels
+do
+  probe_hook_tool "$namespace_free_read namespace-free read allowed" 0 \
+    "$namespace_free_read" '{}'
+done
+probe_hook_tool_as_role 'rpm_issue_refiner' \
+  'issue refiner namespace-free label creation denied' 2 'create_label' \
+  '{"name":"agent:pwn","color":"000000"}'
+probe_hook_tool_as_role 'rpm_issue_refiner' \
+  'issue refiner namespace-free additive labels denied' 2 'add_labels' \
+  '{"issue_number":202,"labels":["agent:ready"]}'
+probe_hook_tool_as_role 'rpm_idea_issue_creator' \
+  'idea creator opaque project id denied' 2 'add_project_item' \
+  '{"project_id":"pwn","content_id":"pwn"}'
+probe_hook_tool_as_role 'rpm_idea_issue_creator' \
+  'idea creator configured project registration allowed' 0 'add_project_item' \
+  '{"project_number":7,"issue_number":202,"repository":"nerdchanii/rpm","owner":"@me"}'
+probe_hook_tool_as_role 'rpm_idea_issue_creator' \
+  'idea creator configured project registration extra field denied' 2 \
+  'add_project_item' \
+  '{"project_number":7,"issue_number":202,"repository":"nerdchanii/rpm","owner":"@me","labels":["agent:ready"]}'
 probe_hook_tool 'curl raw GitHub mutation' 2 'exec_command' '{"cmd":"curl -X PATCH https://api.github.com/repos/nerdchanii/rpm/issues/202"}'
 probe_hook_tool 'wget raw GitHub mutation' 2 'exec_command' '{"cmd":"wget --method=POST https://api.github.com/repos/nerdchanii/rpm/issues/202"}'
 probe_hook_tool 'HTTPie raw GitHub mutation' 2 'exec_command' '{"cmd":"http PATCH https://api.github.com/repos/nerdchanii/rpm/issues/202"}'
 probe_hook_tool 'Python raw GitHub mutation' 2 'exec_command' '{"cmd":"python3 -c \"import urllib.request; urllib.request.urlopen(\\\"https://api.github.com/repos/nerdchanii/rpm/issues/202\\\")\""}'
 probe_hook_tool 'Node raw GitHub mutation' 2 'exec_command' '{"cmd":"node -e \"fetch(\\\"https://api.github.com/repos/nerdchanii/rpm/issues/202\\\")\""}'
+probe_hook_tool 'Python dynamic-host raw mutation' 2 'exec_command' '{"cmd":"python3 -c \"import urllib.request,os; urllib.request.urlopen(os.environ[\\\"TARGET\\\"], data=b[\\\"mutation\\\"])\""}'
+probe_hook_tool 'Node dynamic-host raw mutation' 2 'exec_command' '{"cmd":"node -e \"fetch(process.env.TARGET, {method: \\\"POST\\\"})\""}'
+probe_hook_tool 'Python benign inline command' 0 'exec_command' '{"cmd":"python3 -c \"print(1 + 1)\""}'
+probe_hook_tool 'Node benign inline command' 0 'exec_command' '{"cmd":"node -e \"console.log(1 + 1)\""}'
 probe_hook_tool 'nested shell curl raw GitHub mutation' 2 'exec_command' '{"cmd":"sh -c \"curl -X PATCH https://api.github.com/repos/nerdchanii/rpm/issues/202\""}'
 probe_hook_tool 'nested bash curl raw GitHub mutation' 2 'exec_command' '{"cmd":"bash -c \"curl -X PATCH https://api.github.com/repos/nerdchanii/rpm/issues/202\""}'
 probe_hook_tool 'xargs curl raw GitHub mutation' 2 'exec_command' '{"cmd":"printf %s https://api.github.com/repos/nerdchanii/rpm/issues/202 | xargs curl -X PATCH"}'
@@ -411,9 +543,76 @@ probe_hook_tool_as_role 'rpm_ready_ticket_claimer' \
 probe_hook_tool_as_role 'rpm_ready_ticket_claimer' \
   'ready-ticket claimer persisted generic mutation' 2 'github_execute' \
   '{"operationName":"updateIssue","variables":{"id":"x","x":"attacker-controlled-value"}}'
+claim_comment_input="$(jq -nc --arg body "$claim_comment_marker" \
+  '{issue_number:3,body:$body}')"
+claim_comment_create_input="$(jq -nc --arg body "$claim_comment_marker" \
+  '{owner:"nerdchanii",repo:"rpm",issue_number:3,body:$body}')"
+claim_comment_tampered_input="$(jq -nc --arg body "$claim_comment_marker" \
+  '{issue_number:3,body:($body | sub("delivery-3";"delivery-pwn"))}')"
+claim_comment_wrong_issue_input="$(jq -nc --arg body "$claim_comment_marker" \
+  '{issue_number:4,body:$body}')"
 probe_hook_tool_as_role 'rpm_ready_ticket_claimer' \
-  'ready-ticket claimer exact claimed label' 0 'githubUpdateIssue' \
-  '{"issue_number":202,"labels":["agent:claimed","priority:high"]}'
+  'ready-ticket claimer controller-unissued durable comment denied' 2 \
+  'add_issue_comment' "$claim_comment_input"
+probe_hook_tool_as_role 'rpm_ready_ticket_claimer' \
+  'ready-ticket claimer controller-unissued claimed label denied' 2 \
+  'githubUpdateIssue' \
+  '{"issue_number":3,"labels":["agent:claimed","priority:high"]}'
+jq -nc --arg token "$claim_prepare_token" \
+  '{role:"assistant",content:("rpm_claim_authorization=" + $token)}' \
+  | tee "$hook_transcript" >/dev/null
+jq -nc --arg path "$hook_transcript" \
+  '{hook_event_name:"SubagentStart",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
+  | hook_event >/dev/null 2>&1
+probe_hook_tool 'ready-ticket claimer self-authored token denied' 2 \
+  'exec_command' \
+  '{"cmd":"python3 scripts/check-cloud-queue-contract.py --issues-file .agents/fixtures/backlog/cloud-claim-prepare.json --operation claim --issue 3 --run-id run-3 --event-id delivery-3 --executor cloud --plan-revision plan-3 --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --lease-owner cloud:executor"}'
+jq -nc --arg path "$hook_transcript" \
+  '{hook_event_name:"SubagentStop",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
+  | hook_event >/dev/null 2>&1 || true
+jq -nc --arg token "$claim_prepare_token" \
+  '{role:"user",content:("rpm_claim_authorization=" + $token)}' \
+  | tee "$hook_transcript" >/dev/null
+jq -nc --arg path "$hook_transcript" \
+  '{hook_event_name:"SubagentStart",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
+  | hook_event >/dev/null 2>&1
+probe_hook_tool 'ready-ticket claimer persist controller attestation' 0 \
+  'exec_command' \
+  '{"cmd":"python3 scripts/check-cloud-queue-contract.py --issues-file .agents/fixtures/backlog/cloud-claim-prepare.json --operation claim --issue 3 --run-id run-3 --event-id delivery-3 --executor cloud --plan-revision plan-3 --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --lease-owner cloud:executor"}'
+probe_hook_tool 'ready-ticket claimer untrusted snapshot denied' 2 \
+  'exec_command' \
+  '{"cmd":"python3 scripts/check-cloud-queue-contract.py --issues-file .agents/fixtures/backlog/cloud-claim-ready.json --operation claim --issue 3 --run-id run-3 --event-id delivery-3 --executor cloud --plan-revision plan-3 --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --lease-owner cloud:executor"}'
+probe_hook_tool 'ready-ticket claimer exact durable claim comment' 0 \
+  'add_issue_comment' "$claim_comment_input"
+probe_hook_tool 'ready-ticket claimer exact durable claim create-comment alias' 0 \
+  'create_issue_comment' "$claim_comment_create_input"
+probe_hook_tool 'ready-ticket claimer tampered durable claim comment denied' 2 \
+  'add_issue_comment' "$claim_comment_tampered_input"
+probe_hook_tool 'ready-ticket claimer wrong-issue durable claim comment denied' 2 \
+  'add_issue_comment' "$claim_comment_wrong_issue_input"
+probe_hook_tool 'ready-ticket claimer ordinary comment denied' 2 \
+  'add_issue_comment' '{"issue_number":3,"body":"please claim this issue"}'
+probe_hook_tool 'ready-ticket claimer label before persisted controller denied' 2 \
+  'githubUpdateIssue' \
+  '{"issue_number":3,"labels":["agent:claimed","priority:high"]}'
+jq -nc --arg path "$hook_transcript" \
+  '{hook_event_name:"SubagentStop",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
+  | hook_event >/dev/null 2>&1 || true
+jq -nc --arg token "$claim_token" \
+  '{role:"user",content:("rpm_claim_authorization=" + $token)}' \
+  | tee "$hook_transcript" >/dev/null
+jq -nc --arg path "$hook_transcript" \
+  '{hook_event_name:"SubagentStart",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
+  | hook_event >/dev/null 2>&1
+probe_hook_tool 'ready-ticket claimer persisted controller attestation' 0 \
+  'exec_command' \
+  '{"cmd":"python3 scripts/check-cloud-queue-contract.py --issues-file .agents/fixtures/backlog/cloud-claim-ready.json --operation claim --issue 3 --run-id run-3 --event-id delivery-3 --executor cloud --plan-revision plan-3 --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --lease-owner cloud:executor"}'
+probe_hook_tool 'ready-ticket claimer exact claimed label' 0 'githubUpdateIssue' \
+  '{"issue_number":3,"labels":["agent:claimed","priority:high"]}'
+jq -nc --arg path "$hook_transcript" \
+  '{hook_event_name:"SubagentStop",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
+  | hook_event >/dev/null 2>&1 || true
+printf '%s\n' "$hook_start_payload" | hook_event >/dev/null
 probe_hook_tool_as_role 'rpm_ready_ticket_claimer' \
   'ready-ticket claimer ready label denied' 2 'githubUpdateIssue' \
   '{"issue_number":202,"labels":["agent:ready"]}'
@@ -436,6 +635,18 @@ probe_hook_tool_as_role 'pr-review-resolver' \
   'review resolver claude symlink patch' 2 'apply_patch' \
   '{"patch":"*** Begin Patch\n*** Update File: .claude/skills/pr-review-resolution/SKILL.md\n*** End Patch\n"}'
 probe_hook_tool_as_role 'pr-review-resolver' \
+  'review resolver scripts gate patch' 2 'apply_patch' \
+  '{"patch":"*** Begin Patch\n*** Update File: scripts/check-merge-gate.py\n*** End Patch\n"}'
+probe_hook_tool_as_role 'pr-review-resolver' \
+  'review resolver justfile gate patch' 2 'apply_patch' \
+  '{"patch":"*** Begin Patch\n*** Update File: justfile\n*** End Patch\n"}'
+probe_hook_tool_as_role 'pr-review-resolver' \
+  'review resolver git hook patch' 2 'apply_patch' \
+  '{"patch":"*** Begin Patch\n*** Update File: .githooks/pre-commit\n*** End Patch\n"}'
+probe_hook_tool_as_role 'pr-review-resolver' \
+  'review resolver ordinary source patch allowed' 0 'apply_patch' \
+  '{"patch":"*** Begin Patch\n*** Update File: src/lib.rs\n*** End Patch\n"}'
+probe_hook_tool_as_role 'pr-review-resolver' \
   'review resolver workflow shell write' 2 'exec_command' \
   '{"cmd":"printf changed > .github/workflows/ci.yml"}'
 probe_hook_tool_as_role 'pr-review-resolver' \
@@ -448,7 +659,7 @@ probe_hook_tool_as_role 'pr-review-resolver' \
   'review resolver benign bash validation delegation' 2 'bash' \
   '{"cmd":"just validate"}'
 
-jq -e '
+jq -e --argjson canonical_claim "$(printf '%s\n' "$claim_output" | jq '.data')" '
   type == "array"
   and length > 0
   and all(.[];
@@ -462,9 +673,28 @@ jq -e '
   and any(.[];
     .mode == "scheduled"
     and .input.queue == "eligible-issue"
-    and .input.claim_result.data.status == "claimed"
-    and .input.claim_result.data.claim_contract.status == "claim"
-    and .input.claim_result.data.claim_contract.issue == .input.issue
+    and .input.claim_result == {
+      type:"ready_ticket_claim_result",
+      data:{
+        status:"claimed",
+        issue:.input.issue,
+        before_state:$canonical_claim.before,
+        after_state:$canonical_claim.after,
+        claim_contract:$canonical_claim,
+        preserved_labels:$canonical_claim.preserved_labels,
+        verified:true,
+        race_evidence:[],
+        blockers:[]
+      }
+    }
+    and .input.claim_result.data.claim_contract.transition_required == true
+    and .input.claim_result.data.claim_contract.claim_record.idempotency_key
+      == .input.claim_result.data.claim_contract.idempotency_key
+    and .input.claim_result.data.claim_contract.claim_record.lease
+      == .input.claim_result.data.claim_contract.lease
+    and .input.claim_result.data.claim_contract.recovery.resumed == false
+    and (.input.claim_result.data.claim_contract.issue_comment_marker
+      | startswith("<!-- rpm-agent-claim: "))
     and .expected_status == "complete"
   )
   and any(.[];

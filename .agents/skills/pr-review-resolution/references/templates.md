@@ -22,7 +22,6 @@ Inputs:
   canonical issue packet compatibility handoff
 - discovered-work boundary: preserve a validated #208 handoff when supplied;
   otherwise use existing decisions/follow-up output without inventing a schema
-- followup_body_path_pattern: /tmp/rpm-review-followup-pr<pr>-<slug>.md
 
 Review context:
 <paste full JSONL output of: bash scripts/collect-pr-review-context.sh <pr-number> --format jsonl>
@@ -36,7 +35,9 @@ Rules:
 - Patch only accept-now items.
 - For accepted behavior changes, add/update tests or fixtures when relevant.
 - Run the delegated validation after accepted changes.
-- For deferred items, create body files and preview issue creation with scripts/create-review-followup-issue.sh.
+- For every deferred item, return the complete issue body in
+  `follow_up_issues[].body_markdown`; set `state:"drafted"`, `url:null`, and
+  `path:null`. Do not create a body file or run a preview command.
 - Use --create only if may_create_followup_issues=true and no existing issue naturally absorbs the work.
 - Do not resolve GitHub threads.
 - Do not make unrelated cleanup.
@@ -49,7 +50,7 @@ Return the exact Review Resolver Output shape.
 ## Review Resolver Output
 
 ```jsonl
-{"type":"review_resolution_result","data":{"status":"complete|no-work|blocked","pr":"<number-or-url-or-empty>","issue":"<number-or-url-or-empty>","review_present":true,"validation":["<command-or-not-run-with-reason>"],"adversarial_review":"pass|findings|not-run","actionable_p0_p1_remaining":false,"final_issue_state":"review-pending|awaiting-merge|unchanged","decisions":[{"target":"<comment-url-or-thread-id>","classification":"<classification>","reason":"<one-line reason>","action":"<action taken>"}],"changes":[{"path":"<file>","summary":"<summary>"}],"follow_up_issues":[{"state":"opened|drafted","url":"<url-or-null>","path":"<draft-path-or-null>","title":"<title>"}],"blockers":[]}}
+{"type":"review_resolution_result","data":{"status":"complete|no-work|blocked","pr":"<number-or-url-or-empty>","issue":"<number-or-url-or-empty>","review_present":true,"validation":["<command-or-not-run-with-reason>"],"adversarial_review":"pass|findings|not-run","actionable_p0_p1_remaining":false,"final_issue_state":"review-pending|awaiting-merge|unchanged","decisions":[{"target":"<comment-url-or-thread-id>","classification":"<classification>","reason":"<one-line reason>","action":"<action taken>"}],"changes":[{"path":"<file>","summary":"<summary>"}],"follow_up_issues":[{"state":"opened|drafted","url":"<url-or-null>","path":"<root-created-draft-path-or-null>","title":"<title>","body_markdown":"<complete follow-up issue body>"}],"blockers":[]}}
 ```
 
 ## Follow-Up Issue Body

@@ -8,7 +8,11 @@
 4. Spawn `pr-review-resolver` using the prompt in `templates.md`.
 5. Review resolver output and current diff.
 6. If resolver applied `accept-now` fixes, verify validation actually ran or rerun it in the main session.
-7. If resolver drafted follow-up issues, decide whether to create them. Use `--create` only when `may_create_followup_issues=true`.
+7. Require each deferred result to include the complete draft in
+   `follow_up_issues[].body_markdown` with a null URL and path. The resolver
+   performs no file or shell operation. The main session may create a temporary
+   body file for preview and may use `--create` only when
+   `may_create_followup_issues=true`.
 8. Commit and push accepted fixes to the same PR branch, then run internal adversarial review. Do not assume Automatic review reruns.
 9. Keep `agent:review-pending` while actionable P0/P1 findings remain. Otherwise replace it with `agent:awaiting-merge` and remove stale `agent:claimed`, preserving ordinary labels.
 10. Never merge, request `@codex review`, or make a new Automatic review a completion dependency.

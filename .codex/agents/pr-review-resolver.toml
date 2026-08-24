@@ -32,7 +32,10 @@ Rules:
 - Patch only `accept-now` items.
 - Prioritize actionable P0/P1 findings and report whether any remain.
 - Do not change production code for rejected or deferred feedback.
-- Preview deferred follow-up issues unless issue creation is explicitly allowed.
+- For every deferred finding, return the complete follow-up issue body in
+  `follow_up_issues[].body_markdown`. Set `state:"drafted"`, `url:null`, and
+  `path:null`; do not write a temporary file or invoke a preview script. The
+  main session may pass that structured draft to the safe follow-up delegate.
 - Preserve a validated #208 disposition when supplied. Until #208 defines that
   contract, keep deferred findings in the existing decisions/follow-up output
   and do not invent a replacement schema.

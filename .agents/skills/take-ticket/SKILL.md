@@ -45,9 +45,15 @@ Use `scheduled` without an issue number. The router reads `.agents/workflows/bac
 
 Before the scheduled `agent:ready` to `agent:claimed` transition, validate the
 managed execution metadata and run the policy-defined claim contract. Persist
-the `plan_revision`, `scope_hash`, `executor`, lease, run id, event id, and
-idempotency record with the compare-and-set label mutation. A stale revision,
-scope, executor, or expired lease returns `blocked`.
+the canonical issue-comment claim record containing `plan_revision`,
+`scope_hash`, `executor`, lease, run id, event id, and idempotency key before
+the compare-and-set label mutation. The parent manager binds each canonical
+snapshot to one controller authorization token. A `persist` child writes and
+verifies only the marker, then returns. The parent refetches and starts a new
+`claim` child with a new snapshot-bound token. Only that verified
+`status:"claim"` result may authorize the label transition. An exact persisted
+record resumes the same ready or claimed issue after restart. A stale revision, scope, executor,
+malformed record, conflict, missing marker, or expired lease returns `blocked`.
 
 ## Entry Workflow
 

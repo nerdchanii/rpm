@@ -4,11 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+
+SHA256_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
+RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 
 
 def load_json(path: str) -> dict[str, object]:
@@ -98,9 +103,9 @@ def validate_execution_metadata(
 
 
 def parse_timestamp(value: object, field: str) -> datetime:
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not RFC3339.fullmatch(value):
         raise ValueError(f"{field} must be an RFC3339 timestamp")
-    normalized = value.replace("Z", "+00:00")
+    normalized = value.replace("Z", "+00:00", 1)
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError as error:
@@ -143,6 +148,204 @@ def idempotency_key(
     values = (repository, str(issue_number), plan_revision, scope_hash, event_id)
     canonical = "\0".join(values).encode("utf-8")
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def persistence_contract(contract: dict[str, object]) -> dict[str, object]:
+    persistence = contract.get("persistence")
+    if not isinstance(persistence, dict):
+        raise ValueError("execution contract persistence rules are invalid")
+    marker = persistence.get("marker")
+    if not isinstance(marker, dict) or not all(
+        isinstance(marker.get(field), str) for field in ("prefix", "suffix")
+    ):
+        raise ValueError("execution contract persistence marker is invalid")
+    fields = persistence.get("record_fields")
+    if not isinstance(fields, list) or not all(isinstance(field, str) for field in fields):
+        raise ValueError("execution contract persistence record_fields are invalid")
+    return persistence
+
+
+def canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def canonical_sha256(value: object) -> str:
+    return f"sha256:{hashlib.sha256(canonical_json(value).encode('utf-8')).hexdigest()}"
+
+
+def attach_claim_authorization(
+    result: dict[str, object], fixture: dict[str, object]
+) -> dict[str, object]:
+    """Bind a claim decision to the exact parent-normalized snapshot."""
+    snapshot_sha256 = canonical_sha256(fixture)
+    controller_sha256 = canonical_sha256(result)
+    payload = {
+        "version": 1,
+        "phase": result["status"],
+        "repository": fixture.get("repository"),
+        "issue": result.get("issue"),
+        "snapshot_sha256": snapshot_sha256,
+        "controller_sha256": controller_sha256,
+        "idempotency_key": result.get("idempotency_key"),
+        "issue_comment_marker": result.get("issue_comment_marker"),
+        "transition_required": result.get("transition_required"),
+        "labels": result.get("labels", []),
+    }
+    encoded = base64.urlsafe_b64encode(canonical_json(payload).encode("utf-8"))
+    enriched = dict(result)
+    enriched["snapshot_sha256"] = snapshot_sha256
+    enriched["authorization_token"] = encoded.rstrip(b"=").decode("ascii")
+    return enriched
+
+
+def claim_marker(record: dict[str, object], contract: dict[str, object]) -> str:
+    persistence = persistence_contract(contract)
+    marker = persistence["marker"]
+    assert isinstance(marker, dict)
+    return f"{marker['prefix']}{canonical_json(record)}{marker['suffix']}"
+
+
+def claim_record(
+    repository: str,
+    issue_number: int,
+    run_id: str,
+    event_id: str,
+    executor: str,
+    plan_revision: str,
+    scope_hash: str,
+    lease_owner: str,
+    started_at: datetime,
+    ttl_seconds: int,
+) -> dict[str, object]:
+    started = started_at.isoformat().replace("+00:00", "Z")
+    expires = (started_at + timedelta(seconds=ttl_seconds)).isoformat().replace("+00:00", "Z")
+    key = idempotency_key(repository, issue_number, plan_revision, scope_hash, event_id)
+    lease = {
+        "run_id": run_id,
+        "owner": lease_owner,
+        "started_at": started,
+        "expires_at": expires,
+    }
+    return {
+        "repository": repository,
+        "issue": issue_number,
+        "run_id": run_id,
+        "event_id": event_id,
+        "executor": executor,
+        "plan_revision": plan_revision,
+        "scope_hash": scope_hash,
+        "idempotency_key": key,
+        "lease": lease,
+        "started_at": started,
+        "expires_at": expires,
+    }
+
+
+def validate_claim_record(
+    record: object,
+    contract: dict[str, object],
+    repository: str,
+    issue_number: int | None = None,
+) -> str | None:
+    persistence = persistence_contract(contract)
+    if not isinstance(record, dict):
+        return "malformed-claim-record"
+    fields = [str(field) for field in persistence["record_fields"]]
+    missing = [field for field in fields if field not in record]
+    if missing:
+        return f"malformed-claim-record:{','.join(missing)}"
+    extra = sorted(set(record) - set(fields))
+    if extra:
+        return f"malformed-claim-record:unexpected:{','.join(extra)}"
+    if record.get("repository") != repository:
+        return "claim-record-repository-mismatch"
+    if not isinstance(record.get("issue"), int) or isinstance(record.get("issue"), bool):
+        return "malformed-claim-record:issue"
+    if issue_number is not None and record["issue"] != issue_number:
+        return "claim-record-issue-mismatch"
+    for field in ("run_id", "event_id", "executor", "plan_revision", "scope_hash"):
+        if not isinstance(record.get(field), str) or not str(record[field]).strip():
+            return f"malformed-claim-record:{field}"
+    if not SHA256_KEY.fullmatch(str(record["scope_hash"])):
+        return "malformed-claim-record:scope_hash"
+    if not SHA256_KEY.fullmatch(str(record["idempotency_key"])):
+        return "malformed-claim-record:idempotency_key"
+    expected_key = idempotency_key(
+        repository,
+        int(record["issue"]),
+        str(record["plan_revision"]),
+        str(record["scope_hash"]),
+        str(record["event_id"]),
+    )
+    if record["idempotency_key"] != expected_key:
+        return "claim-record-idempotency-mismatch"
+    executors = contract.get("executor_values")
+    if not isinstance(executors, list) or record["executor"] not in [str(value) for value in executors]:
+        return "invalid-executor"
+    try:
+        started = parse_timestamp(record["started_at"], "claim_record.started_at")
+        expires = parse_timestamp(record["expires_at"], "claim_record.expires_at")
+    except ValueError:
+        return "malformed-claim-record:timestamps"
+    if expires <= started:
+        return "invalid-claim-record-ttl"
+    lease = record.get("lease")
+    if not isinstance(lease, dict):
+        return "malformed-claim-record:lease"
+    lease_fields = ("run_id", "owner", "started_at", "expires_at")
+    if set(lease) != set(lease_fields):
+        return "malformed-claim-record:lease-shape"
+    for field in lease_fields:
+        if not isinstance(lease.get(field), str) or not str(lease[field]).strip():
+            return f"malformed-claim-record:lease.{field}"
+    if (
+        lease["run_id"] != record["run_id"]
+        or lease["started_at"] != record["started_at"]
+        or lease["expires_at"] != record["expires_at"]
+    ):
+        return "claim-record-lease-mismatch"
+    try:
+        lease_started = parse_timestamp(lease["started_at"], "claim_record.lease.started_at")
+        lease_expires = parse_timestamp(lease["expires_at"], "claim_record.lease.expires_at")
+    except ValueError:
+        return "malformed-claim-record:lease-timestamps"
+    if lease_started != started or lease_expires != expires:
+        return "claim-record-lease-mismatch"
+    lease_rules = contract.get("lease")
+    if not isinstance(lease_rules, dict):
+        raise ValueError("execution contract lease rules are invalid")
+    ttl_seconds = int(lease_rules.get("ttl_seconds", 0))
+    if (expires - started).total_seconds() != ttl_seconds:
+        return "claim-record-ttl-mismatch"
+    return None
+
+
+def persisted_runs(fixture: dict[str, object], contract: dict[str, object], repository: str) -> tuple[list[dict[str, object]], str | None]:
+    runs = fixture.get("runs", [])
+    if not isinstance(runs, list):
+        return [], "malformed-run-ledger"
+    valid: list[dict[str, object]] = []
+    for run in runs:
+        error = validate_claim_record(run, contract, repository)
+        if error:
+            return [], error
+        assert isinstance(run, dict)
+        valid.append(run)
+    return valid, None
+
+
+def issue_comment_bodies(fixture: dict[str, object], issue: dict[str, object]) -> list[str]:
+    sources = [fixture.get("comments", []), fixture.get("issue_comments", []), issue.get("comments", [])]
+    bodies: list[str] = []
+    for source in sources:
+        if not isinstance(source, list):
+            return []
+        for comment in source:
+            if isinstance(comment, str):
+                bodies.append(comment)
+            elif isinstance(comment, dict) and isinstance(comment.get("body"), str):
+                bodies.append(comment["body"])
+    return bodies
 
 
 def claim(
@@ -188,62 +391,121 @@ def claim(
     if not run_id.strip() or not event_id.strip() or not lease_owner.strip():
         raise ValueError("run_id, event_id, and lease_owner are required for claim")
     key = idempotency_key(repository, issue_number, plan_revision, scope_hash, event_id)
-    runs = fixture.get("runs", [])
-    if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
-        raise ValueError("fixture runs must be an array of objects")
+    try:
+        runs, ledger_error = persisted_runs(fixture, contract, repository)
+    except ValueError as error:
+        return {"status": "blocked", "reason": "invalid-run-ledger", "issue": issue_number, "detail": str(error)}
+    if ledger_error:
+        return {"status": "blocked", "reason": ledger_error, "issue": issue_number}
     matching_runs = [run for run in runs if run.get("idempotency_key") == key]
-    if matching_runs:
-        if all(run.get("run_id") == run_id for run in matching_runs):
-            return {
-                "status": "no-work",
-                "reason": "duplicate-event",
-                "issue": issue_number,
-                "run_id": run_id,
-                "idempotency_key": key,
-            }
+    if len(matching_runs) > 1:
         return {"status": "blocked", "reason": "idempotency-conflict", "issue": issue_number}
-    if current in set(str(value) for value in contract.get("active_states", [])):
-        lease_rules = contract.get("lease")
-        if not isinstance(lease_rules, dict):
-            raise ValueError("execution contract lease rules are invalid")
-        lease_field = str(lease_rules.get("field", "lease"))
-        lease = metadata.get(lease_field)
-        lease_error = validate_lease(lease, contract)
-        if lease_error:
-            return {"status": "blocked", "reason": lease_error, "issue": issue_number}
-        assert isinstance(lease, dict)
-        now = parse_timestamp(fixture.get("now"), "fixture now")
-        expires_at = parse_timestamp(lease.get("expires_at"), "lease.expires_at")
+    now = parse_timestamp(fixture.get("now"), "fixture now")
+    if matching_runs:
+        persisted = matching_runs[0]
+        record_error = validate_claim_record(persisted, contract, repository, issue_number)
+        if record_error:
+            return {"status": "blocked", "reason": record_error, "issue": issue_number}
+        assert isinstance(persisted, dict)
+        expected_fields = {
+            "run_id": run_id,
+            "event_id": event_id,
+            "executor": executor,
+            "plan_revision": plan_revision,
+            "scope_hash": scope_hash,
+        }
+        if any(persisted.get(field) != value for field, value in expected_fields.items()):
+            return {"status": "blocked", "reason": "claim-record-conflict", "issue": issue_number}
+        persisted_lease = persisted.get("lease")
+        if not isinstance(persisted_lease, dict) or persisted_lease.get("owner") != lease_owner or persisted_lease.get("run_id") != run_id:
+            return {"status": "blocked", "reason": "claim-record-lease-conflict", "issue": issue_number}
+        marker = claim_marker(persisted, contract)
+        if marker not in issue_comment_bodies(fixture, issue):
+            return {"status": "blocked", "reason": "missing-persistence-marker", "issue": issue_number}
+        persistence = persistence_contract(contract)
+        recovery_states = persistence.get("recovery_states")
+        if not isinstance(recovery_states, list) or not all(
+            isinstance(state, str) for state in recovery_states
+        ):
+            raise ValueError("execution contract recovery_states are invalid")
+        if current not in recovery_states:
+            if current in set(str(value) for value in contract.get("active_states", [])):
+                return {
+                    "status": "no-work",
+                    "reason": "claim-already-advanced",
+                    "issue": issue_number,
+                    "current": current,
+                }
+            return {
+                "status": "blocked",
+                "reason": "claim-state-not-recoverable",
+                "issue": issue_number,
+                "current": current,
+            }
+        expires_at = parse_timestamp(persisted["expires_at"], "claim_record.expires_at")
         if expires_at <= now:
             return {"status": "blocked", "reason": "lease-expired", "issue": issue_number}
-        return {"status": "no-work", "reason": "lease-active", "issue": issue_number}
+        ordinary = sorted(label for label in issue_labels(issue) if label not in lifecycle.values())
+        recovery = {
+            "state": current,
+            "resumed": current == "claimed",
+            "evidence": ["durable-claim-record", "exact-persistence-marker", "refetched-runs-ledger"],
+        }
+        return {
+            "status": "claim",
+            "issue": issue_number,
+            "before": current,
+            "after": "claimed",
+            "transition_required": current == "ready",
+            "recovery": recovery,
+            "run_id": run_id,
+            "event_id": event_id,
+            "idempotency_key": key,
+            "claim_record": persisted,
+            "issue_comment_marker": marker,
+            "preserved_labels": ordinary,
+            "labels": sorted([*ordinary, lifecycle["claimed"]]),
+            "lease": persisted["lease"],
+        }
+    if current in set(str(value) for value in contract.get("active_states", [])):
+        return {"status": "blocked", "reason": "missing-persisted-claim-record", "issue": issue_number}
     if current != "ready":
         return {"status": "no-work", "reason": "issue-not-ready", "issue": issue_number}
-    now = parse_timestamp(fixture.get("now"), "fixture now")
     lease_rules = contract.get("lease")
     if not isinstance(lease_rules, dict):
         raise ValueError("execution contract lease rules are invalid")
     ttl_seconds = int(lease_rules.get("ttl_seconds", 0))
     if ttl_seconds <= 0:
         raise ValueError("execution contract lease ttl must be positive")
-    expires_at = now + timedelta(seconds=ttl_seconds)
-    ordinary = sorted(
-        label for label in issue_labels(issue) if label not in lifecycle.values()
+    record = claim_record(
+        repository,
+        issue_number,
+        run_id,
+        event_id,
+        executor,
+        plan_revision,
+        scope_hash,
+        lease_owner,
+        now,
+        ttl_seconds,
     )
+    marker = claim_marker(record, contract)
     return {
-        "status": "claim",
+        "status": "persist",
         "issue": issue_number,
         "before": "ready",
         "after": "claimed",
-        "run_id": run_id,
-        "idempotency_key": key,
-        "preserved_labels": ordinary,
-        "labels": sorted([*ordinary, lifecycle["claimed"]]),
-        "lease": {
-            "run_id": run_id,
-            "owner": lease_owner,
-            "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+        "transition_required": False,
+        "claim_record": record,
+        "issue_comment_marker": marker,
+        "persistence": {
+            "medium": "issue-comment",
+            "order": "persist-marker-refetch-ledger-rerun",
+            "next": "claim",
         },
+        "run_id": run_id,
+        "event_id": event_id,
+        "idempotency_key": key,
     }
 
 
@@ -410,6 +672,8 @@ def main() -> int:
         if any(value is None for value in required.values()):
             parser.error("claim requires --issue, --run-id, --event-id, --executor, --plan-revision, --scope-hash, and --lease-owner")
         result = claim(fixture, lifecycle, contract, **required)
+        if result.get("status") in {"persist", "claim"}:
+            result = attach_claim_authorization(result, fixture)
     print(json.dumps({"type": "cloud_queue_contract", "data": result}, sort_keys=True))
     return 1 if result.get("status") == "blocked" else 0
 

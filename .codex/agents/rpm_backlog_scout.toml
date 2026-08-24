@@ -30,11 +30,14 @@ For candidate modes:
 - exclude ready issues already closed by an open PR;
 - sort ready candidates by issue number ascending;
 - return no more candidates than the command's policy batch limit.
+- for each ready candidate, return the complete canonical normalized claim
+  snapshot and its `sha256-canonical-json` digest. Do not omit comments,
+  durable `runs`, execution metadata, lifecycle labels, or repository identity.
 
 Do not silently repair malformed items. Report them as blocked candidates.
 
 Return exactly one JSONL event:
-{"type":"backlog_scout_result","data":{"status":"complete|no-work|blocked","mode":"capture|research-candidates|ready-candidates","selection_source":"project|issue-labels","selection_command":"<canonical-local-command-or-empty>","duplicate_candidates":[{"issue":"<number-or-url>","relationship":"duplicate|related","evidence":"<evidence>"}],"candidates":[{"issue":"<number-or-url>","state":"<policy-state>","project_item":"<id-or-url-or-empty>","eligibility":"eligible|blocked","evidence":["<fact>"],"blockers":["<blocker>"]}],"repository_evidence":[{"path":"<path-or-url>","observation":"<fact>"}],"blockers":[]}}
+{"type":"backlog_scout_result","data":{"status":"complete|no-work|blocked","mode":"capture|research-candidates|ready-candidates","selection_source":"project|issue-labels","selection_command":"<canonical-local-command-or-empty>","duplicate_candidates":[{"issue":"<number-or-url>","relationship":"duplicate|related","evidence":"<evidence>"}],"candidates":[{"issue":"<number-or-url>","state":"<policy-state>","project_item":"<id-or-url-or-empty>","eligibility":"eligible|blocked","normalized_snapshot":{},"snapshot_sha256":"sha256:<64-lowercase-hex>","evidence":["<fact>"],"blockers":["<blocker>"]}],"repository_evidence":[{"path":"<path-or-url>","observation":"<fact>"}],"blockers":[]}}
 
 If blocked, stop with `BLOCKED: <exact reason>` inside blockers. Do not call another agent.
 """

@@ -53,11 +53,14 @@ without applying it.
 6. Rerun focused validation, the appropriate repository gate, and internal adversarial review after accepted fixes. Do not assume an Automatic review reruns after a push.
 7. Preserve a validated #208 disposition when supplied. Until #208 defines
    that contract, keep deferred findings in the existing decision and
-   follow-up output without inventing a replacement schema. Draft deferred
-   follow-up issues with `scripts/create-review-followup-issue.sh`;
-   use `--create` only when explicitly authorized by
-   `may_create_followup_issues=true`; follow-up authorization gates mutation.
-   Do not invent the final #208 schema.
+   follow-up output without inventing a replacement schema. The resolver
+   returns every complete draft in `follow_up_issues[].body_markdown` with
+   `state:"drafted"`, `url:null`, and `path:null`; it does not write `/tmp`
+   files or invoke the preview script. The main session may write the returned
+   body to `/tmp/rpm-review-followup-pr<pr>-<slug>.md` and preview it with
+   `scripts/create-review-followup-issue.sh`. Use `--create` only when
+   explicitly authorized by `may_create_followup_issues=true`; follow-up
+   authorization gates mutation. Do not invent the final #208 schema.
 8. Commit and push accepted fixes to the same PR branch. The main session owns
    one resolution comment and the lifecycle transition after verification.
 9. Keep `agent:review-pending` when actionable P0/P1 findings remain. When no actionable finding remains, remove `agent:review-pending` and `agent:claimed`, add `agent:awaiting-merge`, and preserve all non-lifecycle labels.
@@ -74,7 +77,9 @@ Read [references/templates.md](references/templates.md) when you need the resolv
 - Host-provided GitHub capability for review, thread, issue, label, and PR operations
 - `bash scripts/collect-pr-review-context.sh <pr> --format jsonl` as a local/manual fallback
 - `bash scripts/collect-pr-review-context.sh <pr> --format json` as a local/manual fallback
-- `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> [--label <label>] --format jsonl`
-- `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> [--label <label>] --create --format jsonl`
+- Main session only: `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> [--label <label>] --format jsonl`
+- Main session or explicitly delegated issue creator only: `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> [--label <label>] --create --format jsonl`
 
-Use `/tmp/rpm-review-followup-pr<pr>-<slug>.md` for temporary issue body files. Do not commit them.
+The resolver returns structured body content and never creates this file.
+When the main session needs a preview, use
+`/tmp/rpm-review-followup-pr<pr>-<slug>.md` and do not commit it.

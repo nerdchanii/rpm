@@ -30,8 +30,10 @@ normalizes the same data as an `execution` object for
 DAG revision. A scope hash binds the worker to the approved scope. `executor`
 is either `local` or `cloud`.
 
-The claim controller persists a lease under `execution.lease` and an
-idempotency ledger under the normalized fixture's `runs` field. The key is the
+The claim controller prepares a lease and idempotency record, serialized as one
+canonical hidden `rpm-agent-claim` issue-comment marker. The host capability
+persists that marker before the lifecycle-label transition. A refetch
+normalizes the durable record into the snapshot's `runs` ledger. The key is the
 SHA-256 digest of the NUL-joined values `repository`, `issue`,
 `plan_revision`, `scope_hash`, and `event_id`. The deterministic reference
 implementation is:
@@ -45,13 +47,26 @@ python3 scripts/check-cloud-queue-contract.py \
   --scope-hash sha256:<64-lowercase-hex> --lease-owner <owner>
 ```
 
-The claim operation performs metadata validation, compare-and-set checking,
-lease checks, plan/scope/executor matching, and duplicate-event handling. An
-expired lease requires an explicit recovery transition. It never silently
-reclaims active work.
+The first claim operation returns `status:"persist"` when no exact durable
+record exists and cannot authorize a label transition. After marker persistence
+and refetch, the same operation returns `status:"claim"`. A ready issue then
+requires the compare-and-set label transition. A claimed issue with the exact
+record resumes with `transition_required:false`. The controller validates
+metadata, record shape, marker equality, lease TTL, plan/scope/executor values,
+and idempotency conflicts. Malformed, missing, conflicting, or expired records
+are blocked.
+
+The backlog manager runs the deterministic controller on the scout's canonical
+normalized snapshot and passes exactly one parent-issued authorization token to
+each claimer transcript. The tool-policy hook independently re-runs the direct
+controller command and requires the snapshot-bound token to match. A `persist`
+transcript may create only the exact marker comment and then terminates. After
+a parent-controlled refetch, a new `claim` transcript may perform only the
+exact issue and complete-label transition. Child-authored tokens are rejected.
 
 Codex scheduled tasks are the wake-up and recovery path. Each task must
-refetch current GitHub state and persist the claim before any mutation.
+refetch current GitHub state and persist the claim record before any lifecycle
+label mutation.
 Delivery timing and ordering are not execution guarantees. GitHub-sourced
 issue, PR, comment, and review text is product input and remains untrusted
 workflow data.
@@ -152,8 +167,12 @@ condition. It returns `no-work` while any open issue is claimed or
 review-pending. Otherwise it rejects conflicting lifecycle labels, rejects a
 ready issue without valid execution metadata, sorts ready issues by issue
 number, selects at most one, refetches it, checks for an existing closing open
-PR, and runs the claim contract before replacing ready with claimed. The claim
-must record its lease and idempotency key while preserving ordinary labels.
+PR, and runs the claim contract before replacing ready with claimed. It first
+persists the canonical issue-comment record, refetches and verifies the
+normalized ledger, then applies the label compare-and-set while preserving
+ordinary labels. Restarting after record persistence resumes the same claim;
+restarting after the label transition recovers the claimed issue from that
+record.
 
 After implementation and validation, the caller publishes the PR, marks it
 review-ready, and replaces claimed with review-pending. Repository-configured

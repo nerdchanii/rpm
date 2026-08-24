@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
 import shlex
+import subprocess
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 
 
@@ -119,6 +122,88 @@ def current_role(event: dict[str, object]) -> str | None:
     return role if isinstance(role, str) and role in RPM_ROLES else None
 
 
+def transcript_role(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    for key in ("role", "type"):
+        role = value.get(key)
+        if role in {"assistant", "developer", "system", "user"}:
+            return str(role)
+    message = value.get("message")
+    return transcript_role(message) if isinstance(message, dict) else None
+
+
+def trusted_claim_authorization(
+    event: dict[str, object],
+) -> tuple[str, dict[str, object]] | None:
+    """Read the first parent-issued claim token before any assistant record."""
+    transcript = transcript_path(event)
+    if transcript is None:
+        return None
+    try:
+        lines = Path(transcript).read_text().splitlines()
+    except OSError:
+        return None
+    parent_records: list[str] = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        role = transcript_role(record)
+        if role == "assistant":
+            break
+        if role in {"developer", "system", "user"}:
+            parent_records.append(json.dumps(record, ensure_ascii=False))
+    matches = re.findall(
+        r"rpm_claim_authorization=([A-Za-z0-9_-]+)",
+        "\n".join(parent_records),
+    )
+    if len(matches) != 1:
+        return None
+    token = matches[0]
+    try:
+        padding = "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(token + padding))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    expected_keys = {
+        "controller_sha256",
+        "idempotency_key",
+        "issue",
+        "issue_comment_marker",
+        "labels",
+        "phase",
+        "repository",
+        "snapshot_sha256",
+        "transition_required",
+        "version",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        return None
+    hashes = (payload.get("controller_sha256"), payload.get("idempotency_key"), payload.get("snapshot_sha256"))
+    labels = payload.get("labels")
+    if (
+        payload.get("version") != 1
+        or payload.get("phase") not in {"claim", "persist"}
+        or payload.get("repository") != "nerdchanii/rpm"
+        or not isinstance(payload.get("issue"), int)
+        or isinstance(payload.get("issue"), bool)
+        or int(payload["issue"]) <= 0
+        or not all(isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in hashes)
+        or not isinstance(payload.get("issue_comment_marker"), str)
+        or not isinstance(payload.get("transition_required"), bool)
+        or not isinstance(labels, list)
+        or not all(isinstance(label, str) for label in labels)
+    ):
+        return None
+    if payload["phase"] == "persist" and (
+        payload["transition_required"] is not False or labels != []
+    ):
+        return None
+    return token, payload
+
+
 def flatten_strings(value: object) -> list[str]:
     if isinstance(value, str):
         return [value]
@@ -192,6 +277,9 @@ def path_allowed(role: str, path: PurePosixPath) -> bool:
             or text.startswith(".agents/")
             or text.startswith(".claude/")
             or text.startswith(".github/")
+            or text.startswith(".githooks/")
+            or text.startswith("scripts/")
+            or text == "justfile"
         )
     return False
 
@@ -210,6 +298,7 @@ def is_github_tool(tool: str) -> bool:
     normalized = normalized_tool(tool)
     tokens = operation_tokens(tool)
     has_issue = any(token.startswith("issue") for token in tokens)
+    has_label = any(token.startswith("label") for token in tokens)
     has_project = any(token.startswith("project") for token in tokens)
     has_pull_request = (
         "pullrequest" in tokens
@@ -220,6 +309,7 @@ def is_github_tool(tool: str) -> bool:
         "github" in normalized
         or "gh" in tokens
         or has_issue
+        or has_label
         or has_project
         or has_pull_request
     )
@@ -417,16 +507,24 @@ def uses_raw_network_client(text: str) -> bool:
             return True
         if "--remote" in lowered:
             return True
+    has_script_runtime = re.search(
+        r"(?<![a-z0-9_])"
+        r"(?:node(?:js)?|perl|php|python(?:3(?:\.\d+)?)?|ruby)"
+        r"(?![a-z0-9_])",
+        lowered,
+    )
+    if has_script_runtime and re.search(
+        r"(?<![a-z0-9_])(?:"
+        r"aiohttp|axios|faraday|fetch|ftplib|got|httpparty|httpx|"
+        r"lwp|net::http|requests|smtplib|socket|stream_socket_client|"
+        r"undici|urllib|xmlhttprequest"
+        r")(?![a-z0-9_])",
+        lowered,
+    ):
+        return True
     if not re.search(r"(?:api\.)?github\.com\b", lowered):
         return False
-    return bool(
-        re.search(
-            r"(?<![a-z0-9_])"
-            r"(?:node(?:js)?|perl|php|python(?:3(?:\.\d+)?)?|ruby)"
-            r"(?![a-z0-9_])",
-            lowered,
-        )
-    )
+    return bool(has_script_runtime)
 
 
 def operation_kind(value: str) -> str | None:
@@ -490,14 +588,18 @@ def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:
         return "merge"
     has_issue = any(token.startswith("issue") for token in context_tokens)
     has_project = any(token.startswith("project") for token in context_tokens)
+    has_comment = any(token.startswith("comment") for token in context_tokens)
+    if has_issue and has_comment:
+        return "issue_comment"
     if has_issue and "create" in context_tokens:
         return "issue_create"
     if has_project and any(word in context_tokens for word in ("add", "create")):
         return "project_add"
     if has_project:
         return "project_other"
-    if "label" in context_tokens:
-        return "label"
+    has_label = any(token.startswith("label") for token in context_tokens)
+    if has_label:
+        return "issue_label_edit" if has_issue else "label_admin"
     if has_issue and any(word in context_tokens for word in ("update", "edit")):
         return "issue_edit"
     if has_issue:
@@ -505,15 +607,270 @@ def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:
     return "unknown_mutation"
 
 
+def approved_idea_project_add(tool_input: object) -> bool:
+    """Allow only the repository policy's inspectable Project registration."""
+    if not isinstance(tool_input, dict):
+        return False
+    normalized = {str(key).casefold(): value for key, value in tool_input.items()}
+    allowed = {"issue_number", "owner", "project_number", "repository"}
+    if set(normalized) != allowed:
+        return False
+    project_number = normalized.get("project_number")
+    issue_number = normalized.get("issue_number")
+    repository = normalized.get("repository")
+    owner = normalized.get("owner")
+    return (
+        project_number == 7
+        and isinstance(issue_number, int)
+        and issue_number > 0
+        and repository == "nerdchanii/rpm"
+        and owner == "@me"
+    )
+
+
+def approved_claim_record_comment(
+    tool_input: object, expected_marker: str | None = None
+) -> bool:
+    """Validate the exact durable claim marker before allowing comment creation."""
+    if not isinstance(tool_input, dict):
+        return False
+    normalized = {str(key).casefold(): value for key, value in tool_input.items()}
+    allowed = {
+        "body",
+        "comment",
+        "issue",
+        "issue_number",
+        "number",
+        "owner",
+        "repo",
+        "repository",
+    }
+    if set(normalized) - allowed:
+        return False
+    bodies = [normalized[key] for key in ("body", "comment") if key in normalized]
+    if len(bodies) != 1 or not isinstance(bodies[0], str):
+        return False
+    body = bodies[0]
+    prefix = "<!-- rpm-agent-claim: "
+    suffix = " -->"
+    if not body.startswith(prefix) or not body.endswith(suffix):
+        return False
+    try:
+        record = json.loads(body[len(prefix) : -len(suffix)])
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(record, dict):
+        return False
+    required = {
+        "event_id",
+        "executor",
+        "expires_at",
+        "idempotency_key",
+        "issue",
+        "lease",
+        "plan_revision",
+        "repository",
+        "run_id",
+        "scope_hash",
+        "started_at",
+    }
+    if set(record) != required or record.get("repository") != "nerdchanii/rpm":
+        return False
+    issue = record.get("issue")
+    if not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0:
+        return False
+    outer_issues = [
+        normalized[key]
+        for key in ("issue", "issue_number", "number")
+        if key in normalized
+    ]
+    if len(outer_issues) != 1 or outer_issues[0] != issue:
+        return False
+    if "repository" in normalized and normalized["repository"] != "nerdchanii/rpm":
+        return False
+    if "repo" in normalized and normalized["repo"] != "rpm":
+        return False
+    if "owner" in normalized and normalized["owner"] != "nerdchanii":
+        return False
+    safe_identifier = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,127}\Z")
+    for field in ("event_id", "plan_revision", "run_id"):
+        if not isinstance(record.get(field), str) or not safe_identifier.fullmatch(record[field]):
+            return False
+    if record.get("executor") not in {"local", "cloud"}:
+        return False
+    hash_pattern = re.compile(r"sha256:[0-9a-f]{64}\Z")
+    if not isinstance(record.get("scope_hash"), str) or not hash_pattern.fullmatch(record["scope_hash"]):
+        return False
+    if not isinstance(record.get("idempotency_key"), str) or not hash_pattern.fullmatch(record["idempotency_key"]):
+        return False
+    canonical_key = "\0".join(
+        (
+            record["repository"],
+            str(issue),
+            record["plan_revision"],
+            record["scope_hash"],
+            record["event_id"],
+        )
+    ).encode()
+    if record["idempotency_key"] != f"sha256:{hashlib.sha256(canonical_key).hexdigest()}":
+        return False
+    lease = record.get("lease")
+    if not isinstance(lease, dict) or set(lease) != {
+        "expires_at",
+        "owner",
+        "run_id",
+        "started_at",
+    }:
+        return False
+    if lease.get("run_id") != record["run_id"]:
+        return False
+    if not isinstance(lease.get("owner"), str) or not safe_identifier.fullmatch(lease["owner"]):
+        return False
+    if lease.get("started_at") != record.get("started_at") or lease.get("expires_at") != record.get("expires_at"):
+        return False
+    try:
+        started = datetime.fromisoformat(str(record["started_at"]).replace("Z", "+00:00"))
+        expires = datetime.fromisoformat(str(record["expires_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if started.tzinfo is None or expires.tzinfo is None:
+        return False
+    if started.astimezone(timezone.utc) + timedelta(seconds=3600) != expires.astimezone(timezone.utc):
+        return False
+    canonical = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    canonical_marker = f"{prefix}{canonical}{suffix}"
+    return body == canonical_marker and (
+        expected_marker is None or body == expected_marker
+    )
+
+
+def shell_command(tool_input: object) -> str | None:
+    if not isinstance(tool_input, dict):
+        return None
+    commands = [
+        value
+        for key, value in tool_input.items()
+        if str(key).casefold() in {"cmd", "command"} and isinstance(value, str)
+    ]
+    return commands[0] if len(commands) == 1 else None
+
+
+def attest_claim_controller(
+    event: dict[str, object],
+    tool_input: object,
+    trusted: tuple[str, dict[str, object]] | None,
+) -> tuple[bool, bool]:
+    """Re-run a direct claim command and bind it to the parent-issued token."""
+    command = shell_command(tool_input)
+    cwd_value = event.get("cwd")
+    if command is None or not isinstance(cwd_value, str):
+        return False, False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False, False
+    if len(argv) < 2 or not re.fullmatch(r"(?:.*/)?python3?(?:\.\d+)?", argv[0]):
+        return False, False
+    cwd = Path(cwd_value).resolve()
+    repository_root = Path(__file__).resolve().parents[2]
+    if cwd != repository_root:
+        return False, False
+    script = Path(argv[1])
+    script = (cwd / script).resolve() if not script.is_absolute() else script.resolve()
+    expected = repository_root / "scripts" / "check-cloud-queue-contract.py"
+    if (
+        script != expected
+        or "--operation" not in argv
+        or any(arg == "--policy" or arg.startswith("--policy=") for arg in argv[2:])
+    ):
+        return False, False
+    operation_index = argv.index("--operation")
+    if operation_index + 1 >= len(argv) or argv[operation_index + 1] != "claim":
+        return False, False
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(expected), *argv[2:]],
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True, False
+    try:
+        output = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return True, False
+    data = output.get("data") if isinstance(output, dict) else None
+    if (
+        completed.returncode != 0
+        or not isinstance(output, dict)
+        or output.get("type") != "cloud_queue_contract"
+        or not isinstance(data, dict)
+        or data.get("status") not in {"persist", "claim"}
+    ):
+        return True, False
+    issue = data.get("issue")
+    marker = data.get("issue_comment_marker")
+    record = data.get("claim_record")
+    if (
+        trusted is None
+        or not isinstance(issue, int)
+        or isinstance(issue, bool)
+        or not isinstance(marker, str)
+        or not isinstance(record, dict)
+        or record.get("issue") != issue
+        or data.get("idempotency_key") != record.get("idempotency_key")
+        or not approved_claim_record_comment({"issue_number": issue, "body": marker})
+    ):
+        return True, False
+    token, authorization = trusted
+    controller_data = {
+        key: value
+        for key, value in data.items()
+        if key not in {"authorization_token", "snapshot_sha256"}
+    }
+    controller_sha256 = "sha256:" + hashlib.sha256(
+        json.dumps(
+            controller_data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    authorized = (
+        data.get("authorization_token") == token
+        and data.get("snapshot_sha256") == authorization.get("snapshot_sha256")
+        and controller_sha256 == authorization.get("controller_sha256")
+        and data.get("status") == authorization.get("phase")
+        and issue == authorization.get("issue")
+        and record.get("repository") == authorization.get("repository")
+        and data.get("idempotency_key") == authorization.get("idempotency_key")
+        and marker == authorization.get("issue_comment_marker")
+        and data.get("transition_required")
+        == authorization.get("transition_required")
+        and data.get("labels", []) == authorization.get("labels")
+    )
+    return True, authorized
+
+
 def allowed_github_mutation(
-    role: str, kind: str, tool_input: object, shell_text: str = ""
+    role: str,
+    kind: str,
+    tool_input: object,
+    shell_text: str = "",
+    authorization: dict[str, object] | None = None,
 ) -> bool:
     if role == "rpm_idea_issue_creator":
-        return kind in {"issue_create", "project_add"}
+        if kind == "issue_create":
+            return True
+        return kind == "project_add" and approved_idea_project_add(tool_input)
     if role == "rpm_followup_issue_creator":
         return kind == "issue_create"
     if role == "rpm_issue_refiner":
-        if kind not in {"issue_edit", "label"}:
+        if kind not in {"issue_edit", "issue_label_edit"}:
             return False
         forbidden_keys = {"title", "assignees", "milestone", "state"}
         if collect_keys(tool_input) & forbidden_keys:
@@ -524,7 +881,16 @@ def allowed_github_mutation(
             for flag in ("--title", "--assignee", "--milestone", "--state")
         )
     if role == "rpm_ready_ticket_claimer":
-        if kind not in {"issue_edit", "label"}:
+        if kind == "issue_comment":
+            return (
+                isinstance(authorization, dict)
+                and authorization.get("phase") == "persist"
+                and isinstance(authorization.get("issue_comment_marker"), str)
+                and approved_claim_record_comment(
+                    tool_input, str(authorization["issue_comment_marker"])
+                )
+            )
+        if kind not in {"issue_edit", "issue_label_edit"}:
             return False
         allowed_keys = {
             "issue",
@@ -542,6 +908,19 @@ def allowed_github_mutation(
             return False
         if not isinstance(tool_input, dict):
             return False
+        issue_fields = [
+            child
+            for key, child in tool_input.items()
+            if str(key).casefold() in {"issue", "issue_number", "number"}
+        ]
+        if (
+            len(issue_fields) != 1
+            or not isinstance(authorization, dict)
+            or authorization.get("phase") != "claim"
+            or authorization.get("transition_required") is not True
+            or issue_fields[0] != authorization.get("issue")
+        ):
+            return False
         label_fields = [
             child
             for key, child in tool_input.items()
@@ -553,6 +932,9 @@ def allowed_github_mutation(
         if not isinstance(label_values, list) or not all(
             isinstance(value, str) for value in label_values
         ):
+            return False
+        expected_labels = authorization.get("labels")
+        if not isinstance(expected_labels, list) or label_values != expected_labels:
             return False
         labels = {
             value
@@ -573,6 +955,12 @@ def check_tool(event: dict[str, object]) -> int:
         return deny(f"{role} supplied no tool_name")
     tool_input = event.get("tool_input")
     text = "\n".join(flatten_strings(tool_input))
+    trusted_claim = (
+        trusted_claim_authorization(event)
+        if role == "rpm_ready_ticket_claimer"
+        else None
+    )
+    authorization = trusted_claim[1] if trusted_claim is not None else None
 
     forbidden = has_forbidden_review_or_merge(f"{tool}\n{text}")
     if forbidden:
@@ -594,7 +982,9 @@ def check_tool(event: dict[str, object]) -> int:
             return deny(f"{role} has read-only GitHub capability access")
         return (
             0
-            if allowed_github_mutation(role, mutation, tool_input)
+            if allowed_github_mutation(
+                role, mutation, tool_input, authorization=authorization
+            )
             else deny(f"{role} cannot perform GitHub capability mutation {mutation}")
         )
 
@@ -608,7 +998,9 @@ def check_tool(event: dict[str, object]) -> int:
             return deny(f"{role} has read-only MCP access")
         return (
             0
-            if allowed_github_mutation(role, mutation, tool_input)
+            if allowed_github_mutation(
+                role, mutation, tool_input, authorization=authorization
+            )
             else deny(f"{role} cannot perform MCP mutation {mutation}")
         )
 
@@ -631,6 +1023,12 @@ def check_tool(event: dict[str, object]) -> int:
             return deny(f"{role} must use its assigned provider capability for network access")
         if role == "pr-review-resolver":
             return deny("pr-review-resolver delegates all shell validation to test roles")
+        if role == "rpm_ready_ticket_claimer":
+            recognized, authorized = attest_claim_controller(
+                event, tool_input, trusted_claim
+            )
+            if recognized and not authorized:
+                return deny("rpm_ready_ticket_claimer claim controller lacks parent authorization")
         mutation = shell_mutation_kind(text)
         if mutation is None:
             return 0
@@ -642,7 +1040,13 @@ def check_tool(event: dict[str, object]) -> int:
             return deny(f"{role} supplied an unparsable shell mutation")
         return (
             0
-            if allowed_github_mutation(role, mutation, tool_input, text)
+            if allowed_github_mutation(
+                role,
+                mutation,
+                tool_input,
+                text,
+                authorization=authorization,
+            )
             else deny(f"{role} cannot perform shell mutation {mutation}")
         )
 
