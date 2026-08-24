@@ -623,6 +623,68 @@ assert_contains "$(<"${regular_cargo_parent_symlink_output}")" \
   'Cargo bin contains a symlink path component'
 [ "$(<"${regular_cargo_parent_symlink_status}")" -eq 1 ]
 
+writable_cargo_home_case="$(new_case writable-cargo-home)"
+make_fake_environment "${writable_cargo_home_case}" warm
+cp "${writable_cargo_home_case}/trusted/bin/"* \
+  "${writable_cargo_home_case}/home/.cargo/bin/"
+chmod 775 "${writable_cargo_home_case}/home"
+writable_cargo_home_output="${writable_cargo_home_case}/output"
+writable_cargo_home_status="${writable_cargo_home_case}/status"
+run_setup "${writable_cargo_home_case}" \
+  "${writable_cargo_home_case}/home/.cargo/bin:${writable_cargo_home_case}/trusted/bin" \
+  "${writable_cargo_home_case}/trusted/bin" "${writable_cargo_home_output}" \
+  "${writable_cargo_home_status}"
+[ "$(<"${writable_cargo_home_status}")" -eq 1 ]
+assert_contains "$(<"${writable_cargo_home_output}")" \
+  'Cargo HOME is writable by a group or other user'
+
+writable_cargo_parent_case="$(new_case writable-cargo-parent)"
+make_fake_environment "${writable_cargo_parent_case}" warm
+cp "${writable_cargo_parent_case}/trusted/bin/"* \
+  "${writable_cargo_parent_case}/home/.cargo/bin/"
+chmod 775 "${writable_cargo_parent_case}/home/.cargo"
+writable_cargo_parent_output="${writable_cargo_parent_case}/output"
+writable_cargo_parent_status="${writable_cargo_parent_case}/status"
+run_setup "${writable_cargo_parent_case}" \
+  "${writable_cargo_parent_case}/home/.cargo/bin:${writable_cargo_parent_case}/trusted/bin" \
+  "${writable_cargo_parent_case}/trusted/bin" \
+  "${writable_cargo_parent_output}" "${writable_cargo_parent_status}"
+[ "$(<"${writable_cargo_parent_status}")" -eq 1 ]
+assert_contains "$(<"${writable_cargo_parent_output}")" \
+  'Cargo home is writable by a group or other user'
+
+aliased_cargo_parent_case="$(new_case aliased-cargo-parent)"
+make_fake_environment "${aliased_cargo_parent_case}" warm
+cp "${aliased_cargo_parent_case}/trusted/bin/"* \
+  "${aliased_cargo_parent_case}/home/.cargo/bin/"
+chmod 775 "${aliased_cargo_parent_case}/home"
+aliased_cargo_parent_output="${aliased_cargo_parent_case}/output"
+aliased_cargo_parent_status="${aliased_cargo_parent_case}/status"
+run_setup "${aliased_cargo_parent_case}" \
+  "${aliased_cargo_parent_case}/home//.cargo/bin:${aliased_cargo_parent_case}/trusted/bin" \
+  "${aliased_cargo_parent_case}/trusted/bin" "${aliased_cargo_parent_output}" \
+  "${aliased_cargo_parent_status}"
+[ "$(<"${aliased_cargo_parent_status}")" -eq 1 ]
+assert_contains "$(<"${aliased_cargo_parent_output}")" \
+  'trusted PATH entry contains an empty path component'
+
+if [ "${EUID}" -eq 0 ]; then
+  wrong_owner_cargo_parent_case="$(new_case wrong-owner-cargo-parent)"
+  make_fake_environment "${wrong_owner_cargo_parent_case}" warm
+  cp "${wrong_owner_cargo_parent_case}/trusted/bin/"* \
+    "${wrong_owner_cargo_parent_case}/home/.cargo/bin/"
+  chown 1001 "${wrong_owner_cargo_parent_case}/home/.cargo"
+  wrong_owner_cargo_parent_output="${wrong_owner_cargo_parent_case}/output"
+  wrong_owner_cargo_parent_status="${wrong_owner_cargo_parent_case}/status"
+  run_setup "${wrong_owner_cargo_parent_case}" \
+    "${wrong_owner_cargo_parent_case}/home/.cargo/bin:${wrong_owner_cargo_parent_case}/trusted/bin" \
+    "${wrong_owner_cargo_parent_case}/trusted/bin" \
+    "${wrong_owner_cargo_parent_output}" "${wrong_owner_cargo_parent_status}"
+  [ "$(<"${wrong_owner_cargo_parent_status}")" -eq 1 ]
+  assert_contains "$(<"${wrong_owner_cargo_parent_output}")" \
+    'Cargo home is not owned by the setup user'
+fi
+
 rustup_proxy_writable_case="$(new_case rustup-proxy-writable)"
 make_fake_environment "${rustup_proxy_writable_case}" rustup-proxies
 chmod 777 "${rustup_proxy_writable_case}/home/.cargo/bin/rustup"
@@ -925,7 +987,8 @@ if [ "${EUID}" -eq 0 ]; then
   mkdir -p "${platform_nvm_bin}"
   cp "${platform_nvm_case}/trusted/bin/"* "${platform_nvm_case}/home/.cargo/bin/"
   cp "${platform_nvm_case}/trusted/bin/node" "${platform_nvm_bin}/node"
-  chown -R 1001 "${platform_nvm_case}/home/.nvm"
+  chown -R 0 "${platform_nvm_case}/home/.nvm"
+  chown -R 1001 "${platform_nvm_bin}"
   platform_nvm_output="${platform_nvm_case}/output"
   platform_nvm_status="${platform_nvm_case}/status"
   run_setup "${platform_nvm_case}" __DEFAULT__ \
@@ -939,8 +1002,9 @@ if [ "${EUID}" -eq 0 ]; then
   mkdir -p "${mixed_nvm_bin}"
   cp "${mixed_nvm_case}/trusted/bin/"* "${mixed_nvm_case}/home/.cargo/bin/"
   cp "${mixed_nvm_case}/trusted/bin/node" "${mixed_nvm_bin}/node"
-  chown -R 1001 "${mixed_nvm_case}/home/.nvm"
-  chown 1002 "${mixed_nvm_bin}/node"
+  chown -R 0 "${mixed_nvm_case}/home/.nvm"
+  chown -R 1001 "${mixed_nvm_bin}"
+  chown 0 "${mixed_nvm_bin}/node"
   mixed_nvm_output="${mixed_nvm_case}/output"
   mixed_nvm_status="${mixed_nvm_case}/status"
   run_setup "${mixed_nvm_case}" __DEFAULT__ "${mixed_nvm_case}/shadow/bin" \
@@ -948,6 +1012,59 @@ if [ "${EUID}" -eq 0 ]; then
     "${mixed_nvm_bin}"
   [ "$(<"${mixed_nvm_status}")" -eq 1 ]
   assert_contains "$(<"${mixed_nvm_output}")" 'does not match the pinned NVM owner'
+
+  arbitrary_nvm_case="$(new_case arbitrary-nvm-owner)"
+  make_fake_environment "${arbitrary_nvm_case}" warm
+  arbitrary_nvm_bin="${arbitrary_nvm_case}/home/.nvm/versions/node/vfixture/bin"
+  mkdir -p "${arbitrary_nvm_bin}"
+  cp "${arbitrary_nvm_case}/trusted/bin/"* "${arbitrary_nvm_case}/home/.cargo/bin/"
+  cp "${arbitrary_nvm_case}/trusted/bin/node" "${arbitrary_nvm_bin}/node"
+  chown -R 1001 "${arbitrary_nvm_case}/home/.nvm"
+  arbitrary_nvm_output="${arbitrary_nvm_case}/output"
+  arbitrary_nvm_status="${arbitrary_nvm_case}/status"
+  run_setup "${arbitrary_nvm_case}" __DEFAULT__ \
+    "${arbitrary_nvm_case}/shadow/bin" "${arbitrary_nvm_output}" \
+    "${arbitrary_nvm_status}" "${arbitrary_nvm_case}/home" "${arbitrary_nvm_bin}"
+  [ "$(<"${arbitrary_nvm_status}")" -eq 1 ]
+  assert_contains "$(<"${arbitrary_nvm_output}")" \
+    'NVM_BIN ancestors are not owned by the setup user or root'
+
+  arbitrary_nvm_transition_case="$(new_case arbitrary-nvm-transition)"
+  make_fake_environment "${arbitrary_nvm_transition_case}" warm
+  arbitrary_nvm_transition_bin="${arbitrary_nvm_transition_case}/home/.nvm/versions/node/vfixture/bin"
+  mkdir -p "${arbitrary_nvm_transition_bin}"
+  cp "${arbitrary_nvm_transition_case}/trusted/bin/"* \
+    "${arbitrary_nvm_transition_case}/home/.cargo/bin/"
+  cp "${arbitrary_nvm_transition_case}/trusted/bin/node" \
+    "${arbitrary_nvm_transition_bin}/node"
+  chown -R 0 "${arbitrary_nvm_transition_case}/home/.nvm"
+  chown -R 1002 "${arbitrary_nvm_transition_bin}"
+  arbitrary_nvm_transition_output="${arbitrary_nvm_transition_case}/output"
+  arbitrary_nvm_transition_status="${arbitrary_nvm_transition_case}/status"
+  run_setup "${arbitrary_nvm_transition_case}" __DEFAULT__ \
+    "${arbitrary_nvm_transition_case}/shadow/bin" \
+    "${arbitrary_nvm_transition_output}" "${arbitrary_nvm_transition_status}" \
+    "${arbitrary_nvm_transition_case}/home" "${arbitrary_nvm_transition_bin}"
+  [ "$(<"${arbitrary_nvm_transition_status}")" -eq 1 ]
+  assert_contains "$(<"${arbitrary_nvm_transition_output}")" \
+    'NVM_BIN has an untrusted owner transition at bin'
+
+  multiple_nvm_case="$(new_case multiple-nvm-owner-transition)"
+  make_fake_environment "${multiple_nvm_case}" warm
+  multiple_nvm_bin="${multiple_nvm_case}/home/.nvm/versions/node/vfixture/bin"
+  mkdir -p "${multiple_nvm_bin}"
+  cp "${multiple_nvm_case}/trusted/bin/"* "${multiple_nvm_case}/home/.cargo/bin/"
+  cp "${multiple_nvm_case}/trusted/bin/node" "${multiple_nvm_bin}/node"
+  chown -R 0 "${multiple_nvm_case}/home/.nvm"
+  chown -R 1001 "${multiple_nvm_case}/home/.nvm/versions"
+  multiple_nvm_output="${multiple_nvm_case}/output"
+  multiple_nvm_status="${multiple_nvm_case}/status"
+  run_setup "${multiple_nvm_case}" __DEFAULT__ \
+    "${multiple_nvm_case}/shadow/bin" "${multiple_nvm_output}" \
+    "${multiple_nvm_status}" "${multiple_nvm_case}/home" "${multiple_nvm_bin}"
+  [ "$(<"${multiple_nvm_status}")" -eq 1 ]
+  assert_contains "$(<"${multiple_nvm_output}")" \
+    'NVM_BIN ownership changes before the trusted bin transition'
 fi
 
 default_unset_nvm_case="$(new_case default-unset-nvm)"
@@ -987,6 +1104,48 @@ run_setup "${invalid_nvm_case}" "${invalid_nvm_case}/trusted/bin" \
   "${invalid_nvm_case}/home" "${invalid_nvm_case}/outside/node/bin"
 [ "$(<"${invalid_nvm_status}")" -eq 1 ]
 assert_contains "$(<"${invalid_nvm_output}")" 'NVM_BIN must be under HOME/.nvm/versions/node/<version>/bin'
+
+platform_python_case="$(new_case platform-python)"
+make_fake_environment "${platform_python_case}" warm python3
+platform_python_output="${platform_python_case}/output"
+platform_python_status="${platform_python_case}/status"
+run_setup "${platform_python_case}" \
+  "${platform_python_case}/trusted/bin:/usr/bin" \
+  "${platform_python_case}/trusted/bin" "${platform_python_output}" \
+  "${platform_python_status}"
+[ "$(<"${platform_python_status}")" -eq 0 ]
+assert_contains "$(<"${platform_python_output}")" 'codex-cloud-setup: ready ('
+
+untrusted_python_symlink_case="$(new_case untrusted-python-symlink)"
+make_fake_environment "${untrusted_python_symlink_case}" warm python3
+ln -s /usr/bin/python3 "${untrusted_python_symlink_case}/trusted/bin/python3"
+untrusted_python_symlink_output="${untrusted_python_symlink_case}/output"
+untrusted_python_symlink_status="${untrusted_python_symlink_case}/status"
+run_setup "${untrusted_python_symlink_case}" \
+  "${untrusted_python_symlink_case}/trusted/bin:/usr/bin" \
+  "${untrusted_python_symlink_case}/trusted/bin" \
+  "${untrusted_python_symlink_output}" "${untrusted_python_symlink_status}"
+[ "$(<"${untrusted_python_symlink_status}")" -eq 1 ]
+assert_contains "$(<"${untrusted_python_symlink_output}")" \
+  'python3 is not an approved executable symlink'
+
+nested_python_symlink_case="$(new_case nested-python-symlink)"
+make_fake_environment "${nested_python_symlink_case}" warm python3
+mkdir -p "${nested_python_symlink_case}/external/python3.vendor"
+printf '#!/bin/bash\nexit 0\n' \
+  >"${nested_python_symlink_case}/external/python3.vendor/runner"
+chmod +x "${nested_python_symlink_case}/external/python3.vendor/runner"
+ln -s "${nested_python_symlink_case}/external/python3.vendor/runner" \
+  "${nested_python_symlink_case}/trusted/bin/python3"
+nested_python_symlink_output="${nested_python_symlink_case}/output"
+nested_python_symlink_status="${nested_python_symlink_case}/status"
+run_setup "${nested_python_symlink_case}" \
+  "${nested_python_symlink_case}/trusted/bin:/usr/bin" \
+  "${nested_python_symlink_case}/trusted/bin" \
+  "${nested_python_symlink_output}" "${nested_python_symlink_status}"
+[ "$(<"${nested_python_symlink_status}")" -eq 1 ]
+assert_contains "$(<"${nested_python_symlink_output}")" \
+  'python3 is not an approved executable symlink'
 
 missing_tool_case="$(new_case missing-tool)"
 make_fake_environment "${missing_tool_case}" warm jq

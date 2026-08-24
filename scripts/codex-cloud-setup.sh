@@ -77,6 +77,7 @@ reject_unsafe_path() {
         ;;
     esac
     case "${component}" in
+      '') die "${label} contains an empty path component" ;;
       .|..) die "${label} contains a traversal component: ${component}" ;;
     esac
   done
@@ -115,6 +116,7 @@ reject_symlink_components() {
 
 canonical_nvm_bin=
 trusted_nvm_owner=
+trusted_nvm_ancestor_owner=
 platform_nvm_owner_uid=1001
 if [ "${NVM_BIN+x}" = x ]; then
   nvm_bin="${NVM_BIN}"
@@ -185,6 +187,7 @@ validate_trusted_path() {
       /*) ;;
       *) die "trusted PATH entry must be absolute: ${entry}" ;;
     esac
+    reject_unsafe_path 'trusted PATH entry' "${entry}"
   done
 }
 
@@ -231,6 +234,22 @@ file_metadata() {
   fi
 }
 
+validate_system_owner_and_mode() {
+  local label="$1"
+  local path="$2"
+  local metadata
+  local mode
+  local owner
+
+  metadata="$(file_metadata "${path}")"
+  mode="${metadata%% *}"
+  owner="${metadata#* }"
+  [ "${owner}" = 0 ] || die "${label} is not owned by the platform owner: ${path}"
+  if (( 8#${mode} & 022 )); then
+    die "${label} is writable by a group or other user: ${path}"
+  fi
+}
+
 validate_owner_and_mode() {
   local label="$1"
   local path="$2"
@@ -254,7 +273,8 @@ validate_owner_and_mode() {
     esac
   fi
   case "${path}" in
-    /bin/*|/usr/bin/*|/sbin/*|/usr/sbin/*|/usr/local/bin/*|/usr/local/sbin/*)
+    /bin|/bin/*|/usr/bin|/usr/bin/*|/sbin|/sbin/*|/usr/sbin|/usr/sbin/*|\
+      /usr/local/bin|/usr/local/bin/*|/usr/local/sbin|/usr/local/sbin/*)
       [ "${owner}" = 0 ] || die "${label} is not owned by the platform owner: ${path}"
       ;;
     *)
@@ -295,14 +315,22 @@ validate_nvm_provenance() {
     metadata="$(file_metadata "${current}")"
     mode="${metadata%% *}"
     owner="${metadata#* }"
-    if [ -z "${trusted_nvm_owner}" ]; then
+    if [ "${current}" = "${canonical_nvm_bin}" ]; then
       case "${owner}" in
-        "${EUID}"|"${platform_nvm_owner_uid}") trusted_nvm_owner="${owner}" ;;
-        *) die "NVM_BIN is not owned by the setup user or pinned platform owner: ${current}" ;;
+        "${trusted_nvm_ancestor_owner}"|"${platform_nvm_owner_uid}")
+          trusted_nvm_owner="${owner}"
+          ;;
+        *) die "NVM_BIN has an untrusted owner transition at bin: ${current}" ;;
       esac
+    elif [ -z "${trusted_nvm_ancestor_owner}" ]; then
+      case "${owner}" in
+        "${EUID}"|0) trusted_nvm_ancestor_owner="${owner}" ;;
+        *) die "NVM_BIN ancestors are not owned by the setup user or root: ${current}" ;;
+      esac
+    else
+      [ "${owner}" = "${trusted_nvm_ancestor_owner}" ] || \
+        die "NVM_BIN ownership changes before the trusted bin transition: ${current}"
     fi
-    [ "${owner}" = "${trusted_nvm_owner}" ] || \
-      die "NVM_BIN ownership changes within the trusted path: ${current}"
     if (( 8#${mode} & 022 )); then
       die "NVM_BIN is writable by a group or other user: ${current}"
     fi
@@ -320,6 +348,9 @@ validate_cargo_bin_provenance() {
   cargo_canonical_home="$(canonicalize_path HOME "${original_home}")"
   [ "${canonical_cargo_bin}" = "${cargo_canonical_home}/.cargo/bin" ] || \
     die "Cargo bin resolves outside its trusted HOME path: ${cargo_bin}"
+  validate_owner_and_mode "Cargo HOME" "${original_home}"
+  validate_owner_and_mode "Cargo home" "${cargo_home}"
+  validate_owner_and_mode "Cargo bin" "${cargo_bin}"
 }
 
 validate_rustup_proxy() {
@@ -349,24 +380,58 @@ validate_rustup_proxy() {
   validate_owner_and_mode "${label} rustup proxy target" "${rustup_target}"
 }
 
+validate_system_python_symlink() {
+  local label="$1"
+  local executable_path="$2"
+  local trusted_root="$3"
+  local component
+  local canonical_target
+
+  [ "${label}" = python3 ] && [ "${executable_path}" = /usr/bin/python3 ] && \
+    [ "${trusted_root}" = /usr/bin ] || return 1
+  for component in / /usr /usr/bin; do
+    [ -d "${component}" ] && [ ! -L "${component}" ] || \
+      die "python3 system path contains an unsafe parent: ${component}"
+    validate_system_owner_and_mode "python3 system parent" "${component}"
+  done
+  canonical_target="$(canonicalize_path python3 "${executable_path}")"
+  [[ "${canonical_target}" =~ ^/usr/bin/python3\.[0-9]+$ ]] || \
+    die "python3 system symlink does not resolve to a direct versioned system binary: ${canonical_target}"
+  [ -f "${canonical_target}" ] && [ ! -L "${canonical_target}" ] && \
+    [ -x "${canonical_target}" ] || \
+    die "python3 system target must be an executable regular file: ${canonical_target}"
+  validate_system_owner_and_mode "python3 system target" "${canonical_target}"
+}
+
 validate_executable_path() {
   local label="$1"
   local executable_path="$2"
   local trusted_root
+  local canonical_trusted_root
+  local canonical_cargo_bin_candidate
 
   reject_unsafe_path "${label}" "${executable_path}"
   case "${executable_path}" in
     *:*|*$'\n'*) die "${label} contains an unsafe separator: ${executable_path}" ;;
   esac
   trusted_root="$(trusted_path_root_for "${executable_path}")"
-  if [ "${trusted_root}" = "${cargo_bin}" ]; then
+  [ -d "${trusted_root}" ] || die "trusted PATH root is not a directory: ${trusted_root}"
+  canonical_trusted_root="$(canonicalize_path 'trusted PATH root' "${trusted_root}")"
+  canonical_cargo_bin_candidate=
+  if [ -d "${cargo_bin}" ]; then
+    canonical_cargo_bin_candidate="$(canonicalize_path 'Cargo bin candidate' "${cargo_bin}")"
+  fi
+  if [ "${trusted_root}" = "${cargo_bin}" ] || \
+    { [ -n "${canonical_cargo_bin_candidate}" ] && \
+      [ "${canonical_trusted_root}" = "${canonical_cargo_bin_candidate}" ]; }; then
     validate_cargo_bin_provenance
   fi
-  [ -d "${trusted_root}" ] || die "trusted PATH root is not a directory: ${trusted_root}"
   validate_owner_and_mode "trusted PATH root" "${trusted_root}"
   if [ -L "${executable_path}" ]; then
-    validate_rustup_proxy "${label}" "${executable_path}" "${trusted_root}" || \
-      die "${label} is not an approved rustup proxy: ${executable_path}"
+    if ! validate_rustup_proxy "${label}" "${executable_path}" "${trusted_root}"; then
+      validate_system_python_symlink "${label}" "${executable_path}" "${trusted_root}" || \
+        die "${label} is not an approved executable symlink: ${executable_path}"
+    fi
     return 0
   fi
   reject_symlink_components "${label}" "${trusted_root}" "${executable_path}"

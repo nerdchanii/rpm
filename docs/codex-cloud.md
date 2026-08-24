@@ -38,11 +38,13 @@ is an existing absolute canonical directory at
 prepended to the default trusted PATH, so a platform-managed Node binary is
 discovered before the fixed system directories. An exported empty value, a
 malformed or nonexistent directory, or an out-of-bound `NVM_BIN` fails setup.
-Every directory from `${HOME}/.nvm` through the selected `bin` must be a
-non-symlink directory owned consistently by either the setup UID or the pinned
-universal-container NVM owner UID 1001, and must not be writable by group or
-other users. Executables selected from that `bin` must have the same pinned
-owner and mode protection. Mixed or arbitrary owners fail setup.
+Every directory from `${HOME}/.nvm` through the selected version directory
+must be a non-symlink directory with one consistent setup-UID or root owner.
+The `bin` directory may retain that owner or make the single supported forward
+transition to the pinned universal-container NVM owner UID 1001. Executables
+selected from `bin` must match its pinned owner. Every checked component must
+be protected from group and other writes. Arbitrary owners, earlier or repeated
+transitions, and a transition back after `bin` fail setup.
 When `NVM_BIN` is unset, the fixed system directories remain the supported
 Node lookup path; ambient PATH entries are never used as a fallback. An
 explicit trusted PATH override is used exactly as supplied and does not
@@ -50,7 +52,8 @@ receive an automatic NVM entry.
 
 `RPM_CODEX_CLOUD_TRUSTED_PATH` is an explicit trust assertion by the
 environment owner for a trusted Cloud environment setting. Every entry must be
-an absolute, non-empty path. Ambient PATH entries are ignored and the override
+an absolute, non-empty path without repeated slashes or traversal components.
+Ambient PATH entries are ignored and the override
 must not be supplied by task input. The default `${HOME}/.cargo/bin` entry
 trusts the platform-managed fresh/reset environment cache. If a task writes
 and then reuses `${HOME}`, repository code cannot guarantee binary integrity;
@@ -120,11 +123,17 @@ Rustup proxies. `${HOME}/.cargo/bin/cargo`, `rustfmt`, and `cargo-clippy` may be
 symlinks only when each resolves to the executable, regular, non-symlink
 `${HOME}/.cargo/bin/rustup` file. The Cargo-bin trusted root is confined to the
 canonical `${HOME}/.cargo/bin` path, and neither `${HOME}` nor its `.cargo/bin`
-path may contain a symlink for proxy or regular executables. Other symlinks
-fail setup. Executables under
-immutable platform paths must be platform-owned and non-writable by group or
-other users. Other trusted executables, including `${HOME}/.cargo/bin`, must be
-owned by the setup user and must also be non-writable by group or other users.
+path may contain a symlink for proxy or regular executables. `${HOME}`,
+`${HOME}/.cargo`, and `${HOME}/.cargo/bin` must all be owned by the setup user
+and protected from group and other writes. Other symlinks fail setup, except
+for the platform `/usr/bin/python3` symlink. That exact link
+must resolve to an executable, regular, non-symlink direct child named
+`/usr/bin/python3.<digits>`;
+the filesystem root, `/usr`, `/usr/bin`, and the target must all be root-owned
+and protected from group and other writes. Executables under immutable platform
+paths must meet the same platform ownership and mode requirements. Other
+trusted executables, including `${HOME}/.cargo/bin`, must be owned by the setup
+user and must also be non-writable by group or other users.
 The validated NVM subtree follows its pinned owner rule described above. These
 checks prevent a Cargo-bin shadow executable or mixed-owner NVM entry from
 replacing a platform command.
