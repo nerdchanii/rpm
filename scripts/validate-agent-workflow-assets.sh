@@ -1858,6 +1858,72 @@ for name, (prompt, expected) in token_boundary_cases.items():
 PY
 }
 
+check_role_taxonomy_contract_negative() {
+  PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import copy
+import importlib.util
+import pathlib
+
+checker_path = pathlib.Path("scripts/check-agent-organization.py")
+spec = importlib.util.spec_from_file_location("rpm_agent_organization", checker_path)
+checker = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(checker)
+
+
+def check_taxonomy(taxonomy, agents):
+    original = checker.ROLE_TAXONOMY
+    try:
+        checker.ROLE_TAXONOMY = taxonomy
+        errors = []
+        checker.check_role_taxonomy(agents, errors)
+        return errors
+    finally:
+        checker.ROLE_TAXONOMY = original
+
+
+load_errors = []
+agents = checker.load_agents(load_errors)
+if load_errors:
+    raise SystemExit(f"could not load agent fixtures: {load_errors!r}")
+
+taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
+taxonomy["rpm_backlog_scout"]["sandbox_mode"] = "workspace-write"
+path, data = agents["rpm_backlog_scout"]
+mutated_agents = dict(agents)
+mutated_data = dict(data)
+mutated_data["sandbox_mode"] = "workspace-write"
+mutated_agents["rpm_backlog_scout"] = (path, mutated_data)
+errors = check_taxonomy(taxonomy, mutated_agents)
+if not any("non-writing role must use read-only sandbox" in error for error in errors):
+    raise SystemExit(f"write_scope=none accepted workspace-write sandbox: {errors!r}")
+
+taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
+taxonomy["rpm_backlog_scout"]["responsibility"] = " \t "
+errors = check_taxonomy(taxonomy, agents)
+if not any("responsibility must be non-empty" in error for error in errors):
+    raise SystemExit(f"whitespace-only responsibility was accepted: {errors!r}")
+
+entrypoint_errors = checker.validate_external_role_entrypoint(
+    "The pr-review-resolver role exists, but this entrypoint does not route to it.\n",
+    "pr-review-resolver",
+    "Use `pr-review-resolver` to classify actionable feedback.",
+)
+if not entrypoint_errors:
+    raise SystemExit("orphaned pr-review-resolver entrypoint was accepted")
+
+valid_entrypoint = pathlib.Path(
+    ".agents/skills/pr-review-resolution/SKILL.md"
+).read_text()
+if checker.validate_external_role_entrypoint(
+    valid_entrypoint,
+    "pr-review-resolver",
+    "Use `pr-review-resolver` to classify actionable feedback.",
+):
+    raise SystemExit("valid pr-review-resolution entrypoint was rejected")
+PY
+}
+
 if [ "${RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION:-}" = "1" ]; then
   check_summary_formatter() {
     local output
@@ -2513,6 +2579,7 @@ check "script_validate_agent_workflow_assets_syntax" \
 
 check "summary_suppresses_skips" check_summary_suppresses_skips
 check "skill_policy_structure_negative" check_skill_policy_structure_negative
+check "role_taxonomy_contract_negative" check_role_taxonomy_contract_negative
 check "just_test_verbosity" check_just_test_verbosity
 
 check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews

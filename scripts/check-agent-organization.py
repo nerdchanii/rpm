@@ -165,6 +165,13 @@ ROLE_TAXONOMY = {
     },
 }
 
+EXTERNAL_ROLE_ENTRYPOINTS = {
+    ".agents/skills/pr-review-resolution/SKILL.md": (
+        "pr-review-resolver",
+        "Use `pr-review-resolver` to classify actionable feedback.",
+    ),
+}
+
 # Retained role-overlap dispositions. These pairs are intentionally retained
 # because their inputs, authority, or mutation boundary differs.
 ADJACENT_ROLE_PAIRS = (
@@ -517,10 +524,22 @@ def check_role_taxonomy(
             f"(missing: {missing}; unexpected: {unexpected})",
         )
 
-    responsibilities = [
-        str(metadata.get("responsibility", ""))
-        for metadata in ROLE_TAXONOMY.values()
-    ]
+    responsibilities: list[str] = []
+    for role, metadata in ROLE_TAXONOMY.items():
+        raw_responsibility = metadata.get("responsibility")
+        if not isinstance(raw_responsibility, str):
+            fail(errors, f"role taxonomy {role!r}: responsibility must be a string")
+            continue
+        responsibility = raw_responsibility.strip()
+        if not responsibility:
+            fail(errors, f"role taxonomy {role!r}: responsibility must be non-empty")
+            continue
+        if responsibility != raw_responsibility:
+            fail(
+                errors,
+                f"role taxonomy {role!r}: responsibility must not contain surrounding whitespace",
+            )
+        responsibilities.append(responsibility)
     duplicates = sorted(
         responsibility
         for responsibility in set(responsibilities)
@@ -595,6 +614,35 @@ def check_role_taxonomy(
             fail(errors, f"{role}: local writer must use workspace-write sandbox")
         if write_scope == "github" and sandbox != "read-only":
             fail(errors, f"{role}: GitHub-only writer must use read-only sandbox")
+        if write_scope == "none" and sandbox != "read-only":
+            fail(errors, f"{role}: non-writing role must use read-only sandbox")
+
+
+def validate_external_role_entrypoint(
+    text: str, role: str, route_marker: str
+) -> list[str]:
+    if route_marker not in text:
+        return [f"does not route to role {role!r} with marker {route_marker!r}"]
+    return []
+
+
+def check_external_role_entrypoints(
+    agents: dict[str, tuple[Path, dict[str, object]]], errors: list[str]
+) -> None:
+    for relative, (role, route_marker) in EXTERNAL_ROLE_ENTRYPOINTS.items():
+        path = ROOT / relative
+        if role not in agents:
+            fail(errors, f"{relative}: entrypoint targets missing role {role!r}")
+            continue
+        try:
+            text = path.read_text()
+        except OSError as error:
+            fail(errors, f"{relative}: cannot read external role entrypoint: {error}")
+            continue
+        for entrypoint_error in validate_external_role_entrypoint(
+            text, role, route_marker
+        ):
+            fail(errors, f"{relative}: {entrypoint_error}")
 
 
 def check_role_organization_docs(
@@ -2255,6 +2303,7 @@ def main() -> int:
     check_role_contracts(agents, errors)
     check_skill_inventory(errors)
     check_role_taxonomy(agents, errors)
+    check_external_role_entrypoints(agents, errors)
     check_role_organization_docs(agents, errors)
     check_entries_and_assets(errors)
     check_deterministic_assets(errors)
