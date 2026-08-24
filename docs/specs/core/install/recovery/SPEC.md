@@ -3,7 +3,7 @@ spec_id: install_recovery
 title: Install Recovery
 status: draft
 owner: core/install/recovery
-last_reviewed: 2026-08-11
+last_reviewed: 2026-08-24
 authors:
   - nerdchanii
 deciders:
@@ -24,7 +24,7 @@ related_issues:
 
 Status: Draft
 Owner: core/install/recovery
-Last reviewed: 2026-08-11
+Last reviewed: 2026-08-24
 
 ## Purpose
 
@@ -65,6 +65,32 @@ successful install. Because the `scripts` phase runs between `link` and
 linked but not yet renamed into place; the staged tree is discarded, so the
 published install never reflects a partial lifecycle run. This invariant is
 owned jointly with `docs/specs/core/install/scripts/SPEC.md` (#141).
+
+### Workspace lifecycle recovery boundary (planned)
+
+Workspace discovery and resolution do not change the active recovery pipeline.
+Before a workspace install may execute a member lifecycle hook, the installer
+must provide one workspace transaction that stages every root/member install
+output governed by the operation. Workspace linking under #147 is a prerequisite
+for that transaction; #147 does not own member lifecycle execution.
+
+The workspace `scripts` phase remains between `link` and `write`. Its source,
+root/member/external visit order, member working directory, PATH, and supported
+hook inventory are owned by `docs/specs/core/install/scripts/SPEC.md`. This SPEC
+owns the transaction result when any of those hooks fails:
+
+- no staged root or member install output is published;
+- every previously published root/member `node_modules` tree remains unchanged;
+- `rpm.lock` and every participating root/member `package.json` remain at their
+  pre-transaction bytes and permissions; and
+- the error retains the `scripts` phase label and the child exit status when one
+  exists.
+
+The guarantee covers RPM-owned install state and the manifest/lockfile snapshots
+named above. It does not claim to reverse arbitrary writes performed by a hook
+elsewhere in a member source tree or outside the workspace. Member hooks remain
+disabled until a dedicated lifecycle/recovery integration issue implements this
+boundary and its fixtures.
 
 ## M3 Side-Effect Audit
 
@@ -154,6 +180,17 @@ Findings:
   `resolve`, `fetch`, `extract`, `link`, and `write` labels and their
   side-effect classifications stand unchanged.
 
+### Planned workspace lifecycle audit
+
+The workspace contract adds no active side effects in its discovery/resolver
+phase. Member lifecycle execution is deferred and has no current open execution
+issue. Activation requires the scripts contract's deterministic order/cwd
+fixture and a recovery fixture that injects a failing member hook after linking,
+then proves all previously published root/member install trees, `rpm.lock`, and
+participating manifests retain their exact bytes and permissions. The fixture
+must copy immutable inputs to a temporary directory and run without a live
+registry, ambient cache, uncontrolled clock, or host-absolute expected path.
+
 ## Test Fixtures
 
 Recovery verification should cover staged replacement success plus resolve,
@@ -162,3 +199,9 @@ fetch, extract, link, scripts, and write failures that leave the previous
 `docs/specs/core/install/scripts/SPEC.md` (#141) and landed with #142; they
 prove that a failed lifecycle hook leaves `node_modules`, `rpm.lock`, and
 `package.json` unchanged.
+
+Workspace lifecycle recovery additionally requires the planned
+`workspace-lifecycle-failure` fixture owned jointly with
+`docs/specs/core/install/scripts/SPEC.md`. It must cover a member `preinstall`
+failure inside a copied two-member workspace and assert the full workspace
+transaction boundary above before production member-hook execution is enabled.

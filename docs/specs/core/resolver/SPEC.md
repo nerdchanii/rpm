@@ -174,6 +174,15 @@ links are owned by #147, and workspace command targeting is owned by #148.
 Those follow-up contracts must consume the same member table and must not
 redefine member order, root confinement, or local-versus-external identity.
 
+Making a member a resolution root does not schedule its lifecycle scripts or
+imply that workspace installation is active. Workspace-member hook sourcing,
+cross-package order, working directory, PATH, failure, and rollback are owned by
+`docs/specs/core/install/scripts/SPEC.md` together with the install recovery
+contract. Resolver implementation and fixtures must remain free of script side
+effects. Workspace installation must not execute member lifecycle hooks until
+that planned contract has an open implementation owner and its ordering,
+working-directory, and failure fixtures exist.
+
 Traversal policy is behind a replaceable `ResolutionStrategy` boundary, or an
 equivalent internal abstraction, owned by the `src/core/resolver` root module.
 Concrete strategies may live in private child modules, but callers depend on
@@ -380,8 +389,10 @@ direct request kinds. Coverage also keeps a local member node distinct from an
 external node with equal name and version text, preserves the same deterministic
 member ordering for external edges, rejects duplicate member names and
 root/member name collisions, and rejects a discovery result that escapes the
-canonical root. Lockfile snapshots and filesystem trees are deferred to #146
-and #147; this SPEC does not require workspace installation behavior.
+canonical root. Resolver workspace fixtures do not execute lifecycle scripts.
+Lockfile snapshots, filesystem trees, and lifecycle execution fixtures are
+deferred to their lockfile, linker, and install-script owners; this SPEC does
+not require workspace installation behavior.
 
 ### Optional-dependency non-enqueue guard fixture
 

@@ -297,20 +297,23 @@ Workspace implementation remains a greenfield gap: no code path reads the
 lockfile, the linker creates only registry-resolved dependency links, and no
 CLI flag targets a workspace. The planned manifest-discovery and resolver
 boundary contracts are now defined by #145; their implementation and fixtures
-remain deferred. This audit distinguishes that defined contract from the
-remaining implementation gaps and assigns each gap an owner.
+remain deferred. Issues #146-#149 own later lockfile, linker, CLI, and
+integration-fixture work, but none owns the discovery/resolver implementation.
+This audit therefore records that execution owner as missing until a separate
+open issue is created.
 
 | M7 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
-| workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, invalid declarations, preservation-before-write, and planned regression coverage are specified; current manifest code still does not read or preserve the field | #145 |
-| workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect, canonical-root and symlink confinement, install-artifact exclusions, deterministic root-relative output, and planned fixtures are specified | #145 |
-| root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: member path/name/version input, deterministic member resolution roots, request origin, compatible-range local classification, external fallback, and distinct local/external graph identities are specified | #145 |
+| workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, invalid declarations, preservation-before-write, and planned regression coverage are specified; current manifest code still does not read or preserve the field | new discovery/resolver execution issue required before #145 closes |
+| workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect, candidate selection, canonical-root and symlink confinement, install-artifact exclusions, deterministic root-relative output, and planned fixtures are specified | new discovery/resolver execution issue required before #145 closes |
+| root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: member path/name/version input, deterministic member resolution roots, request origin, compatible-range local classification, external fallback, and distinct local/external graph identities are specified | new discovery/resolver execution issue required before #145 closes |
 | workspace package lockfile records | `lockfile/SPEC.md` | absent: lockfile v1 keys every entry by `<name>@<version>` with registry metadata and records no local-path or workspace-origin marker; local workspace records need not require tarball or integrity, while external records may use `shasum` when integrity is absent; whether v1 extends safely or a version bump is required is an open question for #146 | #146 |
 | external dependency edges under a workspace root | `lockfile/SPEC.md`, `resolver/SPEC.md` | partially owned in the non-workspace case: the resolver already deduplicates by `<name>@<version>` and the lockfile records requested range and resolved version distinctly, but neither owns how a shared external transitive reached from several workspace members is represented when each member requests a different range | #146 |
 | workspace-to-workspace linking (local symlink) | `linker/SPEC.md` | absent: the linker creates symlinks whose targets are extracted registry packages under `node_modules/`; there is no contract for linking a workspace member that exists as a local source directory rather than a downloaded tarball, or for confining that target to the canonical workspace root | #147 |
 | workspace-to-external linking | `linker/SPEC.md` | code and SPEC currently diverge on strict per-package dependency visibility; #147 must reconcile the implementation first, then extend the strict contract to workspace members so a member's `node_modules` exposes only that member's declared dependencies, with regression coverage | #147 |
 | missing workspace link target | `linker/SPEC.md` | absent: the linker already fails when a registry dependency target is not extracted, but there is no contract for a workspace dependency whose declared local path does not exist or does not contain the expected package | #147 |
 | workspace member writes and recovery | `install/recovery/SPEC.md`, `linker/SPEC.md` | absent: member-local writes are independent of root staging today; #147 must define one root-staged transaction, rollback of every member-local write on failure, and preservation of the prior install state, with recovery regression coverage | #147 |
+| workspace member lifecycle scripts | `install/scripts/SPEC.md`, `install/recovery/SPEC.md` | planned contract defined, implementation deferred: member-manifest sourcing, root/member/external order, canonical member cwd, staged PATH, fatal failure, and transaction-owned rollback coverage are specified; no current open issue owns activation | new workspace lifecycle/recovery integration issue required; #147 is a staging prerequisite and #149 does not own these fixtures |
 | package-name and dependency-name root confinement | `resolver/SPEC.md`, `linker/SPEC.md` | existing package metadata and lockfile names are not fully confined before extraction and dependency linking; names such as `../../outside` can escape the staged tree, so the resolver/linker boundary must reject traversal and verify canonical destinations before any write; #147 must include this regression coverage for workspace and external edges | #147 |
 | workspace member binary links | `linker/SPEC.md` | absent: the existing `.bin` contract does not state whether a workspace member's `bin` field is exposed; #147 must decide the link layout and cover it in the minimal workspace fixture (#149) | #147; #149 |
 | workspace command targeting (`--workspace`, `--all`, root) | `cli/run/SPEC.md` and future CLI command SPECs | absent: no command targeting contract exists; `rpm run` reads only the root manifest, and there is no rule for root-only, all-workspace, or selected-workspace command scope | #148 |
@@ -326,9 +329,17 @@ Findings:
 - The discovery boundary (#145) defines supported declarations, portable glob
   expansion, invalid-member behavior, canonical-root confinement, deterministic
   member output, member resolution-root seeding, and local-versus-external edge
-  classification. Its implementation and executable fixtures remain pending.
-  #146, #147, and #148 must consume this member table and origin model without
-  redefining them.
+  classification. Its implementation and executable fixtures require a new
+  open execution issue because #145 is the contract issue and #146-#149 own
+  later boundaries. Until that issue exists, a PR that closes #145 would leave
+  discovery/resolver implementation without an open owner. #146, #147, and #148
+  must consume this member table and origin model without redefining them.
+- Workspace-member lifecycle activation has no open owner. The install-script
+  and recovery contracts now fix the planned source, deterministic order,
+  canonical member working directory, PATH, and failure boundary. A separate
+  integration issue must consume the single staged transaction from #147 and
+  own the order/cwd and rollback fixtures before any member hook runs. #149's
+  minimal install fixture does not absorb this lifecycle coverage.
 - Lockfile representation (#146) carries one open compatibility decision:
   whether workspace package records can extend lockfile v1 with a local-origin
   marker, or whether a workspace-aware lockfile requires a version bump and a
@@ -361,7 +372,8 @@ Findings:
   #145 workspace discovery and root boundaries, (3) #146 lockfile records and
   external edges, (4) #147 workspace dependency linking, (5) #148 command
   targeting, (6) a minimal two-package workspace fixture (#149) with
-  reviewable expected output, (7) implementation of only the behavior the
-  contracts and fixture cover. Discovery and lockfile work is kept separable
-  from linker work so #145/#146 can land without forcing #147, and CLI
-  targeting (#148) can land as soon as #145 lands.
+  reviewable expected output, (7) the separately owned discovery/resolver
+  implementation, and (8) workspace lifecycle/recovery integration after its
+  fixtures exist. Discovery and lockfile work is kept separable from linker work
+  so the discovery implementation and #146 can land without forcing #147, and
+  CLI targeting (#148) can land after the discovery contract lands.

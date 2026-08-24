@@ -3,7 +3,7 @@ spec_id: install_lifecycle_scripts
 title: Install Lifecycle Scripts
 status: draft
 owner: core/install/scripts
-last_reviewed: 2026-08-11
+last_reviewed: 2026-08-24
 authors:
   - nerdchanii
 deciders:
@@ -22,7 +22,7 @@ related_issues:
 
 Status: Draft
 Owner: core/install/scripts
-Last reviewed: 2026-08-11
+Last reviewed: 2026-08-24
 
 ## Purpose
 
@@ -63,6 +63,42 @@ install side effect.
 The set of supported install lifecycle hooks is exactly the four listed above.
 Adding, removing, or reordering a hook is a contract change to this SPEC, not an
 implementation detail.
+
+### Workspace-member lifecycle boundary (planned)
+
+Workspace discovery and resolution do not activate lifecycle execution. The
+current implementation reads hooks only from the project-root manifest and
+registry-resolved package metadata. A local workspace member's manifest is a
+third script source owned by this SPEC, and member hooks remain disabled until a
+dedicated workspace lifecycle implementation issue claims the behavior below.
+
+When workspace lifecycle execution is activated, it follows these deterministic
+rules:
+
+- A member hook is read from that discovered member's validated manifest. Only
+  hooks whose phase is implemented under the inventory above execute;
+  `preinstall` is the only implemented phase today.
+- The scripts phase visits the root first, workspace members next in the
+  manifest discovery table's canonical root-relative path order, and external
+  resolved packages last in sorted lock-key order. Within each package, hook
+  order remains `preinstall`, `install`, `postinstall`, then `prepare` as phases
+  become implemented. Input enumeration, hash-map order, and network timing
+  cannot change either order.
+- A member hook runs with the canonical member directory as its working
+  directory and the workspace install transaction's staged root `.bin`
+  directory prepended to `PATH`. The lexical symlink spelling used by the
+  workspace declaration never selects a different working directory.
+- Any member-hook failure fails the single `scripts` phase and the whole
+  workspace install transaction. RPM discards every staged root/member install
+  output and preserves the previously published `node_modules`, `rpm.lock`, and
+  root and member `package.json` files, including their original permissions.
+  As with existing root and resolved-package hooks, RPM cannot reverse arbitrary
+  hook writes outside those transaction-owned files and staged trees.
+
+The activating issue must coordinate the single staged transaction with
+`docs/specs/core/install/recovery/SPEC.md` and workspace linking with #147 before
+member hooks can run. The discovery/resolver implementation may land earlier,
+but it must not call this execution path.
 
 ### Unsupported lifecycle phases
 
@@ -109,12 +145,12 @@ This ordering is fixed by this contract. A later hook does not run if an
 earlier hook in the same package has already failed the phase (see "Failure
 behavior").
 
-The ordering **across packages** is deliberately left as an Open Question
-(death-by-dependency-ordering, root-first vs leaves-first, parallel vs
-sequential). This contract only fixes the within-package order today. Until that
-cross-package ordering is owned by a follow-up issue, the `scripts` phase must
-execute hooks in a single deterministic order within each package and must not
-rely on HashMap iteration order or network timing to pick that order.
+Across packages, the current root-only install visits the root first and
+registry-resolved packages afterward in sorted lock-key order. The planned
+workspace order is fixed by the workspace-member boundary above. Neither order
+claims npm-compatible dependency-topological semantics, and changing either
+order requires a contract update. The `scripts` phase must remain sequential
+and must not rely on hash-map iteration order or network timing.
 
 ### Hook environment and PATH
 
@@ -248,15 +284,31 @@ or `just fixture <name>`, and does not assert behavior outside this contract.
 Later lifecycle phases (`install`, `postinstall`, `prepare`) will add their own
 fixtures when a follow-up issue claims them; until then they stay deferred.
 
+Workspace lifecycle activation additionally requires two copied, offline
+fixtures before production execution is enabled:
+
+- `workspace-lifecycle-order-cwd` supplies root, member, and external
+  `preinstall` hooks in deliberately reversed input order and records the exact
+  root/member-path/external-lock-key visit order plus each hook's working
+  directory relative to the copied fixture root;
+- `workspace-lifecycle-failure` makes a member `preinstall` exit non-zero and
+  proves the `scripts` label and child status propagate while the previous root
+  and member install trees, `rpm.lock`, and every participating `package.json`
+  remain byte-for-byte and permission-for-permission unchanged.
+
+The fixtures must use expected output committed with the fixture, must copy all
+mutable input to a temporary directory, and must not depend on a live registry,
+the host's absolute path, directory enumeration order, or ambient caches.
+
 ## Open Questions
 
 Each open question is a deferred decision that does not block the first phase
 (#142). They are listed here so #142 does not silently resolve them in code.
 
-- Cross-package hook ordering during the `scripts` phase (root-first vs
-  leaves-first, sequential vs parallel, dependency order). This contract fixes
-  only the within-package order. A follow-up issue must own the cross-package
-  order before more than the first phase lands.
+- Whether a future dependency-aware lifecycle implementation replaces the
+  current root/sorted-external order or the planned
+  root/member-path/sorted-external workspace order. Until a contract change
+  decides otherwise, the deterministic sequential orders above are normative.
 - Which, if any, npm-specific environment variables (`npm_lifecycle_event`,
   `npm_lifecycle_script`, `npm_config_*`, `npm_package_*`, `INIT_CWD`) RPM sets
   for lifecycle hooks. None are set today.
