@@ -116,27 +116,44 @@ descriptor, and bind the created object identity to the retained parent
 descriptor and temporary name before the result is observable. A separate
 `mkdirat` followed by `openat` or `openat2`, even with no-follow flags, does not
 qualify because an attacker can replace the name between creation and retain.
-The retained create capability then publishes the temporary directory to the
-component name with `renameat2(..., RENAME_NOREPLACE)` or an equivalent
-parent-handle no-replace primitive. A final name that appeared during creation
-or publication causes failure without replacing that entry. RPM verifies that
-the retained object identity is bound to the published parent/name, records
-that binding, and uses the retained descriptor thereafter; it never reopens the
-component through a pathname.
+Before choosing or creating that temporary sibling, RPM must verify that the
+platform also supplies move-aware identity-bound cleanup for the retained
+object, or a combined create-retain-publish capability that never exposes the
+temporary source to an attacker. If neither capability exists, RPM fails
+closed before invoking the create operation and before creating any temporary
+directory.
+The retained create capability then invokes an identity-bound publication
+primitive with the retained temporary-directory descriptor/object identity,
+the original temporary name and parent binding, and the component destination.
+At the one atomic commit point, that primitive must prove that the temporary
+name still identifies the retained directory before moving anything, and must
+then perform a parent-handle no-replace publication such as
+`renameat2(..., RENAME_NOREPLACE)`. A bare `renameat2(..., RENAME_NOREPLACE)`
+protects only the destination name and does not qualify: it can publish an
+attacker's replacement of the temporary source. A separate source identity
+check followed by rename is equally insufficient. If the source binding or
+destination changed, publication fails before either entry is moved or
+replaced. RPM verifies that the retained object identity is bound to the
+published parent/name, records that binding, and uses the retained descriptor
+thereafter; it never reopens the component through a pathname.
 
 Failure cleanup must use the retained create capability's identity-conditional
-remove operation with the original parent binding and object identity. If the
-temporary name or parent/name binding changed, cleanup fails closed and leaves
-the raced entry untouched. A name-only `unlinkat`/`rmdir` cleanup after a
-create/open race is forbidden. A platform without the atomic create-and-retain,
-no-replace publish, no-follow open, and identity-verification capabilities fails
-closed. This establishes the approved cache-root handle without following a
-symlink on a clean first install or an existing cache. It retains the
-workspace-root identity and exact parent/name chain, plus the `.rpm` and
-`.cache` component identities and names, for the transaction. It then opens the
-derived entry relative to that handle with a no-follow operation. It rejects a
-symlink at the final component and rejects directories, devices, sockets, and
-every other non-regular file.
+remove operation with the original parent binding and object identity. The
+cleanup capability must be move-aware: if an attacker renames the retained
+temporary directory to another name after creation, it must reclaim exactly
+the retained object by identity without following an attacker path or removing
+the replacement at the original name. A combined create-retain-publish
+capability may satisfy this requirement by keeping the temporary source
+unobservable. A name-only `unlinkat`/`rmdir` cleanup at the original name after
+a create/open race is forbidden. If the adapter cannot prove and complete
+identity-bound reclamation after a source move, it is unsupported and must
+fail closed before any temporary directory is created. This establishes the
+approved cache-root handle without following a symlink on a clean first install
+or an existing cache. It retains the workspace-root identity and exact
+parent/name chain, plus the `.rpm` and `.cache` component identities and names,
+for the transaction. It then opens the derived entry relative to that handle
+with a no-follow operation. It rejects a symlink at the final component and
+rejects directories, devices, sockets, and every other non-regular file.
 Path-based prechecks alone are insufficient, and the entry must never be
 reopened by pathname after validation.
 
@@ -195,29 +212,36 @@ authorizes the matching-identity CAS branch.
 The primitive takes the retained workspace-root handle and identity, its exact
 parent/name chain, the retained `.rpm/.cache` handle and component parent/name
 chain, staged descriptor/name, final name, and expected final state as one
-commit operation. At the atomic commit point it must prove that the workspace
-root and every `.rpm/.cache` component still resolve through those same
-identities and names before it performs the identity-conditional commit. A
-workspace-root or `.rpm/.cache` pathname replacement therefore fails even when
-an old descriptor still refers to the renamed directory. Reopening `.rpm/.cache`,
-the staged entry, or the final destination through a workspace pathname is
-invalid. A cache-root identity or parent-chain change, unsupported descriptor-
-relative staging or identity-conditional publication, or a raced staging or
-final destination fails publication and discards the staged entry while leaving
-the raced destination untouched. These requirements make pathname replacement
+commit operation. For an absent component, its source check is part of this
+same atomic operation: the temporary name must still map to the retained
+created-directory identity before the no-replace destination commit. At the
+atomic commit point it must also prove that the workspace root and every
+`.rpm/.cache` component still resolve through those same identities and names
+before it performs the identity-conditional commit. A workspace-root or
+`.rpm/.cache` pathname replacement therefore fails even when an old descriptor
+still refers to the renamed directory. Reopening `.rpm/.cache`, the staged
+entry, or the final destination through a workspace pathname is invalid. A
+cache-root identity or parent-chain change, unsupported descriptor-relative
+staging or identity-conditional publication, a changed temporary source
+binding, or a raced staging or final destination fails publication and
+discards only the retained staged object while leaving the raced destination
+and source entries untouched. These requirements make pathname replacement
 after open irrelevant to the bytes consumed by extraction and keep cache replay
 and publication from introducing a verify/use race.
 
-The current Rust/POSIX adapters do not provide the required atomic
-create-and-retain capability for an absent `.rpm` or `.cache`, or the atomic
-parent-chain-and-destination CAS capability. They therefore fail closed for an
-absent cache component before network or cache mutation. A separate
+The current Rust/POSIX adapters, including the current macOS/POSIX adapters,
+do not provide the required atomic create-and-retain capability for an absent
+`.rpm` or `.cache`, the atomic parent-chain-and-destination CAS capability, or
+move-aware identity-bound cleanup. They therefore fail closed before invoking
+absent-component creation and before any temporary directory, network, or
+cache mutation. A separate
 `fstatat`/`fstat` identity check followed by `renameat` or `renameat2` is not an
 atomic proof and does not satisfy this contract. Until #224 supplies concrete
 platform capabilities and executable tests for atomic create-and-retain,
-retained parent-chain proof, no-replace/CAS publication, and no-follow
-descriptor use, every v2 cache publication and replay path remains disabled and
-fails closed before cache, network, extraction, or install mutation.
+retained parent-chain proof, source-bound no-replace/CAS publication,
+move-aware identity-bound cleanup, and no-follow descriptor use, every v2 cache
+publication and replay path remains disabled and fails closed before cache,
+network, extraction, or install mutation.
 
 ## Error Cases
 
@@ -257,15 +281,31 @@ same cache filename shape.
 Planned v2 fixtures must additionally cover:
 
 - a clean first-install workspace with absent `.rpm` and `.cache`, proving each
-  component uses the atomic create-and-retain capability, descriptor-relative
-  `RENAME_NOREPLACE` publication, identity verification, and retained-descriptor
+  component uses the atomic create-and-retain capability, an identity-bound
+  descriptor-relative publication that combines the retained source identity
+  check with `RENAME_NOREPLACE`, identity verification, and retained-descriptor
   use; a barrier immediately after that atomic capability returns and before
-  no-replace publication lets an attacker replace the temporary source name or
-  create the final name, and a second barrier immediately before failure cleanup
-  lets the attacker replace the retained binding. Both barriers must preserve
-  the attacker entry, reject name-only cleanup, clean up only through the
-  retained identity capability, and make zero network or tarball requests or
-  cache mutation;
+  identity-bound publication lets an attacker replace the temporary source
+  name or create the final name, and a second barrier immediately before
+  failure cleanup lets the attacker replace the retained binding. Source
+  replacement must fail before the attacker directory is published. Both
+  barriers must preserve the attacker entry, reject name-only cleanup, clean up
+  only through the retained identity capability, and make zero network or
+  tarball requests or cache mutation;
+- a separate adapter-capability fixture for the combined
+  create-retain-publish branch, proving that the temporary source is never
+  externally observable, its created identity is bound directly to the
+  published component, and no source-replacement barrier is applicable to
+  that branch; destination and retained parent-chain race checks remain
+  required, and unsupported adapters fail closed;
+- an attacker renaming the retained temporary source to another name before
+  publication, proving the publication/failure path reports a stable
+  source-binding race, reclaims the retained object through move-aware
+  identity-bound cleanup without deleting the attacker replacement, and leaves
+  no orphan directory; repeated retries of the same race must not increase the
+  orphan count or create additional untracked temporary directories. An
+  adapter without that cleanup capability fails before the first temporary
+  directory is created;
 - names that collide only after host case folding or Unicode normalization,
   plus trailing-dot, trailing-space, and reserved-name spellings, proving the
   whole cache destination set is rejected before download or cache creation;

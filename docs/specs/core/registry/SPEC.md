@@ -313,10 +313,32 @@ The initial v2 transport policy is fail-closed:
   credential-free policy above before dot-segment removal, so a redirect such as
   `token=secret/../registry` is rejected before it can disappear during
   canonicalization. Cross-origin redirects, HTTPS downgrades, and credential-
-  or expiry-bearing redirect URLs are rejected. A tarball redirect must also
+  or expiry-bearing redirect URLs are rejected. A metadata redirect must remain
+  within the configured `registry_base` path and must preserve the exact
+  canonical packument locator for the original metadata request. The locator is
+  the normalized `registry_base` path followed by the encoded package-name
+  component, with an encoded-version component appended only when the original
+  metadata request contained that version segment. A redirect must not add,
+  remove, or substitute that optional version component. For a scoped name the
+  structural separator is `%2F` inside the package-name segment; a literal
+  `%2F` in an identity component is encoded as `%252F` and remains distinct.
+  A same-origin redirect from `/npm-private/pkg/1` to `/npm-public/pkg/1`, or
+  to a different package or version under the same origin, is rejected and must
+  not change the persisted `registry_base`. A tarball redirect must also
   preserve the same canonical artifact locator path; an alternate path is
   rejected. The initial v2 contract has no implicit CDN or alternate-origin
   exception.
+
+When a tarball response supplies a redirect, the request for the current URL
+that returned its `Location` is required to discover the target. A one-hop
+redirect-target rejection therefore has exactly one request to the valid
+initial tarball URL, zero requests to the rejected target, and zero archive or
+cache publication. A direct tarball URL-policy rejection occurs before any
+tarball request. The same accounting applies to metadata redirects: a rejected
+one-hop target has exactly one request to the valid initial metadata URL and
+zero requests to the rejected target, while a direct metadata URL-policy
+rejection occurs before any metadata request. Redirect-limit failures must
+likewise stop before requesting a target beyond the allowed hop count.
 
 Every v2 URL-policy rejection uses a redacted diagnostic locator. When parsing
 succeeds, the locator may contain only the scheme, normalized lower-case host,
@@ -658,15 +680,35 @@ Fixture expectations are defined by the owning scenario and documented in
   cases produce no packument/tarball requests or cache writes; query-bearing
   credential/signature/expiry tarball URLs rejected with zero tarball requests
   and zero cache writes while diagnostics omit their raw query values,
-  noncanonical path-segment token/signature/expiry tarball URLs and redirects
-  (for example `/download/token=fixture-secret/...` and
-  `/expires=2099-01-01T00:00:00Z/...`) rejected with zero tarball requests and
+  noncanonical path-segment token/signature/expiry tarball URLs (for example
+  `/download/token=fixture-secret/...` and
+  `/expires=2099-01-01T00:00:00Z/...`) rejected before any tarball request and
   zero cache writes while diagnostics contain neither `fixture-secret` nor the
-  expiry text and omit the raw path and secret values,
-  non-HTTPS and cross-origin tarballs, redirects carrying
-  `/token=fixture-secret/../registry` or `/expires=2099-01-01T00:00:00Z/`,
-  HTTPS downgrade, query-bearing redirect, cross-origin redirect, and
-  redirect-limit overflow
+  expiry text and omit the raw path and secret values; one-hop redirects
+  carrying those paths, plus HTTPS downgrade, query-bearing, and cross-origin
+  redirect targets, require exactly one request to the valid initial tarball
+  URL, make zero requests to the rejected target, and publish no archive or
+  cache; redirect-limit overflow stops before requesting a target beyond the
+  allowed hop count;
+- metadata redirects from a configured base such as
+  `https://repo.example/npm-private/` to a same-origin alternate base such as
+  `/npm-public/pkg/1`, or to a different package/version under
+  `/npm-private/`, rejected because they do not preserve the configured base and
+  exact canonical packument locator; name-only requests use
+  `/npm-private/pkg`, versioned requests use `/npm-private/pkg/1`, scoped
+  `@scope/name` uses the structural name segment `/npm-private/@scope%2Fname`,
+  and unscoped literal `foo%2Fbar` uses `/npm-private/foo%252Fbar`. A direct
+  metadata URL mismatch is rejected with zero metadata requests. A rejected
+  one-hop redirect has exactly one request to the valid initial metadata URL,
+  zero requests to the rejected target, and no tarball or cache publication;
+- metadata locator pairs covering add/remove of the optional version segment
+  (`/npm-private/pkg` to `/npm-private/pkg/1` and the reverse) reject both
+  redirect directions; the positive scoped structural spelling
+  `/npm-private/@scope%2Fname` is accepted for `@scope/name` while
+  `/npm-private/@scope%252Fname` is rejected as its alternate spelling, and
+  the positive literal-identity spelling `/npm-private/foo%252Fbar` is
+  accepted for raw `foo%2Fbar` while `/npm-private/foo%2Fbar` is rejected as
+  its structural-separator alternate;
 - wrong-type values on every ignored metadata field are discarded as absent
   rather than failing the packument (issue #113), while well-typed values
   round-trip into `Some(...)`

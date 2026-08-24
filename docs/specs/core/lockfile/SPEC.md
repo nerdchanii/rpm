@@ -592,18 +592,25 @@ may create only the transaction-private non-published stable descriptor;
 missing or failed #147 archive-entry/link validation fails before extraction,
 linking, scripts, cache publication, lockfile publication, install publication,
 or any other live mutation. A fresh writer first requires #221's validated
-immutable member table and uses it to apply #145 local/external classification;
-compatible-local branches perform no metadata access. It may then perform
-side-effect-free packument reads over the configured registry transport only
-for requests classified as external, selecting their versions and constructing
-the complete transitive edge set and external bin destinations. Before tarball
-download, cache access or mutation, extraction, linking, scripts, lockfile
-publication, install publication, or any other live mutation, it must obtain
-#147's graph/name/destination preflight result bound to that exact member table,
-external record set, and edge set, and must prove the #221 result is still bound
-to the unchanged table. Archive-entry confinement is a later descriptor-bound
-#147 staging result required after tarball verification and before extraction or
-cache/install publication. #224
+immutable member table. Before #145 chooses a local compatible branch for any
+request that could be local, it must obtain the registry boundary's
+side-effect-free dist-tags identity result over the configured registry
+transport. This lookup may determine only whether the canonical request text is
+a published tag; it must not select a version or consume per-version metadata
+before the branch is known. A matching tag is an external request and may then
+read the selected packument/version metadata. A request confirmed to be a
+non-tag may take the compatible-local branch without per-version metadata
+access. Semver-shaped text such as `1` therefore requires the tag lookup before
+local compatibility is considered, and a tag lookup failure fails closed before
+tarball acquisition, cache access or mutation, or publication. The writer then
+uses #145's result to construct the complete transitive edge set and external
+bin destinations. Before tarball download, cache access or mutation,
+extraction, linking, scripts, lockfile publication, install publication, or any
+other live mutation, it must obtain #147's graph/name/destination preflight
+result bound to that exact member table, external record set, and edge set, and
+must prove the #221 result is still bound to the unchanged table. Archive-entry
+confinement is a later descriptor-bound #147 staging result required after
+tarball verification and before extraction or cache/install publication. #224
 must not replace either prerequisite with a weaker local name check. A reader
 may decode inert fields only far enough to perform these validations; it must
 return a load failure instead of exposing an accepted v2 graph when either
@@ -740,6 +747,19 @@ Planned workspace snapshots must cover:
   external `direct`/`dev` edges by source/relationship validation even when
   their targets are reachable; the crafted fresh-writer rejection occurs before
   registry or tarball network access and lockfile publication;
+- a fresh writer performing the side-effect-free registry dist-tags identity
+  lookup before choosing a compatible-local branch, including a semver-shaped
+  request `1` that is a published tag; the fixture counts tag-identity and
+  per-version metadata lookups separately, with exactly one tag-identity
+  lookup followed by one per-version lookup only for the confirmed external
+  tag. A confirmed non-tag compatible-local request performs its one
+  tag-identity lookup and zero per-version metadata lookups. An unavailable tag
+  lookup fails closed before tarball, cache, or lockfile publication;
+- an absent-member or incompatible-member external fresh-writer branch with
+  exactly one tag-identity lookup and, after external classification, exactly
+  one selected-version/per-version metadata lookup; the fixture records those
+  counters separately and rejects any additional per-version lookup before
+  classification or any tarball, cache, or lockfile publication;
 - distinct local and external identities with equal name and version text;
 - top-level/root metadata mismatch, external identity/field mismatch, missing
   or empty registry origin, canonical registry base, or tarball, same-origin/
