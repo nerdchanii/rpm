@@ -1924,6 +1924,137 @@ if checker.validate_external_role_entrypoint(
 PY
 }
 
+check_role_tool_policy_contract_negative() {
+  PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import copy
+import importlib.util
+import pathlib
+import tempfile
+
+checker_path = pathlib.Path("scripts/check-agent-organization.py")
+spec = importlib.util.spec_from_file_location("rpm_agent_organization", checker_path)
+checker = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(checker)
+
+taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
+taxonomy["rpm_idea_issue_creator"]["write_scope"] = "none"
+taxonomy["rpm_idea_issue_creator"]["coordination"] = "independent-read"
+original = checker.ROLE_TAXONOMY
+try:
+    checker.ROLE_TAXONOMY = taxonomy
+    errors = []
+    checker.check_tool_policy_mutation_capabilities(errors)
+finally:
+    checker.ROLE_TAXONOMY = original
+
+if not any(
+    "GITHUB_MUTATION_ROLES" in error
+    and "rpm_idea_issue_creator" in error
+    for error in errors
+):
+    raise SystemExit(
+        "taxonomy write_scope=none left GitHub mutation capability accepted: "
+        f"{errors!r}"
+    )
+
+taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
+taxonomy["rpm_backlog_scout"]["mcp_scope"] = "none"
+original = checker.ROLE_TAXONOMY
+try:
+    checker.ROLE_TAXONOMY = taxonomy
+    errors = []
+    checker.check_tool_policy_mutation_capabilities(errors)
+finally:
+    checker.ROLE_TAXONOMY = original
+if not any(
+    "MCP_READ_ROLES" in error and "rpm_backlog_scout" in error
+    for error in errors
+):
+    raise SystemExit(
+        "taxonomy mcp_scope=none left MCP capability accepted: "
+        f"{errors!r}"
+    )
+
+hook_source = pathlib.Path(".codex/hooks/agent_tool_policy.py").read_text()
+for mutation, expected in (
+    ("GITHUB_MUTATION_ROLES |= {'rpm_backlog_scout'}", "augmented assignment"),
+    ("GITHUB_MUTATION_ROLES.update({'rpm_backlog_scout'})", "GITHUB_MUTATION_ROLES.update"),
+    ("GITHUB_MUTATION_ROLES.add('rpm_backlog_scout')", "GITHUB_MUTATION_ROLES.add"),
+    (
+        "role_alias = GITHUB_MUTATION_ROLES\nrole_alias |= {'rpm_backlog_scout'}",
+        "aliasing, argument passing, and dynamic access are forbidden",
+    ),
+    (
+        "role_alias = GITHUB_MUTATION_ROLES\nrole_alias.update({'rpm_backlog_scout'})",
+        "aliasing, argument passing, and dynamic access are forbidden",
+    ),
+    (
+        "def pass_capability(value):\n    return value\npass_capability(GITHUB_MUTATION_ROLES)",
+        "capability sets cannot be passed as call arguments",
+    ),
+    (
+        "GITHUB_MUTATION_ROLES.__ior__({'rpm_backlog_scout'})",
+        "GITHUB_MUTATION_ROLES.__ior__",
+    ),
+    (
+        "GITHUB_MUTATION_ROLES[0] = 'rpm_backlog_scout'",
+        "capability sets cannot be accessed through subscripts",
+    ),
+    (
+        "namespace['GITHUB_MUTATION_ROLES'] = set()",
+        "dynamic namespace and capability-name subscripts are forbidden",
+    ),
+    (
+        "globals()['GITHUB_MUTATION_ROLES'].add('rpm_backlog_scout')",
+        "dynamic namespace access through globals/locals/vars is forbidden",
+    ),
+    (
+        "getattr(namespace, 'GITHUB_MUTATION_ROLES')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "setattr(namespace, 'GITHUB_MUTATION_ROLES', set())",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "namespace.__getattribute__('GITHUB_MUTATION_ROLES')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    ("exec('GITHUB_MUTATION_ROLES.update(set())')", "dynamic exec/eval access is forbidden"),
+    ("eval('GITHUB_MUTATION_ROLES')", "dynamic exec/eval access is forbidden"),
+    (
+        "dynamic_getattr = getattr\ndynamic_getattr(namespace, 'GITHUB_MUTATION_ROLES')",
+        "dynamic namespace and code built-in aliases are forbidden",
+    ),
+    (
+        "(lambda GITHUB_MUTATION_ROLES: GITHUB_MUTATION_ROLES)(set())",
+        "capability names cannot be used as lambda arguments",
+    ),
+    (
+        "GITHUB_MUTATION_ROLES = {'rpm_backlog_scout'}",
+        "GITHUB_MUTATION_ROLES must have exactly one top-level assignment",
+    ),
+):
+    with tempfile.TemporaryDirectory() as root:
+        temporary_root = pathlib.Path(root)
+        hook_path = temporary_root / ".codex" / "hooks" / "agent_tool_policy.py"
+        hook_path.parent.mkdir(parents=True)
+        hook_path.write_text(hook_source + "\n" + mutation + "\n")
+        original_root = checker.ROOT
+        try:
+            checker.ROOT = temporary_root
+            errors = []
+            checker.check_tool_policy_mutation_capabilities(errors)
+        finally:
+            checker.ROOT = original_root
+    if not any(expected in error for error in errors):
+        raise SystemExit(
+            f"capability mutation {mutation!r} was accepted: {errors!r}"
+        )
+PY
+}
+
 if [ "${RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION:-}" = "1" ]; then
   check_summary_formatter() {
     local output
@@ -2580,6 +2711,7 @@ check "script_validate_agent_workflow_assets_syntax" \
 check "summary_suppresses_skips" check_summary_suppresses_skips
 check "skill_policy_structure_negative" check_skill_policy_structure_negative
 check "role_taxonomy_contract_negative" check_role_taxonomy_contract_negative
+check "role_tool_policy_contract_negative" check_role_tool_policy_contract_negative
 check "just_test_verbosity" check_just_test_verbosity
 
 check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews

@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unicodedata
 from pathlib import Path, PurePosixPath
@@ -28,6 +31,7 @@ ROLE_TAXONOMY = {
         "responsibility": "routes one requested workflow mode to one manager",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "none",
         "coordination": "coordinator",
     },
     "rpm_backlog_manager": {
@@ -35,6 +39,7 @@ ROLE_TAXONOMY = {
         "responsibility": "coordinates one bounded backlog mode and its handoffs",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "none",
         "coordination": "coordinator",
     },
     "rpm_issue_manager": {
@@ -42,6 +47,7 @@ ROLE_TAXONOMY = {
         "responsibility": "coordinates one issue state machine and writer handoffs",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "none",
         "coordination": "coordinator",
     },
     "rpm_backlog_scout": {
@@ -49,6 +55,7 @@ ROLE_TAXONOMY = {
         "responsibility": "inventories one candidate source and duplicate evidence",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "read",
         "coordination": "independent-read",
     },
     "rpm_issue_fetcher": {
@@ -56,6 +63,7 @@ ROLE_TAXONOMY = {
         "responsibility": "fetches one canonical issue packet and linked context",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "read",
         "coordination": "independent-read",
     },
     "rpm_issue_researcher": {
@@ -63,6 +71,7 @@ ROLE_TAXONOMY = {
         "responsibility": "builds one evidence-backed implementation research packet",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "read",
         "coordination": "independent-read",
     },
     "rpm_spec_reviewer": {
@@ -70,6 +79,7 @@ ROLE_TAXONOMY = {
         "responsibility": "classifies the owning SPEC impact for one issue",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "none",
         "coordination": "independent-read",
     },
     "rpm_issue_readiness_reviewer": {
@@ -77,6 +87,7 @@ ROLE_TAXONOMY = {
         "responsibility": "judges whether one researched issue is actionable",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "read",
         "coordination": "sequential-read",
     },
     "rpm_adversarial_reviewer": {
@@ -84,6 +95,7 @@ ROLE_TAXONOMY = {
         "responsibility": "tries to falsify one validated change against its evidence",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "none",
         "coordination": "sequential-read",
     },
     "rpm_issue_spec_reconciler": {
@@ -91,6 +103,7 @@ ROLE_TAXONOMY = {
         "responsibility": "compares one issue intent with its active SPEC decision",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "none",
         "coordination": "sequential-read",
     },
     "pr-review-resolver": {
@@ -98,6 +111,7 @@ ROLE_TAXONOMY = {
         "responsibility": "classifies review feedback and applies accepted fixes",
         "sandbox_mode": "workspace-write",
         "write_scope": "local",
+        "mcp_scope": "read",
         "coordination": "single-writer",
     },
     "rpm_spec_updater": {
@@ -105,6 +119,7 @@ ROLE_TAXONOMY = {
         "responsibility": "writes one already-approved contract update",
         "sandbox_mode": "workspace-write",
         "write_scope": "local",
+        "mcp_scope": "none",
         "coordination": "single-writer",
     },
     "rpm_implementer": {
@@ -112,6 +127,7 @@ ROLE_TAXONOMY = {
         "responsibility": "writes one approved production behavior change",
         "sandbox_mode": "workspace-write",
         "write_scope": "local",
+        "mcp_scope": "none",
         "coordination": "single-writer",
     },
     "rpm_test_author": {
@@ -119,6 +135,7 @@ ROLE_TAXONOMY = {
         "responsibility": "writes focused regression tests and deterministic fixtures",
         "sandbox_mode": "workspace-write",
         "write_scope": "local",
+        "mcp_scope": "none",
         "coordination": "single-writer",
     },
     "rpm_test_runner": {
@@ -126,6 +143,7 @@ ROLE_TAXONOMY = {
         "responsibility": "runs supplied targeted tests and reports exact evidence",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "none",
         "coordination": "sequential-read",
     },
     "rpm_verifier": {
@@ -133,6 +151,7 @@ ROLE_TAXONOMY = {
         "responsibility": "runs the full repository validation gate",
         "sandbox_mode": "read-only",
         "write_scope": "none",
+        "mcp_scope": "none",
         "coordination": "sequential-read",
     },
     "rpm_idea_issue_creator": {
@@ -140,6 +159,7 @@ ROLE_TAXONOMY = {
         "responsibility": "creates one authorized idea issue and registration",
         "sandbox_mode": "read-only",
         "write_scope": "github",
+        "mcp_scope": "read",
         "coordination": "single-writer",
     },
     "rpm_issue_refiner": {
@@ -147,6 +167,7 @@ ROLE_TAXONOMY = {
         "responsibility": "updates one managed research section and lifecycle state",
         "sandbox_mode": "read-only",
         "write_scope": "github",
+        "mcp_scope": "read",
         "coordination": "single-writer",
     },
     "rpm_ready_ticket_claimer": {
@@ -154,6 +175,7 @@ ROLE_TAXONOMY = {
         "responsibility": "claims one ready issue through the allowed state transition",
         "sandbox_mode": "read-only",
         "write_scope": "github",
+        "mcp_scope": "read",
         "coordination": "single-writer",
     },
     "rpm_followup_issue_creator": {
@@ -161,6 +183,7 @@ ROLE_TAXONOMY = {
         "responsibility": "creates one explicitly authorized deferred follow-up issue",
         "sandbox_mode": "read-only",
         "write_scope": "github",
+        "mcp_scope": "read",
         "coordination": "single-writer",
     },
 }
@@ -562,6 +585,7 @@ def check_role_taxonomy(
         "mutation",
     }
     allowed_write_scopes = {"none", "local", "github"}
+    allowed_mcp_scopes = {"none", "read"}
     allowed_coordination = {
         "independent-read",
         "sequential-read",
@@ -581,11 +605,14 @@ def check_role_taxonomy(
     for role, metadata in ROLE_TAXONOMY.items():
         category = metadata.get("category")
         write_scope = metadata.get("write_scope")
+        mcp_scope = metadata.get("mcp_scope")
         coordination = metadata.get("coordination")
         if category not in allowed_categories:
             fail(errors, f"role taxonomy {role!r}: invalid category {category!r}")
         if write_scope not in allowed_write_scopes:
             fail(errors, f"role taxonomy {role!r}: invalid write_scope {write_scope!r}")
+        if mcp_scope not in allowed_mcp_scopes:
+            fail(errors, f"role taxonomy {role!r}: invalid mcp_scope {mcp_scope!r}")
         if coordination not in allowed_coordination:
             fail(errors, f"role taxonomy {role!r}: invalid coordination {coordination!r}")
         if write_scope != "none" and coordination != "single-writer":
@@ -614,8 +641,253 @@ def check_role_taxonomy(
             fail(errors, f"{role}: local writer must use workspace-write sandbox")
         if write_scope == "github" and sandbox != "read-only":
             fail(errors, f"{role}: GitHub-only writer must use read-only sandbox")
+        if write_scope == "github" and mcp_scope != "read":
+            fail(errors, f"{role}: GitHub writer must have read MCP capability")
         if write_scope == "none" and sandbox != "read-only":
             fail(errors, f"{role}: non-writing role must use read-only sandbox")
+
+
+def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
+    # Keep the runtime hook's role capabilities aligned with this taxonomy.
+    policy_error_count = len(errors)
+    path = ROOT / ".codex" / "hooks" / "agent_tool_policy.py"
+    try:
+        tree = ast.parse(path.read_text(), filename=str(path))
+    except (OSError, SyntaxError) as error:
+        fail(errors, f"{path.relative_to(ROOT)}: cannot load tool policy: {error}")
+        return
+
+    capability_names = {
+        "MANAGERS",
+        "MCP_READ_ROLES",
+        "LOCAL_WRITE_ROLES",
+        "GITHUB_MUTATION_ROLES",
+        "RPM_ROLES",
+    }
+    relative = str(path.relative_to(ROOT))
+    reported: set[str] = set()
+    dynamic_names = {"getattr", "setattr", "globals", "locals", "vars", "exec", "eval"}
+    dynamic_attributes = {
+        "__getattribute__",
+        "__setattr__",
+        "__ior__",
+        *dynamic_names,
+    }
+
+    def reject(reason: str) -> None:
+        if reason not in reported:
+            reported.add(reason)
+            fail(errors, f"{relative}: {reason}")
+
+    # The hook deliberately has a small, auditable declaration language:
+    # every capability is assigned exactly once at module scope, directly from
+    # a string-only set literal. This checker does not attempt to prove
+    # arbitrary Python; all other declaration and namespace shapes fail closed.
+    canonical_assignments: dict[str, list[ast.Assign]] = {
+        name: [] for name in capability_names
+    }
+    for statement in tree.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if isinstance(target, ast.Name) and target.id in capability_names:
+            canonical_assignments[target.id].append(statement)
+
+    canonical_targets: set[int] = set()
+    for name, candidates in canonical_assignments.items():
+        if len(candidates) != 1:
+            reject(f"{name} must have exactly one top-level assignment")
+            continue
+        statement = candidates[0]
+        canonical_targets.add(id(statement.targets[0]))
+        if not isinstance(statement.value, ast.Set):
+            reject(f"{name} must use an exact set-literal assignment")
+            continue
+        if any(
+            not isinstance(element, ast.Constant)
+            or not isinstance(element.value, str)
+            for element in statement.value.elts
+        ):
+            reject(f"{name} set literal must contain only string constants")
+
+    def contains_capability_name(node: ast.AST) -> bool:
+        return any(
+            isinstance(item, ast.Name) and item.id in capability_names
+            for item in ast.walk(node)
+        )
+
+    def capability_root(node: ast.AST) -> str | None:
+        current = node
+        while isinstance(current, (ast.Attribute, ast.Subscript)):
+            current = current.value
+        if isinstance(current, ast.Name) and current.id in capability_names:
+            return current.id
+        return None
+
+    # Build parent links so the only permitted capability reads are direct
+    # membership checks such as `role in MCP_READ_ROLES`.
+    parents: dict[int, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[id(child)] = parent
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in capability_names:
+            if isinstance(node.ctx, ast.Store):
+                if id(node) in canonical_targets:
+                    continue
+                reject(
+                    f"{node.id} cannot use augmented assignment or be rebound "
+                    "outside its canonical declaration"
+                )
+                continue
+            parent = parents.get(id(node))
+            if (
+                isinstance(node.ctx, ast.Load)
+                and isinstance(parent, ast.Compare)
+                and any(id(comparator) == id(node) for comparator in parent.comparators)
+                and all(isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops)
+            ):
+                continue
+            reject(
+                f"{node.id} may only be read in a direct membership check; "
+                "aliasing, argument passing, and dynamic access are forbidden"
+            )
+        elif isinstance(node, ast.Attribute):
+            root = capability_root(node.value)
+            if node.attr in capability_names or root is not None:
+                access = f"{root}.{node.attr}" if root is not None else node.attr
+                reject(
+                    f"{access} attribute access is forbidden for capability sets "
+                    "(including mutation methods and __ior__)"
+                )
+            elif node.attr in dynamic_attributes:
+                reject("dynamic attribute access is forbidden in the capability hook")
+        elif isinstance(node, ast.Subscript):
+            if capability_root(node.value) is not None:
+                reject("capability sets cannot be accessed through subscripts")
+            elif (
+                isinstance(node.value, ast.Name)
+                and node.value.id in {"__builtins__", "builtins"}
+            ) or (
+                isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, str)
+                and (
+                    node.slice.value in capability_names
+                    or node.slice.value in dynamic_names
+                )
+            ):
+                reject("dynamic namespace and capability-name subscripts are forbidden")
+        elif isinstance(node, ast.Call):
+            function = node.func
+            function_name = function.id if isinstance(function, ast.Name) else None
+            attribute_name = function.attr if isinstance(function, ast.Attribute) else None
+            if function_name in {"globals", "locals", "vars"}:
+                reject("dynamic namespace access through globals/locals/vars is forbidden")
+            if function_name in {"exec", "eval"}:
+                reject("dynamic exec/eval access is forbidden")
+            if function_name in {"getattr", "setattr"} or attribute_name in {
+                "__getattribute__",
+                "__setattr__",
+                "__ior__",
+            }:
+                reject(
+                    "capability names cannot be used with getattr/setattr/"
+                    "__getattribute__/__ior__"
+                )
+            if any(contains_capability_name(argument) for argument in node.args) or any(
+                keyword.value is not None and contains_capability_name(keyword.value)
+                for keyword in node.keywords
+            ):
+                reject("capability sets cannot be passed as call arguments")
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
+            if node.value.id in dynamic_names:
+                reject("dynamic namespace and code built-in aliases are forbidden")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in capability_names:
+                reject(f"{node.name} cannot be rebound as a definition")
+            if any(
+                argument.arg in capability_names
+                for argument in (
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                )
+            ) or (
+                node.args.vararg is not None
+                and node.args.vararg.arg in capability_names
+            ) or (
+                node.args.kwarg is not None
+                and node.args.kwarg.arg in capability_names
+            ):
+                reject("capability names cannot be used as function arguments")
+        elif isinstance(node, ast.Lambda):
+            lambda_arguments = (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
+            if any(argument.arg in capability_names for argument in lambda_arguments) or (
+                node.args.vararg is not None
+                and node.args.vararg.arg in capability_names
+            ) or (
+                node.args.kwarg is not None
+                and node.args.kwarg.arg in capability_names
+            ):
+                reject("capability names cannot be used as lambda arguments")
+        elif isinstance(node, ast.alias):
+            if node.asname in capability_names:
+                reject("capability names cannot be introduced through import aliases")
+            if node.name in dynamic_names:
+                reject("dynamic namespace and code built-ins cannot be imported")
+        elif isinstance(node, ast.ExceptHandler) and node.name in capability_names:
+            reject("capability names cannot be introduced as exception aliases")
+
+    if len(errors) > policy_error_count:
+        return
+
+    actual_sets: dict[str, set[str]] = {}
+    for name, candidates in canonical_assignments.items():
+        if len(candidates) != 1 or not isinstance(candidates[0].value, ast.Set):
+            continue
+        actual_sets[name] = {
+            element.value
+            for element in candidates[0].value.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        }
+
+    expected_sets = {
+        "MANAGERS": set(MANAGER_REPORTS),
+        "MCP_READ_ROLES": {
+            role
+            for role, metadata in ROLE_TAXONOMY.items()
+            if metadata.get("mcp_scope") == "read"
+        },
+        "RPM_ROLES": set(ROLE_TAXONOMY),
+        "LOCAL_WRITE_ROLES": {
+            role
+            for role, metadata in ROLE_TAXONOMY.items()
+            if metadata.get("write_scope") == "local"
+        },
+        "GITHUB_MUTATION_ROLES": {
+            role
+            for role, metadata in ROLE_TAXONOMY.items()
+            if metadata.get("write_scope") == "github"
+        },
+    }
+    for name, expected in expected_sets.items():
+        actual = actual_sets.get(name)
+        if not isinstance(actual, set):
+            fail(errors, f"{path.relative_to(ROOT)}: {name} must be a set")
+            continue
+        if actual != expected:
+            missing = ", ".join(sorted(expected - actual)) or "none"
+            unexpected = ", ".join(sorted(actual - expected)) or "none"
+            fail(
+                errors,
+                f"{path.relative_to(ROOT)}: {name} does not match role taxonomy "
+                f"(missing: {missing}; unexpected: {unexpected})",
+            )
 
 
 def validate_external_role_entrypoint(
@@ -2191,6 +2463,7 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
         return run(
             {
                 "hook_event_name": "PreToolUse",
+                "agent_type": role,
                 "transcript_path": transcript,
                 "cwd": str(ROOT),
                 "tool_name": tool,
@@ -2279,11 +2552,243 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             {"cmd": "gh pr merge 1 --squash"},
             2,
         ),
+        (
+            "gh-api-method-equals-patch",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api --method=PATCH repos/example/example"},
+            2,
+        ),
+        (
+            "gh-api-x-equals-patch",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api -X=PATCH repos/example/example"},
+            2,
+        ),
+        (
+            "gh-api-unknown-method",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api --method=custom-write repos/example/example"},
+            2,
+        ),
+        (
+            "gh-api-x-unknown-method",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api -X=custom-write repos/example/example"},
+            2,
+        ),
+        (
+            "gh-api-fields-default-write",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example --field name=value"},
+            2,
+        ),
+        (
+            "gh-api-short-field-default-write",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example -f name=value"},
+            2,
+        ),
+        (
+            "gh-api-input-default-write",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example --input payload.json"},
+            2,
+        ),
+        (
+            "gh-api-default-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example"},
+            0,
+        ),
+        (
+            "gh-api-method-get-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api --method=GET repos/example/example"},
+            0,
+        ),
+        (
+            "mcp-provider-neutral-read",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue",
+            {"operation": "read"},
+            0,
+        ),
+        (
+            "mcp-post-resource-false-positive",
+            "rpm_issue_researcher",
+            "mcp__provider__get_post",
+            {"operation": "read"},
+            0,
+        ),
+        (
+            "mcp-get-commit-read",
+            "rpm_issue_researcher",
+            "mcp__provider__get_commit",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-publish-log-read",
+            "rpm_issue_researcher",
+            "mcp__provider__get_publish_log",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-commit-operation-override",
+            "rpm_issue_researcher",
+            "mcp__provider__get_commit",
+            {"operation": "publish"},
+            2,
+        ),
+        (
+            "mcp-get-publish-log-nested-http-method-override",
+            "rpm_issue_researcher",
+            "mcp__provider__get_publish_log",
+            {"request": {"http_method": "POST"}},
+            2,
+        ),
+        (
+            "mcp-get-commit-nested-request-method-override",
+            "rpm_issue_researcher",
+            "mcp__provider__get_commit",
+            {"request": {"request_method": "PUT"}},
+            2,
+        ),
+        (
+            "mcp-resolve-issue-state-ambiguity",
+            "rpm_issue_researcher",
+            "mcp__github__resolve_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-asset-false-positive",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue",
+            {"operation": "asset"},
+            0,
+        ),
+        (
+            "mcp-provider-neutral-key-override",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue",
+            {"publish": True},
+            2,
+        ),
     )
+    for verb in ("set", "assign", "archive", "publish", "transfer", "approve", "pin"):
+        cases += (
+            (
+                f"mcp-{verb}-mutation-alias",
+                "rpm_issue_researcher",
+                "mcp__provider__get_issue",
+                {"operation": verb},
+                2,
+            ),
+        )
+    for method in ("POST", "PATCH", "PUT"):
+        cases += (
+            (
+                f"mcp-provider-neutral-{method.casefold()}-method",
+                "rpm_issue_researcher",
+                "mcp__provider__get_issue",
+                {"method": method},
+                2,
+            ),
+        )
+
+    missing_registration = run(
+        {
+            "hook_event_name": "SubagentStart",
+            "agent_type": "rpm_issue_researcher",
+        }
+    )
+    if missing_registration.returncode != 2:
+        fail(
+            errors,
+            "tool policy probe missing-registration expected exit 2, "
+            f"got {missing_registration.returncode}",
+        )
+    missing_state_transcript = f"{transcript}-missing-state"
+    registered = run(
+        {
+            "hook_event_name": "SubagentStart",
+            "agent_type": "rpm_issue_researcher",
+            "agent_transcript_path": missing_state_transcript,
+        }
+    )
+    if registered.returncode != 0:
+        fail(errors, f"tool policy probe missing-state registration failed: {registered.stderr}")
+    else:
+        policy_path = Path(tempfile.gettempdir()) / "rpm-agent-tool-policy"
+        digest = hashlib.sha256(missing_state_transcript.encode()).hexdigest()
+        (policy_path / f"{digest}.json").unlink(missing_ok=True)
+        missing_state = run(
+            {
+                "hook_event_name": "PreToolUse",
+                "transcript_path": missing_state_transcript,
+                "tool_name": "mcp__provider__get_issue",
+                "tool_input": {},
+            }
+        )
+        if missing_state.returncode != 2:
+            fail(
+                errors,
+                "tool policy probe missing-state expected exit 2, "
+                f"got {missing_state.returncode}",
+            )
+        run(
+            {
+                "hook_event_name": "SubagentStop",
+                "agent_type": "rpm_issue_researcher",
+                "agent_transcript_path": missing_state_transcript,
+            }
+        )
+
+    external_read = run(
+        {
+            "hook_event_name": "PreToolUse",
+            "agent_type": "general-purpose",
+            "transcript_path": f"{transcript}-external",
+            "tool_name": "exec_command",
+            "tool_input": {"cmd": "gh api --method=PATCH repos/example/example"},
+        }
+    )
+    if external_read.returncode != 0:
+        fail(
+            errors,
+            "tool policy probe external-non-rpm expected exit 0, "
+            f"got {external_read.returncode}",
+        )
     for name, role, tool, tool_input, expected in cases:
         actual = pre_tool(role, tool, tool_input)
         if actual != expected:
             fail(errors, f"tool policy probe {name} expected exit {expected}, got {actual}")
+    resolve_reason = run(
+        {
+            "hook_event_name": "PreToolUse",
+            "agent_type": "rpm_issue_researcher",
+            "transcript_path": transcript,
+            "tool_name": "mcp__github__resolve_issue",
+            "tool_input": {},
+        }
+    )
+    if resolve_reason.returncode != 2 or "detected mutation issue_other" not in resolve_reason.stderr:
+        fail(
+            errors,
+            "tool policy probe resolve_issue must reject with a mutation reason, "
+            f"got exit {resolve_reason.returncode}: {resolve_reason.stderr}",
+        )
     run(
         {
             "hook_event_name": "SubagentStop",
@@ -2303,6 +2808,7 @@ def main() -> int:
     check_role_contracts(agents, errors)
     check_skill_inventory(errors)
     check_role_taxonomy(agents, errors)
+    check_tool_policy_mutation_capabilities(errors)
     check_external_role_entrypoints(agents, errors)
     check_role_organization_docs(agents, errors)
     check_entries_and_assets(errors)

@@ -40,12 +40,69 @@ GITHUB_MUTATION_ROLES = {
     "rpm_ready_ticket_claimer",
     "rpm_followup_issue_creator",
 }
-RPM_ROLES = MANAGERS | LOCAL_WRITE_ROLES | MCP_READ_ROLES | {
+RPM_ROLES = {
+    "rpm_workflow_manager",
+    "rpm_backlog_manager",
+    "rpm_issue_manager",
+    "pr-review-resolver",
+    "rpm_spec_updater",
+    "rpm_test_author",
+    "rpm_implementer",
+    "rpm_backlog_scout",
+    "rpm_idea_issue_creator",
+    "rpm_issue_fetcher",
+    "rpm_issue_researcher",
+    "rpm_issue_refiner",
+    "rpm_issue_readiness_reviewer",
+    "rpm_ready_ticket_claimer",
+    "rpm_followup_issue_creator",
     "rpm_spec_reviewer",
     "rpm_issue_spec_reconciler",
     "rpm_test_runner",
     "rpm_verifier",
     "rpm_adversarial_reviewer",
+}
+MCP_MUTATION_VERBS = {
+    "create",
+    "update",
+    "edit",
+    "write",
+    "delete",
+    "remove",
+    "add",
+    "close",
+    "reopen",
+    "comment",
+    "label",
+    "mutation",
+    "merge",
+    "set",
+    "assign",
+    "archive",
+    "publish",
+    "transfer",
+    "approve",
+    "pin",
+    "mutate",
+    "modify",
+    "commit",
+    "claim",
+    "resolve",
+}
+MCP_HTTP_MUTATION_VERBS = {"post", "patch", "put"}
+MCP_OPERATION_KEYS = {
+    "action",
+    "operation",
+    "method",
+    "http_method",
+    "request_method",
+    "httpmethod",
+    "requestmethod",
+    "mutation",
+    "op",
+    "verb",
+    "command",
+    "intent",
 }
 POLICY_DIR = Path(tempfile.gettempdir()) / "rpm-agent-tool-policy"
 PATCH_PATH = re.compile(
@@ -94,24 +151,39 @@ def policy_path(transcript: str) -> Path:
     return POLICY_DIR / f"{digest}.json"
 
 
+def registration_path(transcript: str) -> Path:
+    digest = hashlib.sha256(transcript.encode()).hexdigest()
+    return POLICY_DIR / f"{digest}.registered"
+
+
 def register(event: dict[str, object]) -> int:
     role = event.get("agent_type")
     transcript = transcript_path(event, start_or_stop=True)
-    if not isinstance(role, str) or role not in RPM_ROLES or transcript is None:
+    if not isinstance(role, str) or role not in RPM_ROLES:
         return 0
-    POLICY_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    policy_path(transcript).write_text(json.dumps({"agent_type": role}))
+    if transcript is None:
+        return deny(f"{role} registration is missing an agent transcript path")
+    try:
+        POLICY_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        registration_path(transcript).write_text(json.dumps({"agent_type": role}))
+        policy_path(transcript).write_text(json.dumps({"agent_type": role}))
+    except OSError as error:
+        return deny(f"{role} policy registration failed: {error}")
     return 0
 
 
 def cleanup(event: dict[str, object]) -> int:
+    role = event.get("agent_type")
     transcript = transcript_path(event, start_or_stop=True)
     if transcript is None:
+        if isinstance(role, str) and role in RPM_ROLES:
+            return deny(f"{role} cleanup is missing an agent transcript path")
         return 0
-    try:
-        policy_path(transcript).unlink()
-    except FileNotFoundError:
-        pass
+    for path in (policy_path(transcript), registration_path(transcript)):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
     return 0
 
 
@@ -120,10 +192,20 @@ def current_role(event: dict[str, object]) -> str | None:
     if transcript is None:
         return None
     try:
+        registration = json.loads(registration_path(transcript).read_text())
         value = json.loads(policy_path(transcript).read_text())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
+    registered_role = (
+        registration.get("agent_type") if isinstance(registration, dict) else None
+    )
     role = value.get("agent_type") if isinstance(value, dict) else None
+    if (
+        not isinstance(registered_role, str)
+        or registered_role not in RPM_ROLES
+        or registered_role != role
+    ):
+        return None
     return role if isinstance(role, str) and role in RPM_ROLES else None
 
 
@@ -150,12 +232,13 @@ def collect_keys(value: object) -> set[str]:
 
 def operation_values(value: object) -> list[str]:
     if isinstance(value, dict):
-        selected = [
-            item
-            for key, child in value.items()
-            if str(key).casefold() in {"action", "operation", "method", "mutation"}
-            for item in flatten_strings(child)
-        ]
+        selected: list[str] = []
+        for key, child in value.items():
+            key_text = str(key).casefold()
+            if key_text in MCP_OPERATION_KEYS or key_text in MCP_MUTATION_VERBS:
+                selected.extend(flatten_strings(child))
+                if key_text in MCP_MUTATION_VERBS:
+                    selected.append(key_text)
         return selected + [
             item for child in value.values() for item in operation_values(child)
         ]
@@ -256,45 +339,70 @@ def shell_mutation_kind(text: str) -> str | None:
         lowered,
     ):
         return "other_github"
-    if re.search(r"\bgh\s+api\b", lowered) and (
-        re.search(r"(?:--method|-x)\s*(?:post|patch|put|delete)\b", lowered)
-        or re.search(r"\bmutation\b", lowered)
-    ):
-        return "raw_api_mutation"
+    if re.search(r"\bgh\s+api\b", lowered):
+        method_flag = re.compile(r"(?<!\S)(?:--method|-x)(?=$|\s|=|[a-z])")
+        methods = re.findall(
+            r"(?<!\S)(?:--method|-x)(?:=|\s+|(?=[a-z]))([a-z][a-z0-9_-]*)\b",
+            lowered,
+        )
+        if method_flag.search(lowered) and not methods:
+            return "raw_api_unknown"
+        if any(method in {"post", "patch", "put", "delete"} for method in methods):
+            return "raw_api_mutation"
+        if any(method not in {"get", "head", "options"} for method in methods):
+            return "raw_api_unknown"
+        if re.search(
+            r"(?<!\S)(?:--field|--raw-field|-f|-F|--input|--input-file)(?=$|\s|=)",
+            lowered,
+        ) and not methods:
+            return "raw_api_mutation"
+        if re.search(r"\bmutation\b", lowered):
+            return "raw_api_unknown"
     return None
 
 
-def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:
-    lowered = f"{normalized_tool(tool)} {' '.join(operation_values(tool_input)).casefold()}"
-    mutation_words = (
-        "create",
-        "update",
-        "edit",
-        "write",
-        "delete",
-        "remove",
-        "add",
-        "close",
-        "reopen",
-        "comment",
-        "label",
-        "mutation",
+def has_mcp_word(text: str, word: str) -> bool:
+    return re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", text) is not None
+
+
+def has_explicit_mcp_read_action(tool: str) -> bool:
+    command = normalized_tool(tool).split("__")[-1]
+    return any(
+        command == action or command.startswith(f"{action}_")
+        for action in ("get", "list", "fetch", "read", "search", "view")
     )
-    if not any(word in lowered for word in mutation_words):
+
+
+def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:
+    operation_text = " ".join(operation_values(tool_input)).casefold()
+    lowered = f"{normalized_tool(tool)} {operation_text}"
+    operation_mutation = any(
+        has_mcp_word(operation_text, word)
+        for word in MCP_MUTATION_VERBS | MCP_HTTP_MUTATION_VERBS
+    )
+    if not operation_mutation and has_explicit_mcp_read_action(tool):
         return None
-    if "merge" in lowered:
+    if not operation_mutation and not any(
+        has_mcp_word(lowered, word) for word in MCP_MUTATION_VERBS
+    ):
+        return None
+    if has_mcp_word(lowered, "merge"):
         return "merge"
-    if "issue" in lowered and "create" in lowered:
+    if has_mcp_word(lowered, "issue") and has_mcp_word(lowered, "create"):
         return "issue_create"
-    if "project" in lowered and any(word in lowered for word in ("add", "create")):
+    if has_mcp_word(lowered, "project") and any(
+        has_mcp_word(lowered, word) for word in ("add", "create")
+    ):
         return "project_add"
-    if "project" in lowered:
+    if has_mcp_word(lowered, "project"):
         return "project_other"
-    if "label" in lowered:
+    if has_mcp_word(lowered, "label"):
         return "label"
-    if "issue" in lowered and any(word in lowered for word in ("update", "edit")):
+    if has_mcp_word(lowered, "issue") and any(
+        has_mcp_word(lowered, word) for word in ("update", "edit")
+    ):
         return "issue_edit"
-    if "issue" in lowered:
+    if has_mcp_word(lowered, "issue"):
         return "issue_other"
     return "unknown_mutation"
 
@@ -346,9 +454,21 @@ def allowed_github_mutation(
 
 
 def check_tool(event: dict[str, object]) -> int:
+    transcript = transcript_path(event)
+    declared_role = event.get("agent_type")
     role = current_role(event)
     if role is None:
+        state_exists = transcript is not None and (
+            policy_path(transcript).is_file() or registration_path(transcript).is_file()
+        )
+        if (
+            isinstance(declared_role, str)
+            and declared_role in RPM_ROLES
+        ) or state_exists:
+            return deny("known RPM role has no valid registered policy state")
         return 0
+    if isinstance(declared_role, str) and declared_role != role:
+        return deny("registered RPM role does not match the declared agent type")
 
     tool = event.get("tool_name")
     if not isinstance(tool, str):
@@ -370,7 +490,7 @@ def check_tool(event: dict[str, object]) -> int:
         if mutation is None:
             return 0
         if role not in GITHUB_MUTATION_ROLES:
-            return deny(f"{role} has read-only MCP access")
+            return deny(f"{role} has read-only MCP access; detected mutation {mutation}")
         return (
             0
             if allowed_github_mutation(role, mutation, tool_input)
