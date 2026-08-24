@@ -78,13 +78,29 @@ the parser cannot reinterpret it as another option.
 
 `--all` and `--workspace` cannot be used together. Repeated selectors and
 repeated resolved members are deduplicated. Selector argument order does not
-control execution order: selected members are emitted in the #145 table's
-deduplicated `member_path_key` order, sorted lexicographically by unsigned
-UTF-8 bytes.
+control resolved target-list order: selected members are emitted in the #145
+table's deduplicated `member_path_key` order, sorted lexicographically by
+unsigned UTF-8 bytes. Whether that resolved list is spawned sequentially or in
+parallel, and how its output is ordered, remain owned by #151 and the adopting
+command.
+
+Targeting consumes only the validated #145 member table from the
+[`core/resolver` workspace boundary](../../core/resolver/SPEC.md). For
+`--all` and `--workspace`, #145 manifest discovery has already rejected
+duplicate member package names before publishing the table. Targeting itself
+compares the root package name from the validated root snapshot with every
+member row and rejects a root/member collision before selector matching or
+execution. This preflight comparison is local to targeting and does not
+require dependency resolution.
 
 The target list is fully resolved and validated before any target executes.
 This includes option conflicts, selector identity errors, and the zero-member
-all-workspace case. A failed validation executes no script.
+all-workspace case. The same preflight checks that the requested `<script>`
+exists in every selected target's immutable manifest snapshot, using the root
+manifest snapshot for root-only mode. If any selected snapshot lacks the
+script, the entire invocation fails before any child starts, including targets
+that precede the missing script in table order. A failed validation executes no
+script.
 
 For a selected member, `rpm run <script>` reads the script text only from that
 row's immutable #145 manifest snapshot. It binds the child working directory
@@ -100,9 +116,19 @@ the retained #145 parent/name mapping and descriptor identity. A missing,
 renamed, replaced, or identity-mismatched entry fails before spawn. Retaining an
 old descriptor or changing directory through it does not satisfy this check:
 the command must not launch from a displaced directory or execute a replacement
-entry. This command contract does not redefine #145 member identity or ordering
-and does not define how linker output or workspace links are created; those
-behaviors remain owned by the linker and workspace install contracts.
+entry. Final revalidation and process creation form one atomic boundary. From a
+successful final revalidation through process creation, the retained
+descriptor/fd-bound working directory and target-local `.bin` identity must be
+preserved, or an atomic platform equivalent must be used. A path-based reopen,
+`current_dir` path lookup, or recomputation of the `.bin` location from
+`member_path_key` cannot establish that boundary and fails closed before the
+child starts. This is a per-target execution-time safety failure: it prevents
+that child from starting but does not claim that an earlier target did not run.
+Whether later targets run or failures aggregate remains owned by #151 and the
+adopting command. This command contract does not redefine #145 member identity
+or ordering and does not define how linker output or workspace links are
+created; those behaviors remain owned by the linker and workspace install
+contracts.
 
 ### Execution and failure ownership
 
@@ -116,10 +142,13 @@ behavior from [`run/SPEC.md`](../run/SPEC.md).
 M8 issue #151, together with the adopting command's SPEC and implementation
 follow-up, must define the stable numeric exit code, diagnostic envelope,
 wording policy, and stdout/stderr ownership for multi-target outcomes before
-those behaviors are implemented. Until that contract exists, #223 may implement
-and fixture the target-set resolver and its deterministic ordering only; it must
-not expose multi-target parser or dispatch behavior that chooses continuation or
-aggregation. This SPEC deliberately introduces none of those decisions.
+those behaviors are implemented. It must also decide whether selected targets
+spawn sequentially or in parallel and what ordering applies to their output.
+Until that contract exists, #223 may implement and fixture the target-set
+resolver and its deterministic ordering only; it must not expose multi-target
+parser or dispatch behavior that chooses continuation, aggregation, spawn
+scheduling, or output ordering. This SPEC deliberately introduces none of
+those decisions.
 
 ### Command adoption and unsupported filters
 
@@ -143,12 +172,13 @@ command execution:
 - cover that layer with the deterministic offline target-set fixtures listed
   below without exposing incomplete CLI options;
 - after M8 #151 and the adopting `run` decision define failure continuation,
-  aggregation, exit status, and output channels, add parser support for
-  run-only `--all` and repeatable `--workspace <selector>`, enforcing exactly
-  one selector value per `--workspace` occurrence (for StructOpt/Clap, an
-  equivalent of `number_of_values(1)` rather than a greedy variadic argument),
-  and dispatch each target using its manifest, working directory, and
-  target-local `.bin` PATH rule;
+  aggregation, exit status, output channels, sequential-versus-parallel spawn,
+  and target output ordering, add parser support for run-only `--all` and
+  repeatable `--workspace <selector>`, enforcing exactly one selector value per
+  `--workspace` occurrence (for StructOpt/Clap, an equivalent of
+  `number_of_values(1)` rather than a greedy variadic argument), and dispatch
+  each target using its manifest, working directory, and target-local `.bin`
+  PATH rule;
 - update `rpm run --help` in that same exposed CLI change to state the default
   root target and its workspace-discovery bypass, that `--all` excludes the
   root, exact package-name and portable root-relative `member_path_key`
@@ -169,9 +199,14 @@ The following are input errors and must occur before any selected target runs:
 
 - `--all` combined with one or more `--workspace` selectors;
 - `--all` when the discovery table has no members;
+- the requested `<script>` is absent from any selected target's immutable
+  manifest snapshot;
 - a selector that is not an exact package-name or portable root-relative
   `member_path_key` match;
 - a selector whose package-name and path matches resolve to different rows;
+- duplicate member package names rejected by #145 before table publication;
+- a root package name equal to a validated member row, rejected by target-set
+  preflight before selector matching or execution;
 - a leading-hyphen selector supplied without the attached
   `--workspace=<selector>` syntax;
 - any target or filter option other than `--all` and `--workspace`, including
@@ -192,6 +227,9 @@ this contract is active. Planned coverage includes:
 - a two-member project whose table order differs from selector argument order,
   proving `--all`, exact name selectors, exact path selectors, and duplicate
   selector deduplication;
+- a two-member project where the first member contains the requested script and
+  a later selected member does not, proving target-set preflight checks every
+  immutable snapshot and starts no child when any selected script is missing;
 - a parser invocation such as `rpm run --workspace member build`, proving one
   `--workspace` occurrence consumes exactly one selector and leaves `build` as
   the script positional;
@@ -200,11 +238,20 @@ this contract is active. Planned coverage includes:
   to one table row and execute once;
 - a member whose package name or `member_path_key` begins with `-`, proving the
   attached `--workspace=<selector>` syntax remains unambiguous to the parser;
+- a leading-hyphen selector passed in separated form (`--workspace -pkg`),
+  proving that form is rejected while the attached `--workspace=-pkg` form is
+  accepted;
 - exact-selector no-match and cross-kind ambiguity cases, including the rule
   that root and external identities cannot be selected;
 - a member whose native path uses decomposed Unicode while its table key is NFC,
-  proving the exact NFC selector matches and the decomposed spelling is
-  rejected without selector normalization;
+  with a package name distinct from both spellings, proving the exact NFC
+  selector matches and the decomposed spelling is rejected without selector
+  normalization or an accidental package-name alias match;
+- the #145 discovery fixture with duplicate member package names, proving
+  discovery rejects them before publishing the table, plus a targeting fixture
+  with a root/member package-name collision, proving target-set preflight
+  rejects it before selector matching or execution without dependency
+  resolution;
 - members with path-shaped package names such as `/pkg` and `C:/pkg`, proving
   those strings select literal package-name identities and are never resolved
   as filesystem paths;
@@ -212,14 +259,24 @@ this contract is active. Planned coverage includes:
   proving no target script starts after validation failure;
 - a member-local manifest, working-directory marker, and local `.bin` marker;
 - an injected member-manifest and member-directory replacement after target
-  resolution but before dispatch, proving the immediate retained parent/name
-  and descriptor revalidation rejects the replacement and prevents displaced
-  or replacement script text and local `.bin` files from executing;
+  resolution but before final parent/name and descriptor revalidation, proving
+  final revalidation rejects the replacement and prevents displaced or
+  replacement script text and local `.bin` files from executing;
+- a process-creation race adapter that attempts a path-based reopen,
+  `current_dir` lookup, or `.bin` substitution after final revalidation,
+  proving the retained descriptor/fd-bound working directory and `.bin`
+  identity survive through process creation or dispatch fails closed;
+- a multi-target fixture where an earlier selected target has completed before
+  a later target fails final identity revalidation, separating this late
+  execution-time safety failure from the all-or-none missing-script preflight;
+  whether later targets continue and how failures aggregate wait for #151 and
+  the adopting command SPEC;
 - a multi-target run with a failing script, pinning the resolved target set and
   table order. Before #151 settles execution policy, this fixture may assert
-  only target-set resolution; whether later targets run, how the outcome
-  aggregates, and numeric exit or diagnostic golden text wait for M8 #151 and
-  the adopting command SPEC;
+  only target-set resolution; whether later targets run, whether targets spawn
+  sequentially or in parallel, how the outcome aggregates, how target output is
+  ordered, and numeric exit or diagnostic golden text wait for M8 #151 and the
+  adopting command SPEC;
 - a non-opted command invoked with `--all` or `--workspace`, proving parser
   rejection occurs before command work and does not fall back to the root; and
 - an offline `rpm run --help` assertion covering the required targeting facts
@@ -228,7 +285,8 @@ this contract is active. Planned coverage includes:
 ## Open Questions
 
 - #151 and the adopting command SPEC own fail-fast versus continue, failure
-  aggregation, stable exit-code, diagnostic-envelope, and stdout/stderr
-  decisions required before implementation.
+  aggregation, stable exit-code, diagnostic-envelope, stdout/stderr, sequential-
+  versus-parallel spawn, and target output-order decisions required before
+  implementation.
 - Other commands may opt into these selectors only through their owning CLI
   SPEC; no command adoption is implied by this document.

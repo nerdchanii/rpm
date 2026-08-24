@@ -318,7 +318,7 @@ activation by #222. Workspace lifecycle remains disabled.
 | package-name and dependency-name root confinement | `resolver/SPEC.md`, `linker/SPEC.md` | existing package metadata and lockfile names are not fully confined before extraction and dependency linking; names such as `../../outside` can escape the staged tree, so the resolver/linker boundary must reject traversal and verify canonical destinations before any write; #147 must include this regression coverage for workspace and external edges | #147 |
 | workspace member binary links | `linker/SPEC.md` | absent: the existing `.bin` contract does not state whether a workspace member's `bin` field is exposed; #147 must decide the link layout and cover it in the minimal workspace fixture (#149) | #147; #149 |
 | workspace command targeting (`--workspace`, `--all`, root) | `cli/workspace-targeting/SPEC.md`, `cli/run/SPEC.md` | contract defined, implementation deferred: root-only default, all-member selection, exact name/path selectors, deterministic #145 table ordering, validation-before-execution, and command opt-in are specified; only `rpm run` opts in | #148 / PR #216; #223 implementation |
-| partial workspace failure and exit behavior | `cli/workspace-targeting/SPEC.md`, `cli/run/SPEC.md`, M8 #151 | target-set validation is defined, execution and diagnostic policy deferred: target lists resolve atomically before execution; fail-fast versus continue, failure aggregation, stable numeric exit code, diagnostic envelope, and stdout/stderr ownership remain explicitly owned by #151 and the adopting command; #223 may implement target-set resolution and fixtures, while parser/dispatch exposure waits for those decisions | #148 (target set); #223 implementation; #151 (execution/diagnostics) |
+| partial workspace failure and exit behavior | `cli/workspace-targeting/SPEC.md`, `cli/run/SPEC.md`, M8 #151 | target-set validation is defined, execution and diagnostic policy deferred: target lists resolve atomically before execution; fail-fast versus continue, failure aggregation, stable numeric exit code, diagnostic envelope, stdout/stderr ownership, sequential-versus-parallel spawning, and target output ordering remain explicitly owned by #151 and the adopting command; #223 may implement target-set resolution and fixtures, while parser/dispatch exposure waits for those decisions | #148 (target set); #223 implementation; #151 (execution/diagnostics) |
 
 Findings:
 
@@ -364,8 +364,9 @@ Findings:
   unsupported-filter, deterministic-order, and validation behavior; execution
   and planned fixtures remain deferred. Fail-fast versus continue, failure
   aggregation, stable numeric exit codes, diagnostic envelopes, and
-  stdout/stderr ownership remain explicitly owned by M8 #151 and the adopting
-  command, so this audit introduces no execution or diagnostic policy.
+  stdout/stderr ownership, sequential-versus-parallel spawning, and target
+  output ordering remain explicitly owned by M8 #151 and the adopting command,
+  so this audit introduces no execution or diagnostic policy.
 - Root safety rules remain an explicit constraint and include existing package
   metadata and dependency-name traversal risks. #147 must confine workspace
   link targets and dependency-name writes. Workspace mutation, rollback, and
