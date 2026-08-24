@@ -203,9 +203,28 @@ The initial v2 transport policy is fail-closed:
   the packument request. It retains the normalized origin and endpoint path
   prefix, without user information, query, or fragment. A percent sign in the
   serialized endpoint must introduce exactly two ASCII hexadecimal digits;
-  malformed escapes are rejected before a packument or tarball request. Path
-  canonicalization then decodes only ASCII unreserved escapes (`A-Z`, `a-z`,
-  `0-9`, `-`, `.`, `_`, `~`), so `%41` becomes `A` and `%7e` becomes `~`.
+  malformed escapes are rejected before a packument or tarball request. The
+  endpoint path is a stable, policy-approved namespace prefix and cannot carry
+  per-request credentials, signatures, or expiry values. Before any percent
+  normalization or dot-segment removal, RPM examines every raw path segment.
+  The v2 endpoint policy must provide this prefix from a reviewed static
+  namespace allowlist; an arbitrary user-, metadata-, or request-derived path
+  is not a policy-approved base and fails closed. This prevents an unrecognized
+  secret value from entering persisted `registry_base` merely because it lacks
+  a known marker.
+  It rejects a segment containing `=`, `&`, `;`, `?`, or `#` (including their
+  percent-encoded forms), or a case-insensitive credential marker equal to or
+  followed by a delimiter (a segment boundary or `-`, `_`, `.`, `:`, `=`,
+  `&`, `;`, `?`, `#`): `token`, `secret`, `sig`, `signature`, `credential`,
+  `auth`, `authorization`, `access_key`, `expires`, `expiry`, `expires_at`, or
+  `x-amz-*`. The security projection decodes unreserved escapes and recognizes
+  encoded delimiter forms for this rejection check, while `%2F` remains an
+  encoded slash and does not create a segment. Dot segments are checked under
+  this raw-segment policy before they can be removed; therefore
+  `token=secret/../registry` is rejected as supplied and cannot canonicalize to
+  `/registry`. Path canonicalization then decodes only ASCII unreserved escapes
+  (`A-Z`, `a-z`, `0-9`, `-`, `.`, `_`, `~`), so `%41` becomes `A` and `%7e`
+  becomes `~`.
   Escapes for reserved or non-ASCII octets remain escapes with uppercase hex,
   so `%2f` becomes `%2F` and never creates a path separator. The resulting
   literal `.` and `..` segments, including ones produced by `%2E` or `%2e`, are
@@ -241,22 +260,46 @@ The initial v2 transport policy is fail-closed:
   lockfile provenance. V1 keeps its current URL handling. A future policy that
   needs private or expiring downloads must define a stable redacted locator and
   explicit runtime credential injection before v2 can admit one.
+  Planned v2 also requires a credential-free stable artifact locator. Its
+  normalized path must equal the canonical path derived from `registry_base`,
+  the external package `name`, and the selected `version`: the base endpoint
+  path, the canonical artifact package path, `/-/`, and the canonical
+  `<unscoped-name>-<version>.tgz` or `<scoped-leaf-name>-<version>.tgz` artifact
+  filename. The artifact package path is `/<name>` for an unscoped name and
+  `/@scope/<leaf>` for `@scope/leaf`; its scope separator is structural, while
+  the packument lookup path may use `%2F` as specified in the scoped-name
+  section. A `%2F` that represents that scope separator is normalized to the
+  structural separator before comparison; an encoded slash inside any other
+  component remains encoded and never creates an extra segment. Every path
+  component uses the `registry_base` canonical percent-escape spelling. The
+  filename is one path component. Any extra segment or alternate path,
+  including a token, signature, or expiry-bearing path segment, is rejected
+  before archive acquisition. V2 has no runtime credential injection, so a
+  private or expiring artifact path is ineligible until a future SPEC defines a
+  stable redacted locator and an explicit authenticated runtime injection API.
 - Metadata and tarball redirects are limited to five hops. Every redirect
   target is parsed and checked before following it, remains HTTPS, has no user
   information, query, or fragment, and has the same normalized origin. A
   relative redirect is allowed only when resolution against the current URL
-  produces a URL that passes those checks. Cross-origin redirects, HTTPS
-  downgrades, and credential- or expiry-bearing redirect URLs are rejected. The
-  initial v2 contract has no implicit CDN or alternate-origin exception.
+  produces a URL that passes those checks. Its raw path segments must pass the
+  credential-free policy above before dot-segment removal, so a redirect such as
+  `token=secret/../registry` is rejected before it can disappear during
+  canonicalization. Cross-origin redirects, HTTPS downgrades, and credential-
+  or expiry-bearing redirect URLs are rejected. A tarball redirect must also
+  preserve the same canonical artifact locator path; an alternate path is
+  rejected. The initial v2 contract has no implicit CDN or alternate-origin
+  exception.
 
 Every v2 URL-policy rejection uses a redacted diagnostic locator. When parsing
 succeeds, the locator may contain only the scheme, normalized lower-case host,
-effective non-default port, and normalized path, followed by `?[redacted]` when
-a query was present. It omits user information, the raw query, fragment, and
-the raw URL. A malformed percent escape or otherwise unparseable URL reports a
-stable rejection category without echoing the supplied URL. Error chains,
-logs, and fixture diagnostics apply the same rule, so credential, signature,
-and expiry query values never appear in diagnostics.
+effective non-default port, and a path placeholder; a query is represented by
+`?[redacted]` when present. It omits user information, the raw path, raw query,
+fragment, and raw URL for every rejected v2 URL policy, including
+`registry_base`, tarball, and redirect policy. A malformed percent escape or
+otherwise unparseable URL reports a stable rejection category without echoing
+the supplied URL. Error chains, logs, and fixture diagnostics apply the same
+rule, so credential, signature, and expiry path or query values never appear in
+diagnostics.
 
 After the graph, name, and destination projections derivable without archive
 bytes pass preflight, the approved tarball request may acquire bytes only into a
@@ -519,11 +562,13 @@ content. Failures must be returned to callers as typed errors:
   fetch/verify cache side effect, not before all installer side effects.
 - A planned v2 provenance tuple with an invalid registry origin or base endpoint,
   a same-origin/different-path registry drift, a disallowed tarball URL or
-  redirect, a query-bearing tarball URL, malformed percent encoding, mixed-version
-  metadata, an untrusted lockfile source, or missing/invalid SHA-512 SRI fails
-  before archive acquisition, cache mutation, extraction, and any install output
-  publication. The URL-policy diagnostic uses the redaction rules above and
-  never echoes a rejected query, credential, signature, or expiry value.
+  redirect, a query-bearing or noncanonical credential-bearing tarball path,
+  a credential/signature/expiry-bearing or raw-dot-removal-bypass `registry_base`
+  path, malformed percent encoding, mixed-version metadata, an untrusted
+  lockfile source, or missing/invalid SHA-512 SRI fails before archive
+  acquisition, cache mutation, extraction, and any install output publication.
+  The URL-policy diagnostic uses the redaction rules above and never echoes a
+  rejected path, query, credential, signature, or expiry value.
   A valid SHA-1 shasum does not make that v2 tuple eligible.
 - A legacy single-version root record is ineligible for v2 publication even when
   its root dist contains valid SHA-512 integrity; rejection occurs before tarball
@@ -562,12 +607,25 @@ Fixture expectations are defined by the owning scenario and documented in
   (including same-origin/different-path drift), malformed percent escapes and
   the complete `registry_base` normalization matrix (uppercase retained hex,
   unreserved decoding, encoded dot/slash behavior, root traversal, repeated
-  separators, and trailing slash), untrusted lockfile input, missing or
-  unsupported integrity, shasum-only metadata, query-bearing
+  separators, trailing slash, and raw-segment credential rejection before
+  dot-segment removal), untrusted lockfile input, missing or unsupported
+  integrity, shasum-only metadata, base paths such as
+  `/npm/token=fixture-secret/` and `/npm/expires=2099-01-01T00:00:00Z/`, the
+  raw bypass `/npm/token=fixture-secret/../registry`, and scoped encoding
+  variants (`@scope%2Fname` and `@scope%2fname` canonicalize identically while
+  `%40scope%2Fname` remains a distinct encoded-`@` spelling) with no
+  packument/tarball requests or cache writes; query-bearing
   credential/signature/expiry tarball URLs rejected with zero tarball requests
   and zero cache writes while diagnostics omit their raw query values,
-  non-HTTPS and cross-origin tarballs, HTTPS downgrade, query-bearing redirect,
-  cross-origin redirect, and redirect-limit overflow
+  noncanonical path-segment token/signature/expiry tarball URLs and redirects
+  (for example `/download/token=fixture-secret/...` and
+  `/expires=2099-01-01T00:00:00Z/...`) rejected with zero tarball requests and
+  zero cache writes while diagnostics contain neither `fixture-secret` nor the
+  expiry text and omit the raw path and secret values,
+  non-HTTPS and cross-origin tarballs, redirects carrying
+  `/token=fixture-secret/../registry` or `/expires=2099-01-01T00:00:00Z/`,
+  HTTPS downgrade, query-bearing redirect, cross-origin redirect, and
+  redirect-limit overflow
 - wrong-type values on every ignored metadata field are discarded as absent
   rather than failing the packument (issue #113), while well-typed values
   round-trip into `Some(...)`

@@ -126,8 +126,9 @@ published through a mutable pathname, and has no other writable handle during
 verification or extraction. RPM rewinds and reads that stable descriptor to
 validate the required supported SHA-512 `integrity` value, then uses the same
 descriptor to inspect the archive package manifest. The manifest `name`,
-`version`, canonical bin map, and scripts map must exactly match the v2 external
-record under the lockfile SPEC.
+`version`, ordinary `dependencies` request map, canonical bin map, and scripts
+map must exactly match the v2 external record and outgoing edges under the
+lockfile SPEC.
 RPM rewinds the descriptor again and passes it directly to extraction only after
 both checks and #147's descriptor-bound archive-entry, symlink, and hardlink
 validation succeed, keeping it open throughout. Extraction must not resolve or
@@ -241,7 +242,9 @@ Planned v2 fixtures must additionally cover:
   replay fails closed; and
 - digest-valid archives with matching identity plus missing, wrong-type,
   mismatching, duplicate, and ambiguous required package-manifest name/version
-  cases, plus canonical bin/scripts mismatches; absent and wrong-type optional
-  bin/scripts normalize to `{}` on both sides. No cache or install output is
-  published and extraction never starts unless the exact provenance gate
-  succeeds.
+  cases, ordinary `dependencies` absent/empty, wrong-type, non-string,
+  duplicate, key-order, exact-selector, missing-edge, extra-edge, and changed-
+  edge cases, plus canonical bin/scripts mismatches; absent and wrong-type
+  optional bin/scripts normalize to `{}` on both sides. No cache or install
+  output is published and extraction never starts unless the exact provenance
+  gate succeeds.

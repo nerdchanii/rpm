@@ -266,6 +266,30 @@ rewound for extraction only after this provenance gate succeeds. #147 owns safe
 archive-entry selection and symlink/hardlink handling; this SPEC owns the exact
 identity/bin/scripts predicate consumed by v2 replay.
 
+The same pre-extraction inspection must compare the archive package's ordinary
+`dependencies` object with the locked outgoing request set. An absent
+`dependencies` field canonicalizes to `{}`. A present field must be an object
+whose keys are valid dependency names and whose values are strings; `null`, an
+array, a scalar, a non-string value, a duplicate key, an unsafe name, or an
+invalid dependency declaration is a descriptor validation failure. The archive
+package JSON parser must detect duplicate object keys and fail the
+parse before map construction; last-value-wins parsing cannot satisfy this
+predicate. Canonical comparison ignores JSON object order, sorts names by UTF-8
+byte order, and preserves each selector string exactly, including an empty
+selector; it does not
+trim or semver-normalize selector text. The expected map consists of every
+`transitive` edge whose `source` is this external identity, keyed by
+`requested_name` with its exact `requested` text. The complete map must match
+the archive object with no missing, extra, or changed request. Existing edge
+validation separately checks each edge's selector kind and target; this archive
+predicate binds the package bytes to the same ordinary dependency request set.
+`devDependencies`, `peerDependencies`, and `optionalDependencies` are outside
+this ordinary-dependency predicate and remain governed by their owning strategy
+SPECs. A missing, wrong-type, non-canonicalizable, or mismatching dependency
+map fails before extraction, hooks, cache publication, lockfile publication, or
+install publication; an absent field fails when the locked outgoing map is
+non-empty.
+
 Before a v2 identity can drive a cache, fetch, extraction, link, or script
 operation, its external `name` and `version` must pass a platform-independent
 filesystem-confinement check. This is a path-safety gate, not a full npm
@@ -522,8 +546,8 @@ query-bearing tarball URLs, absent or unsupported SHA-512 integrity, shasum-only
 records, untrusted lockfile bytes,
 cache or graph-derived linker projection collisions, and equality, uniqueness,
 reachability, selector/target, or referential-integrity failures are load
-failures before acquisition or mutation. Archive-manifest identity, bin, or
-scripts mismatches and archive-derived projection failures are
+failures before acquisition or mutation. Archive-manifest identity, ordinary
+dependency, bin, or scripts mismatches and archive-derived projection failures are
 stable-descriptor validation failures after private acquisition; they fail
 before extraction or any cache, lockfile, or install publication.
 
@@ -604,24 +628,39 @@ create an absent destination); the identity includes the platform's stable
 object identity and, where available, its file-generation/version value. It
 must reject a symlink, non-regular entry, unexpected identity, or destination
 that appeared or changed after validation.
+
+Before that destination preflight, publication must either acquire a
+write-excluding lease for an existing regular `rpm.lock` and retain it through
+the commit, or capture an opaque content-version token and pass it to the same
+atomic primitive as a compare-and-swap condition. A lease must exclude
+in-place writes through the adapter for the whole interval; an advisory lock
+that an uncooperating writer can ignore does not qualify. A content version must
+change on every successful write or truncate and must be supplied by the
+adapter's object/version primitive; mtime, size, or a separately recomputed hash
+alone does not qualify. An absent destination uses the no-replace branch and
+has no existing-file lease or version.
+
 The final operation must use a platform-backed conditional root-bound publish
 primitive with the retained root handle, expected root identity, expected
-parent/name chain, candidate descriptor, and expected destination identity as
-inputs. At one atomic commit point, that primitive must prove that the retained
-root is still the live project root reached through the same validated
-parent/name chain and then perform the no-follow destination replace. A separate
-parent-chain recheck followed by an ordinary `renameat`/`renameat2` does not
-provide this guarantee because the root can be renamed between the check and
-the rename. A root-path rename or replacement race therefore returns a
-publication race, discards the candidate, leaves the prior lockfile
-byte-identical, and cannot write an `rpm.lock` in the replacement directory.
+parent/name chain, candidate descriptor, expected destination identity, and
+either the retained lease or expected content version as inputs. At one atomic
+commit point, that primitive must prove that the retained root is still the live
+project root reached through the same validated parent/name chain, that the
+destination identity and content version remain valid or the write-excluding
+lease is held, and then perform the no-follow destination replace. A separate
+parent-chain recheck or identity-only destination check followed by an ordinary
+`renameat`/`renameat2` does not provide this guarantee. A root-path replacement
+or in-place edit race therefore returns a publication race, discards the
+candidate, leaves the bytes present at the commit attempt untouched, and cannot
+write an `rpm.lock` in the replacement directory.
 #221/#224 own this capability and its implementation contract. If the target
 platform cannot provide the atomic conditional proof, v2 lockfile publication
 is disabled and fails closed before lockfile or install state changes. No current
 supported RPM adapter is treated as having this capability: planned v2 lockfile
 publication and replay remain disabled on every current adapter until #224
-supplies a concrete atomic adapter and an executable capability test proves it.
-An ordinary `renameat` or `renameat2`, even when called with descriptor-relative
+supplies a concrete atomic adapter and an executable capability test proves both
+the root-bound proof and the write-excluding lease/content-version CAS. An
+ordinary `renameat` or `renameat2`, even when called with descriptor-relative
 arguments after a separate check, cannot qualify as that adapter.
 
 #### Migration and failure preservation
@@ -704,8 +743,13 @@ Planned workspace snapshots must cover:
   preflighted before tarball download; plus required archive name/version
   absence, wrong type, mismatch, duplication, or ambiguity rejected and
   canonical archive bin/scripts mismatches rejected before extraction, hooks,
-  or publication; absent or wrong-type optional bin/scripts normalize to `{}` on
-  both sides;
+  or publication; archive ordinary `dependencies` absent canonicalizes to `{}`
+  only when the locked outgoing map is empty, wrong-type/non-string/unsafe or
+  duplicate entries reject, duplicate JSON object keys fail parsing before map
+  construction, JSON key order is normalized while selector text is preserved
+  exactly, and missing/extra/changed outgoing requests reject before extraction
+  or publication; absent or wrong-type optional bin/scripts
+  normalize to `{}` on both sides;
 - a `TrustedLockfile` capability issued by #155 for an approved descriptor and
   consumed by #224 without metadata refetch, plus an otherwise valid copied
   attacker-controlled byte snapshot, a replaced descriptor, or a capability
@@ -740,6 +784,11 @@ Planned workspace snapshots must cover:
   the replacement. The test must report unsupported and keep v2 publication and
   replay disabled when no such concrete primitive exists; an implementation
   using only ordinary `renameat` or `renameat2` must fail this test;
+- a barrier after existing `rpm.lock` identity/content-version preflight and
+  before commit where another writer edits the file in place, proving the
+  write-excluding lease or content-version CAS rejects the edit and leaves the
+  bytes present at commit untouched; an adapter without either primitive reports
+  unsupported and keeps v2 publication and replay disabled;
 - v1-to-v2 migration and failure preservation without lifecycle execution,
   proving that a failed fresh resolution or publication preserves the prior v1
   file and only the fully validated v2 candidate can publish; #222 must define
