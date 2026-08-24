@@ -225,6 +225,18 @@ prefix matching `[A-Za-z]:`, and every backslash-qualified UNC or device form
 are absolute or platform-qualified and invalid on every host. Implementations
 must not delegate this decision to the current operating system's path parser.
 
+Pattern matching is host-independent and case-sensitive. RPM decodes both each
+JSON pattern segment and each enumerated native directory-entry component to
+Unicode scalar values, then compares literal scalars for exact equality. `*`
+matches a sequence of zero or more Unicode scalars within one component; `**`
+applies the same scalar model across complete components. Matching performs no
+locale collation, case folding, or Unicode normalization, so case variants and
+canonically equivalent composed/decomposed spellings remain distinct at this
+boundary. NFC normalization occurs only when a successfully matched path becomes
+a `member_path_key`. RPM must enumerate entries and apply this matcher instead of
+delegating literal or wildcard matching to host glob or case-insensitive path
+lookup behavior.
+
 The object form does not implicitly enable npm- or Yarn-specific workspace
 options. Unsupported object keys and every other `workspaces` value type are
 invalid declarations and must produce an input error that names the manifest
@@ -244,12 +256,12 @@ The root snapshot and member table form one discovery result. Resolver seeding,
 workspace staging, and root lifecycle-script selection consume that result and
 must not reopen the live root manifest by path. The live root descriptor/native
 identity is filesystem-validation state only. Immediately before any workspace
-publication, after acquiring the exclusive workspace transaction guard defined
-by `docs/specs/core/install/recovery/SPEC.md`, the transaction verifies through
-the retained descriptor and a descriptor-relative no-follow lookup that the live
-root manifest still has the pinned identity, exact bytes, and permissions. A
-replacement or concurrent byte or mode change fails before backup or publication
-and must not be overwritten or absorbed into transaction state.
+publication, while holding the cooperative per-workspace RPM lock and following
+the guarded descriptor protocol in
+`docs/specs/core/install/recovery/SPEC.md`, the transaction verifies through the
+retained descriptor and a descriptor-relative no-follow lookup that the live root
+manifest still has the pinned identity, exact bytes, and permissions. Detected
+replacement or byte/mode drift fails before the next backup or publication step.
 
 Each workspace pattern is normalized relative to the canonical project root
 before expansion. Absolute patterns, patterns that can escape through `..`, and
@@ -402,6 +414,10 @@ workspace contract requires planned coverage for:
 - supported `*` and `**` patterns plus rejected brace, character-class,
   negation, escape, platform-separator, drive-qualified (`C:/...` and
   `C:\\...`), UNC, and device-path forms on every host;
+- literal and wildcard patterns over ASCII case variants, non-ASCII case
+  variants, Turkish dotted/dotless I, and composed/decomposed spellings, proving
+  exact Unicode-scalar matching returns identical results on simulated
+  case-sensitive and case-insensitive hosts without locale or normalization;
 - `packages/**` over ordinary intermediate and source directories, proving
   zero-segment and descendant traversal nodes without `package.json` are
   ignored while direct member candidates are returned;
