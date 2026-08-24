@@ -203,9 +203,13 @@ planned fixtures in this section.
 The root manifest may declare workspace members through the `workspaces` field.
 RPM supports exactly these declaration shapes:
 
-- an array of non-empty strings, each interpreted as a relative member glob;
-- an object with a `packages` array of non-empty strings, interpreted the same
-  way as the array form.
+- a non-empty array containing only non-empty strings, each interpreted as a
+  relative member glob;
+- an object whose `packages` value is a non-empty array containing only
+  non-empty strings, interpreted the same way as the array form.
+
+An empty array in either supported shape is an invalid declaration. It does not
+mean root-only; only an absent `workspaces` field has that meaning.
 
 Workspace patterns use a portable RPM dialect. `/` is the only path separator
 and every segment must be non-empty. `*` matches zero or more non-`/`
@@ -214,7 +218,11 @@ segment and matches zero or more descendant segments. Wildcards do not match a
 segment whose first character is `.`; a non-excluded dot-prefixed segment must
 be named literally. Brace expansion, character classes, `?`, extglobs,
 negation with `!`, and backslash escaping or separators are unsupported, and a
-pattern containing those forms is an invalid declaration.
+pattern containing those forms is an invalid declaration. Portable validation
+is lexical and runs before host path parsing: a leading `/`, an ASCII drive
+prefix matching `[A-Za-z]:`, and every backslash-qualified UNC or device form
+are absolute or platform-qualified and invalid on every host. Implementations
+must not delegate this decision to the current operating system's path parser.
 
 The object form does not implicitly enable npm- or Yarn-specific workspace
 options. Unsupported object keys and every other `workspaces` value type are
@@ -227,10 +235,35 @@ The declaration is read from the canonical project-root manifest. Each pattern
 is normalized relative to that root before expansion. Absolute patterns,
 patterns that can escape through `..`, and matched member paths whose resolved
 symlink target is outside the canonical root are rejected before a discovery
-result is returned. A pattern with no matching member directory, a member
-directory without a valid `package.json`, or a member path equal to the root is
-an invalid workspace declaration. Discovery must not read or write a manifest
-outside the canonical root.
+result is returned.
+
+Glob expansion distinguishes traversal directories from member candidates.
+Directories consumed only while a `**` segment matches zero or more descendant
+segments are traversal nodes; a traversal node without a direct `package.json`
+entry is incidental and is not an error. A directory selected by a terminal
+literal or `*` segment is an explicit match and must contain a direct
+`package.json` entry. A pattern must produce at least one member candidate after
+this distinction or the declaration is invalid. This lets `packages/**` pass
+through `packages`, member subdirectories, and source subdirectories without
+treating each directory as a package, while a misspelled explicit member path
+still fails.
+
+The expansion walker inspects directory-symlink entries but never descends
+through them. A symlink path that the complete pattern selects is a terminal
+member candidate only when it canonicalizes to a directory inside the canonical
+root. Its descendants are not discovered through that link. A dangling link, a
+symlink cycle, an outside-root target, or any other canonicalization failure on
+a selected symlink is an invalid declaration. This rule is independent of the
+filesystem walker's default symlink policy.
+
+Before opening a candidate manifest, discovery canonicalizes the candidate's
+direct `package.json` path and requires the result to be a regular file inside
+both the canonical member directory and the canonical project root. A dangling
+or cyclic manifest link, a non-file target, or a manifest link that resolves
+outside either boundary is rejected without reading the target. A malformed
+candidate manifest or a member path equal to the root is also an invalid
+workspace declaration. Discovery must not read or write a manifest outside the
+canonical root.
 
 Expansion considers descendant directories only and prunes install artifacts
 before matching. A path at or below any `node_modules` or `.rpm` component, or
@@ -282,13 +315,22 @@ workspace contract requires planned coverage for:
 - a simple root with two workspace packages;
 - the array declaration and the object `{ "packages": [...] }` declaration;
 - a root-only project with no `workspaces` field;
-- malformed, unsupported, empty, and wrong-type declarations;
+- malformed, unsupported, wrong-type, `[]`, and `{ "packages": [] }`
+  declarations, proving only a missing field is root-only;
 - supported `*` and `**` patterns plus rejected brace, character-class,
-  negation, escape, and platform-separator forms;
+  negation, escape, platform-separator, drive-qualified (`C:/...` and
+  `C:\\...`), UNC, and device-path forms on every host;
+- `packages/**` over ordinary intermediate and source directories, proving
+  zero-segment and descendant traversal nodes without `package.json` are
+  ignored while direct member candidates are returned;
 - a declaration whose pattern matches no member path;
 - a member without a valid `package.json`;
 - `..` or absolute path escape attempts;
-- a symlink whose resolved target is outside the canonical root;
+- an in-root directory-symlink member whose descendants are not traversed, a
+  directory-symlink cycle that fails without traversal, and a symlink whose
+  resolved target is outside the canonical root;
+- an in-root member whose direct `package.json` symlink resolves outside the
+  member or canonical root and is rejected before the target is read;
 - a broad pattern with pre-existing `node_modules`, `.rpm`, and RPM-managed
   staging or backup paths, proving artifacts do not change discovery;
 - overlapping declarations proving sorted, deduplicated root-relative output;
