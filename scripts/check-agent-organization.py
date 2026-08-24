@@ -310,6 +310,9 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
     """Read the root fields needed by the repository policy.
 
     Root ``description`` is required and must be a non-empty string.
+    Its supported string forms include the YAML literal and folded block
+    scalar subset parsed by ``parse_frontmatter_block_scalar``. Other root
+    fields remain single-line scalar values.
     The supported forms are an empty ``metadata:`` block, an empty
     ``metadata: {}`` flow mapping, or a block mapping with one direct,
     non-empty ``short-description`` string child.  We keep that child out of
@@ -333,7 +336,8 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
     except ValueError:
         fail(errors, f"{path.relative_to(ROOT)}: unterminated frontmatter")
         return {}
-    frontmatter_source = "\n".join(lines[1:closing_line])
+    frontmatter_lines = lines[1:closing_line]
+    frontmatter_source = "\n".join(frontmatter_lines)
     if (
         "\r" in frontmatter_source
         or contains_yaml_surrogate(frontmatter_source)
@@ -353,7 +357,11 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
     active_nested_mapping: str | None = None
     metadata_flow_mapping = False
     metadata_keys: set[str] = set()
-    for line_number, line in enumerate(lines[1:closing_line], 2):
+    skip_until = 0
+    for line_index, line in enumerate(frontmatter_lines):
+        if line_index < skip_until:
+            continue
+        line_number = line_index + 2
         leading_whitespace = line[: len(line) - len(line.lstrip())]
         if any(character != YAML_SEPARATOR_SPACE for character in leading_whitespace):
             fail(
@@ -481,7 +489,30 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
             continue
         if key == "description":
             description_seen = True
-        parsed_value, scalar_error = parse_frontmatter_scalar(value, line_number)
+        block_header = parse_frontmatter_block_header(value, line_number)
+        if key == "description" and block_header is not None:
+            if isinstance(block_header, str):
+                fail(errors, f"{path.relative_to(ROOT)}: {block_header}")
+                skip_until = line_index + 1
+                while skip_until < len(frontmatter_lines):
+                    candidate = frontmatter_lines[skip_until]
+                    if candidate.strip(YAML_SEPARATOR_SPACE) == "":
+                        skip_until += 1
+                        continue
+                    candidate_indent = len(candidate) - len(
+                        candidate.lstrip(YAML_SEPARATOR_SPACE)
+                    )
+                    if candidate_indent == 0:
+                        break
+                    skip_until += 1
+                continue
+            parsed_value, skip_until, scalar_error = parse_frontmatter_block_scalar(
+                frontmatter_lines,
+                line_index,
+                block_header,
+            )
+        else:
+            parsed_value, scalar_error = parse_frontmatter_scalar(value, line_number)
         if scalar_error is not None:
             if key in FRONTMATTER_NON_EMPTY_STRING_KEYS:
                 fail(
@@ -1166,6 +1197,181 @@ def parse_frontmatter_scalar(
     if parsed is None:
         return None, f"line {line_number}: frontmatter values must be non-empty scalars"
     return parsed, None
+
+
+FRONTMATTER_BLOCK_SCALAR_HEADER_ERROR = (
+    "frontmatter description block scalar header must use '|' or '>' with "
+    "optional one-digit indentation and '-' or '+' chomping indicators"
+)
+FRONTMATTER_BLOCK_SCALAR_INDENTATION_ERROR = (
+    "frontmatter description block scalar content must be indented consistently"
+)
+
+
+def parse_frontmatter_block_header(
+    value: str, line_number: int
+) -> tuple[str, int | None, str] | str | None:
+    """Parse the supported root-description block-scalar header subset.
+
+    The boundary is intentionally explicit: ``|`` and ``>`` are accepted with
+    an optional one-digit indentation indicator, an optional ``-`` or ``+``
+    chomping indicator in either order, and an optional ASCII-space comment.
+    Tabs are accepted in comment text and after the required content
+    indentation; structural header and indentation tabs remain unsupported.
+    Collections and block scalars on other frontmatter fields remain outside
+    this parser contract.
+    """
+    source = value.strip(YAML_SEPARATOR_SPACE)
+    if not source.startswith(("|", ">")):
+        return None
+    match = re.fullmatch(
+        r"(?P<style>[|>])(?P<indicators>(?:[1-9][+-]?|[+-][1-9]?)?)(?: +#.*)?",
+        source,
+    )
+    if match is None:
+        return f"line {line_number}: {FRONTMATTER_BLOCK_SCALAR_HEADER_ERROR}"
+    comment_index = source.find("#")
+    structural_header = source if comment_index < 0 else source[:comment_index]
+    if "\t" in structural_header:
+        return f"line {line_number}: {FRONTMATTER_BLOCK_SCALAR_HEADER_ERROR}"
+    indicators = match.group("indicators")
+    indent_indicator = next(
+        (int(character) for character in indicators if character.isdigit()),
+        None,
+    )
+    chomping = next(
+        (character for character in indicators if character in "+-"),
+        "",
+    )
+    return match.group("style"), indent_indicator, chomping
+
+
+def fold_frontmatter_block_lines(
+    payloads: list[str], more_indented: list[bool]
+) -> str:
+    """Fold base-indented lines while preserving blank and indented breaks."""
+    if not payloads:
+        return ""
+    folded: list[str] = [payloads[0]]
+    for index in range(len(payloads) - 1):
+        current = payloads[index]
+        following = payloads[index + 1]
+        if more_indented[index] or more_indented[index + 1]:
+            separator = "\n"
+        elif current == "" and following != "":
+            run_start = index
+            while (
+                run_start > 0
+                and payloads[run_start - 1] == ""
+                and not more_indented[run_start - 1]
+            ):
+                run_start -= 1
+            separator = "\n" if (
+                run_start == 0
+                or more_indented[run_start - 1]
+            ) else ""
+        elif current == "" or following == "":
+            separator = "\n"
+        else:
+            separator = " "
+        folded.append(separator)
+        folded.append(following)
+    return "".join(folded)
+
+
+def parse_frontmatter_block_scalar(
+    lines: list[str],
+    header_index: int,
+    header: tuple[str, int | None, str],
+) -> tuple[str | None, int, str | None]:
+    """Parse a root ``description`` block scalar and return its next line.
+
+    Leading ASCII spaces determine indentation. Tabs after that indentation
+    remain scalar content, including when they begin a folded line.
+    """
+    style, indent_indicator, chomping = header
+    content_lines: list[tuple[int, str]] = []
+    line_index = header_index + 1
+    while line_index < len(lines):
+        line = lines[line_index]
+        if line.strip(YAML_SEPARATOR_SPACE) == "":
+            content_lines.append((line_index, line))
+            line_index += 1
+            continue
+        indent = len(line) - len(line.lstrip(YAML_SEPARATOR_SPACE))
+        if indent == 0:
+            break
+        content_lines.append((line_index, line))
+        line_index += 1
+
+    non_empty_lines = [
+        (physical_index, line)
+        for physical_index, line in content_lines
+        if line.strip(YAML_SEPARATOR_SPACE)
+    ]
+    if indent_indicator is None:
+        if non_empty_lines:
+            content_indent = len(non_empty_lines[0][1]) - len(
+                non_empty_lines[0][1].lstrip(YAML_SEPARATOR_SPACE)
+            )
+        else:
+            content_indent = 0
+    else:
+        content_indent = indent_indicator
+
+    if indent_indicator is None and non_empty_lines:
+        first_non_empty_index = non_empty_lines[0][0]
+        for physical_index, line in content_lines:
+            if physical_index >= first_non_empty_index:
+                break
+            indent = len(line) - len(line.lstrip(YAML_SEPARATOR_SPACE))
+            if indent > content_indent:
+                return (
+                    None,
+                    line_index,
+                    f"line {physical_index + 2}: {FRONTMATTER_BLOCK_SCALAR_INDENTATION_ERROR}",
+                )
+
+    payloads: list[str] = []
+    more_indented: list[bool] = []
+    for physical_index, line in content_lines:
+        indent = len(line) - len(line.lstrip(YAML_SEPARATOR_SPACE))
+        if (
+            non_empty_lines
+            and line.strip(YAML_SEPARATOR_SPACE)
+            and indent < content_indent
+        ):
+            return (
+                None,
+                line_index,
+                f"line {physical_index + 2}: {FRONTMATTER_BLOCK_SCALAR_INDENTATION_ERROR}",
+            )
+        if not non_empty_lines:
+            payload = ""
+            is_more_indented = False
+        elif indent < content_indent:
+            payload = ""
+            is_more_indented = False
+        else:
+            payload = line[content_indent:]
+            is_more_indented = indent > content_indent or payload.startswith("\t")
+        payloads.append(payload)
+        more_indented.append(is_more_indented)
+
+    if style == "|":
+        value = "\n".join(payloads)
+    else:
+        value = fold_frontmatter_block_lines(payloads, more_indented)
+    if payloads:
+        value += "\n"
+    if chomping == "-":
+        value = value.rstrip("\n")
+    elif chomping == "":
+        if not any(payload.strip(YAML_SEPARATOR_SPACE) for payload in payloads):
+            value = ""
+        else:
+            value = value.rstrip("\n") + "\n"
+    return value, line_index, None
 
 
 def validate_interface_asset_path(

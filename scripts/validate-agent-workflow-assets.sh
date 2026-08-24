@@ -1042,6 +1042,159 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             f"errors={frontmatter_errors!r}"
         )
 
+    def block_skill(header, body):
+        return (
+            "---\n"
+            "name: fixture-governance\n"
+            f"description: {header}\n"
+            f"{body}"
+            "---\n"
+        )
+
+    block_description_fixtures = {
+        "folded": (
+            ">",
+            "  First line\n  second line.\n",
+            "First line second line.\n",
+        ),
+        "literal": (
+            "|",
+            "  First line\n  second line.\n",
+            "First line\nsecond line.\n",
+        ),
+        "folded-strip": (
+            ">- # strip the final line break",
+            "  First line\n  second line.\n",
+            "First line second line.",
+        ),
+        "literal-keep": (
+            "|+",
+            "  First line\n  second line.\n\n",
+            "First line\nsecond line.\n\n",
+        ),
+        "explicit-indent": (
+            "|2-",
+            "    First line\n    second line.\n",
+            "  First line\n  second line.",
+        ),
+        "reversed-indicators": (
+            ">-2",
+            "  First line\n  second line.\n",
+            "First line second line.",
+        ),
+        "more-indented-line": (
+            ">",
+            "  First line\n    indented line\n  second line.\n",
+            "First line\n  indented line\nsecond line.\n",
+        ),
+        "tab-in-header-comment": (
+            "| #\tcomment",
+            "  First line\n",
+            "First line\n",
+        ),
+        "tab-in-content": (
+            "|",
+            "  First line\n  \tsecond\n",
+            "First line\n\tsecond\n",
+        ),
+    }
+    for name, (header, body, expected_description) in block_description_fixtures.items():
+        text = block_skill(header, body)
+        block_path = pathlib.Path(temp_dir) / f"{name}-block-SKILL.md"
+        block_path.write_text(text)
+        frontmatter_errors = []
+        block_values = checker.parse_frontmatter(block_path, frontmatter_errors)
+        if frontmatter_errors or block_values.get("description") != expected_description:
+            raise SystemExit(
+                f"valid {name} description block was rejected or decoded incorrectly: "
+                f"values={block_values!r}, errors={frontmatter_errors!r}"
+            )
+
+    invalid_block_descriptions = {
+        "empty": ("|", "", "frontmatter description must be a non-empty string"),
+        "invalid-header": (
+            ">0",
+            "  body\n",
+            "frontmatter description block scalar header must use",
+        ),
+        "tab-in-header-structure": (
+            "| \t#comment",
+            "  body\n",
+            "frontmatter description block scalar header must use",
+        ),
+        "tab-indentation": (
+            "|",
+            "  first line\n\tsecond\n",
+            "frontmatter indentation must use ASCII spaces",
+        ),
+        "invalid-indentation": (
+            ">",
+            "    first line\n  second line\n",
+            "frontmatter description block scalar content must be indented consistently",
+        ),
+        "leading-blank-indentation": (
+            "|",
+            "   \n  first line\n",
+            "frontmatter description block scalar content must be indented consistently",
+        ),
+        "todo": (
+            ">",
+            "  [TODO: fill this in]\n",
+            "frontmatter description contains an unfinished TODO placeholder",
+        ),
+        "angle-bracket": (
+            "|",
+            "  Use <path> safely.\n",
+            "frontmatter description cannot contain angle brackets (< or >)",
+        ),
+        "long": (
+            "|",
+            "  " + ("a" * 1025) + "\n",
+            "frontmatter description is too long",
+        ),
+    }
+    for name, (header, body, expected_error) in invalid_block_descriptions.items():
+        text = block_skill(header, body)
+        block_path = pathlib.Path(temp_dir) / f"invalid-{name}-block-SKILL.md"
+        block_path.write_text(text)
+        frontmatter_errors = []
+        checker.validate_skill_frontmatter_name(
+            "fixture-governance",
+            block_path,
+            frontmatter_errors,
+        )
+        if not any(expected_error in error for error in frontmatter_errors):
+            raise SystemExit(
+                f"invalid {name} description block was accepted: "
+                f"errors={frontmatter_errors!r}"
+            )
+
+    non_description_block_path = (
+        pathlib.Path(temp_dir) / "non-description-block-SKILL.md"
+    )
+    non_description_block_path.write_text(
+        "---\n"
+        "name: fixture-governance\n"
+        "description: A valid temporary skill fixture.\n"
+        "license: |\n"
+        "  MIT\n"
+        "---\n"
+    )
+    frontmatter_errors = []
+    checker.validate_skill_frontmatter_name(
+        "fixture-governance",
+        non_description_block_path,
+        frontmatter_errors,
+    )
+    if not any(
+        "frontmatter field 'license' must be a non-empty string" in error
+        for error in frontmatter_errors
+    ):
+        raise SystemExit(
+            "non-description block scalar crossed the documented boundary: "
+            f"errors={frontmatter_errors!r}"
+        )
+
     malformed_frontmatter = {
         "nested-only-name": (
             "---\n"
