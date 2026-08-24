@@ -268,6 +268,10 @@ this contract is active. Planned coverage includes:
 - a selector list naming one member by both its package name and its
   `member_path_key`, plus repeated selectors, proving both identities resolve
   to one table row and execute once;
+- a member whose package name is identical to its `member_path_key` (for
+  example, both are `packages`), proving one selector that matches both
+  identity fields is accepted and resolves to that row exactly once rather
+  than being rejected as ambiguous;
 - a member whose package name or `member_path_key` begins with `-`, proving the
   attached `--workspace=<selector>` syntax remains unambiguous to the parser;
 - a leading-hyphen selector passed in separated form (`--workspace -pkg`),

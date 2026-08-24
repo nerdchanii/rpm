@@ -253,8 +253,8 @@ deterministic:
 - Planned `lifecycle-preinstall-root-staged-bin`: a positive root lifecycle
   fixture invokes a deterministic binary from the staged project-level `.bin`,
   proving the lifecycle PATH policy without claiming new runtime
-  implementation. Workspace-member lifecycle execution remains disabled and
-  owned by #222.
+  implementation. Focused fixture implementation is owned by #227.
+  Workspace-member lifecycle execution remains disabled and owned by #222.
 
 Each scenario is a single deterministic fixture under
 `tests/fixtures/install-projects/`, scaffolded by `scripts/new-install-fixture.sh`
