@@ -134,8 +134,12 @@ by prepending it to `PATH` (`docs/specs/cli/run/SPEC.md`); the linker owns how
 Lifecycle script execution (`preinstall`, `install`, `postinstall`, `prepare`)
 is not part of this contract. Lifecycle policy is owned separately
 (`docs/specs/core/install/recovery/SPEC.md` will own the `scripts` phase; see
-issue #141). The `.bin` contract must not depend on lifecycle scripts running,
-and lifecycle scripts must not depend on `.bin` being populated.
+issue #141). Linker generation is one-way: it must not depend on lifecycle
+scripts running. Lifecycle hooks may consume the already-generated staged
+project-level `.bin` under `docs/specs/core/install/scripts/SPEC.md`, but they
+do not make `.bin` generation conditional. Workspace-member binary-link
+extensions remain owned by #147, and workspace-member lifecycle activation
+remains owned by #222.
 
 #### Platform considerations
 

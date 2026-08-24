@@ -39,8 +39,10 @@ effect. Workspace targeting is an opt-in extension owned by
 returns a clean missing-script error before touching install output.
 
 Scripts execute through the platform shell so command chaining, quoting, and
-environment assignment follow normal package-script semantics. RPM prepends the
-project's `node_modules/.bin` directory to `PATH` for the child process.
+environment assignment follow normal package-script semantics. Root-only
+`rpm run` prepends the root project's `node_modules/.bin` directory to `PATH`.
+Workspace-targeted runs prepend the selected member's target-local
+`node_modules/.bin`, as defined below.
 
 The CLI returns the child process exit code when the script starts and exits
 normally. If the script process cannot be spawned, RPM returns a readable run
@@ -50,12 +52,14 @@ error.
 install lifecycle execution: lifecycle hooks (`preinstall`, `install`,
 `postinstall`, `prepare`) run as an install phase and are owned by
 `docs/specs/core/install/scripts/SPEC.md` (#141). The two paths share one shell
-invocation model — both execute script text through the platform shell and
-prepend the project `node_modules/.bin` to `PATH` — so there is a single
-script-execution contract rather than two. `rpm run` reads only the targeted
-manifest's `scripts` map; lifecycle execution reads recognized hooks from both
-the root manifest and resolved-package registry metadata. Running a script
-through `rpm run` must never trigger lifecycle execution, and lifecycle
+invocation model — both execute script text through the platform shell, with
+normal command chaining, quoting, and environment assignment semantics. Their
+PATH policies are execution-path-specific: `rpm run` uses the root or selected
+member `.bin` directory, while lifecycle execution uses the staged project
+`.bin` policy owned by `install/scripts/SPEC.md`. `rpm run` reads only the
+targeted manifest's `scripts` map; lifecycle execution reads recognized hooks
+from both the root manifest and resolved-package registry metadata. Running a
+script through `rpm run` must never trigger lifecycle execution, and lifecycle
 execution must never trigger `rpm run`.
 
 ### Workspace targeting

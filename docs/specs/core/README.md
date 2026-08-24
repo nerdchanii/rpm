@@ -127,10 +127,10 @@ criteria.
 | scoped vs unscoped binary links in `.bin` | `linker/SPEC.md` | binary-name mapping is defined: scoped string form drops the scope prefix, object form uses keys verbatim | delivered: #139 |
 | executable shims / symlinks in `.bin` | `linker/SPEC.md` | `.bin` entries are symlinks on every platform; RPM does not synthesize or rewrite shebangs | delivered: #139 |
 | platform considerations (`.cmd`, shebang) | `linker/SPEC.md` | explicitly deferred inside #139: the link layout is defined; Windows `.cmd`/`.ps1` shim generation, executable-bit handling, and permission normalization are deferred until a platform-packaging strategy SPEC (M10 / #163) owns them | delivered: #139 (active layout); deferred to M10 (platform shims) |
-| `rpm run` PATH prepend | `cli/run/SPEC.md` | `rpm run` prepends the project `node_modules/.bin` to `PATH` and propagates the child exit code; running a script must not reinstall or mutate install output | none |
+| `rpm run` PATH prepend | `cli/run/SPEC.md` | root-only `rpm run` prepends the root project's `node_modules/.bin`; workspace-targeted `rpm run` prepends the selected member's target-local `.bin`; both propagate child exit status and do not reinstall or mutate install output | contract gap: none; M7 #223 runtime implementation; #147/#149 member `.bin` creation |
 | missing `.bin` directory behavior in `rpm run` | `cli/run/SPEC.md` | the run SPEC assumes `.bin` is populated and does not own how it is populated (that is linker work), but it already owns the absent-binary case: a binary that is missing from `PATH` (including when `node_modules/.bin` is absent) must surface the shell's readable error and non-zero status (`cli/run/SPEC.md` Error Cases); #143 proves project-local binaries are reachable without mutating install output rather than redefining that existing behavior | #143 |
 | lifecycle script fields (`preinstall`, `install`, `postinstall`, `prepare`, ...) | `registry/SPEC.md` (per-version read/preserve), `manifest/SPEC.md` (root read/preserve), `install/scripts/SPEC.md` (active execution) | per-version `scripts` is now read and preserved as a `string -> string` map at the registry boundary (moved out of the ignored list, with tolerant wrong-type handling kept) and the root `scripts` map is read and preserved by the manifest SPEC; active lifecycle execution is owned by `install/scripts/SPEC.md`, which fixes the supported hook names (`preinstall`, `install`, `postinstall`, `prepare`), the `string -> string` value type, and the working-directory and PATH policy | delivered: #141 |
-| script command parsing | `cli/run/SPEC.md` (shell invocation model), `install/scripts/SPEC.md` (lifecycle reuse) | lifecycle hook values are strings-only and reuse the `rpm run` shell invocation model (`/bin/sh -c` on Unix, `cmd /C` on Windows) and the same `node_modules/.bin` PATH prepend, so there is a single script-execution contract rather than two; the relationship is made explicit in both `cli/run/SPEC.md` and `install/scripts/SPEC.md` | delivered: #141 |
+| script command parsing | `cli/run/SPEC.md` (shell invocation model), `install/scripts/SPEC.md` (lifecycle reuse) | lifecycle hook values are strings-only and reuse the `rpm run` shell invocation model (`/bin/sh -c` on Unix, `cmd /C` on Windows); PATH remains execution-path-specific (`rpm run` root/member target-local `.bin`, lifecycle staged project `.bin`), so there is one shared shell model rather than one shared PATH rule | delivered: #141 |
 | lifecycle execution as an install phase | `install/recovery/SPEC.md`, `install/scripts/SPEC.md` | the recovery phase pipeline now includes a `scripts` phase between `link` and `write`, with the phase label and position contracted in `install/recovery/SPEC.md`; the within-package ordering (`preinstall`, `install`, `postinstall`, `prepare`) is owned by `install/scripts/SPEC.md`; active execution is deferred to #142 | delivered: #141 (contract); #142 (execution) |
 | lifecycle script failure preserving install state | `install/recovery/SPEC.md`, `install/scripts/SPEC.md` | a failed `scripts` phase cannot publish partial successful install state: it runs between `link` and `write`, so the staged tree is discarded and the previous `node_modules`, `rpm.lock`, and `package.json` remain unchanged; the invariant is stated in both SPECs and an M6 lifecycle row is added to the recovery side-effect audit | delivered: #141 |
 
@@ -162,15 +162,16 @@ Findings:
   wrong-type handling kept), the recovery SPEC adds a `scripts` phase between
   `link` and `write` plus an M6 lifecycle side-effect row, and the run SPEC
   records that lifecycle execution reuses the `rpm run` shell invocation model
-  rather than defining a second one. Active execution of the first phase is
+  while keeping PATH ownership execution-path-specific rather than defining a
+  second shell model. Active execution of the first phase is
   tracked by #142; cross-package ordering, npm-specific environment variables,
   and any opt-in skip-on-failure policy remain Open Questions in
   `install/scripts/SPEC.md`.
-- `rpm run` integration is mostly owned: `cli/run/SPEC.md` already prepends
-  `node_modules/.bin` to PATH and propagates exit codes without reinstalling. The
-  one remaining gap — behavior when `.bin` is absent — is owned by #143, which
-  proves project-local binaries are reachable through `rpm run` without mutating
-  install output.
+- `rpm run` integration is mostly owned: `cli/run/SPEC.md` prepends the root or
+  selected member's target-local `node_modules/.bin` to PATH and propagates
+  exit codes without reinstalling. The one remaining gap — behavior when
+  `.bin` is absent — is owned by #143, which proves project-local binaries are
+  reachable through `rpm run` without mutating install output.
 - The delivery order follows the issue: (1) this contract and gap audit, (2) #139
   `.bin` and `bin` contract, (3) `.bin` fixture coverage, (4) #140 first `.bin`
   link forms, (5) #141 lifecycle policy (delivered), (6) #142 first lifecycle
@@ -343,7 +344,9 @@ Findings:
   must disposition root-manifest write provenance, immutable runtime inputs,
   lockfile-candidate visibility, descriptor-confined source materialization,
   workspace-root relocation, and cross-owner staged read/write isolation before
-  activation. This PR does not change the install scripts or recovery contracts.
+  activation. This PR aligns `install/scripts/SPEC.md` PATH wording with the
+  shared shell model and target-specific `rpm run` paths; it does not activate
+  workspace lifecycle or change recovery behavior.
 - Lockfile representation and compatibility are outside this PR. #146 and PR
   #217 own that contract, and #224 owns its later implementation in two slices:
   parser/schema work may proceed from #146, while runtime/replay/publication
