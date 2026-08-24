@@ -371,14 +371,179 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
     return value.strip() == "true", None
 
 
+INTERFACE_METADATA_SCALAR_ERROR = (
+    "interface metadata must be a non-empty YAML string scalar "
+    "(plain scalars cannot start with YAML indicators such as - ? : , @ % or `; "
+    "ASCII space is the only separator, literal tabs are rejected, and "
+    "single/double quotes with separation-space comments are supported)"
+)
+YAML_SEPARATOR_SPACE = " "
+LITERAL_SCALAR_CONTROL_ERROR = (
+    "literal C0 and DEL control characters are not allowed in interface metadata scalars"
+)
+
+
+def parse_yaml_string_scalar(value: str, line_number: int) -> tuple[str | None, str | None]:
+    """Parse the supported openai.yaml scalar subset without third-party dependencies.
+
+    Interface metadata accepts non-empty plain, single-quoted, or double-quoted
+    YAML string scalars. Plain scalars use YAML comment and leading-indicator
+    rules; a comment is allowed after one ASCII separation space. Nulls,
+    collections, tags, block scalars, non-string scalars, and literal tabs are
+    rejected. Double-quoted YAML escapes remain supported; single-quoted and
+    plain backslashes remain literal.
+    """
+    source = value.strip(YAML_SEPARATOR_SPACE)
+    if not source:
+        return None, None
+    if any(ord(character) <= 0x1F or ord(character) == 0x7F for character in source):
+        return None, f"line {line_number}: {LITERAL_SCALAR_CONTROL_ERROR}"
+
+    def validate_quoted_tail(tail: str) -> str | None:
+        if not tail:
+            return None
+        if not tail.startswith(YAML_SEPARATOR_SPACE):
+            return "trailing content after quoted scalar"
+        comment = tail.lstrip(YAML_SEPARATOR_SPACE)
+        if comment and not comment.startswith("#"):
+            return "trailing content after quoted scalar"
+        return None
+
+    if source.startswith('"'):
+        end: int | None = None
+        escaped = False
+        for index in range(1, len(source)):
+            character = source[index]
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                end = index
+                break
+        if end is None or escaped:
+            return None, f"line {line_number}: unterminated double-quoted scalar"
+        tail_error = validate_quoted_tail(source[end + 1 :])
+        if tail_error is not None:
+            return None, f"line {line_number}: {tail_error}"
+
+        escape_values = {
+            "0": "\0",
+            "a": "\a",
+            "b": "\b",
+            "t": "\t",
+            "n": "\n",
+            "v": "\v",
+            "f": "\f",
+            "r": "\r",
+            "e": "\x1b",
+            " ": " ",
+            '"': '"',
+            "/": "/",
+            "\\": "\\",
+            "N": "\x85",
+            "_": "\xa0",
+            "L": "\u2028",
+            "P": "\u2029",
+        }
+        decoded: list[str] = []
+        index = 1
+        while index < end:
+            character = source[index]
+            if character != "\\":
+                decoded.append(character)
+                index += 1
+                continue
+            index += 1
+            if index >= end:
+                return None, f"line {line_number}: invalid double-quoted scalar escape"
+            escape = source[index]
+            if escape in escape_values:
+                decoded.append(escape_values[escape])
+                index += 1
+                continue
+            if escape in {"x", "u", "U"}:
+                width = {"x": 2, "u": 4, "U": 8}[escape]
+                digits = source[index + 1 : index + 1 + width]
+                if len(digits) != width or not re.fullmatch(r"[0-9a-fA-F]+", digits):
+                    return None, f"line {line_number}: invalid double-quoted scalar escape"
+                codepoint = int(digits, 16)
+                try:
+                    decoded.append(chr(codepoint))
+                except ValueError:
+                    return None, f"line {line_number}: invalid double-quoted scalar escape"
+                index += width + 1
+                continue
+            return None, f"line {line_number}: invalid double-quoted scalar escape"
+        return "".join(decoded), None
+
+    if source.startswith("'"):
+        end: int | None = None
+        decoded: list[str] = []
+        index = 1
+        while index < len(source):
+            character = source[index]
+            if character != "'":
+                decoded.append(character)
+                index += 1
+                continue
+            if index + 1 < len(source) and source[index + 1] == "'":
+                decoded.append("'")
+                index += 2
+                continue
+            end = index
+            break
+        if end is None:
+            return None, f"line {line_number}: unterminated single-quoted scalar"
+        tail_error = validate_quoted_tail(source[end + 1 :])
+        if tail_error is not None:
+            return None, f"line {line_number}: {tail_error}"
+        return "".join(decoded), None
+
+    comment_index = next(
+        (
+            index
+            for index, character in enumerate(source)
+            if character == "#"
+            and (index == 0 or source[index - 1] == YAML_SEPARATOR_SPACE)
+        ),
+        len(source),
+    )
+    plain = source[:comment_index].rstrip(YAML_SEPARATOR_SPACE)
+    if not plain:
+        return None, None
+    if plain.startswith((",", "[", "]", "{", "}", "&", "*", "!", "|", ">", "@", "%", "`")):
+        return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
+    if plain[0] in "-?:" and (
+        len(plain) == 1 or plain[1] == YAML_SEPARATOR_SPACE
+    ):
+        return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
+    if re.search(r":[ \t]", plain):
+        return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
+    if plain.lower() in {"null", "true", "false", "yes", "no", "on", "off", "~"}:
+        return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
+    if plain.lower() in {".inf", "+.inf", "-.inf", ".nan"}:
+        return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
+    if re.fullmatch(
+        r"[-+]?(?:[0-9][0-9_]*(?:\.[0-9_]*)?|\.[0-9_]+)(?:[eE][-+]?[0-9]+)?",
+        plain,
+    ) or re.fullmatch(r"[-+]?0[xob][0-9a-fA-F_]+", plain, re.IGNORECASE):
+        return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[Tt ].*)?", plain):
+        return None, f"line {line_number}: {INTERFACE_METADATA_SCALAR_ERROR}"
+    return plain, None
+
+
 def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
     """Validate required metadata as direct children of one interface mapping."""
-    blocks: list[dict[str, tuple[str, int]]] = []
-    current: dict[str, tuple[str, int]] | None = None
+    blocks: list[dict[str, tuple[str | None, int]]] = []
+    current: dict[str, tuple[str | None, int]] | None = None
     for line_number, raw_line in enumerate(text.splitlines(), 1):
         leading = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
         if "\t" in leading:
             return [f"line {line_number}: tabs are not allowed for interface indentation"]
+        if "\t" in raw_line:
+            return [f"line {line_number}: literal tabs are not supported in interface metadata"]
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -398,9 +563,16 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
         if separator != ":":
             return [f"line {line_number}: invalid interface child"]
         key = key.strip()
+        if value and not value.startswith(YAML_SEPARATOR_SPACE):
+            return [
+                f"line {line_number}: interface child {key!r} must use YAML separation space after ':'"
+            ]
         if key in current:
             return [f"line {line_number}: duplicate interface child {key!r}"]
-        current[key] = (value.strip(), line_number)
+        parsed_value, scalar_error = parse_yaml_string_scalar(value, line_number)
+        if scalar_error is not None:
+            return [scalar_error]
+        current[key] = (parsed_value, line_number)
 
     if len(blocks) != 1:
         return ["expected exactly one root interface mapping"]

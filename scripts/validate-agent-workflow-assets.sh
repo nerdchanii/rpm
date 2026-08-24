@@ -118,6 +118,196 @@ if not expected_errors.issubset(interface_errors):
     raise SystemExit(
         f"misplaced interface metadata was accepted: errors={sorted(interface_errors)!r}"
     )
+
+invalid_interface_scalars = {
+    "empty-display-name": ("display_name", '""', "display_name is missing", False),
+    "null-display-name": (
+        "display_name",
+        "null",
+        "interface metadata must be a non-empty YAML string scalar",
+        False,
+    ),
+    "empty-prompt-comment": (
+        "default_prompt",
+        '"" # $fixture-governance',
+        "default_prompt is missing",
+        False,
+    ),
+    "unmatched-quote": (
+        "display_name",
+        '"Fixture Governance',
+        "unterminated double-quoted scalar",
+        False,
+    ),
+    "literal-c0-control": (
+        "display_name",
+        '"Fixture ' + chr(1) + 'Governance"',
+        "literal C0 and DEL control characters",
+        False,
+    ),
+    "literal-del-control": (
+        "display_name",
+        '"Fixture ' + chr(127) + 'Governance"',
+        "literal C0 and DEL control characters",
+        False,
+    ),
+    "literal-single-c0-control": (
+        "short_description",
+        "'Create " + chr(1) + " fixtures.'",
+        "literal C0 and DEL control characters",
+        False,
+    ),
+    "literal-single-del-control": (
+        "short_description",
+        "'Create " + chr(127) + " fixtures.'",
+        "literal C0 and DEL control characters",
+        False,
+    ),
+    "literal-plain-c0-control": (
+        "short_description",
+        "Create" + chr(1) + " fixtures.",
+        "literal C0 and DEL control characters",
+        False,
+    ),
+    "literal-plain-del-control": (
+        "short_description",
+        "Create" + chr(127) + " fixtures.",
+        "literal C0 and DEL control characters",
+        False,
+    ),
+    "tab-separation": (
+        "display_name",
+        chr(9) + "Fixture Governance",
+        "literal tabs are not supported in interface metadata",
+        True,
+    ),
+    "quoted-trailing-tab": (
+        "display_name",
+        '"Fixture Governance"' + chr(9),
+        "literal tabs are not supported in interface metadata",
+        False,
+    ),
+    "plain-trailing-tab": (
+        "short_description",
+        "Create fixtures." + chr(9),
+        "literal tabs are not supported in interface metadata",
+        False,
+    ),
+    **{
+        f"plain-{name}-indicator": (
+            "display_name",
+            value,
+            "interface metadata must be a non-empty YAML string scalar",
+            False,
+        )
+        for name, value in {
+            "dash": "- value",
+            "question": "? value",
+            "colon": ": value",
+            "comma": ",value",
+            "at": "@value",
+            "percent": "%value",
+            "backtick": "`value`",
+        }.items()
+    },
+    "missing-separation-space": (
+        "display_name",
+        "Fixture Governance",
+        "must use YAML separation space",
+        True,
+    ),
+}
+for name, (field, value, expected_error, omit_space) in invalid_interface_scalars.items():
+    fields = {
+        "display_name": '"Fixture Governance"',
+        "short_description": '"Create deterministic fixtures."',
+        "default_prompt": '"Use $fixture-governance for fixtures."',
+    }
+    fields[field] = value
+    text = "interface:\n" + "\n".join(
+        f"  {key}:{'' if omit_space and key == field else ' '}{value}"
+        for key, value in fields.items()
+    ) + "\n"
+    interface_errors = checker.validate_skill_interface_metadata(
+        text,
+        "fixture-governance",
+    )
+    if len(interface_errors) != 1 or expected_error not in interface_errors[0]:
+        raise SystemExit(
+            f"{name} did not report {expected_error!r}: errors={interface_errors!r}"
+        )
+
+valid_interface_scalars = {
+    "double-quoted-escape": """\
+interface:
+  display_name: "Fixture \\u0047overnance"
+  short_description: "Create deterministic fixtures."
+  default_prompt: "Use $fixture-governance."
+""",
+    "single-quoted-doubled-apostrophe": """\
+interface:
+  display_name: Fixture Governance
+  short_description: 'Create ''safe'' fixtures.'
+  default_prompt: "Use $fixture-governance."
+""",
+    "inline-comment": """\
+interface:
+  display_name: Fixture Governance
+  short_description: Create safe fixtures.
+  default_prompt: Use $fixture-governance # trailing comment
+""",
+    "hash-without-space": """\
+interface:
+  display_name: Fixture#Governance
+  short_description: Create safe# fixtures.
+  default_prompt: Use $fixture-governance.
+""",
+}
+for name, text in valid_interface_scalars.items():
+    interface_errors = checker.validate_skill_interface_metadata(
+        text,
+        "fixture-governance",
+    )
+    if interface_errors:
+        raise SystemExit(f"{name} was rejected: errors={interface_errors!r}")
+
+nbspace_value = "Fixture" + chr(0xA0) + "#Governance"
+parsed, parse_error = checker.parse_yaml_string_scalar(nbspace_value, 1)
+if parse_error is not None or parsed != nbspace_value:
+    raise SystemExit(
+        f"NBSP before # was not preserved: parsed={parsed!r}, error={parse_error!r}"
+    )
+nbspace_interface = (
+    "interface:\n"
+    f"  display_name: {nbspace_value}\n"
+    "  short_description: Create safe fixtures.\n"
+    "  default_prompt: Use $fixture-governance.\n"
+)
+interface_errors = checker.validate_skill_interface_metadata(
+    nbspace_interface,
+    "fixture-governance",
+)
+if interface_errors:
+    raise SystemExit(f"NBSP interface value was rejected: errors={interface_errors!r}")
+
+escaped_control = '"Fixture ' + chr(92) + "u0001Governance\""
+parsed, parse_error = checker.parse_yaml_string_scalar(escaped_control, 1)
+if parse_error is not None or parsed != "Fixture \x01Governance":
+    raise SystemExit(
+        f"escaped control was not decoded: parsed={parsed!r}, error={parse_error!r}"
+    )
+
+literal_escape = chr(92) + "u0001"
+for name, scalar in {
+    "single-quoted-literal-escape": "'" + literal_escape + "'",
+    "plain-literal-escape": literal_escape,
+}.items():
+    parsed, parse_error = checker.parse_yaml_string_scalar(scalar, 1)
+    if parse_error is not None or parsed != literal_escape:
+        raise SystemExit(
+            f"{name} was decoded outside double quotes: "
+            f"parsed={parsed!r}, error={parse_error!r}"
+        )
 PY
 }
 
