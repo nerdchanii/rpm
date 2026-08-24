@@ -257,13 +257,38 @@ a selected symlink is an invalid declaration. This rule is independent of the
 filesystem walker's default symlink policy.
 
 Before opening a candidate manifest, discovery canonicalizes the candidate's
-direct `package.json` path and requires the result to be a regular file inside
-both the canonical member directory and the canonical project root. A dangling
-or cyclic manifest link, a non-file target, or a manifest link that resolves
-outside either boundary is rejected without reading the target. A malformed
-candidate manifest or a member path equal to the root is also an invalid
-workspace declaration. Discovery must not read or write a manifest outside the
-canonical root.
+direct `package.json` path and requires the candidate path itself to be a
+regular, non-symlink file inside both the canonical member directory and the
+canonical project root. A dangling or cyclic manifest link, a non-file target,
+or any manifest link that resolves outside either boundary is rejected without
+reading the target. A malformed candidate manifest or a member path equal to
+the root is also an invalid workspace declaration. Discovery must not read or
+write a manifest outside the canonical root.
+
+The candidate manifest read uses a descriptor-relative, no-follow open rooted
+at the canonical member directory, followed by `fstat`-equivalent identity and
+confinement checks. The no-follow pre-open identity must match the opened
+descriptor's regular-file type and identity, and the descriptor must remain
+inside both the canonical member directory and project root. A path swap,
+identity mismatch, or platform without an atomic equivalent for this operation
+fails the entire discovery before the candidate bytes are read; discovery must
+not fall back to a path-based open.
+
+Directory traversal uses descriptor-relative, no-follow directory handles for
+every enumeration and metadata operation, or an atomic equivalent with the
+same identity and root-confinement guarantees. Before and after each traversal
+operation, the directory handle identity must still represent the expected
+root-relative directory. A directory replacement, identity mismatch, or
+platform without a supported equivalent fails the entire discovery; discovery
+must not continue from a path-based handle or return a partial member table.
+
+Discovery fails closed on every filesystem I/O error that can affect the
+member table. This includes directory enumeration, directory or candidate
+metadata/stat, symlink resolution or canonicalization, and reading a candidate
+manifest. The implementation must discard any partial result and return one
+error instead of skipping the affected path. The error names the failed
+operation and a safe path relative to the canonical root; it must not expose a
+host-absolute path or continue with an incomplete workspace set.
 
 Expansion considers descendant directories only and prunes install artifacts
 before matching. A path at or below any `node_modules` or `.rpm` component, or
@@ -329,8 +354,19 @@ workspace contract requires planned coverage for:
 - an in-root directory-symlink member whose descendants are not traversed, a
   directory-symlink cycle that fails without traversal, and a symlink whose
   resolved target is outside the canonical root;
-- an in-root member whose direct `package.json` symlink resolves outside the
-  member or canonical root and is rejected before the target is read;
+- an in-root member whose direct `package.json` is a symlink (including one
+  resolving outside the member or canonical root) and is rejected before the
+  target is read;
+- injected walker/fake-filesystem failures for directory enumeration, metadata,
+  symlink resolution/canonicalization, and candidate manifest reads, proving
+  each error names the operation and safe root-relative path and returns no
+  partial member table;
+- an injected descriptor-relative validate-open path swap and identity mismatch,
+  including a platform without an atomic equivalent, proving the candidate
+  target is not read and the full discovery fails without a partial table;
+- an injected directory replacement during descriptor-relative enumeration or
+  metadata validation, proving the traversal identity mismatch fails the full
+  discovery without a partial table;
 - a broad pattern with pre-existing `node_modules`, `.rpm`, and RPM-managed
   staging or backup paths, proving artifacts do not change discovery;
 - overlapping declarations proving sorted, deduplicated root-relative output;
