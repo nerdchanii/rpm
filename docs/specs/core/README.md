@@ -304,8 +304,8 @@ disabled.
 
 | M7 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
-| workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, duplicate declaration keys rejected before parser selection, descriptor-rooted root/member snapshots, single-link manifest identity, preservation-before-write, and planned replacement/hard-link coverage are specified; current manifest code still does not read or preserve the field | #221 |
-| workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect uses host-independent case-sensitive whole-result NFC matching; candidate selection, mount-aware canonical-root and symlink confinement, stable manifest/directory snapshots, canonical-target keys for directory-symlink members, portable managed-path exclusions, and NFC `/`-separated keys are specified; every accepted `member_path_key` must round-trip as identical valid UTF-8 on every host, and non-Unicode/WTF-8/lossy native paths fail before resolver handoff | #221 |
+| workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, duplicate declaration keys rejected before parser selection, descriptor-rooted root/ancestor/member/inode snapshots, read-only absent-root handling, single-link manifest identity, preservation-before-write, and planned replacement/hard-link coverage are specified; current manifest code still does not read or preserve the field | #221 |
+| workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect uses host-independent case-sensitive whole-result NFC matching; candidate selection, ancestor-chain and mount-aware canonical-root/symlink confinement, stable global manifest/directory snapshots, canonical-target keys for directory-symlink members, portable managed-path exclusions, and NFC `/`-separated keys are specified; every accepted `member_path_key` must round-trip as identical valid UTF-8 on every host, and non-Unicode/WTF-8/lossy native paths fail before resolver handoff | #221 |
 | root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: immutable root/member dependency snapshots, portable `member_path_key` graph origin, production-over-development overlap precedence, branch-before-metadata local classification, single-pass member-root seeding, external fallback, and native identity restricted to filesystem validation are specified | #221 |
 | workspace package lockfile records | `lockfile/SPEC.md` | absent on this branch: lockfile v1 has no local-path or workspace-origin marker; #146 owns the contract in PR #217 | #146 / PR #217; #224 parser/schema after #146, then runtime/replay/publication after #221 + #147 implementation + #149 |
 | external dependency edges under a workspace root | `lockfile/SPEC.md`, `resolver/SPEC.md` | resolver contract defined, implementation deferred: external nodes deduplicate by `<name>@<version>`, while every incoming edge preserves its requested range, request kind, and origin or resolved parent; #146 owns lockfile serialization of those per-parent edges | #146; #221 |
@@ -329,8 +329,9 @@ Findings:
 - The discovery boundary (#145) defines supported declarations, portable glob
   expansion, invalid-member behavior, canonical-root confinement, deterministic
   Unicode member keys with valid UTF-8 round-trip rejection before resolver
-  handoff, no-follow single-link root/member snapshots, portable graph origins,
-  one-time member resolution-root seeding, and
+  handoff, no-follow single-link root/ancestor/member snapshots with retained
+  descriptor/inode watches, read-only absent-root handling, portable graph
+  origins, one-time member resolution-root seeding, and
   local-versus-external edge classification before metadata lookup. Compatible
   local edges attach to the existing member node without metadata access or
   reseeding. #221 owns its implementation and executable fixtures. #146,

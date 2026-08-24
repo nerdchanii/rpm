@@ -259,21 +259,28 @@ identity must match the opened descriptor; a rename, replacement, mount/reparse
 substitution, or platform without an atomic equivalent fails before a manifest
 is read. Discovery retains the root directory descriptor, identity, and exact
 parent/name chain as filesystem-validation state. On Linux, the global
-descriptor-scoped watcher is installed on this retained root descriptor before
-any root `package.json` lookup, open, or read, including the absent-manifest
-case. Watch setup and the initial queue drain must succeed before any manifest
-operation; the root watch remains installed through the root snapshot, complete
-member discovery, and the single final linearization cut below.
+descriptor-scoped watcher is initialized before the root is opened. Starting at
+the outermost retained ancestor anchor, discovery opens and validates each
+ancestor descriptor, installs its watch through the descriptor's
+`/proc/self/fd/<dirfd>` path, and only then opens the next child in the retained
+parent/name chain. Every ancestor watch remains installed through root open,
+root manifest lookup, complete member discovery, and the single final
+linearization cut below. The root directory watch is installed on the retained
+root descriptor before any root `package.json` lookup, open, or read, including
+the absent-manifest case. Watch setup and the initial queue drain must succeed
+before any manifest operation.
 
 When the root `package.json` is absent, discovery follows the existing manifest
 initialization contract: it returns one immutable empty root snapshot and an
 empty member table, with no `workspaces` declaration to expand. It does not
-invent a manifest file or fail merely because the file is absent. Before a later
-initializer creates the manifest, it revalidates the retained project-root
-descriptor and requires a descriptor-relative no-follow lookup to prove that
-`package.json` is still absent, then uses descriptor-relative exclusive creation
-or an atomic equivalent. A concurrently created entry fails the operation
-instead of being truncated or replaced.
+invent a manifest file or fail merely because the file is absent. Workspace
+discovery is fully read-only: it performs no exclusive creation, replacement,
+truncation, or other manifest mutation, and it does not invoke an initializer.
+Workspace-aware absent-root creation remains disabled and deferred to #222,
+which must prove a root-bound publication primitive before enabling it. A later
+root-only flow may apply its own owning initialization contract, but it is not a
+workspace-discovery consumer; a concurrently created entry is observed by a
+fresh read and is never overwritten or replaced by this discovery.
 
 When the root `package.json` is present, it is opened descriptor-relative to
 that retained project-root descriptor with no symlink following. The path
@@ -376,23 +383,39 @@ snapshot and the member table as one result, so all of those operations share
 one global watcher and final linearization cut.
 
 On Linux, the supported primitive is descriptor-scoped inotify revalidation.
-After the validated root descriptor is opened and before the root manifest is
-looked up, discovery creates one nonblocking inotify descriptor and installs a
-watch for the root through `/proc/self/fd/<root-dirfd>`. Before every first
-read from a newly opened descendant directory, it installs that directory's
-watch through its retained descriptor path. The root watch and every descendant
-watch remain installed through root-manifest lookup and stable reads, the
-complete descriptor-relative walk, candidate-manifest reads, and final
+Discovery creates one nonblocking inotify descriptor before walking the
+retained root parent/name chain. For each ancestor edge, it installs a watch
+through the already validated ancestor's `/proc/self/fd/<dirfd>` path before
+opening the next child. After the validated root descriptor is opened, it
+installs the root directory watch before looking up the root manifest. Before
+every first read from a newly opened descendant directory, it installs that
+directory's watch through its retained descriptor path. After each root or
+member manifest descriptor is opened and its no-follow identity, link count,
+and confinement are checked, discovery installs an inode-bound watch through
+`/proc/self/fd/<manifestfd>` before the first byte read. All ancestor,
+root/member directory, and root/member manifest watches remain installed, and
+their descriptors remain open, through root-manifest lookup and stable reads,
+the complete descriptor-relative walk, candidate-manifest reads, and final
 identity/metadata checks.
 
 The queue-drain operation owns the inotify descriptor and follows one exact
 nonblocking loop: (1) read repeatedly until `EAGAIN`, requiring every returned
 buffer to contain complete event records; (2) call `poll` with a zero timeout;
 (3) return a quiet result only when `poll` reports no readable event, otherwise
-return to step 1. If that readable poll is followed by `EAGAIN` again, it is a
-readiness/read retry; three consecutive such retries (`DRAIN_RETRY_LIMIT = 3`)
-fail closed, and any successful event read resets the retry count. A
-zero-return `poll` with `revents == 0` is the only quiet result. A nonzero
+return to step 1. Each drain invocation has fixed starvation bounds:
+`DRAIN_EVENT_BUDGET = 4096` complete event records, `DRAIN_BYTE_BUDGET =
+1_048_576` bytes returned by `read`, and `DRAIN_TIME_BUDGET = 10 ms` measured
+by a monotonic clock from invocation start. Every complete record, including an
+unrelated ancestor entry, counts toward both the event and byte budgets; the
+counters are not reset by a successful read or by ignoring an unrelated event.
+The implementation checks the monotonic deadline before each read or poll and
+after each such call. Reaching or exceeding any budget fails closed before a
+quiet result can be returned; a clock failure also fails closed. These budgets
+bound drain work and do not establish quiet by elapsed time. If that readable
+poll is followed by `EAGAIN` again, it is a readiness/read retry; three
+consecutive such retries (`DRAIN_RETRY_LIMIT = 3`) fail closed, and any
+successful event read resets the retry count. A zero-return `poll` with
+`revents == 0` is the only quiet result. A nonzero
 `poll` return is accepted only when `revents == POLLIN` exactly; `POLLERR`,
 `POLLPRI`, `POLLHUP`, `POLLNVAL`, any unknown bit, any of those bits combined
 with `POLLIN`, or an inconsistent return/revents pair fails closed. Inotify
@@ -400,32 +423,48 @@ setup/watch failure, read error or EOF, malformed or partial event record, or
 unavailable `/proc/self/fd` resolution also fails closed. No sleep or time-based
 quiet period is allowed. The initial root drain must return quiet before the
 root manifest operation. Drains at the root snapshot boundary, after each
-directory enumeration, and after final metadata validation must each return
-quiet; any mutation event observed by any retained watch fails the full
-discovery. The last quiet result after all final checks is the single global
-linearization cut.
+directory enumeration, and after final validation must each return quiet. The
+final validation rechecks every retained ancestor parent/name edge, root/member
+directory identity, and root/member manifest identity, link count, size,
+permissions, and content-change metadata before the last drain. Any
+role-relevant mutation event observed by a retained watch fails the full
+discovery; unrelated ancestor entries remain drain-only events after their
+complete records are parsed, subject to the per-attempt event, byte, and
+monotonic-time budgets above. The last quiet result after all final checks is
+the single global linearization cut.
 The adapter must provide a documented ordering guarantee that every watched
 mutation completed before that cut has a queued event; when the filesystem or
 kernel adapter cannot provide that guarantee, discovery fails closed.
 
-For a watched directory, `IN_CREATE`, `IN_DELETE`, `IN_MOVED_FROM`,
-`IN_MOVED_TO`, `IN_ATTRIB`, `IN_MODIFY`, `IN_CLOSE_WRITE`, `IN_DELETE_SELF`,
-`IN_MOVE_SELF`, `IN_UNMOUNT`, queue overflow, or a lost watch (`IN_Q_OVERFLOW`
-or `IN_IGNORED`) observed before that cut fails the full operation. The event is
-a drift signal even when later events restore the earlier names; discovery
-never interprets the event stream as a replacement entry set. A mutation
-delivered after the final cut belongs to a later filesystem state and is
-outside the returned snapshot. Before a consumer accesses an enumerated member
-again, its retained parent/name and descriptor identity must still validate; a
-missing or replaced selected entry fails that consumer operation. A fixed delay
-or repeated equal enumeration does not establish stability. Linux without the
-descriptor-scoped watch, a readable lossless queue, or the required
-`/proc/self/fd` resolution fails closed. Other hosts require an atomic
+The queue parser binds each watch descriptor to its role. For a root or member
+directory watch, `IN_CREATE`, `IN_DELETE`, `IN_MOVED_FROM`, `IN_MOVED_TO`,
+`IN_ATTRIB`, `IN_MODIFY`, `IN_CLOSE_WRITE`, `IN_DELETE_SELF`, `IN_MOVE_SELF`,
+or `IN_UNMOUNT` affecting the watched entry set fails the full operation. For
+an ancestor-chain watch, the same events fail when they affect the tracked
+child component or the watched directory itself; unrelated ancestor entries
+are drained and ignored after their complete records are parsed. For a
+root/member manifest inode watch, `IN_ATTRIB`, `IN_MODIFY`, `IN_CLOSE_WRITE`,
+`IN_DELETE_SELF`, `IN_MOVE_SELF`, or `IN_UNMOUNT` on that exact inode fails,
+including link-count changes and writes made through an outside hard-link alias.
+`IN_Q_OVERFLOW`, `IN_IGNORED`, or any other queue-loss/watch-loss event fails
+globally. The event is a drift signal even when later events restore the earlier
+names; discovery never interprets the event stream as a replacement entry set.
+Before the global cut, every retained root/member manifest descriptor is rechecked
+for identity, link count, size, permissions, and content-change metadata; any
+difference fails before the result is returned. A mutation delivered after the
+final cut belongs to a later filesystem state and is outside the returned
+snapshot. Before a consumer accesses an enumerated member again, its retained
+parent/name and descriptor identity must still validate; a missing or replaced
+selected entry fails that consumer operation. A fixed delay or repeated equal
+enumeration does not establish stability. Linux without the descriptor-scoped
+watch, a readable lossless queue, an exact inode-bound manifest watch, or the
+required `/proc/self/fd` resolution fails closed. Other hosts require an atomic
 enumeration snapshot, a reliable monotonic directory-content generation, or an
 equivalent lossless watcher/revalidation primitive; a platform without one
 fails the entire discovery. A directory replacement, mount/reparse crossing,
-identity mismatch, or entry-set mutation must never continue from a path-based
-handle or return a partial member table.
+identity mismatch, entry-set mutation, manifest link-count/content drift, or
+watch loss must never continue from a path-based handle or return a partial
+member table.
 
 Discovery fails closed on every filesystem I/O error that can affect the
 member table. This includes directory enumeration, directory or candidate
@@ -527,9 +566,10 @@ workspace contract requires planned coverage for:
 - a simple root with two workspace packages;
 - the array declaration and the object `{ "packages": [...] }` declaration;
 - a root-only project with no `workspaces` field;
-- an absent root `package.json`, proving discovery returns the existing empty
-  root-only initialization snapshot and a concurrent manifest creation is
-  rejected before an initializer writes;
+- an absent root `package.json`, proving workspace discovery returns the empty
+  root-only snapshot without invoking an initializer or writing, a root rename
+  or replacement cannot redirect a stale descriptor into a later creation, and
+  any workspace-aware absent-root mutation remains deferred to #222;
 - malformed, unsupported, wrong-type, `[]`, and `{ "packages": [] }`
   declarations, plus duplicate top-level `workspaces` keys and duplicate
   object-form `packages` keys, proving only a missing field is root-only and a
@@ -569,10 +609,10 @@ workspace contract requires planned coverage for:
 - an injected descriptor-relative validate-open path swap and identity mismatch,
   including a platform without an atomic equivalent, proving the candidate
   target is not read and the full discovery fails without a partial table;
-- a canonical root-directory rename, parent/name replacement, mount/reparse
-  substitution, and root path swap between validation and descriptor open,
-  proving discovery rejects the changed root identity before reading its
-  `package.json`;
+- a canonical root-directory rename, every retained ancestor parent/name
+  replacement, mount/reparse substitution, and root path swap between chain
+  validation and descriptor open, proving the ancestor-chain watches and final
+  identity checks reject the changed root before reading its `package.json`;
 - a root-manifest replacement between discovery and a later consumer, proving
   every workspace-discovery consumer uses the immutable root snapshot and no
   workspace-aware path publishes or truncates the replacement;
@@ -581,9 +621,11 @@ workspace contract requires planned coverage for:
 - an attempted present-manifest write by a workspace-discovery consumer,
   proving the operation is rejected before the root manifest or any alias is
   modified and remains deferred to #222;
-- root and member `package.json` files hard-linked to an external alias, plus an
-  injected platform without descriptor link-count support, proving discovery
-  rejects each case before parsing or returning a snapshot;
+- root and member `package.json` files hard-linked to an external alias, writes
+  made through that alias, link-count changes, and an injected platform without
+  descriptor link-count or exact inode-watch support, proving the retained
+  descriptor/inode watches and final metadata checks reject each case before
+  parsing or returning a snapshot;
 - an injected directory replacement during descriptor-relative enumeration or
   metadata validation, proving the traversal identity mismatch fails the full
   discovery without a partial table;
@@ -598,10 +640,26 @@ workspace contract requires planned coverage for:
   before consumer access; a post-cut addition remains outside the returned
   snapshot; fixed delays and repeated equal enumerations are rejected as
   stability evidence;
+- an ancestor-chain adapter proving each ancestor watch is installed before
+  opening the next child and retained through the global cut; injected rename,
+  replacement, delete/create, self-move, mount, watch-loss, and tracked
+  parent/name identity drift on every ancestor fail before root manifest bytes
+  are read, while unrelated ancestor entries are drained without changing the
+  result;
+- a sustained unrelated-ancestor-event adapter that keeps the inotify queue
+  readable with irrelevant entries while avoiding overflow; event-count,
+  byte-count, and monotonic-deadline variants each exceed one per-attempt drain
+  budget and fail closed before root manifest bytes or a partial member table
+  are returned, while an under-budget burst reaches the exact quiet poll;
 - injected `pollfd.revents` values of `POLLERR`, `POLLPRI`, `POLLHUP`,
   `POLLNVAL`, each unknown bit, each combination with `POLLIN`, and
   return-zero/nonzero inconsistencies fail closed; only `revents == 0` with a
   zero return or `revents == POLLIN` with a nonzero return is accepted;
+- a root/member manifest inode-watch adapter proving each exact descriptor watch
+  is installed before its first byte read and retained through the global cut;
+  injected outside-alias writes, hard-link creation/removal, link-count drift,
+  `IN_ATTRIB`, `IN_MODIFY`, `IN_CLOSE_WRITE`, self-move, delete, watch-loss,
+  and final `fstat` metadata drift fail before parsing or returning a table;
 - a race adapter that replaces the root `package.json` or adds, removes, or
   renames a selected member between root snapshot reads, the root-to-member
   snapshot boundary, member enumeration, candidate-manifest reads, and final
