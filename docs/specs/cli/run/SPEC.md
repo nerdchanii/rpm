@@ -72,7 +72,14 @@ descriptor-validated native identity, and prepends `node_modules/.bin`
 relative to the same identity. It does not reopen a member manifest or derive
 filesystem identity from `member_path_key` during dispatch.
 The existing child-status rule applies to each target process; it does not
-settle how multiple target statuses are combined.
+settle how multiple target statuses are combined. Each `--workspace` occurrence
+consumes exactly one selector value, so a separated occurrence leaves the
+following script positional available to `rpm run`; a leading-hyphen selector
+uses the attached `--workspace=<selector>` form. Immediately before spawning a
+selected member, the consumer revalidates the retained #145 parent/name mapping
+and descriptor identity. A missing, renamed, replaced, or identity-mismatched
+entry fails before spawn; an old descriptor or `fchdir` alone cannot authorize
+launch from a displaced directory.
 
 A root-only invocation does not invoke workspace discovery or validate a
 `workspaces` declaration. Malformed workspace metadata cannot block the
@@ -83,7 +90,9 @@ The workspace member table is consumed from the manifest and resolver
 contracts for #145. This SPEC does not redefine discovery, lockfile records,
 or linker output. Partial multi-target execution policy, aggregate exit codes,
 and diagnostic channels remain owned by M8 #151 and the adopting command
-follow-up and must be decided before implementation.
+follow-up and must be decided before implementation. #223 may implement the
+target-set resolver and deterministic fixtures independently, while parser and
+dispatch exposure waits for that #151 contract and the adopting `run` decision.
 
 ## Error Cases
 

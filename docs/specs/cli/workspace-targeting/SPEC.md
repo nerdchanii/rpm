@@ -60,15 +60,21 @@ valid-UTF-8, root-relative identity that uses `/` separators. Matching compares
 the selector bytes directly with `member_path_key`; the CLI does not normalize
 Unicode, `./`, trailing separators, platform separators, or symlinks while
 matching. Native canonical paths and pre-normalization discovery strings are
-never selector identities. Selectors never support globs, regular
-expressions, prefixes, substrings, absolute paths, or external-package names.
-The root identity and external-package identities are never selector
-candidates. A selector matching neither member identity is invalid. If the
-same selector matches a package-name row and a different path row, it is
+never selector identities. Selectors never support globs, regular expressions,
+prefixes, substrings, or external-package names. A selector is never
+interpreted as a filesystem path: path-shaped package names such as `/pkg` or
+`C:/pkg` are literal package-name identities and remain eligible for exact name
+matching. A path-shaped string that is not an exact package-name or
+`member_path_key` identity remains invalid; it is never resolved against the
+host filesystem. The root identity and external-package identities are never
+selector candidates. A selector matching neither member identity is invalid.
+If the same selector matches a package-name row and a different path row, it is
 ambiguous and invalid. A selector matching both identities of one row resolves
-to that one member. When selector text begins with `-`, it must use the
-attached `--workspace=<selector>` form so the parser cannot reinterpret it as
-another option.
+to that one member. Each `--workspace` occurrence consumes exactly one selector
+value. The separated form must preserve the following `<script>` positional
+argument instead of greedily consuming it as another selector. When selector
+text begins with `-`, it must use the attached `--workspace=<selector>` form so
+the parser cannot reinterpret it as another option.
 
 `--all` and `--workspace` cannot be used together. Repeated selectors and
 repeated resolved members are deduplicated. Selector argument order does not
@@ -89,8 +95,13 @@ from `member_path_key`, or let a manifest-path or member-directory replacement
 substitute script text, the working directory, or a local `.bin`. If the child
 process interface cannot preserve that retained identity or an atomic
 equivalent through process creation, dispatch fails before the child starts.
-This command contract does not redefine #145 member identity or ordering and
-does not define how linker output or workspace links are created; those
+Immediately before spawning each selected member, the consumer must revalidate
+the retained #145 parent/name mapping and descriptor identity. A missing,
+renamed, replaced, or identity-mismatched entry fails before spawn. Retaining an
+old descriptor or changing directory through it does not satisfy this check:
+the command must not launch from a displaced directory or execute a replacement
+entry. This command contract does not redefine #145 member identity or ordering
+and does not define how linker output or workspace links are created; those
 behaviors remain owned by the linker and workspace install contracts.
 
 ### Execution and failure ownership
@@ -105,8 +116,10 @@ behavior from [`run/SPEC.md`](../run/SPEC.md).
 M8 issue #151, together with the adopting command's SPEC and implementation
 follow-up, must define the stable numeric exit code, diagnostic envelope,
 wording policy, and stdout/stderr ownership for multi-target outcomes before
-those behaviors are implemented. This SPEC deliberately introduces none of
-those decisions.
+those behaviors are implemented. Until that contract exists, #223 may implement
+and fixture the target-set resolver and its deterministic ordering only; it must
+not expose multi-target parser or dispatch behavior that chooses continuation or
+aggregation. This SPEC deliberately introduces none of those decisions.
 
 ### Command adoption and unsupported filters
 
@@ -131,9 +144,11 @@ command execution:
   below without exposing incomplete CLI options;
 - after M8 #151 and the adopting `run` decision define failure continuation,
   aggregation, exit status, and output channels, add parser support for
-  run-only `--all` and repeatable `--workspace <selector>` and dispatch each
-  target using its manifest, working directory, and target-local `.bin` PATH
-  rule;
+  run-only `--all` and repeatable `--workspace <selector>`, enforcing exactly
+  one selector value per `--workspace` occurrence (for StructOpt/Clap, an
+  equivalent of `number_of_values(1)` rather than a greedy variadic argument),
+  and dispatch each target using its manifest, working directory, and
+  target-local `.bin` PATH rule;
 - update `rpm run --help` in that same exposed CLI change to state the default
   root target and its workspace-discovery bypass, that `--all` excludes the
   root, exact package-name and portable root-relative `member_path_key`
@@ -177,6 +192,9 @@ this contract is active. Planned coverage includes:
 - a two-member project whose table order differs from selector argument order,
   proving `--all`, exact name selectors, exact path selectors, and duplicate
   selector deduplication;
+- a parser invocation such as `rpm run --workspace member build`, proving one
+  `--workspace` occurrence consumes exactly one selector and leaves `build` as
+  the script positional;
 - a selector list naming one member by both its package name and its
   `member_path_key`, plus repeated selectors, proving both identities resolve
   to one table row and execute once;
@@ -184,17 +202,24 @@ this contract is active. Planned coverage includes:
   attached `--workspace=<selector>` syntax remains unambiguous to the parser;
 - exact-selector no-match and cross-kind ambiguity cases, including the rule
   that root and external identities cannot be selected;
+- a member whose native path uses decomposed Unicode while its table key is NFC,
+  proving the exact NFC selector matches and the decomposed spelling is
+  rejected without selector normalization;
+- members with path-shaped package names such as `/pkg` and `C:/pkg`, proving
+  those strings select literal package-name identities and are never resolved
+  as filesystem paths;
 - `--all` plus `--workspace` conflict and zero-member all-mode validation,
   proving no target script starts after validation failure;
 - a member-local manifest, working-directory marker, and local `.bin` marker;
 - an injected member-manifest and member-directory replacement after target
-  resolution but before dispatch, proving the immutable member snapshot and
-  retained descriptor-validated directory identity prevent replacement script
-  text or a replacement-local `.bin` from executing;
+  resolution but before dispatch, proving the immediate retained parent/name
+  and descriptor revalidation rejects the replacement and prevents displaced
+  or replacement script text and local `.bin` files from executing;
 - a multi-target run with a failing script, pinning the resolved target set and
-  table order. Whether later targets run, how the outcome aggregates, and
-  numeric exit or diagnostic golden text wait for M8 #151 and the adopting
-  command SPEC;
+  table order. Before #151 settles execution policy, this fixture may assert
+  only target-set resolution; whether later targets run, how the outcome
+  aggregates, and numeric exit or diagnostic golden text wait for M8 #151 and
+  the adopting command SPEC;
 - a non-opted command invoked with `--all` or `--workspace`, proving parser
   rejection occurs before command work and does not fall back to the root; and
 - an offline `rpm run --help` assertion covering the required targeting facts
