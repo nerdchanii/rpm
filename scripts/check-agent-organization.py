@@ -703,6 +703,7 @@ def validate_supported_dependencies(text: str) -> str | None:
     dependencies_seen = False
     tools_seen = False
     tools_mode: str | None = None
+    tools_items_seen = False
     tool_keys: set[str] | None = None
 
     def finish_tool(line_number: int) -> str | None:
@@ -711,6 +712,11 @@ def validate_supported_dependencies(text: str) -> str | None:
         if not {"type", "value"}.issubset(tool_keys):
             return f"line {line_number}: dependency tool requires type and value"
         return None
+
+    def finish_tools(line_number: int) -> str | None:
+        if tools_mode == "sequence" and not tools_items_seen:
+            return f"line {line_number}: {YAML_DEPENDENCY_ERROR}"
+        return finish_tool(line_number)
 
     for line_number, raw_line in enumerate(text.splitlines(), 1):
         leading = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
@@ -723,7 +729,7 @@ def validate_supported_dependencies(text: str) -> str | None:
             return f"line {line_number}: literal tabs are not supported in dependencies"
         indent = len(raw_line) - len(raw_line.lstrip(" "))
         if indent == 0:
-            if tool_error := finish_tool(line_number):
+            if tool_error := finish_tools(line_number):
                 return tool_error
             tool_keys = None
             if not is_supported_root_mapping_line(stripped):
@@ -740,12 +746,13 @@ def validate_supported_dependencies(text: str) -> str | None:
             dependencies_seen = True
             tools_seen = False
             tools_mode = None
+            tools_items_seen = False
             continue
 
         if active_root != "dependencies":
             continue
         if indent == 2:
-            if tool_error := finish_tool(line_number):
+            if tool_error := finish_tools(line_number):
                 return tool_error
             tool_keys = None
             key, separator, value = stripped.partition(":")
@@ -771,10 +778,12 @@ def validate_supported_dependencies(text: str) -> str | None:
                 return tool_error
             tool_keys = None
             if stripped == "-":
+                tools_items_seen = True
                 tool_keys = set()
                 continue
             if not stripped.startswith("- "):
                 return f"line {line_number}: {YAML_DEPENDENCY_ERROR}"
+            tools_items_seen = True
             tool_keys = set()
             inline_field = stripped[2:].strip()
             if inline_field and not inline_field.startswith("#"):
@@ -789,7 +798,7 @@ def validate_supported_dependencies(text: str) -> str | None:
             continue
         return f"line {line_number}: {YAML_DEPENDENCY_ERROR}"
 
-    return finish_tool(len(text.splitlines()) + 1)
+    return finish_tools(len(text.splitlines()) + 1)
 
 
 def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
@@ -864,6 +873,11 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
     key, separator, value = child.partition(":")
     if separator != ":" or key != "allow_implicit_invocation":
         return None, f"line {line_number}: unexpected policy child"
+    if value and not value.startswith(YAML_SEPARATOR_SPACE):
+        return None, (
+            f"line {line_number}: policy child {key!r} must use "
+            "YAML separation space after ':'"
+        )
     boolean_value = strip_ascii_space_inline_comment(value)
     if boolean_value not in {"true", "false"}:
         return None, f"line {line_number}: allow_implicit_invocation must be boolean"
@@ -1055,7 +1069,7 @@ def parse_frontmatter_scalar(
     value: str, line_number: int
 ) -> tuple[str | bool | None, str | None]:
     """Parse a scalar in the supported SKILL.md frontmatter subset."""
-    stripped = value.strip(YAML_SEPARATOR_SPACE)
+    stripped = strip_ascii_space_inline_comment(value).strip(YAML_SEPARATOR_SPACE)
     if stripped in {"true", "false"}:
         return stripped == "true", None
     parsed, error = parse_yaml_string_scalar(value, line_number)

@@ -89,6 +89,7 @@ malformed = {
     "duplicate-policy": "policy:\n  allow_implicit_invocation: false\npolicy:\n  allow_implicit_invocation: false\n",
     "duplicate-child": "policy:\n  allow_implicit_invocation: false\n  allow_implicit_invocation: false\n",
     "non-boolean": "policy:\n  allow_implicit_invocation: \"false\"\n",
+    "missing-separation-space": "policy:\n  allow_implicit_invocation:false\n",
     "document-start": "---\npolicy:\n  allow_implicit_invocation: false\n",
     "document-end": "policy:\n  allow_implicit_invocation: false\n...\n",
     "multiple-documents": "policy:\n  allow_implicit_invocation: false\n---\npolicy:\n  allow_implicit_invocation: true\n",
@@ -151,7 +152,6 @@ for expected, child_value in (
 
 boolean_error = "allow_implicit_invocation must be boolean"
 for name, child_value in {
-    "no-space-comment": "false#comment",
     "nbsp-comment": "false\u00a0#comment",
     "quoted-boolean-comment": '"false" # comment',
     "quoted-hash-content": '"false # comment"',
@@ -164,6 +164,25 @@ for name, child_value in {
     if policy_value is not None or policy_error is None or boolean_error not in policy_error:
         raise SystemExit(
             f"invalid boolean comment {name} was accepted: child={child_value!r}, "
+            f"value={policy_value!r}, error={policy_error!r}"
+        )
+
+separation_space_error = "policy child 'allow_implicit_invocation' must use YAML separation space"
+for name, child_value in {
+    "missing-separation-space": "false",
+    "no-space-comment": "false#comment",
+}.items():
+    policy_value, policy_error = checker.parse_skill_invocation_policy(
+        "policy:\n"
+        f"  allow_implicit_invocation:{child_value}\n"
+    )
+    if (
+        policy_value is not None
+        or policy_error is None
+        or separation_space_error not in policy_error
+    ):
+        raise SystemExit(
+            f"invalid policy separation space {name} was accepted: child={child_value!r}, "
             f"value={policy_value!r}, error={policy_error!r}"
         )
 
@@ -763,6 +782,18 @@ invalid_dependencies = {
         ),
         checker.YAML_DEPENDENCY_ERROR,
     ),
+    "null-tools": (
+        valid_interface_scalars["dependencies-tools"].replace(
+            "  tools:\n"
+            "    - type: \"mcp\"\n"
+            "      value: \"github\"\n"
+            "      description: \"GitHub MCP server\"\n"
+            "      transport: \"streamable_http\"\n"
+            "      url: \"https://api.githubcopilot.com/mcp/\"\n",
+            "  tools:\n",
+        ),
+        checker.YAML_DEPENDENCY_ERROR,
+    ),
 }
 for name, (text, expected_error) in invalid_dependencies.items():
     dependency_error = checker.validate_supported_dependencies(text)
@@ -805,6 +836,25 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
         raise SystemExit(
             "mismatched SKILL.md name was accepted: "
             f"errors={frontmatter_errors!r}"
+        )
+
+    commented_invocation_path = pathlib.Path(temp_dir) / "commented-SKILL.md"
+    commented_invocation_path.write_text(
+        "---\n"
+        "name: fixture-governance\n"
+        "disable-model-invocation: true # explicit-only entry\n"
+        "description: A valid temporary skill fixture.\n"
+        "---\n"
+    )
+    frontmatter_errors = []
+    commented_values = checker.parse_frontmatter(
+        commented_invocation_path,
+        frontmatter_errors,
+    )
+    if frontmatter_errors or commented_values.get("disable-model-invocation") is not True:
+        raise SystemExit(
+            "commented boolean frontmatter was rejected: "
+            f"values={commented_values!r}, errors={frontmatter_errors!r}"
         )
 
     malformed_frontmatter = {
