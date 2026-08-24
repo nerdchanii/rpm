@@ -2,8 +2,47 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-codex-cloud-setup.XXXXXX")"
+trusted_temp_root=/tmp
+temp_dir="$(/usr/bin/mktemp -d "${trusted_temp_root}/rpm-codex-cloud-setup.XXXXXX")"
 trap 'rm -rf -- "${temp_dir}"' EXIT
+
+run_tmpdir_regression() {
+  local regression_root
+  local marker_name
+  local marker_path
+  local malicious_tmpdir
+  local output_file
+  local status
+
+  regression_root="$(/usr/bin/mktemp -d "${trusted_temp_root}/rpm-codex-cloud-setup-regression.XXXXXX")"
+  marker_name="rpm-codex-cloud-setup-marker-${RANDOM}-${RANDOM}"
+  malicious_tmpdir="${regression_root}/tmp'; echo \$(printf x >${marker_name}); #"
+  printf 'TMPDIR must be ignored by the fixture harness\n' >"${malicious_tmpdir}"
+  output_file="${regression_root}/output"
+  set +e
+  TMPDIR="${malicious_tmpdir}" RPM_CLOUD_TEST_TMPDIR_REGRESSION=1 \
+    "${script_dir}/$(basename -- "${BASH_SOURCE[0]}")" >"${output_file}" 2>&1
+  status="$?"
+  set -e
+  if [ "${status}" -ne 0 ]; then
+    cat "${output_file}" >&2
+    rm -rf -- "${regression_root}"
+    exit 1
+  fi
+  marker_path="$(/usr/bin/find "${trusted_temp_root}" -type f -name "${marker_name}" \
+    -print -quit 2>/dev/null)"
+  if [ -n "${marker_path}" ]; then
+    printf 'malicious TMPDIR executed a fake shim payload: %s\n' "${marker_path}" >&2
+    rm -f -- "${marker_path}"
+    rm -rf -- "${regression_root}"
+    exit 1
+  fi
+  rm -rf -- "${regression_root}"
+}
+
+if [ "${RPM_CLOUD_TEST_TMPDIR_REGRESSION:-}" != 1 ]; then
+  run_tmpdir_regression
+fi
 
 assert_contains() {
   local actual="$1"
@@ -58,7 +97,8 @@ for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_prox
   CARGO_REGISTRIES_CRATES_IO_INDEX CARGO_HTTP_PROXY CARGO_NET_OFFLINE \
   CARGO_SOURCE_CRATES_IO_REPLACE_WITH CARGO_SOURCE_FOO_REPLACE_WITH \
   CARGO_REGISTRY_TOKEN RUSTUP_DIST_SERVER RUSTUP_UPDATE_ROOT RUSTC_WRAPPER \
-  RUSTFLAGS RPM_CLOUD_TEST_SECRET
+  RUSTFLAGS RPM_CLOUD_TEST_SECRET NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH \
+  RUSTDOCFLAGS RUSTC_WORKSPACE_WRAPPER
 do
   case "\${variable}" in
     CARGO_HOME|RUSTUP_HOME|RUSTUP_TOOLCHAIN) ;;
@@ -93,7 +133,8 @@ for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_prox
   NO_PROXY no_proxy CARGO_REGISTRIES_CRATES_IO_INDEX CARGO_HTTP_PROXY CARGO_NET_OFFLINE \
   CARGO_SOURCE_CRATES_IO_REPLACE_WITH CARGO_SOURCE_FOO_REPLACE_WITH CARGO_REGISTRY_TOKEN RUSTUP_DIST_SERVER \
   RUSTUP_UPDATE_ROOT RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER RUSTFLAGS \
-  RPM_CLOUD_TEST_SECRET
+  RPM_CLOUD_TEST_SECRET NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH RUSTDOCFLAGS \
+  RUSTC_WORKSPACE_WRAPPER
 do
   [ -z "\${!variable+x}" ] || { printf 'env-leak=%s\\n' "\${variable}" >>"\${log_file}"; exit 90; }
 done
@@ -161,7 +202,8 @@ for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_prox
   CARGO_HTTP_PROXY CARGO_NET_OFFLINE CARGO_SOURCE_CRATES_IO_REPLACE_WITH \
   CARGO_SOURCE_FOO_REPLACE_WITH CARGO_REGISTRY_TOKEN \
   RUSTUP_DIST_SERVER RUSTUP_UPDATE_ROOT RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER \
-  RUSTFLAGS RPM_CLOUD_TEST_SECRET
+  RUSTFLAGS RPM_CLOUD_TEST_SECRET NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH \
+  RUSTDOCFLAGS RUSTC_WORKSPACE_WRAPPER
 do
   case "\${variable}" in
     CARGO_HOME|RUSTUP_HOME) ;;
@@ -295,7 +337,11 @@ run_setup() {
   if [ "$#" -ge 7 ]; then
     env_args+=("NVM_BIN=${nvm_bin_override}")
   fi
-  /usr/bin/env "${env_args[@]}" \
+  NVM_BIN=/tmp/ambient-nvm-bin \
+  RPM_CODEX_CLOUD_TRUSTED_PATH=/tmp/ambient-trusted/bin \
+  RUSTDOCFLAGS=--ambient-rustdocflags \
+  RUSTC_WORKSPACE_WRAPPER=/tmp/ambient-rustc-wrapper \
+  /usr/bin/env -i "${env_args[@]}" \
     /bin/sh -c 'cd "$1/outside" && exec "$2"' sh "${case_dir}" \
     "${script_dir}/codex-cloud-setup.sh" >"${output_file}" 2>&1
   printf '%s\n' "$?" >"${status_file}"
