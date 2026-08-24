@@ -2028,6 +2028,30 @@ for mutation, expected in (
         "dynamic namespace and code built-in aliases are forbidden",
     ),
     (
+        "from module import GITHUB_MUTATION_ROLES",
+        "capability names cannot be introduced through imports",
+    ),
+    (
+        "from module import GITHUB_MUTATION_ROLES as OTHER",
+        "capability names cannot be introduced through imports",
+    ),
+    (
+        "import GITHUB_MUTATION_ROLES.foo",
+        "capability names cannot be introduced through imports",
+    ),
+    (
+        "from module import *",
+        "wildcard imports are forbidden in the capability hook",
+    ),
+    (
+        "from module import harmless as GITHUB_MUTATION_ROLES",
+        "capability names cannot be introduced through import aliases",
+    ),
+    (
+        "import module as GITHUB_MUTATION_ROLES",
+        "capability names cannot be introduced through import aliases",
+    ),
+    (
         "(lambda GITHUB_MUTATION_ROLES: GITHUB_MUTATION_ROLES)(set())",
         "capability names cannot be used as lambda arguments",
     ),
@@ -2052,6 +2076,23 @@ for mutation, expected in (
         raise SystemExit(
             f"capability mutation {mutation!r} was accepted: {errors!r}"
         )
+
+with tempfile.TemporaryDirectory() as root:
+    temporary_root = pathlib.Path(root)
+    hook_path = temporary_root / ".codex" / "hooks" / "agent_tool_policy.py"
+    hook_path.parent.mkdir(parents=True)
+    hook_path.write_text(
+        hook_source + "\nfrom module import harmless\nimport harmless.submodule\n"
+    )
+    original_root = checker.ROOT
+    try:
+        checker.ROOT = temporary_root
+        errors = []
+        checker.check_tool_policy_mutation_capabilities(errors)
+    finally:
+        checker.ROOT = original_root
+if errors:
+    raise SystemExit(f"harmless unrelated import was rejected: {errors!r}")
 PY
 }
 

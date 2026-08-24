@@ -836,7 +836,12 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
             ):
                 reject("capability names cannot be used as lambda arguments")
         elif isinstance(node, ast.alias):
-            if node.asname in capability_names:
+            import_root = node.name.split(".", 1)[0]
+            if node.name == "*":
+                reject("wildcard imports are forbidden in the capability hook")
+            elif import_root in capability_names:
+                reject("capability names cannot be introduced through imports")
+            elif node.asname in capability_names:
                 reject("capability names cannot be introduced through import aliases")
             if node.name in dynamic_names:
                 reject("dynamic namespace and code built-ins cannot be imported")
