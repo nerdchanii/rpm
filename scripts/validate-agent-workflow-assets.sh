@@ -1195,6 +1195,35 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             f"errors={frontmatter_errors!r}"
         )
 
+    crlf_frontmatter_fixtures = {
+        "simple": (
+            "---\r\n"
+            "name: fixture-governance\r\n"
+            "description: A CRLF frontmatter fixture.\r\n"
+            "---\r\n",
+            "A CRLF frontmatter fixture.",
+        ),
+        "block": (
+            "---\r\n"
+            "name: fixture-governance\r\n"
+            "description: >-\r\n"
+            "  First line\r\n"
+            "  second line.\r\n"
+            "---\r\n",
+            "First line second line.",
+        ),
+    }
+    for name, (text, expected_description) in crlf_frontmatter_fixtures.items():
+        crlf_path = pathlib.Path(temp_dir) / f"crlf-{name}-SKILL.md"
+        crlf_path.write_bytes(text.encode("utf-8"))
+        frontmatter_errors = []
+        crlf_values = checker.parse_frontmatter(crlf_path, frontmatter_errors)
+        if frontmatter_errors or crlf_values.get("description") != expected_description:
+            raise SystemExit(
+                f"valid CRLF {name} frontmatter was rejected or decoded incorrectly: "
+                f"values={crlf_values!r}, errors={frontmatter_errors!r}"
+            )
+
     malformed_frontmatter = {
         "nested-only-name": (
             "---\n"
@@ -1492,6 +1521,22 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             "---\n",
             "frontmatter contains an unsupported control or line separator",
         ),
+        "bare-carriage-return": (
+            "---\r\n"
+            "name: fixture-governance\r\n"
+            "description: A valid temporary skill fixture.\r\n"
+            "# bare\rname: other-skill\r\n"
+            "---\r\n",
+            "frontmatter contains an unsupported control or line separator",
+        ),
+        "mixed-line-endings-with-bare-carriage-return": (
+            "---\r\n"
+            "name: fixture-governance\n"
+            "description: A valid temporary skill fixture.\r\n"
+            "# bare\rname: other-skill\r\n"
+            "---\r\n",
+            "frontmatter contains an unsupported control or line separator",
+        ),
         "unterminated": (
             "---\n"
             "name: fixture-governance\n",
@@ -1500,7 +1545,7 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
     }
     for name, (text, expected_error) in malformed_frontmatter.items():
         malformed_skill_path = pathlib.Path(temp_dir) / f"{name}.md"
-        malformed_skill_path.write_text(text)
+        malformed_skill_path.write_bytes(text.encode("utf-8"))
         frontmatter_errors = []
         checker.validate_skill_frontmatter_name(
             "fixture-governance",

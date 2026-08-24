@@ -327,6 +327,10 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
     except OSError as error:
         fail(errors, f"{path.relative_to(ROOT)}: cannot read: {error}")
         return {}
+    # Accept CRLF as a line ending at the file boundary. A remaining carriage
+    # return is a bare or malformed CR and stays covered by the control check
+    # below, so scalar content cannot silently acquire a different newline.
+    text = text.replace("\r\n", "\n")
     if not text.startswith("---\n"):
         fail(errors, f"{path.relative_to(ROOT)}: missing frontmatter")
         return {}
