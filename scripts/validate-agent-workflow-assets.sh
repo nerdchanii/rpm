@@ -69,6 +69,33 @@ check() {
   fi
 }
 
+check_skill_policy_structure_negative() {
+  PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import importlib.util
+import pathlib
+
+checker_path = pathlib.Path("scripts/check-agent-organization.py")
+spec = importlib.util.spec_from_file_location("rpm_agent_organization", checker_path)
+checker = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(checker)
+
+malformed = {
+    "empty-policy": "policy:\n",
+    "relocated-child": "policy:\nallow_implicit_invocation: false\n",
+    "interface-child": "interface:\n  allow_implicit_invocation: false\npolicy:\n",
+    "nested-child": "policy:\n    allow_implicit_invocation: false\n",
+    "duplicate-policy": "policy:\n  allow_implicit_invocation: false\npolicy:\n  allow_implicit_invocation: false\n",
+    "duplicate-child": "policy:\n  allow_implicit_invocation: false\n  allow_implicit_invocation: false\n",
+    "non-boolean": "policy:\n  allow_implicit_invocation: \"false\"\n",
+}
+for name, text in malformed.items():
+    value, error = checker.parse_skill_invocation_policy(text)
+    if error is None:
+        raise SystemExit(f"{name} was accepted: value={value!r}")
+PY
+}
+
 if [ "${RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION:-}" = "1" ]; then
   check_summary_formatter() {
     local output
@@ -86,6 +113,7 @@ if [ "${RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION:-}" = "1" ]; then
   }
 
   check "summary_formatter" check_summary_formatter
+  check "skill_policy_structure_negative" check_skill_policy_structure_negative
   printf 'agent_assets.status=%s\n' "${status}"
   [ "${status}" = "ok" ] || exit 1
   exit 0
@@ -722,6 +750,7 @@ check "script_validate_agent_workflow_assets_syntax" \
   bash -n scripts/validate-agent-workflow-assets.sh
 
 check "summary_suppresses_skips" check_summary_suppresses_skips
+check "skill_policy_structure_negative" check_skill_policy_structure_negative
 check "just_test_verbosity" check_just_test_verbosity
 
 check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews

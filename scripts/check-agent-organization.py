@@ -81,6 +81,18 @@ FORBIDDEN_REFERENCES = (
     "pr-checklist-updater",
     "watch-codex-review.sh",
 )
+EXPECTED_SKILL_INVOCATION_POLICY = {
+    "fixture-governance": True,
+    "merge-gatekeeper": False,
+    "open-pr-review-batch": False,
+    "pr-resolution-loop": False,
+    "pr-review-resolution": False,
+    "prepare-backlog": False,
+    "rust-analyzer": True,
+    "safe-direct-merge": False,
+    "spec-governance": True,
+    "take-ticket": False,
+}
 EXPECTED_TRANSITIONS = {
     "untracked": ["research"],
     "research": ["research", "ready", "blocked"],
@@ -313,6 +325,97 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str]:
             key, value = line.split(":", 1)
             values[key.strip()] = value.strip()
     return values
+
+
+def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
+    """Parse the deliberately small policy mapping in an openai.yaml file.
+
+    A full YAML dependency is unnecessary here. The supported policy shape is
+    intentionally strict: one root ``policy:`` mapping with one direct child.
+    """
+    blocks: list[list[tuple[int, str, int]]] = []
+    current: list[tuple[int, str, int]] | None = None
+    for line_number, raw_line in enumerate(text.splitlines(), 1):
+        leading = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
+        if "\t" in leading:
+            return None, f"line {line_number}: tabs are not allowed for policy indentation"
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        if indent == 0:
+            if re.match(r"^policy\s*:", stripped):
+                if stripped != "policy:":
+                    return None, f"line {line_number}: policy must be a root mapping"
+                blocks.append([])
+                current = blocks[-1]
+            else:
+                current = None
+            continue
+        if current is not None:
+            current.append((indent, stripped, line_number))
+
+    if len(blocks) != 1:
+        return None, "expected exactly one root policy mapping"
+    children = blocks[0]
+    if len(children) != 1:
+        return None, "expected exactly one direct policy child"
+    indent, child, line_number = children[0]
+    if indent != 2:
+        return None, f"line {line_number}: policy child must be directly indented by two spaces"
+    key, separator, value = child.partition(":")
+    if separator != ":" or key.strip() != "allow_implicit_invocation":
+        return None, f"line {line_number}: unexpected policy child"
+    if value.strip() not in {"true", "false"}:
+        return None, f"line {line_number}: allow_implicit_invocation must be boolean"
+    return value.strip() == "true", None
+
+
+def check_skill_inventory(errors: list[str]) -> None:
+    skills_dir = ROOT / ".agents" / "skills"
+    if not skills_dir.is_dir():
+        fail(errors, f"{skills_dir.relative_to(ROOT)}: skill directory is missing")
+        return
+
+    actual = {path.name for path in skills_dir.iterdir() if path.is_dir()}
+    expected = set(EXPECTED_SKILL_INVOCATION_POLICY)
+    for missing in sorted(expected - actual):
+        fail(errors, f".agents/skills/{missing}: inventory entry is missing")
+    for unexpected in sorted(actual - expected):
+        fail(errors, f".agents/skills/{unexpected}: unregistered skill directory")
+
+    for skill_name, allow_implicit in EXPECTED_SKILL_INVOCATION_POLICY.items():
+        metadata_path = skills_dir / skill_name / "agents" / "openai.yaml"
+        if not metadata_path.is_file():
+            fail(errors, f"{metadata_path.relative_to(ROOT)}: metadata is missing")
+            continue
+        try:
+            text = metadata_path.read_text()
+        except OSError as error:
+            fail(errors, f"{metadata_path.relative_to(ROOT)}: cannot read: {error}")
+            continue
+        if not re.search(r"(?m)^interface:\s*$", text):
+            fail(errors, f"{metadata_path.relative_to(ROOT)}: interface block is missing")
+        if not re.search(r"(?m)^\s+display_name:\s*\S+", text):
+            fail(errors, f"{metadata_path.relative_to(ROOT)}: display_name is missing")
+        if not re.search(r"(?m)^\s+short_description:\s*\S+", text):
+            fail(errors, f"{metadata_path.relative_to(ROOT)}: short_description is missing")
+        if not re.search(
+            rf"(?m)^\s+default_prompt:\s*.*\${re.escape(skill_name)}",
+            text,
+        ):
+            fail(errors, f"{metadata_path.relative_to(ROOT)}: default_prompt must mention ${skill_name}")
+        value, policy_error = parse_skill_invocation_policy(text)
+        if policy_error is not None:
+            fail(
+                errors,
+                f"{metadata_path.relative_to(ROOT)}: invalid invocation policy: {policy_error}",
+            )
+        elif value != allow_implicit:
+            fail(
+                errors,
+                f"{metadata_path.relative_to(ROOT)}: allow_implicit_invocation must be {str(allow_implicit).lower()}",
+            )
 
 
 def check_entries_and_assets(errors: list[str]) -> None:
@@ -565,6 +668,7 @@ def main() -> int:
     agents = load_agents(errors)
     check_policy(errors)
     check_role_contracts(agents, errors)
+    check_skill_inventory(errors)
     check_entries_and_assets(errors)
     check_deterministic_assets(errors)
     check_tool_policy_runtime(errors)

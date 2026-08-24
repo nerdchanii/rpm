@@ -2,3 +2,5 @@ interface:
   display_name: "Open PR Review Batch"
   short_description: "Post a non-blocking, confidence-scored code review on every open PR."
   default_prompt: "Use $open-pr-review-batch to review every open PR in parallel and post one COMMENT review each."
+policy:
+  allow_implicit_invocation: false

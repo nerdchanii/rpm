@@ -1,0 +1,6 @@
+interface:
+  display_name: "Merge Gatekeeper"
+  short_description: "Run the deterministic gate for one scheduled RPM merge."
+  default_prompt: "Use $merge-gatekeeper in scheduled mode to verify and execute at most one gated RPM merge."
+policy:
+  allow_implicit_invocation: false
