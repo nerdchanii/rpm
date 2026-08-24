@@ -388,6 +388,16 @@ Version selection precedence at the registry boundary:
    `docs/specs/core/semver/SPEC.md`). This keeps determinism at the registry
    boundary, where the randomized map lives, rather than in shared semver code.
 
+For planned lockfile v2, the registry boundary returns the selected version
+together with the selection branch: `empty`, `latest`, `dist-tag`, or `semver`.
+An empty request records `empty`; the exact raw request `latest` records
+`latest`; any other request that matched a `dist-tags` key records `dist-tag`;
+every other request successfully selected through the semver facade records
+`semver`. Tag matching retains its precedence when the tag text also parses as
+semver. The v2 writer stores this value as the edge's required `selector_kind`,
+allowing replay to use the pinned target without fetching the packument to
+rediscover which branch won.
+
 Only requests that are not registry dist-tags are evaluated as semver ranges.
 This keeps version selection centralized and keeps dist-tag interpretation out of
 semver code.
@@ -465,6 +475,8 @@ Fixture expectations are defined by the owning scenario and documented in
 - integrity-only dist metadata (no legacy shasum)
 - legacy single-version document shape (root `version`, `dist`, `dependencies`)
 - dist-tag resolution before semver range evaluation
+- planned v2 selector-kind capture, including a semver-shaped dist-tag recorded
+  as `dist-tag` rather than reclassified as `semver` during replay
 - missing dist rejected before fetch
 - integrity verification of supported, mismatched, invalid, and absent variants
 - planned v2 provenance cases covering same-version fact capture, rejection of

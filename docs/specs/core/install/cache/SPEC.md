@@ -94,8 +94,8 @@ replay fails closed.
 
 The corresponding workspace and `node_modules` destination projections are
 owned by workspace discovery (#221) and the linker (#147). The lockfile replay
-gate consumes their collision-free results; this cache SPEC does not define the
-linker's path layout.
+gate consumes their validated results, including the linker's narrow exact-name
+`.bin` precedence rule; this cache SPEC does not define the linker's path layout.
 
 ### Planned v2 verified replay reads
 
@@ -132,9 +132,18 @@ A newly downloaded v2 archive follows the same rule: bytes are staged under an
 exclusive transaction-owned descriptor, SHA-512 verified there, inspected for
 the exact external package-manifest identity, and extracted from that same
 descriptor. Final cache publication may occur only after both verification and
-identity inspection succeed. These requirements make pathname replacement
-after open irrelevant to the bytes consumed by extraction and keep cache replay
-from introducing a verify/use race.
+identity inspection succeed. RPM retains the originally approved cache-root
+directory descriptor through publication. The staged entry is created relative
+to that descriptor, and the final same-directory rename is performed relative
+to the same descriptor with no-follow final-component semantics. The publisher
+must atomically reject a final destination that appeared or changed after
+preflight; it must not truncate, follow, or replace that entry. Reopening
+`.rpm/.cache` or the final destination through a workspace pathname is invalid.
+A cache-root identity change, unsupported descriptor-relative publication, or
+destination race fails publication and discards the staged entry. These
+requirements make pathname replacement after open irrelevant to the bytes
+consumed by extraction and keep cache replay and publication from introducing a
+verify/use race.
 
 ## Error Cases
 
@@ -155,7 +164,9 @@ tarball URLs.
 For v2, a cache projection collision, reserved host spelling, symlink or
 non-regular cache entry, unstable verification descriptor, missing or invalid
 SHA-512 integrity, shasum-only provenance, or archive-manifest identity failure
-is reported before extraction and before any install output is published.
+is reported before extraction and before install output is published. Cache-root
+identity drift, unavailable descriptor-relative publication, or a raced final
+destination fails cache publication and still blocks install publication.
 
 ## Test Fixtures
 
@@ -175,7 +186,11 @@ Planned v2 fixtures must additionally cover:
 - a final cache entry replaced with a symlink or non-regular file, proving the
   descriptor-relative no-follow open rejects it without reading the target;
 - a pathname swap after the cache entry is opened, proving verification and
-  extraction consume the same stable descriptor bytes; and
+  extraction consume the same stable descriptor bytes;
+- replacement of the `.rpm/.cache` pathname or creation of the final entry
+  between verification and publication, proving publication remains relative
+  to the originally opened cache-root descriptor and fails without following or
+  replacing the raced destination;
 - concurrent content mutation where a stable direct descriptor cannot be
   guaranteed, proving the transaction-owned verified descriptor is used or the
   replay fails closed; and

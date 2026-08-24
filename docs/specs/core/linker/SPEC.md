@@ -125,6 +125,17 @@ completes; RPM does not merge or union colliding binaries. The collision
 resolution order is owned by the linker implementation ticket (#140), not by
 this contract.
 
+Planned workspace v2 makes that existing exception deterministic for each
+root/member `node_modules/.bin` directory. Eligible package producers are
+visited in lockfile v2's total identity order and each package's validated
+binary names are visited in unsigned UTF-8 byte order. When multiple producers
+use the exact same binary-name bytes, the later producer replaces the earlier
+link and is the one surviving target. This exact-name case is one intentional
+logical output slot and is exempt from the general #147 projection-collision
+rejection. Two distinct raw names that only collide after host case folding,
+Unicode normalization, trailing-space/dot handling, or another filesystem
+equivalence are separate objects and remain invalid before linking.
+
 The `.bin` directory and its links are part of the install output transaction:
 they are created during the link phase and must be present before the install
 is reported as successful. `rpm run` consumes the resulting `node_modules/.bin`
@@ -191,7 +202,11 @@ destination-directory and symlink-creation failures.
 - an object-form `bin` key that is not a single path component (absolute,
   separator-containing, parent-referencing, or empty, for example
   `{"../../etc/foo": "./cli.js"}`) producing a link input error rather than a
-  link written outside `node_modules/.bin/`.
+  link written outside `node_modules/.bin/`;
+- two planned v2 producers with the exact same validated binary name, proving
+  the later producer in total identity order wins deterministically; and
+- two distinct raw binary names that project to the same host key, proving the
+  pair is rejected instead of entering last-writer precedence.
 
 Fixtures must copy install projects to temporary directories before mutation
 and must not use live npm.
