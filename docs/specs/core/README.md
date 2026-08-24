@@ -300,17 +300,21 @@ and the workspace-aware lockfile records and compatibility contract are defined
 by #146 in PR #217. Their implementation and fixtures remain deferred to #221
 and #224. CLI targeting is tracked by #148 in PR #216, linker/integration work
 by #147/#149, and workspace lifecycle/recovery activation by #222. Workspace
-lifecycle remains disabled.
+lifecycle remains disabled. V2 replay remains fail-closed until #221 and #147
+provide injective host-filesystem projections, #147 confines archive links and
+extraction, and #222 keeps lifecycle execution behind those staging gates.
+Replay requires reviewed trusted lockfile bytes because planned v2 has no npm
+signature or equivalent attestation.
 
 | M7 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
 | workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, duplicate declaration keys rejected before parser selection, descriptor-rooted root/ancestor/member/inode snapshots, read-only absent-root handling, single-link manifest identity, preservation-before-write, and planned replacement/hard-link coverage are specified; current manifest code still does not read or preserve the field | #221 |
 | workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect uses host-independent case-sensitive whole-result NFC matching; candidate selection, ancestor-chain and mount-aware canonical-root/symlink confinement, stable global manifest/directory snapshots, canonical-target keys for directory-symlink members, portable managed-path exclusions, and NFC `/`-separated keys are specified; every accepted `member_path_key` must round-trip as identical valid UTF-8 on every host, and non-Unicode/WTF-8/lossy native paths fail before resolver handoff | #221 |
 | root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: immutable root/member dependency snapshots preserve exact raw selector provenance alongside canonical request text, portable `member_path_key` graph origin, production-over-development overlap precedence, registry-owned tag precedence before confirmed non-tag local classification, single-pass member-root seeding, external fallback, and native identity restricted to filesystem validation are specified | #221 |
-| workspace package lockfile records | `lockfile/SPEC.md` | contract defined for planned v2, implementation deferred: ordered root/member records preserve origin, manifest path, name, and optional declared version; structured local identities remain distinct from external identities; v1 remains the current root-only format and rejects v2 | #224 |
-| external dependency edges under a workspace root | `lockfile/SPEC.md`, `resolver/SPEC.md` | contract defined for planned v2, implementation deferred: external nodes deduplicate by `<name>@<version>`, while every parent edge preserves source identity, canonical request text, exact raw selector provenance, selection-branch/classification provenance, request kind/relationship, origin or resolved parent, and resolved target; external facts are normalized once with canonical ordering, referential integrity, and deterministic replay | #221; #224 |
-| workspace-to-workspace linking (local symlink) | `linker/SPEC.md` | absent: the linker creates symlinks whose targets are extracted registry packages under `node_modules/`; there is no contract for linking a workspace member that exists as a local source directory rather than a downloaded tarball, or for confining that target to the canonical workspace root | #147 |
-| workspace-to-external linking | `linker/SPEC.md` | code and SPEC currently diverge on strict per-package dependency visibility; #147 must reconcile the implementation first, then extend the strict contract to workspace members so a member's `node_modules` exposes only that member's declared dependencies, with regression coverage | #147 |
+| workspace package lockfile records | `lockfile/SPEC.md` | contract defined for planned v2, implementation deferred: ordered root/member records preserve origin, manifest path, name, and optional declared version; structured local identities remain distinct from external identities; v1 remains the current root-only format and rejects v2; replay consumes a host-safe member projection supplied by #221/#147 | #224; #221/#147 prerequisite |
+| external dependency edges under a workspace root | `lockfile/SPEC.md`, `registry/SPEC.md`, `install/cache/SPEC.md`, `resolver/SPEC.md` | contract defined for planned v2, implementation deferred: external nodes deduplicate by `<name>@<version>`, while every parent edge preserves source identity, canonical request text, exact raw selector provenance, selection-branch/classification provenance, request kind/relationship, origin or resolved parent, and resolved target; reviewed trusted lockfile facts carry selected registry provenance and required SHA-512 SRI, with canonical ordering, reachability, selector/target validation, exact archive-manifest identity, collision-free host projections, stable-descriptor cache verification, and deterministic no-refetch replay | #221; #224; #147 extraction/link prerequisite |
+| workspace-to-workspace linking (local symlink) | `linker/SPEC.md` | absent: the linker creates registry-package links today; #147 must define local member targets, consume #221's member table, reject host-filesystem projection collisions, and confine each target to the canonical workspace root | #147; #221 prerequisite |
+| workspace-to-external linking | `linker/SPEC.md` | code and SPEC currently diverge on strict per-package dependency visibility; #147 must reconcile the implementation, define host-filesystem destination injectivity, confine archive symlink and hardlink entries, then extend the strict contract to workspace members with regression coverage | #147 |
 | missing workspace link target | `linker/SPEC.md` | absent: the linker already fails when a registry dependency target is not extracted, but there is no contract for a workspace dependency whose declared local path does not exist or does not contain the expected package | #147 |
 | workspace member writes and recovery | `install/recovery/SPEC.md`, `install/scripts/SPEC.md`, `linker/SPEC.md` | implementation and workspace contract deferred: #147 owns link construction; #222 owns workspace transaction, mutation, rollback, and recovery behavior | #147; #222 |
 | workspace member lifecycle scripts | `install/scripts/SPEC.md`, `install/recovery/SPEC.md` | contract and implementation deferred: current behavior remains root-only; workspace hook provenance, order, working directory, environment/runtime boundary, staged read/write isolation, lockfile visibility, and failure recovery must remain disabled until #222 defines and tests them | #222 |
@@ -354,6 +358,18 @@ Findings:
   may proceed from #146, while serialization, replay, migration, publication,
   and snapshots require #221 graph/preflight, #147 linker/extraction-validation
   implementation, and the #149 end-to-end fixture.
+- Planned v2 external replay treats the exact reviewed lockfile bytes as trusted
+  execution input because the same-file URL and digest do not prove npm metadata
+  authenticity. Trusted replay performs no metadata refetch. It requires
+  selected registry provenance, SHA-512 SRI, descriptor-relative no-follow cache
+  access, exact archive `package.json` name/version, and extraction from the same
+  stable verified descriptor. Shasum-only records fail closed in v2 while v1
+  keeps its current fallback. Cache and linker destinations must be injective
+  under host case-folding, Unicode normalization, trailing-space/dot, and
+  reserved-name semantics before mutation. #221/#147 own the local-member and
+  linker projections, #147 owns archive symlink/hardlink confinement, and #222
+  owns keeping lifecycle hooks behind those gates. #224 integrates these
+  prerequisites in the v2 runtime.
 - Linker ownership (#147) splits cleanly: workspace-to-external linking must
   first reconcile the current code/SPEC mismatch on strict dependency
   visibility, while workspace-to-workspace linking is new and must define

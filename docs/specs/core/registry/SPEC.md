@@ -3,7 +3,7 @@ spec_id: registry_metadata
 title: Registry Metadata
 status: draft
 owner: core/registry
-last_reviewed: 2026-08-11
+last_reviewed: 2026-08-24
 authors:
   - nerdchanii
 deciders:
@@ -26,14 +26,16 @@ related_issues:
   - 139
   - 141
   - 142
+  - 146
   - 170
+  - 224
 ---
 
 # Spec: Registry Metadata
 
 Status: Draft
 Owner: core/registry
-Last reviewed: 2026-08-11
+Last reviewed: 2026-08-24
 
 ## Purpose
 
@@ -163,6 +165,64 @@ lifecycle hooks. Non-lifecycle `scripts` entries (for example `test`, `build`,
 `start`) are preserved but are not invoked during install; they remain
 reachable only through `rpm run` (`docs/specs/cli/run/SPEC.md`).
 
+### Planned v2 selected-metadata provenance and transport
+
+Lockfile v2 records the selected registry origin together with the selected
+version's immutable replay facts. The provenance tuple consists of the
+canonical `registry_origin`, external `name` and selected `version`, `tarball`,
+required SHA-512 SRI `integrity`, optional legacy `shasum`, `scripts`, and the
+outgoing transitive dependency requests produced from that same per-version
+record. A writer must take the whole tuple from one selected version record. It
+must not combine a tarball or scripts map from root fallback fields, a different
+version, or a later metadata read. `docs/specs/core/lockfile/SPEC.md` owns the v2
+record shape and #224 owns its runtime implementation.
+
+The initial v2 transport policy is fail-closed:
+
+- `registry_origin` is the normalized origin of the configured HTTPS registry
+  used for the packument request. It contains only scheme, host, and effective
+  port; it has no user information, path, query, or fragment. The canonical
+  spelling lowercases scheme and DNS host, removes a trailing DNS dot, omits
+  the default HTTPS port `443`, and includes any non-default port explicitly. A
+  replay reader compares the recorded value with the currently configured and
+  policy-approved registry origin before cache access, network access, or
+  extraction, including when a cache hit would avoid a request. A mismatch is
+  ineligible for replay, and RPM must not contact the recorded origin first.
+- The selected `tarball` is an absolute HTTPS URL with no user information or
+  fragment, and its normalized origin must equal `registry_origin`.
+- Metadata and tarball redirects are limited to five hops. Every redirect
+  target is parsed and checked before following it, remains HTTPS, has no user
+  information or fragment, and has the same normalized origin. A relative
+  redirect is allowed only when resolution against the current URL produces a
+  URL that passes those checks. Cross-origin redirects and HTTPS downgrades are
+  rejected. The initial v2 contract has no implicit CDN or alternate-origin
+  exception.
+
+Offline registry fixtures use the fixture transport and do not relax this
+production URL policy. A future configurable registry or CDN allowlist requires
+an explicit registry contract update and a stable provenance representation;
+lockfile replay must not infer trust from a URL recorded by an unvalidated
+lockfile alone.
+
+The planned v2 packument fields have no npm signature or attestation primitive.
+A digest stored beside a URL in the same lockfile binds archive bytes to that
+record after the record is trusted; it cannot independently prove that the URL,
+digest, scripts, or dependency facts came from npm. Fresh resolution obtains the
+tuple over the configured HTTPS registry policy above. Later no-refetch replay
+uses it only from the exact lockfile byte snapshot already established as a
+reviewed trusted execution input under the lockfile SPEC. An untrusted
+downloaded, generated, or replaced lockfile is not eligible for replay.
+
+SHA-512 SRI is the only authenticated archive verifier accepted by planned v2.
+The `integrity` field is required, non-empty, and must contain a valid supported
+`sha512` token. A legacy `shasum` may be preserved when metadata supplies it,
+but SHA-1 never makes a v2 record eligible and is not a v2 fallback. Missing,
+empty, malformed, unsupported, or mismatched SHA-512 integrity blocks v2
+publication, replay, and extraction even when a valid shasum is present. A
+future equivalent authenticated provenance mechanism may replace SRI only after
+this SPEC and the lockfile SPEC add an explicit typed mechanism and verification
+rules.
+
 ### Ignored metadata fields
 
 The following fields are deserialized for document fidelity but are not consumed
@@ -273,8 +333,11 @@ RPM rejects the following as input errors rather than silently proceeding:
   fallback verification digest, or whose SHA-1 digest does not match the
   downloaded bytes.
 
-When both `integrity` and `shasum` are absent or empty, RPM may proceed without
-verification but must not claim the tarball was verified.
+For the current v1 path, when both `integrity` and `shasum` are absent or empty,
+RPM may proceed without verification but must not claim the tarball was
+verified. V1 also retains its existing shasum fallback when integrity is absent.
+Planned v2 publication and replay require SHA-512 SRI under the
+selected-metadata provenance contract above.
 
 ## Registry Boundary
 
@@ -375,6 +438,10 @@ content. Failures must be returned to callers as typed errors:
   `docs/specs/core/install/recovery/SPEC.md`). Because the tarball is downloaded
   and cached before verification, this failure is reported after the allowed
   fetch/verify cache side effect, not before all installer side effects.
+- A planned v2 provenance tuple with an invalid registry origin, a disallowed
+  tarball URL or redirect, mixed-version metadata, an untrusted lockfile source,
+  or missing/invalid SHA-512 SRI fails before extraction and before any install
+  output is published. A valid SHA-1 shasum does not make that v2 tuple eligible.
 
 Registry metadata **read and interpretation** failures (parsing, version
 selection, dist lookup) must be reported before installer side effects and must
@@ -400,6 +467,11 @@ Fixture expectations are defined by the owning scenario and documented in
 - dist-tag resolution before semver range evaluation
 - missing dist rejected before fetch
 - integrity verification of supported, mismatched, invalid, and absent variants
+- planned v2 provenance cases covering same-version fact capture, rejection of
+  mixed-version fields, configured/recorded origin mismatch, untrusted lockfile
+  input, missing or unsupported integrity, shasum-only metadata, non-HTTPS and
+  cross-origin tarballs, HTTPS downgrade, cross-origin redirect, and
+  redirect-limit overflow
 - wrong-type values on every ignored metadata field are discarded as absent
   rather than failing the packument (issue #113), while well-typed values
   round-trip into `Some(...)`
