@@ -442,13 +442,12 @@ owns enforcement in the v2 reader.
 This boundary preserves no-refetch semantics. Trusted replay uses the recorded
 targets and provenance without fetching mutable metadata. Untrusted input never
 reaches replay, so no-refetch does not turn a self-authored lockfile tuple into a
-registry-authenticated statement. During planned workspace lifecycle execution,
-the pinned v2 candidate remains outside every hook capability. It retains
-transaction trust only while the scripts/recovery acceptance predicate keeps
-that candidate, the hook-visible prior-live snapshot, and the live prior-state
-baseline unchanged. Semantic equality after replacement is insufficient. A hook
-cannot introduce a new URL, digest, graph fact, or script and then authenticate
-that change with its own fields.
+registry-authenticated statement. Workspace lifecycle execution remains
+disabled and is owned by #222. Before activation, #222 must define and prove how
+the transaction keeps the pinned v2 candidate outside every hook capability and
+detects candidate replacement or drift. This SPEC does not define a hook-visible
+lockfile snapshot or authorize a hook to introduce a new URL, digest, graph
+fact, or script and authenticate that change with its own fields.
 
 On accepted v2 replay, the reader first discovers the current root/member table
 and compares origin, manifest path, name, and declared version (including
@@ -523,21 +522,14 @@ serialized, and atomically published. A resolution, validation, serialization,
 or publication failure leaves the prior file intact. A v2 reader never silently
 downgrades or discards workspace origins to produce v1.
 
-The planned workspace scripts phase does not weaken this migration boundary.
-The scripts and recovery SPECs own one three-part acceptance predicate: the live
-entry must still equal its transaction-start prior-live baseline, the
-hook-visible staged snapshot of that prior-live state must remain unchanged, and
-the separately pinned v2 candidate must remain unchanged in hook-inaccessible
-transaction state. A prior live v1 file is expected to differ from the fresh v2
-candidate and those two snapshots are never compared for equality. After the
-predicate succeeds, `write` materializes the candidate's pinned bytes through
-its retained descriptor into the recovery protocol's new regular publication
-file; it does not publish either staging inode. Any mutation or replacement of
-one of the three states fails the transaction under
-`docs/specs/core/install/scripts/SPEC.md` and
-`docs/specs/core/install/recovery/SPEC.md`. RPM performs no mechanical merge,
-new resolution, or repeated root hook. This lockfile SPEC consumes that
-predicate and does not define a second hook-visible candidate snapshot.
+Workspace lifecycle execution remains disabled and does not weaken this
+migration boundary. #222 owns the future contract for prior-live visibility,
+hook-inaccessible candidate state, post-hook validation, and failure recovery;
+it must consume the v2 candidate produced by #224 without redefining its format
+or graph. Until that contract and its fixtures land, no root, member, or external
+workspace hook may run between v2 candidate creation and publication. This
+lockfile SPEC defines neither a second hook-visible candidate snapshot nor a
+post-hook merge, new resolution, or repeated-root-hook path.
 
 ## Error Cases
 
@@ -597,10 +589,11 @@ Planned workspace snapshots must cover:
   live mutation;
 - root/member manifest request drift rejected before replay, plus a fresh
   replacement resolution that preserves the prior file on failure;
-- v1-to-v2 migration and failure preservation, including the scripts/recovery
-  fixtures that keep a prior-live v1 snapshot distinct from the hidden v2
-  candidate, reject mutation of either state, and publish only the unchanged
-  candidate after the shared three-part acceptance predicate succeeds;
+- v1-to-v2 migration and failure preservation without lifecycle execution,
+  proving that a failed fresh resolution or publication preserves the prior v1
+  file and only the fully validated v2 candidate can publish; #222 must define
+  separate prior-live/candidate hook-visibility and recovery fixtures before
+  workspace lifecycle activation;
 - an unsupported future version rejected before record interpretation; and
 - repeated canonical serialization producing identical bytes.
 
