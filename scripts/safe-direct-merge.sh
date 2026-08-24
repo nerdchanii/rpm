@@ -89,9 +89,13 @@ export GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 \
 export GH_HOST=github.com
 
 if [ "$trusted_stage" = "launcher" ]; then
+  if [ "${RPM_SAFE_DIRECT_MERGE_BOOTSTRAPPED:-}" != "1" ]; then
+    echo "safe-direct-merge.error=launcher-not-bootstrapped" >&2
+    exit 2
+  fi
   # The trust root lives in repository-local Git config, outside PR content.
-  # Invoke this script from that configured clean main checkout. A script in
-  # the current PR checkout is never a valid launcher.
+  # The caller must load this launcher from the trusted commit before invoking
+  # it. A script in the current PR checkout is never a valid launcher.
   if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
     echo "safe-direct-merge.error=missing-repository" >&2
     exit 2
@@ -138,6 +142,26 @@ if [ "$trusted_stage" = "launcher" ]; then
     || [ "$(git -C "$trusted_checkout" rev-parse HEAD 2>/dev/null || true)" != "$trusted_main_sha" ] \
     || ! git -C "$trusted_checkout" cat-file -e "${trusted_main_sha}^{commit}" 2>/dev/null; then
     echo "safe-direct-merge.error=trusted-checkout-not-live-main" >&2
+    exit 2
+  fi
+
+  if ! expected_launcher_blob="$(git -C "$trusted_checkout" \
+    rev-parse "$trusted_main_sha:scripts/safe-direct-merge.sh" 2>/dev/null)"; then
+    echo "safe-direct-merge.error=trusted-main-launcher-invalid" >&2
+    exit 2
+  fi
+  if [ -n "${BASH_EXECUTION_STRING:-}" ]; then
+    if ! actual_launcher_blob="$(printf '%s' "$BASH_EXECUTION_STRING" \
+      | git hash-object --stdin 2>/dev/null)"; then
+      echo "safe-direct-merge.error=launcher-source-unreadable" >&2
+      exit 2
+    fi
+  elif ! actual_launcher_blob="$(git hash-object "$0" 2>/dev/null)"; then
+    echo "safe-direct-merge.error=launcher-source-unreadable" >&2
+    exit 2
+  fi
+  if [ "$actual_launcher_blob" != "$expected_launcher_blob" ]; then
+    echo "safe-direct-merge.error=untrusted-launcher-bytes" >&2
     exit 2
   fi
 
@@ -450,6 +474,68 @@ validate_base_target() {
   fi
 }
 
+validate_final_pr_metadata() {
+  local pr="$1" expected_head="$2"
+  local final_pr_json final_number final_url final_state final_draft
+  local final_base final_head final_mergeable final_merge_state
+  if ! final_pr_json="$(gh pr view "$pr" --repo "$repo" \
+    --json number,url,state,isDraft,baseRefName,headRefOid,mergeable,mergeStateStatus)"; then
+    echo "skip: unable to recheck final PR metadata; refusing readiness report"
+    return 1
+  fi
+  if ! jq -e '
+    type == "object"
+    and (.number | type == "number")
+    and (.url | type == "string")
+    and (.state | type == "string")
+    and (.isDraft | type == "boolean")
+    and (.baseRefName | type == "string")
+    and (.headRefOid | type == "string")
+    and (.mergeable | type == "string")
+    and (.mergeStateStatus | type == "string")
+  ' <<<"$final_pr_json" >/dev/null 2>&1; then
+    echo "skip: final PR metadata payload is invalid; refusing readiness report"
+    return 1
+  fi
+  final_number="$(jq -er .number <<<"$final_pr_json")"
+  final_url="$(jq -er '.url | sub("/$"; "") | ascii_downcase' <<<"$final_pr_json")"
+  if [ "$final_number" != "$pr" ] \
+    || [ "$final_url" != "https://github.com/$repo/pull/$pr" ]; then
+    echo "skip: final PR identity changed; refusing readiness report"
+    return 1
+  fi
+  final_state="$(jq -er .state <<<"$final_pr_json")"
+  final_draft="$(jq -er .isDraft <<<"$final_pr_json")"
+  final_base="$(jq -er .baseRefName <<<"$final_pr_json")"
+  final_head="$(jq -er .headRefOid <<<"$final_pr_json")"
+  final_mergeable="$(jq -er .mergeable <<<"$final_pr_json")"
+  final_merge_state="$(jq -er .mergeStateStatus <<<"$final_pr_json")"
+  if [ "$final_state" != "OPEN" ]; then
+    echo "skip: final PR state=$final_state (not OPEN); refusing readiness report"
+    return 1
+  fi
+  if [ "$final_draft" = "true" ]; then
+    echo "skip: final PR is draft; refusing readiness report"
+    return 1
+  fi
+  if [ "$final_base" != "main" ]; then
+    echo "skip: final PR base branch $final_base is not protected main; refusing readiness report"
+    return 1
+  fi
+  if [[ ! "$final_head" =~ ^[[:xdigit:]]{40}$ ]] || [ "$final_head" != "$expected_head" ]; then
+    echo "skip: final PR head revision changed; refusing readiness report"
+    return 1
+  fi
+  if [ "$final_mergeable" != "MERGEABLE" ]; then
+    echo "skip: final PR mergeable=$final_mergeable; refusing readiness report"
+    return 1
+  fi
+  if [ "$final_merge_state" != "CLEAN" ]; then
+    echo "skip: final PR mergeState=$final_merge_state; refusing readiness report"
+    return 1
+  fi
+}
+
 merge_one() {
   local pr="$1"
   echo "=== PR #$pr ==="
@@ -565,6 +651,9 @@ merge_one() {
     return 1
   fi
   if ! validate_base_target "$pr"; then
+    return 1
+  fi
+  if ! validate_final_pr_metadata "$pr" "$head_oid"; then
     return 1
   fi
 

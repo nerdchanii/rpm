@@ -57,6 +57,14 @@ cp "${mock_repo}/.agents/workflows/backlog-policy.json" \
   "${trusted_source}/.agents/workflows/backlog-policy.json"
 chmod +x "${trusted_source}/scripts/safe-direct-merge.sh" \
   "${trusted_source}/scripts/collect-pr-review-context.sh"
+trusted_commit_source="${tmp_dir}/trusted-commit-source"
+mkdir -p "${trusted_commit_source}/scripts" "${trusted_commit_source}/.agents/workflows"
+cp "${trusted_source}/scripts/safe-direct-merge.sh" \
+  "${trusted_commit_source}/scripts/safe-direct-merge.sh"
+cp "${trusted_source}/scripts/collect-pr-review-context.sh" \
+  "${trusted_commit_source}/scripts/collect-pr-review-context.sh"
+cp "${trusted_source}/.agents/workflows/backlog-policy.json" \
+  "${trusted_commit_source}/.agents/workflows/backlog-policy.json"
 trusted_main_sha='1111111111111111111111111111111111111111'
 trusted_script_hash="$(git hash-object "${mock_repo}/scripts/safe-direct-merge.sh")"
 trusted_policy_hash="$(git hash-object "${mock_repo}/.agents/workflows/backlog-policy.json")"
@@ -147,6 +155,27 @@ case "$*" in
     [ "${MOCK_GH_SCENARIO:-ok}" = "base-race" ] && base_branch='develop'
     printf '%s\n' "$base_branch"
     ;;
+  *"--json number,url,state,isDraft,baseRefName,headRefOid,mergeable,mergeStateStatus"*)
+    final_url='https://github.com/owner/repo/pull/1'
+    final_state='OPEN'
+    final_draft='false'
+    final_base='main'
+    final_head='0123456789abcdef0123456789abcdef01234567'
+    final_mergeable='MERGEABLE'
+    final_merge_state='CLEAN'
+    case "${MOCK_GH_SCENARIO:-ok}" in
+      final-state-race) final_state='CLOSED' ;;
+      final-draft-race) final_draft='true' ;;
+      final-base-race) final_base='develop' ;;
+      final-head-race) final_head='fedcba9876543210fedcba9876543210fedcba98' ;;
+      final-conflicting-race) final_mergeable='CONFLICTING' ;;
+      final-blocked-race) final_merge_state='BLOCKED' ;;
+      final-unknown-race) final_mergeable='UNKNOWN' ;;
+    esac
+    printf '{"number":1,"url":"%s","state":"%s","isDraft":%s,"baseRefName":"%s","headRefOid":"%s","mergeable":"%s","mergeStateStatus":"%s"}\n' \
+      "$final_url" "$final_state" "$final_draft" "$final_base" "$final_head" \
+      "$final_mergeable" "$final_merge_state"
+    ;;
   *"pr checks"*)
     if [ "${MOCK_GH_SCENARIO:-ok}" = "check-race" ]; then
       count=0
@@ -216,8 +245,15 @@ if [ "${1:-}" = "hash-object" ]; then
       printf '%s\n' "${TRUSTED_COLLECTOR_HASH}"
       ;;
     *scripts/safe-direct-merge.sh)
-      [ "${MOCK_GIT_SCENARIO:-}" = "materialized-script-mismatch" ] \
-        && printf 'deadbeef\n' || printf '%s\n' "${TRUSTED_SCRIPT_HASH}"
+      if [ "${MOCK_GIT_SCENARIO:-}" = "launcher-working-tree-mismatch" ] \
+        && [ "${2:-}" = "${MOCK_LAUNCHER_PATH:-}" ]; then
+        printf 'deadbeef\n'
+      elif [ "${MOCK_GIT_SCENARIO:-}" = "materialized-script-mismatch" ] \
+        && [ "${2:-}" != "${MOCK_LAUNCHER_PATH:-}" ]; then
+        printf 'deadbeef\n'
+      else
+        printf '%s\n' "${TRUSTED_SCRIPT_HASH}"
+      fi
       ;;
     *.agents/workflows/backlog-policy.json)
       [ "${MOCK_GIT_SCENARIO:-}" = "materialized-policy-mismatch" ] \
@@ -284,7 +320,7 @@ if [ "${1:-}" = "-C" ]; then
   fi
   if [ "${1:-}" = "show" ] && [[ "${2:-}" == "${TRUSTED_MAIN_SHA}:"* ]]; then
     trusted_path="${2#*:}"
-    cat "${TRUSTED_SOURCE}/${trusted_path}"
+    cat "${TRUSTED_COMMIT_SOURCE:-${TRUSTED_SOURCE}}/${trusted_path}"
     exit 0
   fi
   if [ "${1:-}" = "branch" ] && [ "${2:-}" = "--show-current" ]; then
@@ -395,7 +431,10 @@ export MOCK_REPO="${mock_repo}" GH_LOG="${tmp_dir}/gh.log" \
   LOCAL_REF_LOG="${tmp_dir}/local-ref.log" REMOTE_RACE_LOG="${tmp_dir}/remote-race.log" \
   BASE_RACE_LOG="${tmp_dir}/base-race.log" \
   EXPECTED_HEAD_OID="0123456789abcdef0123456789abcdef01234567" \
-  TRUSTED_CHECKOUT="${trusted_source}" MOCK_COMMON_DIR="${tmp_dir}/common.git"
+  TRUSTED_CHECKOUT="${trusted_source}" MOCK_COMMON_DIR="${tmp_dir}/common.git" \
+  TRUSTED_COMMIT_SOURCE="${trusted_commit_source}" \
+  MOCK_LAUNCHER_PATH="${trusted_source}/scripts/safe-direct-merge.sh" \
+  RPM_SAFE_DIRECT_MERGE_BOOTSTRAPPED=1
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -589,6 +628,36 @@ if [ -e "${hostile_hook_log}" ]; then
   fail 'trusted-status-hook: repository-configured post-index-change hook executed'
 fi
 
+# Real Git worktrees can hide a modified launcher with either index flag.
+# The launcher byte check must reject both cases before any PR lookup.
+hidden_launcher_backup="${tmp_dir}/actual-launcher-original"
+cp "${actual_repo}/scripts/safe-direct-merge.sh" "${hidden_launcher_backup}"
+for hidden_index_flag in --assume-unchanged --skip-worktree; do
+  git -C "${actual_repo}" update-index "${hidden_index_flag}" -- scripts/safe-direct-merge.sh
+  printf '\n# hidden index-flag launcher mutation\n' \
+    >>"${actual_repo}/scripts/safe-direct-merge.sh"
+  if [ -n "$(git -C "${actual_repo}" status --porcelain --untracked-files=all)" ]; then
+    fail "${hidden_index_flag}: Git exposed the hidden launcher mutation"
+  fi
+  set +e
+  hidden_launcher_output="$(
+    cd "${actual_repo}"
+    PATH="${mock_bin}:${system_path}" MOCK_GIT_REAL=true REAL_GIT="${real_git}" \
+      MOCK_GH_SCENARIO=ok MOCK_COLLECTOR_SCENARIO=ok \
+      "${actual_repo}/scripts/safe-direct-merge.sh" --dry-run 1 2>&1
+  )"
+  hidden_launcher_rc=$?
+  set -e
+  git -C "${actual_repo}" update-index --no-assume-unchanged --no-skip-worktree -- \
+    scripts/safe-direct-merge.sh
+  cp "${hidden_launcher_backup}" "${actual_repo}/scripts/safe-direct-merge.sh"
+  if [ "${hidden_launcher_rc}" -ne 2 ] \
+    || ! grep -q 'untrusted-launcher-bytes' <<<"${hidden_launcher_output}"; then
+    printf '%s\n' "${hidden_launcher_output}" >&2
+    fail "${hidden_index_flag}: hidden launcher mutation was evaluated"
+  fi
+done
+
 output="$(run_case cross-repository 1 cross-repo ok "" 2>&1)"
 if ! grep -q 'cross-repository PRs' <<<"${output}"; then
   fail 'cross-repository: cross-repository PR was not rejected'
@@ -604,6 +673,27 @@ output="$(run_case normal-dry-run 0 ok ok "" 2>&1)"
 unset MOCK_WORKTREE_CASE
 if ! grep -q '(dry-run) gates satisfied for branch feature/mock' <<<"${output}"; then
   fail 'normal-dry-run: expected successful dry-run output'
+fi
+
+# The documented bootstrap evaluates the source read from the trusted commit,
+# so a later working-tree launcher mutation cannot affect the audit.
+trusted_bootstrap_source="$(cat "${trusted_commit_source}/scripts/safe-direct-merge.sh"; printf .)"
+trusted_bootstrap_source="${trusted_bootstrap_source%.}"
+bootstrap_launcher_backup="${tmp_dir}/bootstrap-launcher-original"
+cp "${trusted_source}/scripts/safe-direct-merge.sh" "${bootstrap_launcher_backup}"
+printf '\n# working-tree-only launcher mutation after bootstrap\n' \
+  >>"${trusted_source}/scripts/safe-direct-merge.sh"
+set +e
+bootstrap_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=ok \
+  MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
+  bash -c "${trusted_bootstrap_source}" "${safe_merge}" --dry-run 1 2>&1)"
+bootstrap_rc=$?
+set -e
+cp "${bootstrap_launcher_backup}" "${trusted_source}/scripts/safe-direct-merge.sh"
+if [ "${bootstrap_rc}" -ne 0 ] \
+  || ! grep -q '(dry-run) gates satisfied' <<<"${bootstrap_output}"; then
+  printf '%s\n' "${bootstrap_output}" >&2
+  fail 'trusted-commit-bootstrap: working-tree launcher affected the audit'
 fi
 
 # URL references are accepted only when they name a PR in the current origin.
@@ -701,6 +791,27 @@ if [ "${untrusted_launcher_rc}" -ne 2 ] \
   || grep -q 'pr view\|pr merge' "${GH_LOG}"; then
   printf '%s\n' "${untrusted_launcher_output}" >&2
   fail 'untrusted-launcher: current-checkout script was accepted'
+fi
+
+# A launcher modified in the trusted checkout can hide behind
+# assume-unchanged/skip-worktree. The bootstrap still compares the evaluated
+# launcher bytes with the trusted main blob before materializing any asset.
+launcher_backup="${tmp_dir}/trusted-launcher-original"
+cp "${trusted_source}/scripts/safe-direct-merge.sh" "${launcher_backup}"
+printf '\n# hidden working-tree launcher mutation\n' \
+  >>"${trusted_source}/scripts/safe-direct-merge.sh"
+set +e
+launcher_tamper_output="$(PATH="${mock_bin}:${system_path}" \
+  MOCK_GIT_SCENARIO=launcher-working-tree-mismatch \
+  "${safe_merge}" --dry-run 1 2>&1)"
+launcher_tamper_rc=$?
+set -e
+cp "${launcher_backup}" "${trusted_source}/scripts/safe-direct-merge.sh"
+if [ "${launcher_tamper_rc}" -ne 2 ] \
+  || ! grep -q 'untrusted-launcher-bytes' <<<"${launcher_tamper_output}" \
+  || grep -q 'pr view\|pr checks' "${GH_LOG}"; then
+  printf '%s\n' "${launcher_tamper_output}" >&2
+  fail 'launcher-working-tree-mutation: hidden launcher bytes were executed'
 fi
 
 for materialized_scenario in materialized-script-mismatch \
@@ -873,6 +984,43 @@ if [ "${base_race_rc}" -ne 1 ] \
   printf '%s\n' "${base_race_output}" >&2
   fail 'base-race: non-transactional target mutation was reachable'
 fi
+
+# The PR can close or become a draft after the final collector/check pass.
+# Recheck both fields immediately before reporting readiness.
+for final_state_scenario in final-state-race final-draft-race; do
+  : > "${GH_LOG}"
+  set +e
+  final_state_output="$(PATH="${mock_bin}:${system_path}" \
+    MOCK_GH_SCENARIO="${final_state_scenario}" MOCK_COLLECTOR_SCENARIO=ok \
+    MOCK_WORKTREE="${mock_worktree}" "${safe_merge}" --dry-run 1 2>&1)"
+  final_state_rc=$?
+  set -e
+  if [ "${final_state_rc}" -ne 1 ] \
+    || ! grep -q 'refusing readiness report' <<<"${final_state_output}" \
+    || grep -q '(dry-run) gates satisfied' <<<"${final_state_output}"; then
+    printf '%s\n' "${final_state_output}" >&2
+    fail "${final_state_scenario}: final PR eligibility was reported stale"
+  fi
+done
+
+# A main-branch update can make a previously mergeable PR conflicting, blocked,
+# or temporarily unknown after the initial gate pass. Final mergeability and
+# merge-state fields must prevent a stale readiness report.
+for final_merge_scenario in final-conflicting-race final-blocked-race final-unknown-race; do
+  : > "${GH_LOG}"
+  set +e
+  final_merge_output="$(PATH="${mock_bin}:${system_path}" \
+    MOCK_GH_SCENARIO="${final_merge_scenario}" MOCK_COLLECTOR_SCENARIO=ok \
+    MOCK_WORKTREE="${mock_worktree}" "${safe_merge}" --dry-run 1 2>&1)"
+  final_merge_rc=$?
+  set -e
+  if [ "${final_merge_rc}" -ne 1 ] \
+    || ! grep -q 'refusing readiness report' <<<"${final_merge_output}" \
+    || grep -q '(dry-run) gates satisfied' <<<"${final_merge_output}"; then
+    printf '%s\n' "${final_merge_output}" >&2
+    fail "${final_merge_scenario}: final mergeability was reported stale"
+  fi
+done
 
 # A stable main base still cannot reach mutation without the transactional
 # expected-base primitive. The final report is followed by a deterministic

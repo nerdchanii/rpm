@@ -31,11 +31,24 @@ Prefer the scheduled `merge-gatekeeper` for PRs already in `agent:awaiting-merge
    repository-local Git config:
    `git config rpm.safeDirectMergeTrustedCheckout /absolute/path/to/main-checkout`.
    Its HEAD must equal live GitHub `main`.
-2. Resolve and execute only that configured launcher. Never execute the copy
-   in the current PR checkout:
-   `trusted_checkout="$(git config --path --get rpm.safeDirectMergeTrustedCheckout)"`
-   then
-   `bash "$trusted_checkout/scripts/safe-direct-merge.sh" --dry-run <pr>`.
+2. Bootstrap the launcher from the trusted commit before evaluating any
+   working-tree bytes. Never execute a launcher path directly. From the
+   configured clean-main checkout, resolve the trusted commit and pass its
+   exact source to Bash:
+
+   ```sh
+   trusted_checkout="$(git config --path --get rpm.safeDirectMergeTrustedCheckout)"
+   trusted_sha="$(git -C "$trusted_checkout" rev-parse HEAD)"
+   trusted_source="$(git -C "$trusted_checkout" \
+     show "$trusted_sha:scripts/safe-direct-merge.sh"; printf .)"
+   trusted_source="${trusted_source%.}"
+   RPM_SAFE_DIRECT_MERGE_BOOTSTRAPPED=1 \
+     bash -c "$trusted_source" \
+     "$trusted_checkout/scripts/safe-direct-merge.sh" --dry-run <pr>
+   ```
+
+   The loaded launcher verifies that the trusted checkout still equals live
+   `main` and that the evaluated source hash matches the trusted commit.
 3. Audit one PR per invocation. Re-launch from the trusted checkout before
    auditing another PR so policy and collector assets are rematerialized from
    the current live `main` revision.
@@ -53,6 +66,8 @@ Prefer the scheduled `merge-gatekeeper` for PRs already in `agent:awaiting-merge
    performs the worktree safety scan. The script rejects
    cross-repository PRs and dirty worktrees, preserves the primary and current
    checkouts, and blocks when another linked worktree holds the PR branch.
+   Immediately before reporting readiness, it re-reads and validates the PR
+   identity, state/draft status, base/head, mergeability, and merge state.
    It never removes a worktree or deletes a local or remote branch.
    The clean-main launcher materializes the merge implementation, policy, and
    review collector from one immutable live-main Git commit, verifies the exact
