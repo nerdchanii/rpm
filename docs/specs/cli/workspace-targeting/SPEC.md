@@ -16,6 +16,7 @@ related_issues:
   - 145
   - 148
   - 151
+  - 223
 ---
 
 # Spec: Workspace Command Targeting
@@ -108,8 +109,9 @@ as selectors or as a request for the root target.
 
 ## Implementation and help follow-ups
 
-Issue #148 delivers this contract only. Later implementation follow-ups must
-keep target-set resolution separate from command execution:
+Issue #148 delivers this contract only. Issue #223 owns runtime implementation
+and deterministic fixtures and must keep target-set resolution separate from
+command execution:
 
 - add a target-resolution layer that consumes the validated #145 member table;
 - cover that layer with the deterministic offline target-set fixtures listed

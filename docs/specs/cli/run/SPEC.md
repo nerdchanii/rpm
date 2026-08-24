@@ -17,6 +17,7 @@ related_issues:
   - 141
   - 148
   - 151
+  - 223
 ---
 
 # Spec: Run Scripts
@@ -90,7 +91,8 @@ preservation, and PATH setup for project-local binaries.
 
 Workspace-targeting verification is planned in
 [`cli/workspace-targeting/SPEC.md`](../workspace-targeting/SPEC.md). Runtime
-implementation and its deterministic fixtures remain deferred under #148.
+implementation and its deterministic fixtures are owned by #223. Multi-target
+execution and diagnostic policy remain gated on #151 as described above.
 
 A package binary produced by the install transaction (the `.bin` link owned by
 `docs/specs/core/linker/SPEC.md`) must be reachable through `rpm run` without
