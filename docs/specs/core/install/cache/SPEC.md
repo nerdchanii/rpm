@@ -105,13 +105,15 @@ cache SPEC does not define the linker's path layout.
 A v2 cache hit is untrusted until its exact bytes pass the required SHA-512 SRI
 recorded in the selected registry provenance. A shasum-only cache hit is
 ineligible for v2 replay. Starting from the trusted workspace directory handle,
-RPM opens each `.rpm/.cache` component descriptor-relative with
-no-follow semantics and requires a directory at each step, establishing the
-approved cache-root handle without following a symlink. It then opens the
-derived entry relative to that handle with a no-follow operation. It rejects a
-symlink at the final component and rejects directories, devices, sockets, and
-every other non-regular file. Path-based prechecks alone are insufficient, and
-the entry must never be reopened by pathname after validation.
+RPM opens each `.rpm/.cache` component descriptor-relative with no-follow
+semantics and requires a directory at each step, establishing the approved
+cache-root handle without following a symlink. It retains the workspace-root
+identity and exact parent/name chain, plus the `.rpm` and `.cache` component
+identities and names, for the transaction. It then opens the derived entry
+relative to that handle with a no-follow operation. It rejects a symlink at the
+final component and rejects directories, devices, sockets, and every other
+non-regular file. Path-based prechecks alone are insufficient, and the entry
+must never be reopened by pathname after validation.
 
 The installer must establish one stable verification descriptor for the archive
 bytes. The descriptor returned by the no-follow cache open may be used directly
@@ -148,15 +150,37 @@ staged cache entry is exclusively created as a regular file relative to that
 descriptor with no-follow final-component semantics. RPM writes and flushes it
 through that exact opened descriptor. The final same-directory rename publishes
 that same staged entry relative to the same cache-root descriptor without a
-pathname reopen. The publisher must atomically reject a final destination that
-appeared or changed after preflight; it must not truncate, follow, or replace
-that entry. Reopening `.rpm/.cache`, the staged entry, or the final destination
-through a workspace pathname is invalid. A cache-root identity change,
-unsupported descriptor-relative staging or publication, or a raced staging or
-final destination fails publication and discards the staged entry. These
-requirements make pathname replacement after open irrelevant to the bytes
-consumed by extraction and keep cache replay and publication from introducing a
-verify/use race.
+pathname reopen. The identity includes the platform's stable object identity
+and, where the platform exposes it, the file-generation/version value; a
+platform that cannot distinguish an unlink/recreate from the observed object
+must not claim CAS support. The rename must be an identity-conditional
+descriptor-relative commit, with a no-replace branch for an absent final
+destination and a CAS branch
+for an explicitly authorized existing destination. Preflight records the final
+state as absent or as the exact regular, non-symlink identity that the CAS is
+allowed to replace. The no-replace branch atomically fails if a final entry
+appeared; the CAS branch atomically compares that recorded identity and fails if
+the entry appeared, disappeared, changed identity, became non-regular, or became
+a symlink. An ordinary `renameat` or same-directory rename that silently
+replaces the destination does not satisfy this contract. Planned v2 cache
+population uses the absent/no-replace branch unless an explicit update policy
+authorizes the matching-identity CAS branch.
+
+The primitive takes the retained workspace-root handle and identity, its exact
+parent/name chain, the retained `.rpm/.cache` handle and component parent/name
+chain, staged descriptor/name, final name, and expected final state as one
+commit operation. At the atomic commit point it must prove that the workspace
+root and every `.rpm/.cache` component still resolve through those same
+identities and names before it performs the identity-conditional commit. A
+workspace-root or `.rpm/.cache` pathname replacement therefore fails even when
+an old descriptor still refers to the renamed directory. Reopening `.rpm/.cache`,
+the staged entry, or the final destination through a workspace pathname is
+invalid. A cache-root identity or parent-chain change, unsupported descriptor-
+relative staging or identity-conditional publication, or a raced staging or
+final destination fails publication and discards the staged entry while leaving
+the raced destination untouched. These requirements make pathname replacement
+after open irrelevant to the bytes consumed by extraction and keep cache replay
+and publication from introducing a verify/use race.
 
 ## Error Cases
 
@@ -165,8 +189,8 @@ return an error instead of writing a placeholder cache file.
 
 Cache directory creation, file opening, file writing, and file flushing failures
 must be returned to callers with the failed cache path in the error message.
-Rename-style publication failures must also be returned to callers with the
-failed cache path in the error message. Failed staged writes or failed
+Identity-conditional publication failures must also be returned to callers with
+the failed cache path in the error message. Failed staged writes or failed
 publication must not leave a partial file at the final cache path. Staging files
 should be removed after failures; if cleanup fails, the cleanup failure should
 be reported with the original cache write failure.
@@ -178,17 +202,17 @@ For v2, a cache projection collision, reserved host spelling, symlink or
 non-regular cache entry, unstable verification descriptor, missing or invalid
 SHA-512 integrity, shasum-only provenance, archive-manifest identity failure,
 or archive-entry/link validation failure is reported before extraction and
-before cache or install output is published. Cache-root identity drift,
-unavailable descriptor-relative publication, or a raced final destination fails
-cache publication and still blocks install publication. A raced or unsafe
+before cache or install output is published. Cache-root identity or parent-chain
+drift, unavailable descriptor-relative publication, or a raced final destination
+fails cache publication and still blocks install publication. A raced or unsafe
 staging entry fails before verified bytes are copied into cache staging.
 
 ## Test Fixtures
 
 Unit tests in `src/lib/registry/mod.rs` verify cache filename derivation for
 unscoped and scoped package names, and verify that cache writes do not create
-`*.tgz.tgz` paths. They also verify that rename-style publication failures are
-reported without leaving staging files behind.
+`*.tgz.tgz` paths. They also verify that cache publication failures are reported
+without leaving staging files behind.
 
 Linker tests in `src/lib/node_linker/mod.rs` verify that extraction reads the
 same cache filename shape.
@@ -202,10 +226,12 @@ Planned v2 fixtures must additionally cover:
   descriptor-relative no-follow open rejects it without reading the target;
 - a pathname swap after the cache entry is opened, proving verification and
   extraction consume the same stable descriptor bytes;
-- replacement of the `.rpm/.cache` pathname or creation of the final entry
-  between verification and publication, proving publication remains relative
-  to the originally opened cache-root descriptor and fails without following or
-  replacing the raced destination;
+- behind a barrier after workspace-root and `.rpm/.cache` parent/name-chain
+  identity plus final-destination preflight and before the commit, renaming or
+  replacing the validated workspace root or `.rpm/.cache` pathname and creating
+  or replacing the final entry, proving the descriptor-relative no-replace/CAS
+  primitive rejects every race without following or replacing the raced
+  destination; a platform without that primitive fails closed;
 - a pre-existing or raced cache staging name that is a symlink or other entry,
   proving exclusive descriptor-relative no-follow creation fails without
   writing through the entry, publishing a final cache file, or changing install

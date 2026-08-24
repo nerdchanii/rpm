@@ -207,20 +207,25 @@ without normalization. The recorded roots must have unique origins and names,
 and a root/member name collision is invalid.
 
 An external package record requires `identity`, `name`, `version`,
-`registry_origin`, `tarball`, `integrity`, `bin`, and `scripts`; `shasum` is
-optional.
+`registry_origin`, `registry_base`, `tarball`, `integrity`, `bin`, and
+`scripts`; `shasum` is optional.
 `identity` must be an external identity whose `name` and `version` exactly equal
 the record fields. `registry_origin` is the normalized HTTPS origin from which
-the selected packument was obtained. `tarball` is the non-empty resolved
+the selected packument was obtained. `registry_base` is the canonical HTTPS
+registry endpoint, including that origin and its normalized endpoint path
+prefix, as defined by the registry SPEC. `tarball` is the non-empty resolved
 download URL supplied by that selected registry version and must satisfy the
-registry SPEC's scheme, origin, and redirect policy. Before any cache access,
-network access, or extraction, replay requires the recorded origin to equal the
-currently configured and policy-approved registry origin, including on a cache
-hit. `integrity` must be non-empty and contain a valid supported SHA-512
-SRI token. A legacy `shasum` is preserved when supplied but never substitutes
-for integrity in v2. Replay never refetches mutable metadata to recover an
-omitted URL or verifier, so a missing or empty `registry_origin`, `tarball`, or
-`integrity`, an unsupported integrity value, or a shasum-only record makes the
+registry SPEC's scheme, origin, query, and redirect policy.
+Before any cache access, network access, or extraction, replay requires both
+recorded registry fields to equal the currently configured and policy-approved
+registry endpoint, including on a cache hit. A same-origin endpoint with a
+different base path is a mismatch, and the origin parsed from `registry_base`
+must equal `registry_origin`. `integrity` must be non-empty and contain a
+valid supported SHA-512 SRI token. A legacy `shasum` is preserved when supplied
+but never substitutes for integrity in v2. Replay never refetches mutable
+metadata to recover an omitted URL or verifier, so a missing or empty
+`registry_origin`, `registry_base`, `tarball`, or `integrity`, an unsupported
+integrity value, a query-bearing tarball URL, or a shasum-only record makes the
 v2 document invalid and blocks extraction. The initial v2 schema has no
 verifier-free or SHA-1-only authenticated-provenance alternative.
 
@@ -229,9 +234,10 @@ the selected version has no usable `bin` metadata. A string-form registry value
 becomes the one binary-name/target entry defined by the linker SPEC; an
 object-form value retains its entries. `scripts` is also always present as a
 `string -> string` map and is `{}` when the selected version has no lifecycle
-scripts. The registry origin, external identity fields, tarball, verifier
-fields, canonical bin map, scripts map, and outgoing transitive dependency
-requests form one selected-version provenance snapshot. A fresh writer captures
+scripts. The registry origin and base endpoint, external identity fields,
+tarball, verifier fields, canonical bin map, scripts map, and outgoing
+transitive dependency requests form one selected-version provenance snapshot. A
+fresh writer captures
 them from one per-version metadata record without mixing versions or later
 reads. This recorded bin map lets #147 enumerate every planned `.bin`
 destination before tarball download, cache mutation, extraction, or linking.
@@ -239,7 +245,7 @@ External identities are unique. Dependency relationships are
 represented by `edges`, not duplicated inside this package record. A package
 fact is written once even when several parents reach the same name and version.
 Local workspace members have no external package record and do not require a
-registry origin, tarball, integrity, or shasum.
+registry origin, registry base, tarball, integrity, or shasum.
 
 Archive acquisition may occur after the graph, name, and destination projections
 derivable without archive bytes pass preflight, but it may write only a
@@ -397,6 +403,7 @@ identity = { kind = "external", name = "lodash", version = "4.17.21" }
 name = "lodash"
 version = "4.17.21"
 registry_origin = "https://registry.npmjs.org"
+registry_base = "https://registry.npmjs.org"
 tarball = "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
 integrity = "sha512-..."
 bin = {}
@@ -430,7 +437,8 @@ requested name, requested text, selector-kind rank `empty`, `latest`,
 Identity fields are emitted in the order `kind`, `path` or `name`, then `version`.
 Resolution-root fields use `origin`, `manifest_path`,
 `name`, `declared_version`; external-package fields use `identity`, `name`,
-`version`, `registry_origin`, `tarball`, `integrity`, `shasum`, `bin`, `scripts`; edge
+`version`, `registry_origin`, `registry_base`, `tarball`, `integrity`, `shasum`,
+`bin`, `scripts`; edge
 fields use the order shown in the example. Optional fields retain their listed
 position when present. Every nested map, including `bin` and `scripts`, is emitted with
 UTF-8 bytewise ascending keys. Empty maps use `{}`. A serializer must not expose
@@ -447,19 +455,32 @@ selected metadata tuple. A SHA-512 digest recorded in the same lockfile proves
 only that the consumed archive bytes match that tuple after the tuple is trusted;
 an attacker able to replace the lockfile can replace both archive URL and digest.
 
-Locked replay therefore accepts only the exact lockfile byte snapshot that the
-caller has established as reviewed trusted execution input, such as reviewed
-source-controlled bytes from the trusted checkout or an equivalent explicit
-user approval. File presence in the workspace, syntactic validity, a
-self-consistent digest, or equality with the configured registry origin does not
-establish that trust. A reader must bind the trust decision to the exact bytes it
-parses; replacement or drift after approval makes the input ineligible. If the
-caller cannot establish trust, RPM fails before network access, extraction,
-scripts, or publication. A mode that is authorized to update may instead perform
-fresh resolution over the configured HTTPS registry and produce a new candidate;
-that is resolution, not replay, and the candidate becomes replay-eligible only
-after the trust boundary above is satisfied. #155 owns mode selection and #224
-owns enforcement in the v2 reader.
+Locked replay therefore accepts only an opaque `TrustedLockfile` capability
+issued by the #155 trust-policy boundary. #155 owns mode selection, the approved
+source (for example a trusted checkout or an explicit user approval), and
+capability issuance. The capability API accepts an already opened, no-follow,
+regular-file descriptor and attests the exact byte snapshot with the lockfile
+file identity, byte length, a SHA-256 byte digest, the validated workspace-root
+identity and relative lockfile key, and an opaque approval context/nonce. The
+capability is process-local and non-serializable; it has no public constructor
+from TOML, a path, a digest, a boolean "reviewed" flag, or user-controlled
+metadata. Its descriptor remains pinned
+through the byte read, digest check, parse, and replay validation. #224 owns
+capability validation and consumption in the v2 reader, including checking that
+the descriptor identity, length, and digest still match the attestation before
+any replay side effect.
+
+File presence in the workspace, syntactic validity, a self-consistent digest, or
+equality with the configured registry origin or base endpoint does not establish
+that capability. Copying attacker-controlled bytes to another path or inode
+cannot satisfy an attestation issued for the approved descriptor, and replacing
+or mutating that descriptor invalidates it. Until #155 supplies this issuance
+API and #224 supplies its enforcement, planned v2 replay is disabled. If the
+caller cannot obtain a valid capability, RPM fails before network access,
+extraction, scripts, or publication. A mode authorized to update may instead
+perform fresh resolution over the configured HTTPS registry and produce a new
+candidate; that operation is fresh resolution and requires a new #155 approval
+before the candidate can become replay-eligible.
 
 This boundary preserves no-refetch semantics. Trusted replay uses the recorded
 targets and provenance without fetching mutable metadata. Untrusted input never
@@ -496,8 +517,9 @@ descriptor to the extractor without a pathname reopen, as specified by the
 cache SPEC. No archive entry is extracted before the complete provenance gate
 succeeds.
 Missing or duplicate records, unknown fields or identity kinds, malformed
-fields, unsafe external path components, disallowed provenance URLs, absent
-or unsupported SHA-512 integrity, shasum-only records, untrusted lockfile bytes,
+fields, unsafe external path components, disallowed provenance URLs,
+query-bearing tarball URLs, absent or unsupported SHA-512 integrity, shasum-only
+records, untrusted lockfile bytes,
 cache or graph-derived linker projection collisions, and equality, uniqueness,
 reachability, selector/target, or referential-integrity failures are load
 failures before acquisition or mutation. Archive-manifest identity, bin, or
@@ -555,6 +577,53 @@ result is unavailable or fails. This SPEC records the consumer precondition and
 does not duplicate the projection, archive-entry, or linker algorithms. #224
 owns the v2 reader, writer, validator, replay, and migration implementation.
 
+#### Descriptor-bound candidate creation and publication
+
+The successful #221 discovery result includes the retained canonical
+workspace-root directory descriptor, its identity, and the exact parent/name
+chain bound to the immutable member table. A v2 reader or fresh writer must
+retain that validated handle for the whole lockfile transaction. It must not
+reopen the workspace root through its pathname after discovery or use a
+path-based temporary file followed by a path-based rename.
+
+Candidate creation is descriptor-relative to that handle. RPM exclusively
+creates the candidate as a regular file with no-follow final-component
+semantics, writes and flushes it through the opened descriptor, and keeps it
+transaction-private until every applicable graph, provenance, archive-entry,
+and install staging gate succeeds. Candidate bytes do not become replayable or
+hook-visible merely because the candidate file exists. The existing archive
+sequence remains in force: graph/name/destination preflight precedes archive
+acquisition, acquisition writes only the transaction-private stable archive
+descriptor, and descriptor-bound archive-entry/link validation precedes
+extraction and cache/install publication.
+
+Final `rpm.lock` publication is a descriptor-relative, no-follow atomic replace
+through the same validated workspace-root handle. The publisher may replace
+only the exact regular destination identity observed under that handle (or
+create an absent destination); the identity includes the platform's stable
+object identity and, where available, its file-generation/version value. It
+must reject a symlink, non-regular entry, unexpected identity, or destination
+that appeared or changed after validation.
+The final operation must use a platform-backed conditional root-bound publish
+primitive with the retained root handle, expected root identity, expected
+parent/name chain, candidate descriptor, and expected destination identity as
+inputs. At one atomic commit point, that primitive must prove that the retained
+root is still the live project root reached through the same validated
+parent/name chain and then perform the no-follow destination replace. A separate
+parent-chain recheck followed by an ordinary `renameat`/`renameat2` does not
+provide this guarantee because the root can be renamed between the check and
+the rename. A root-path rename or replacement race therefore returns a
+publication race, discards the candidate, leaves the prior lockfile
+byte-identical, and cannot write an `rpm.lock` in the replacement directory.
+#221/#224 own this capability and its implementation contract. If the target
+platform cannot provide the atomic conditional proof, v2 lockfile publication
+is disabled and fails closed before lockfile or install state changes. No current
+supported RPM adapter is treated as having this capability: planned v2 lockfile
+publication and replay remain disabled on every current adapter until #224
+supplies a concrete atomic adapter and an executable capability test proves it.
+An ordinary `renameat` or `renameat2`, even when called with descriptor-relative
+arguments after a separate check, cannot qualify as that adapter.
+
 #### Migration and failure preservation
 
 Migration from v1 to v2 is a fresh deterministic resolution that reconstructs
@@ -583,6 +652,15 @@ Malformed TOML, malformed lockfile fields, and save failures must be returned
 with the lockfile path and parser or write context. Empty loading must not be
 reported as successful dependency resolution.
 
+Load failures for disallowed provenance URLs use the registry SPEC's redacted
+diagnostic locator. A lockfile error must omit the raw tarball or redirect URL,
+query, fragment, user information, and credential, signature, or expiry values;
+malformed URL input uses only a stable rejection category.
+
+On every current supported adapter, v2 replay and publication return a stable
+unsupported-capability failure before cache access, network access, extraction,
+or mutation until #224's executable atomic-adapter capability test passes.
+
 ## Test Fixtures
 
 Lockfile verification should cover v1 format round-tripping, empty lockfile
@@ -607,9 +685,11 @@ Planned workspace snapshots must cover:
   rejected during replay even when both target the same identity;
 - distinct local and external identities with equal name and version text;
 - top-level/root metadata mismatch, external identity/field mismatch, missing
-  or empty registry origin or tarball, missing/empty/unsupported SHA-512
-  integrity, shasum-only provenance, disallowed tarball
-  scheme/origin/redirect, an external-only disconnected cycle, a
+  or empty registry origin, canonical registry base, or tarball, same-origin/
+  different-path registry drift, query-bearing credential/signature/expiry
+  tarball URLs, missing/empty/unsupported SHA-512 integrity, shasum-only
+  provenance, disallowed tarball scheme/origin/query/redirect, an external-only
+  disconnected cycle, a
   selector/target version mismatch, malformed or unknown fields, and duplicate
   or conflicting edges;
 - scoped-name acceptance plus rejection of traversal, backslash, drive, UNC,
@@ -626,9 +706,12 @@ Planned workspace snapshots must cover:
   canonical archive bin/scripts mismatches rejected before extraction, hooks,
   or publication; absent or wrong-type optional bin/scripts normalize to `{}` on
   both sides;
-- reviewed trusted lockfile bytes accepted without metadata refetch, plus an
-  otherwise valid untrusted or post-approval replaced lockfile rejected before
-  network access or mutation;
+- a `TrustedLockfile` capability issued by #155 for an approved descriptor and
+  consumed by #224 without metadata refetch, plus an otherwise valid copied
+  attacker-controlled byte snapshot, a replaced descriptor, or a capability
+  whose length/digest/identity no longer matches rejected before network access
+  or mutation; replay remains disabled while the issuance and enforcement APIs
+  are absent;
 - cross-contract #221/#147/#222 prerequisite fixtures with missing or failed
   pre-acquisition validation results; local member names and requested
   dependency names that use traversal, unsupported separator, absolute, drive,
@@ -645,6 +728,18 @@ Planned workspace snapshots must cover:
   linking, lifecycle hooks, install publication, or other live mutation;
 - root/member manifest request drift rejected before replay, plus a fresh
   replacement resolution that preserves the prior file on failure;
+- candidate creation and `rpm.lock` publication performed through the retained
+  validated workspace-root descriptor with descriptor-relative no-follow
+  operations, plus a barrier after ordinary validation and before the atomic
+  conditional root-bound commit where a root-path rename/replacement race
+  proves the conditional primitive fails, the replacement directory is
+  untouched, and the prior lockfile remains byte-identical; a platform without
+  that primitive fails closed;
+- a planned #224 adapter-capability test that runs the root-path barrier race at
+  the actual publication commit point and proves the adapter atomically rejects
+  the replacement. The test must report unsupported and keep v2 publication and
+  replay disabled when no such concrete primitive exists; an implementation
+  using only ordinary `renameat` or `renameat2` must fail this test;
 - v1-to-v2 migration and failure preservation without lifecycle execution,
   proving that a failed fresh resolution or publication preserves the prior v1
   file and only the fully validated v2 candidate can publish; #222 must define

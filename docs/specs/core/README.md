@@ -305,17 +305,18 @@ fail-closed until #221 and #147 validate the graph, names, and destinations that
 are derivable without archive bytes, including injective host-filesystem
 projections. #147 validates archive entries, symlinks, and hardlinks from the
 verified stable descriptor before extraction or cache/install publication, and
-#222 keeps lifecycle execution behind those staging gates. Replay requires
-reviewed trusted lockfile bytes because planned v2 has no npm signature or
-equivalent attestation.
+#222 keeps lifecycle execution behind those staging gates. Replay requires the
+opaque `TrustedLockfile` capability issued by #155 and enforced by #224 because
+planned v2 has no npm signature or equivalent attestation; replay stays disabled
+until those capability APIs exist.
 
 | M7 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
 | workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, duplicate declaration keys rejected before parser selection, descriptor-rooted root/ancestor/member/inode snapshots, read-only absent-root handling, single-link manifest identity, preservation-before-write, and planned replacement/hard-link coverage are specified; current manifest code still does not read or preserve the field | #221 |
 | workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect uses host-independent case-sensitive whole-result NFC matching; candidate selection, ancestor-chain and mount-aware canonical-root/symlink confinement, stable global manifest/directory snapshots, canonical-target keys for directory-symlink members, portable managed-path exclusions, and NFC `/`-separated keys are specified; every accepted `member_path_key` must round-trip as identical valid UTF-8 on every host, and non-Unicode/WTF-8/lossy native paths fail before resolver handoff | #221 |
 | root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: immutable root/member dependency snapshots preserve exact raw selector provenance alongside canonical request text, portable `member_path_key` graph origin, production-over-development overlap precedence, registry-owned tag precedence before confirmed non-tag local classification, single-pass member-root seeding, external fallback, and native identity restricted to filesystem validation are specified | #221 |
-| workspace package lockfile records | `lockfile/SPEC.md` | contract defined for planned v2, implementation deferred: ordered root/member records preserve origin, manifest path, name, and optional declared version; structured local identities remain distinct from external identities; v1 remains the current root-only format and rejects v2; replay requires #221 and #147 graph/name/destination preflight before cache or network, permits archive acquisition only into a transaction-private non-published stable descriptor, then requires #147 archive-entry/link validation before extraction or cache/install publication; a fresh writer applies the same staged boundary after #221-based resolution | #224; #221/#147 prerequisite |
-| external dependency edges under a workspace root | `lockfile/SPEC.md`, `registry/SPEC.md`, `install/cache/SPEC.md`, `resolver/SPEC.md` | contract defined for planned v2, implementation deferred: external nodes deduplicate by `<name>@<version>`, while each effective parent request preserves source identity, canonical request text, exact raw selector provenance, selection-branch/classification provenance, request kind/relationship, origin or resolved parent, and resolved target after consuming #145 production-over-development precedence; reviewed trusted lockfile facts carry selected registry provenance, canonical bin and scripts maps, and required SHA-512 SRI, with canonical ordering, reachability, selector/target validation, pre-extraction archive-manifest provenance equality, deterministic preflighted `.bin` collision precedence, descriptor-bound cache verification/publication, and deterministic no-refetch replay; legacy root-only registry records are rejected for v2 | #221; #224; #147 extraction/link prerequisite |
+| workspace package lockfile records | `lockfile/SPEC.md` | contract defined for planned v2, implementation deferred: ordered root/member records preserve origin, manifest path, name, and optional declared version; structured local identities remain distinct from external identities; v1 remains the current root-only format and rejects v2; replay requires #155's opaque trust capability plus #221 and #147 graph/name/destination preflight before cache or network, keeps the validated workspace-root handle through descriptor-relative no-follow candidate creation, and uses an atomic conditional root-bound publication primitive or fails closed; every current adapter keeps v2 publication and replay disabled until #224 supplies a concrete atomic adapter and an executable capability test proves it; archive acquisition remains transaction-private until #147 archive-entry/link validation; a fresh writer applies the same staged boundary after #221-based resolution | #224; #221/#147 prerequisite |
+| external dependency edges under a workspace root | `lockfile/SPEC.md`, `registry/SPEC.md`, `install/cache/SPEC.md`, `resolver/SPEC.md` | contract defined for planned v2, implementation deferred: external nodes deduplicate by `<name>@<version>`, while each effective parent request preserves source identity, canonical request text, exact raw selector provenance, selection-branch/classification provenance, request kind/relationship, origin or resolved parent, and resolved target after consuming #145 production-over-development precedence; trusted lockfile facts carry selected registry origin and canonical base endpoint with explicit percent-encoding normalization, query-free tarball provenance and redacted URL diagnostics, canonical bin and scripts maps, and required SHA-512 SRI, with canonical ordering, reachability, selector/target validation, pre-extraction archive-manifest provenance equality, deterministic preflighted `.bin` collision precedence, descriptor-bound cache verification and identity-conditional no-replace/CAS publication, and deterministic no-refetch replay; legacy root-only registry records are rejected for v2 | #221; #224; #147 extraction/link prerequisite |
 | workspace-to-workspace linking (local symlink) | `linker/SPEC.md` | absent: the linker creates registry-package links today; #147 must define local member targets, consume #221's member table, reject host-filesystem projection collisions, and confine each target to the canonical workspace root | #147; #221 prerequisite |
 | workspace-to-external linking | `linker/SPEC.md` | code and SPEC currently diverge on strict per-package dependency visibility; #147 must reconcile the implementation, define host-filesystem destination injectivity, confine archive symlink and hardlink entries, then extend the strict contract to workspace members with regression coverage | #147 |
 | missing workspace link target | `linker/SPEC.md` | absent: the linker already fails when a registry dependency target is not extracted, but there is no contract for a workspace dependency whose declared local path does not exist or does not contain the expected package | #147 |
@@ -361,12 +362,14 @@ Findings:
   may proceed from #146, while serialization, replay, migration, publication,
   and snapshots require #221 graph/preflight, #147 linker/extraction-validation
   implementation, and the #149 end-to-end fixture.
-- Planned v2 external replay treats the exact reviewed lockfile bytes as trusted
-  execution input because the same-file URL and digest do not prove npm metadata
-  authenticity. Trusted replay performs no metadata refetch. It requires
-  selected registry provenance, SHA-512 SRI, descriptor-relative no-follow cache
-  access, exact archive `package.json` name/version/bin/scripts provenance, and
-  extraction from the same stable verified descriptor. Shasum-only and legacy
+- Planned v2 external replay treats an exact `TrustedLockfile` capability issued
+  by #155 as trusted execution input because the same-file URL and digest do not
+  prove npm metadata authenticity. Trusted replay performs no metadata refetch
+  and remains disabled until #155 issuance and #224 enforcement exist. It
+  requires selected registry origin/base provenance with query-free tarball URLs,
+  SHA-512 SRI, descriptor-relative no-follow cache access, exact archive
+  `package.json` name/version/bin/scripts provenance, and extraction from the
+  same stable verified descriptor. Shasum-only and legacy
   root-record sources fail closed in v2 while v1 keeps its current fallbacks.
   Cache and structural linker destinations must be
   injective under host case-folding, Unicode normalization, trailing-space/dot,
@@ -378,16 +381,25 @@ Findings:
   projections, #147 owns package and dependency-name confinement plus archive
   symlink/hardlink confinement, and #222 owns keeping lifecycle hooks behind
   those gates. Missing or failed graph/name/destination preflight evidence
-  blocks replay before cache or network. After that preflight, acquisition may
-  write only a transaction-private non-published stable descriptor; missing or
-  failed archive-entry/link validation then blocks extraction and cache/install
+  blocks replay before cache or network. Replay also requires #155's exact-byte
+  `TrustedLockfile` capability; copied bytes and capability drift fail before
+  side effects. After that preflight, acquisition may write only a
+  transaction-private non-published stable descriptor; missing or failed
+  archive-entry/link validation then blocks extraction and cache/install
   publication. A fresh writer requires #221 before local/external
   classification, performs side-effect-free metadata resolution only for
   external branches, obtains #147 preflight bound to the completed graph before
   tarball acquisition, and applies the same descriptor-bound archive gate.
-  #224
-  integrates these prerequisites in the v2 runtime without
-  weakening or reimplementing them.
+  Candidate lockfile creation and final publication retain #221's validated
+  workspace-root handle and use descriptor-relative no-follow operations; the
+  atomic root-bound conditional commit rejects a barriered root replacement,
+  with unsupported platforms failing closed without touching the replacement
+  directory or the prior lockfile. No current supported adapter qualifies until
+  #224 supplies a concrete atomic capability and an executable capability test
+  proves it. Ordinary `renameat`/`renameat2` cannot qualify. This is an M7
+  implementation blocker for planned v2 lockfile publication and replay. #224
+  integrates these prerequisites in the v2 runtime without weakening or
+  reimplementing them.
 - Linker ownership (#147) splits cleanly: workspace-to-external linking must
   first reconcile the current code/SPEC mismatch on strict dependency
   visibility, while workspace-to-workspace linking is new and must define

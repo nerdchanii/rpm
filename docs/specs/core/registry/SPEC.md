@@ -167,14 +167,15 @@ reachable only through `rpm run` (`docs/specs/cli/run/SPEC.md`).
 
 ### Planned v2 selected-metadata provenance and transport
 
-Lockfile v2 records the selected registry origin together with the selected
-version's immutable replay facts. The provenance tuple consists of the
-canonical `registry_origin`, external `name` and selected `version`, `tarball`,
-required SHA-512 SRI `integrity`, optional legacy `shasum`, the canonicalized
-`bin` map, `scripts`, and the outgoing transitive dependency requests produced
-from that same per-version record. A writer must take the whole tuple from one
-selected version record. It must not combine a tarball, bin map, or scripts map
-from root fallback fields, a different version, or a later metadata read.
+Lockfile v2 records the selected registry origin and base endpoint together
+with the selected version's immutable replay facts. The provenance tuple
+consists of the canonical `registry_origin` and `registry_base`, external
+`name` and selected `version`, `tarball`, required SHA-512 SRI `integrity`,
+optional legacy `shasum`, the canonicalized `bin` map, `scripts`, and the
+outgoing transitive dependency requests produced from that same per-version
+record. A writer must take the whole tuple from one selected version record. It
+must not combine a tarball, bin map, or scripts map from root fallback fields, a
+different version, or a later metadata read.
 `docs/specs/core/lockfile/SPEC.md` owns the v2 record shape and #224 owns its
 runtime implementation.
 
@@ -198,15 +199,64 @@ The initial v2 transport policy is fail-closed:
   policy-approved registry origin before cache access, network access, or
   extraction, including when a cache hit would avoid a request. A mismatch is
   ineligible for replay, and RPM must not contact the recorded origin first.
-- The selected `tarball` is an absolute HTTPS URL with no user information or
-  fragment, and its normalized origin must equal `registry_origin`.
+- `registry_base` is the canonical configured HTTPS registry endpoint used for
+  the packument request. It retains the normalized origin and endpoint path
+  prefix, without user information, query, or fragment. A percent sign in the
+  serialized endpoint must introduce exactly two ASCII hexadecimal digits;
+  malformed escapes are rejected before a packument or tarball request. Path
+  canonicalization then decodes only ASCII unreserved escapes (`A-Z`, `a-z`,
+  `0-9`, `-`, `.`, `_`, `~`), so `%41` becomes `A` and `%7e` becomes `~`.
+  Escapes for reserved or non-ASCII octets remain escapes with uppercase hex,
+  so `%2f` becomes `%2F` and never creates a path separator. The resulting
+  literal `.` and `..` segments, including ones produced by `%2E` or `%2e`, are
+  removed using the standard dot-segment walk; an attempt to walk above the
+  endpoint root is rejected. Interior empty segments are preserved, a trailing
+  slash run is removed except for the root path, and the root path is serialized
+  as the origin without a trailing slash. A replay reader compares both
+  `registry_origin` and `registry_base` with the currently configured and
+  policy-approved endpoint before cache access, network access, or extraction.
+  The origin parsed from `registry_base` must equal `registry_origin`. A
+  same-origin endpoint with a different base path is a provenance mismatch; RPM
+  must not contact the recorded endpoint first.
+
+  The normalization matrix is part of this contract:
+
+  | input path | canonical path |
+  | --- | --- |
+  | `/repo/` | `/repo` |
+  | `/repo/%41/` | `/repo/A` |
+  | `/repo/%7e` | `/repo/~` |
+  | `/repo/%2e/` | `/repo` |
+  | `/repo/x/%2E%2E/pkg` | `/repo/pkg` |
+  | `/repo/%2E%2E` | `/` (serialized as the origin) |
+  | `/%2E%2E/repo` | rejected above the endpoint root |
+  | `/repo//packages///` | `/repo//packages` |
+  | `/repo/%2f/private` | `/repo/%2F/private` |
+  | `/repo/%3f` | `/repo/%3F` |
+  | `/repo/%` or `/repo/%G0` | rejected as a malformed escape |
+- The selected `tarball` is an absolute HTTPS URL with no user information,
+  query, or fragment, and its normalized origin must equal `registry_origin`.
+  Planned v2 rejects every query-bearing tarball URL before archive acquisition.
+  This keeps credentials, signed URLs, and expiry values out of persisted
+  lockfile provenance. V1 keeps its current URL handling. A future policy that
+  needs private or expiring downloads must define a stable redacted locator and
+  explicit runtime credential injection before v2 can admit one.
 - Metadata and tarball redirects are limited to five hops. Every redirect
   target is parsed and checked before following it, remains HTTPS, has no user
-  information or fragment, and has the same normalized origin. A relative
-  redirect is allowed only when resolution against the current URL produces a
-  URL that passes those checks. Cross-origin redirects and HTTPS downgrades are
-  rejected. The initial v2 contract has no implicit CDN or alternate-origin
-  exception.
+  information, query, or fragment, and has the same normalized origin. A
+  relative redirect is allowed only when resolution against the current URL
+  produces a URL that passes those checks. Cross-origin redirects, HTTPS
+  downgrades, and credential- or expiry-bearing redirect URLs are rejected. The
+  initial v2 contract has no implicit CDN or alternate-origin exception.
+
+Every v2 URL-policy rejection uses a redacted diagnostic locator. When parsing
+succeeds, the locator may contain only the scheme, normalized lower-case host,
+effective non-default port, and normalized path, followed by `?[redacted]` when
+a query was present. It omits user information, the raw query, fragment, and
+the raw URL. A malformed percent escape or otherwise unparseable URL reports a
+stable rejection category without echoing the supplied URL. Error chains,
+logs, and fixture diagnostics apply the same rule, so credential, signature,
+and expiry query values never appear in diagnostics.
 
 After the graph, name, and destination projections derivable without archive
 bytes pass preflight, the approved tarball request may acquire bytes only into a
@@ -227,9 +277,10 @@ A digest stored beside a URL in the same lockfile binds archive bytes to that
 record after the record is trusted; it cannot independently prove that the URL,
 digest, bin map, scripts, or dependency facts came from npm. Fresh resolution
 obtains the tuple over the configured HTTPS registry policy above. Later
-no-refetch replay uses it only from the exact lockfile byte snapshot established as a
-reviewed trusted execution input under the lockfile SPEC. An untrusted
-downloaded, generated, or replaced lockfile is not eligible for replay.
+no-refetch replay uses it only with the exact `TrustedLockfile` capability
+established under the lockfile SPEC. An untrusted downloaded, generated, or
+replaced lockfile is not eligible for replay, and replay remains disabled until
+the #155 issuance and #224 enforcement APIs exist.
 
 SHA-512 SRI is the only authenticated archive verifier accepted by planned v2.
 The `integrity` field is required, non-empty, and must contain a valid supported
@@ -466,10 +517,14 @@ content. Failures must be returned to callers as typed errors:
   `docs/specs/core/install/recovery/SPEC.md`). Because the tarball is downloaded
   and cached before verification, this failure is reported after the allowed
   fetch/verify cache side effect, not before all installer side effects.
-- A planned v2 provenance tuple with an invalid registry origin, a disallowed
-  tarball URL or redirect, mixed-version metadata, an untrusted lockfile source,
-  or missing/invalid SHA-512 SRI fails before extraction and before any install
-  output is published. A valid SHA-1 shasum does not make that v2 tuple eligible.
+- A planned v2 provenance tuple with an invalid registry origin or base endpoint,
+  a same-origin/different-path registry drift, a disallowed tarball URL or
+  redirect, a query-bearing tarball URL, malformed percent encoding, mixed-version
+  metadata, an untrusted lockfile source, or missing/invalid SHA-512 SRI fails
+  before archive acquisition, cache mutation, extraction, and any install output
+  publication. The URL-policy diagnostic uses the redaction rules above and
+  never echoes a rejected query, credential, signature, or expiry value.
+  A valid SHA-1 shasum does not make that v2 tuple eligible.
 - A legacy single-version root record is ineligible for v2 publication even when
   its root dist contains valid SHA-512 integrity; rejection occurs before tarball
   download or cache mutation. Existing v1 interpretation remains unchanged.
@@ -503,10 +558,16 @@ Fixture expectations are defined by the owning scenario and documented in
 - planned v2 provenance cases covering same-version bin/scripts fact capture,
   rejection of mixed-version fields, and a legacy single-version root record
   carrying valid SHA-512 integrity rejected with zero tarball requests and zero
-  cache writes; configured/recorded origin mismatch, untrusted lockfile input,
-  missing or unsupported integrity, shasum-only metadata, non-HTTPS and
-  cross-origin tarballs, HTTPS downgrade, cross-origin redirect, and
-  redirect-limit overflow
+  cache writes; configured/recorded origin or canonical base endpoint mismatch
+  (including same-origin/different-path drift), malformed percent escapes and
+  the complete `registry_base` normalization matrix (uppercase retained hex,
+  unreserved decoding, encoded dot/slash behavior, root traversal, repeated
+  separators, and trailing slash), untrusted lockfile input, missing or
+  unsupported integrity, shasum-only metadata, query-bearing
+  credential/signature/expiry tarball URLs rejected with zero tarball requests
+  and zero cache writes while diagnostics omit their raw query values,
+  non-HTTPS and cross-origin tarballs, HTTPS downgrade, query-bearing redirect,
+  cross-origin redirect, and redirect-limit overflow
 - wrong-type values on every ignored metadata field are discarded as absent
   rather than failing the packument (issue #113), while well-typed values
   round-trip into `Some(...)`
