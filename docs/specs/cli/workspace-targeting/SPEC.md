@@ -73,12 +73,18 @@ The target list is fully resolved and validated before any target executes.
 This includes option conflicts, selector identity errors, and the zero-member
 all-workspace case. A failed validation executes no script.
 
-For a selected member, `rpm run <script>` reads that member's manifest, uses
-the member directory as the child process working directory, and prepends that
-member's `node_modules/.bin` to `PATH` according to the run-script contract.
-This command contract does not define how linker output or workspace links are
-created; those behaviors remain owned by the linker and workspace install
-contracts.
+For a selected member, `rpm run <script>` reads the script text only from that
+row's immutable #145 manifest snapshot. It binds the child working directory
+to the row's retained descriptor-validated native member identity and prepends
+`node_modules/.bin` relative to that same identity according to the run-script
+contract. Dispatch must not reopen `package.json`, reconstruct a native path
+from `member_path_key`, or let a manifest-path or member-directory replacement
+substitute script text, the working directory, or a local `.bin`. If the child
+process interface cannot preserve that retained identity or an atomic
+equivalent through process creation, dispatch fails before the child starts.
+This command contract does not redefine #145 member identity or ordering and
+does not define how linker output or workspace links are created; those
+behaviors remain owned by the linker and workspace install contracts.
 
 ### Execution and failure ownership
 
@@ -164,6 +170,10 @@ this contract is active. Planned coverage includes:
 - `--all` plus `--workspace` conflict and zero-member all-mode validation,
   proving no target script starts after validation failure;
 - a member-local manifest, working-directory marker, and local `.bin` marker;
+- an injected member-manifest and member-directory replacement after target
+  resolution but before dispatch, proving the immutable member snapshot and
+  retained descriptor-validated directory identity prevent replacement script
+  text or a replacement-local `.bin` from executing;
 - a multi-target run with a failing script, pinning the resolved target set and
   table order. Whether later targets run, how the outcome aggregates, and
   numeric exit or diagnostic golden text wait for M8 #151 and the adopting

@@ -177,10 +177,13 @@ its own contract:
 
 - **`rpm run`** reads the targeted immutable manifest snapshot's `scripts` map
   to execute a user-named script on demand. The default target is the root;
-  workspace-targeted invocations consume the selected member snapshots under
-  `docs/specs/cli/workspace-targeting/SPEC.md`. Running a script must not
-  reinstall or mutate install output (`docs/specs/cli/run/SPEC.md`). Any script
-  name is reachable through `rpm run`, not only the lifecycle names below.
+  workspace-targeted invocations consume the selected member snapshots and
+  retained descriptor-validated native identities under
+  `docs/specs/cli/workspace-targeting/SPEC.md`. They do not reopen a member
+  manifest or reconstruct native filesystem identity from `member_path_key`
+  during dispatch. Running a script must not reinstall or mutate install output
+  (`docs/specs/cli/run/SPEC.md`). Any script name is reachable through
+  `rpm run`, not only the lifecycle names below.
 - **Install lifecycle execution** reads the recognized lifecycle hooks from the
   `scripts` map and runs them as an install phase. The supported install
   lifecycle hook names are exactly `preinstall`, `install`, `postinstall`, and

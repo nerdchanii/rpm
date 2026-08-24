@@ -66,9 +66,11 @@ targets the root, `--all` targets every discovered member, and repeatable
 `--workspace <selector>` targets selected members. That SPEC owns exact
 selector identity, validation-before-execution, and deterministic member
 ordering. This run SPEC owns the target-local script
-behavior: a member invocation reads that member's manifest, uses its directory
-as the working directory, and prepends that member's `node_modules/.bin` to
-`PATH`.
+behavior: a member invocation consumes script text from the selected #145
+member-table snapshot, binds the working directory to that row's retained
+descriptor-validated native identity, and prepends `node_modules/.bin`
+relative to the same identity. It does not reopen a member manifest or derive
+filesystem identity from `member_path_key` during dispatch.
 The existing child-status rule applies to each target process; it does not
 settle how multiple target statuses are combined.
 
