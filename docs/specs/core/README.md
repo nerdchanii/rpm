@@ -304,15 +304,15 @@ disabled and is owned separately by #222.
 | M7 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
 | workspace manifest declaration (`workspaces` field) | `manifest/SPEC.md` | contract defined, implementation deferred: array and `{ "packages": [...] }` forms, descriptor-rooted root/member snapshots, single-link manifest identity, preservation-before-write, and planned replacement/hard-link coverage are specified; current manifest code still does not read or preserve the field | #221 |
-| workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect, candidate selection, canonical-root and symlink confinement, install-artifact exclusions, NFC `/`-separated UTF-8 member keys across POSIX/Windows native paths, and planned fixtures are specified | #221 |
+| workspace glob expansion and member discovery | `manifest/SPEC.md` | contract defined, implementation deferred: the portable glob dialect uses host-independent case-sensitive Unicode-scalar matching; candidate selection, canonical-root and symlink confinement, install-artifact exclusions, NFC `/`-separated UTF-8 member keys across POSIX/Windows native paths, and planned fixtures are specified | #221 |
 | root vs workspace vs external package boundary | `manifest/SPEC.md`, `resolver/SPEC.md` | contract defined, implementation deferred: immutable root/member dependency snapshots, portable `member_path_key` graph origin, production-over-development overlap precedence, compatible-range local classification, external fallback, and native identity restricted to filesystem validation are specified | #221 |
 | workspace package lockfile records | `lockfile/SPEC.md` | absent: lockfile v1 keys every entry by `<name>@<version>` with registry metadata and records no local-path or workspace-origin marker; local workspace records need not require tarball or integrity, while external records may use `shasum` when integrity is absent; whether v1 extends safely or a version bump is required is an open question for #146 | #146 |
 | external dependency edges under a workspace root | `lockfile/SPEC.md`, `resolver/SPEC.md` | partially owned in the non-workspace case: the resolver already deduplicates by `<name>@<version>` and the lockfile records requested range and resolved version distinctly, but neither owns how a shared external transitive reached from several workspace members is represented when each member requests a different range | #146 |
 | workspace-to-workspace linking (local symlink) | `linker/SPEC.md` | absent: the linker creates symlinks whose targets are extracted registry packages under `node_modules/`; there is no contract for linking a workspace member that exists as a local source directory rather than a downloaded tarball, or for confining that target to the canonical workspace root | #147 |
 | workspace-to-external linking | `linker/SPEC.md` | code and SPEC currently diverge on strict per-package dependency visibility; #147 must reconcile the implementation first, then extend the strict contract to workspace members so a member's `node_modules` exposes only that member's declared dependencies, with regression coverage | #147 |
 | missing workspace link target | `linker/SPEC.md` | absent: the linker already fails when a registry dependency target is not extracted, but there is no contract for a workspace dependency whose declared local path does not exist or does not contain the expected package | #147 |
-| workspace member writes and recovery | `install/recovery/SPEC.md`, `install/scripts/SPEC.md`, `linker/SPEC.md` | planned split defined: #147 owns workspace link construction; #222 owns an exclusive full-target publication guard, post-acquisition drift validation, one all-output transaction record, backup retention through final verification, exact multi-output rollback, and boundary-race fixtures | #147; #222 |
-| workspace member lifecycle scripts | `install/scripts/SPEC.md`, `install/recovery/SPEC.md` | planned contract defined, implementation disabled: immutable root/member snapshot sourcing, portable order/origin, exact staged-member parent/name mapping, full no-follow managed-tree scans at every hook boundary, process-confined source overlays, frozen `workspaces`, and fatal transaction recovery are specified | #222; #147 is a staging prerequisite and #149 does not own these fixtures |
+| workspace member writes and recovery | `install/recovery/SPEC.md`, `install/scripts/SPEC.md`, `linker/SPEC.md` | planned split defined: #147 owns workspace link construction; #222 owns pre-baseline member-manifest validation, one all-output transaction record, a durable per-workspace cooperative RPM lock, guarded descriptor revalidation, a fsynced recovery journal, startup recovery, backup retention through final verification, exact multi-output rollback, and crash fixtures; non-cooperating external writers and already-open external handles are an explicit unsupported concurrency boundary | #147; #222 |
+| workspace member lifecycle scripts | `install/scripts/SPEC.md`, `install/recovery/SPEC.md` | planned contract defined, implementation disabled: immutable root/member snapshot sourcing, portable order/origin, exact staged-member parent/name mapping, root graph-field freezing, staged lockfile integrity/materialization, full no-follow managed-tree scans, and staging-root confinement for root/member/external hooks are specified | #222; #147 is a staging prerequisite and #149 does not own these fixtures |
 | package-name and dependency-name root confinement | `resolver/SPEC.md`, `linker/SPEC.md` | existing package metadata and lockfile names are not fully confined before extraction and dependency linking; names such as `../../outside` can escape the staged tree, so the resolver/linker boundary must reject traversal and verify canonical destinations before any write; #147 must include this regression coverage for workspace and external edges | #147 |
 | workspace member binary links | `linker/SPEC.md` | absent: the existing `.bin` contract does not state whether a workspace member's `bin` field is exposed; #147 must decide the link layout and cover it in the minimal workspace fixture (#149) | #147; #149 |
 | workspace command targeting (`--workspace`, `--all`, root) | `cli/run/SPEC.md` and future CLI command SPECs | absent: no command targeting contract exists; `rpm run` reads only the root manifest, and there is no rule for root-only, all-workspace, or selected-workspace command scope | #148 |
@@ -335,12 +335,18 @@ Findings:
 - Workspace-member lifecycle activation is owned by #222. The install-script
   and recovery contracts fix validated snapshot sourcing, deterministic order,
   isolated staged directories with exact key-to-parent/name validation, full
-  hook-boundary managed-tree scans, process-confined source overlays, frozen
-  workspace identity, an exclusive full-publication guard, one multi-output
-  transaction record, PATH, and exact failure recovery. #222 consumes the staged
-  link construction from #147 and owns the order/cwd, mutation, publication,
-  race, and recovery fixtures before any member hook runs. #149's minimal install
-  fixture does not absorb this lifecycle coverage.
+  hook-boundary managed-tree scans, process-confined root/member/external hooks,
+  frozen workspace graph fields, pinned and separately materialized `rpm.lock`,
+  pre-baseline live-manifest checks, one multi-output transaction record, a
+  durable per-workspace cooperative RPM lock, guarded descriptor revalidation,
+  a durable recovery journal, PATH, and crash recovery. The lock serializes
+  conforming RPM invocations. Non-cooperating external writers and already-open
+  external handles remain outside the supported concurrency contract; the SPEC
+  requires fail-closed behavior for drift observed at a guarded check and does
+  not claim an unavailable cross-process filesystem transaction. #222 consumes
+  the staged link construction from #147 and owns the order/cwd, mutation,
+  publication, crash, and recovery fixtures before any member hook runs. #149's
+  minimal install fixture does not absorb this lifecycle coverage.
 - Lockfile representation (#146) carries one open compatibility decision:
   whether workspace package records can extend lockfile v1 with a local-origin
   marker, or whether a workspace-aware lockfile requires a version bump and a
