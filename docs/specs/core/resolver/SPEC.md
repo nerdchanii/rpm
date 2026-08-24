@@ -177,16 +177,24 @@ merging the node must not merge or discard those per-edge fields. A dependency
 reachable only from a member therefore cannot be omitted or mistaken for a
 root-manifest entry.
 
-A dependency edge is classified against the discovered member table before
-external metadata lookup. A name absent from the table is an external edge. A
-name present in the table is workspace-local only when the member has a valid
-declared semantic version and that version satisfies the edge's requested
-range under `docs/specs/core/semver/SPEC.md`. A missing, invalid, or
-range-incompatible member version leaves that edge external, allowing external
-metadata to select a compatible package version. Registry dist-tags have no
-local member mapping and remain external selectors. Invalid or unsupported
-request syntax still fails under its owning input contract; it is not converted
-into a workspace-local edge.
+A dependency-map declaration first becomes a `DependencyRequest` through the
+resolver's existing parsing and request-normalization boundary. Empty range
+text is normalized to `latest` before workspace classification, matching
+`DependencyRequest::new` and the registry contract for bare requests. The
+workspace branch therefore examines the canonical request text: an empty-range
+declaration such as `"foo": ""` is the `latest` selector, not an any-version
+semver range, and remains external because registry dist-tags have no local
+member mapping. A dependency edge is classified against the discovered member
+table before external metadata lookup. A name absent from the table is an
+external edge. A name present in the table is workspace-local only when the
+member has a valid declared semantic version and that version satisfies the
+canonical, non-empty requested range under
+`docs/specs/core/semver/SPEC.md`. A missing, invalid, or range-incompatible
+member version leaves that edge external, allowing external metadata to select
+a compatible package version. Registry dist-tags have no local member mapping
+and remain external selectors. Invalid or unsupported request syntax still
+fails under its owning input contract; it is not converted into a
+workspace-local edge.
 
 Resolution-root creation and edge classification are separate operations. RPM
 creates every root/member resolution-root record and seeds that record's
@@ -444,7 +452,10 @@ ordering use the same NFC `/`-separated `member_path_key` and never a native
 canonical path or separator. Overlapping `dependencies` and `devDependencies`
 cases use ranges that would otherwise select different local/external targets
 and prove the production declaration wins with exactly one `DirectProduction`
-request. A local-branch fixture uses a metadata provider that records every
+request. An empty-range request such as `"foo": ""` is normalized to `latest`
+before classification and remains external, while an explicit satisfying
+semver range for the same member is classified local. A local-branch fixture
+uses a metadata provider that records every
 request and fails if queried for a compatible member; multiple root/member
 edges target the same compatible member and prove that its resolution root and
 snapshot dependency seeds are created exactly once. Paired incompatible and
