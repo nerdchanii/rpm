@@ -88,11 +88,179 @@ malformed = {
     "duplicate-policy": "policy:\n  allow_implicit_invocation: false\npolicy:\n  allow_implicit_invocation: false\n",
     "duplicate-child": "policy:\n  allow_implicit_invocation: false\n  allow_implicit_invocation: false\n",
     "non-boolean": "policy:\n  allow_implicit_invocation: \"false\"\n",
+    "document-start": "---\npolicy:\n  allow_implicit_invocation: false\n",
+    "document-end": "policy:\n  allow_implicit_invocation: false\n...\n",
+    "multiple-documents": "policy:\n  allow_implicit_invocation: false\n---\npolicy:\n  allow_implicit_invocation: true\n",
+    "bom-document-start": "\ufeff---\npolicy:\n  allow_implicit_invocation: false\n",
+    "bom-document-end": "\ufeff...\npolicy:\n  allow_implicit_invocation: false\n",
+    "bom-document-end-after-policy": "policy:\n  allow_implicit_invocation: false\n\ufeff...\n",
 }
 for name, text in malformed.items():
     value, error = checker.parse_skill_invocation_policy(text)
     if error is None:
         raise SystemExit(f"{name} was accepted: value={value!r}")
+
+document_marker_error = "YAML document markers are not supported in openai.yaml"
+for name in (
+    "document-start",
+    "document-end",
+    "multiple-documents",
+    "bom-document-start",
+    "bom-document-end",
+    "bom-document-end-after-policy",
+):
+    _, error = checker.parse_skill_invocation_policy(malformed[name])
+    if error is None or document_marker_error not in error:
+        raise SystemExit(f"{name} did not report a document marker error: {error!r}")
+
+bom_policy_value, bom_policy_error = checker.parse_skill_invocation_policy(
+    "\ufeffpolicy:\n  allow_implicit_invocation: false\n"
+)
+if bom_policy_value is not False or bom_policy_error is not None:
+    raise SystemExit(
+        "valid BOM-prefixed policy was rejected: "
+        f"value={bom_policy_value!r}, error={bom_policy_error!r}"
+    )
+
+policy_comment_value, policy_comment_error = checker.parse_skill_invocation_policy(
+    "interface: # interface mapping comment\n"
+    "policy: # policy mapping comment\n"
+    "  allow_implicit_invocation: false\n"
+)
+if policy_comment_value is not False or policy_comment_error is not None:
+    raise SystemExit(
+        "valid root mapping comments were rejected by policy parser: "
+        f"value={policy_comment_value!r}, error={policy_comment_error!r}"
+    )
+
+for expected, child_value in (
+    (False, "false # comment"),
+    (True, "true  # comment"),
+    (False, "false #comment # trailing"),
+):
+    policy_value, policy_error = checker.parse_skill_invocation_policy(
+        "policy:\n"
+        f"  allow_implicit_invocation: {child_value}\n"
+    )
+    if policy_value is not expected or policy_error is not None:
+        raise SystemExit(
+            f"valid boolean comment was rejected: child={child_value!r}, "
+            f"value={policy_value!r}, error={policy_error!r}"
+        )
+
+boolean_error = "allow_implicit_invocation must be boolean"
+for name, child_value in {
+    "no-space-comment": "false#comment",
+    "nbsp-comment": "false\u00a0#comment",
+    "quoted-boolean-comment": '"false" # comment',
+    "quoted-hash-content": '"false # comment"',
+    "tab-comment": "false\t# comment",
+}.items():
+    policy_value, policy_error = checker.parse_skill_invocation_policy(
+        "policy:\n"
+        f"  allow_implicit_invocation: {child_value}\n"
+    )
+    if policy_value is not None or policy_error is None or boolean_error not in policy_error:
+        raise SystemExit(
+            f"invalid boolean comment {name} was accepted: child={child_value!r}, "
+            f"value={policy_value!r}, error={policy_error!r}"
+        )
+
+root_mapping_error = "root-level YAML nodes must be supported mappings"
+for root_line in ("policy:\u00a0# comment", "interface:\u00a0# comment"):
+    policy_value, policy_error = checker.parse_skill_invocation_policy(
+        f"{root_line}\n  allow_implicit_invocation: false\n"
+    )
+    if policy_value is not None or policy_error is None or root_mapping_error not in policy_error:
+        raise SystemExit(
+            f"non-ASCII policy root comment separator was accepted: "
+            f"line={root_line!r}, value={policy_value!r}, error={policy_error!r}"
+        )
+    interface_errors = checker.validate_skill_interface_metadata(
+        f"{root_line}\n"
+        "  display_name: Fixture Governance\n"
+        "  short_description: Create deterministic fixtures.\n"
+        "  default_prompt: Use $fixture-governance.\n",
+        "fixture-governance",
+    )
+    if len(interface_errors) != 1 or root_mapping_error not in interface_errors[0]:
+        raise SystemExit(
+            f"non-ASCII interface root comment separator was accepted: "
+            f"line={root_line!r}, errors={interface_errors!r}"
+        )
+
+for marker in ("---", "..."):
+    for prefix in ("", "\ufeff"):
+        for interface_with_marker in (
+            f"{prefix}{marker}\ninterface:\n",
+            "interface:\n"
+            "  display_name: Fixture Governance\n"
+            "  short_description: Create deterministic fixtures.\n"
+            "  default_prompt: Use $fixture-governance.\n"
+            f"{prefix}{marker}\n",
+        ):
+            interface_errors = checker.validate_skill_interface_metadata(
+                interface_with_marker,
+                "fixture-governance",
+            )
+            if len(interface_errors) != 1 or document_marker_error not in interface_errors[0]:
+                raise SystemExit(
+                    f"interface {prefix + marker!r} marker was accepted: "
+                    f"errors={interface_errors!r}"
+                )
+
+root_scalars = (
+    '"---"',
+    "---#comment",
+    "...foo",
+    "\u00a0\"---\"",
+    "\u00a0...foo",
+    "\u00a0#comment",
+)
+for root_scalar in root_scalars:
+    policy_text = (
+        "policy:\n"
+        "  allow_implicit_invocation: false\n"
+        f"{root_scalar}\n"
+    )
+    policy_value, policy_error = checker.parse_skill_invocation_policy(policy_text)
+    if policy_error is None or root_mapping_error not in policy_error:
+        raise SystemExit(
+            f"policy root scalar {root_scalar!r} was accepted: "
+            f"value={policy_value!r}, error={policy_error!r}"
+        )
+    interface_text = (
+        "interface:\n"
+        "  display_name: Fixture Governance\n"
+        "  short_description: Create deterministic fixtures.\n"
+        "  default_prompt: Use $fixture-governance.\n"
+        f"{root_scalar}\n"
+    )
+    interface_errors = checker.validate_skill_interface_metadata(
+        interface_text,
+        "fixture-governance",
+    )
+    if len(interface_errors) != 1 or root_mapping_error not in interface_errors[0]:
+        raise SystemExit(
+            f"interface root scalar {root_scalar!r} was accepted: "
+            f"errors={interface_errors!r}"
+        )
+
+unsupported_root_error = "only interface and policy root mappings are supported"
+for unknown_value in ("value", "[unclosed", '"unmatched', "{unclosed"):
+    policy_with_unknown_root = (
+        f"extra: {unknown_value}\n"
+        "policy:\n"
+        "  allow_implicit_invocation: false\n"
+    )
+    policy_value, policy_error = checker.parse_skill_invocation_policy(
+        policy_with_unknown_root
+    )
+    if policy_value is not None or policy_error is None or unsupported_root_error not in policy_error:
+        raise SystemExit(
+            f"unknown policy root value {unknown_value!r} was accepted: "
+            f"value={policy_value!r}, error={policy_error!r}"
+        )
 
 misplaced_interface = """\
 interface:
@@ -103,20 +271,13 @@ other:
 policy:
   allow_implicit_invocation: true
 """
-interface_errors = set(
-    checker.validate_skill_interface_metadata(
-        misplaced_interface,
-        "fixture-governance",
-    )
+interface_errors = checker.validate_skill_interface_metadata(
+    misplaced_interface,
+    "fixture-governance",
 )
-expected_errors = {
-    "display_name is missing",
-    "short_description is missing",
-    "default_prompt is missing",
-}
-if not expected_errors.issubset(interface_errors):
+if len(interface_errors) != 1 or unsupported_root_error not in interface_errors[0]:
     raise SystemExit(
-        f"misplaced interface metadata was accepted: errors={sorted(interface_errors)!r}"
+        f"misplaced interface metadata was accepted: errors={interface_errors!r}"
     )
 
 invalid_interface_scalars = {
@@ -131,6 +292,30 @@ invalid_interface_scalars = {
         "default_prompt",
         '"" # $fixture-governance',
         "default_prompt is missing",
+        False,
+    ),
+    "longer-skill-prefix": (
+        "default_prompt",
+        '"Use $fixture-governance-extra."',
+        "default_prompt must mention $fixture-governance",
+        False,
+    ),
+    "combining-mark-skill-suffix": (
+        "default_prompt",
+        '"Use $fixture-governance\u0301."',
+        "default_prompt must mention $fixture-governance",
+        False,
+    ),
+    "zero-width-joiner-skill-suffix": (
+        "default_prompt",
+        '"Use $fixture-governance\u200dfoo."',
+        "default_prompt must mention $fixture-governance",
+        False,
+    ),
+    "variation-selector-skill-suffix": (
+        "default_prompt",
+        '"Use $fixture-governance\ufe0f."',
+        "default_prompt must mention $fixture-governance",
         False,
     ),
     "unmatched-quote": (
@@ -262,6 +447,17 @@ interface:
   short_description: Create safe# fixtures.
   default_prompt: Use $fixture-governance.
 """,
+    "root-mapping-comment": """\
+interface: # interface mapping comment
+  display_name: Fixture Governance
+  short_description: Create safe fixtures.
+  default_prompt: Use $fixture-governance.
+policy: # policy mapping comment
+""",
+    "bom-prefix": "\ufeffinterface:\n"
+    "  display_name: Fixture Governance\n"
+    "  short_description: Create deterministic fixtures.\n"
+    "  default_prompt: Use $fixture-governance.\n",
 }
 for name, text in valid_interface_scalars.items():
     interface_errors = checker.validate_skill_interface_metadata(
@@ -290,11 +486,76 @@ interface_errors = checker.validate_skill_interface_metadata(
 if interface_errors:
     raise SystemExit(f"NBSP interface value was rejected: errors={interface_errors!r}")
 
+for unknown_value in ("value", "[unclosed", '"unmatched', "{unclosed"):
+    interface_with_unknown_root = (
+        f"extra: {unknown_value}\n"
+        "interface:\n"
+        "  display_name: Fixture Governance\n"
+        "  short_description: Create deterministic fixtures.\n"
+        "  default_prompt: Use $fixture-governance.\n"
+    )
+    interface_errors = checker.validate_skill_interface_metadata(
+        interface_with_unknown_root,
+        "fixture-governance",
+    )
+    if len(interface_errors) != 1 or unsupported_root_error not in interface_errors[0]:
+        raise SystemExit(
+            f"unknown interface root value {unknown_value!r} was accepted: "
+            f"errors={interface_errors!r}"
+        )
+
+unsupported_line_separator_error = (
+    "U+0085, U+2028, and U+2029 are not supported in openai.yaml"
+)
+for separator in ("\u0085", "\u2028", "\u2029"):
+    policy_value, policy_error = checker.parse_skill_invocation_policy(
+        "policy:\n"
+        "  allow_implicit_invocation: false"
+        f"{separator}\n"
+    )
+    if policy_value is not None or policy_error != unsupported_line_separator_error:
+        raise SystemExit(
+            f"policy line separator U+{ord(separator):04X} was not rejected: "
+            f"value={policy_value!r}, error={policy_error!r}"
+        )
+    interface_errors = checker.validate_skill_interface_metadata(
+        "interface:\n"
+        f"  display_name: Fixture{separator}Governance\n"
+        "  short_description: Create deterministic fixtures.\n"
+        "  default_prompt: Use $fixture-governance.\n",
+        "fixture-governance",
+    )
+    if interface_errors != [unsupported_line_separator_error]:
+        raise SystemExit(
+            f"interface line separator U+{ord(separator):04X} was not rejected: "
+            f"errors={interface_errors!r}"
+        )
+
+for scalar in (
+    r'"Fixture\u2028Governance"',
+    r'"Fixture\u2029Governance"',
+    r'"Fixture\x85Governance"',
+):
+    parsed, parse_error = checker.parse_yaml_string_scalar(scalar, 1)
+    expected_scalar_error = f"line 1: {unsupported_line_separator_error}"
+    if parsed is not None or parse_error != expected_scalar_error:
+        raise SystemExit(
+            f"escaped line separator {scalar!r} was not rejected: "
+            f"parsed={parsed!r}, error={parse_error!r}"
+        )
+
 escaped_control = '"Fixture ' + chr(92) + "u0001Governance\""
 parsed, parse_error = checker.parse_yaml_string_scalar(escaped_control, 1)
 if parse_error is not None or parsed != "Fixture \x01Governance":
     raise SystemExit(
         f"escaped control was not decoded: parsed={parsed!r}, error={parse_error!r}"
+    )
+
+escaped_del_control = '"Fixture ' + chr(92) + "u007fGovernance\""
+parsed, parse_error = checker.parse_yaml_string_scalar(escaped_del_control, 1)
+if parse_error is not None or parsed != "Fixture \x7fGovernance":
+    raise SystemExit(
+        f"escaped DEL control was not decoded: parsed={parsed!r}, error={parse_error!r}"
     )
 
 literal_escape = chr(92) + "u0001"
@@ -307,6 +568,36 @@ for name, scalar in {
         raise SystemExit(
             f"{name} was decoded outside double quotes: "
             f"parsed={parsed!r}, error={parse_error!r}"
+        )
+
+skill_name = "fixture-governance"
+token = f"${skill_name}"
+token_boundary_cases = {
+    "at-end": (token, True),
+    "space": (token + " next", True),
+    "nbsp": (token + "\u00a0next", True),
+    "period": (token + ".", True),
+    "comma": (token + ",", True),
+    "exclamation": (token + "!", True),
+    "question": (token + "?", True),
+    "colon": (token + ":", True),
+    "hash": (token + "#note", True),
+    "ascii-name-continuation": (token + "extra", False),
+    "ascii-hyphen-continuation": (token + "-extra", False),
+    "leading-ascii-name-continuation": ("x" + token, False),
+    "unicode-letter-continuation": (token + "é", False),
+    "unicode-number-continuation": (token + "²", False),
+    "combining-mark": (token + "\u0301", False),
+    "zero-width-joiner": (token + "\u200dfoo", False),
+    "variation-selector": (token + "\ufe0f", False),
+    "format-character": (token + "\u2060", False),
+}
+for name, (prompt, expected) in token_boundary_cases.items():
+    actual = checker.has_complete_skill_token(prompt, skill_name)
+    if actual != expected:
+        raise SystemExit(
+            f"token boundary {name} disagreed: prompt={prompt!r}, "
+            f"expected={expected!r}, actual={actual!r}"
         )
 PY
 }

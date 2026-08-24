@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import unicodedata
 from pathlib import Path
 
 
@@ -327,26 +328,160 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str]:
     return values
 
 
+YAML_SEPARATOR_SPACE = " "
+YAML_DOCUMENT_MARKER_ERROR = "YAML document markers are not supported in openai.yaml"
+YAML_ROOT_MAPPING_ERROR = "root-level YAML nodes must be supported mappings"
+YAML_UNSUPPORTED_ROOT_MAPPING_ERROR = (
+    "only interface and policy root mappings are supported"
+)
+YAML_SUPPORTED_ROOT_MAPPING_KEYS = frozenset(("interface", "policy"))
+YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR = (
+    "U+0085, U+2028, and U+2029 are not supported in openai.yaml"
+)
+YAML_UNSUPPORTED_LINE_SEPARATORS = frozenset(("\u0085", "\u2028", "\u2029"))
+YAML_TOKEN_ASCII_CONTINUATIONS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+)
+YAML_TOKEN_UNICODE_CONTINUATION_CATEGORIES = frozenset(
+    (
+        "Ll",
+        "Lm",
+        "Lo",
+        "Lt",
+        "Lu",
+        "Mc",
+        "Me",
+        "Mn",
+        "Nd",
+        "Nl",
+        "No",
+        "Cf",
+    )
+)
+YAML_TOKEN_EXPLICIT_CONTINUATIONS = frozenset((0x200C, 0x200D))
+
+
+def contains_unsupported_yaml_line_separator(text: str) -> bool:
+    return any(character in text for character in YAML_UNSUPPORTED_LINE_SEPARATORS)
+
+
+def is_supported_root_mapping_line(stripped: str) -> bool:
+    key, separator, value = stripped.partition(":")
+    return bool(
+        separator
+        and key.strip(" \t")
+        and (not value or value.startswith(YAML_SEPARATOR_SPACE))
+    )
+
+
+def supported_root_mapping_key(stripped: str) -> str | None:
+    if not is_supported_root_mapping_line(stripped):
+        return None
+    return stripped.partition(":")[0].strip(" \t")
+
+
+def is_supported_root_mapping_header(stripped: str, key: str) -> bool:
+    """Accept an empty root mapping value or an ASCII-space comment suffix."""
+    prefix = f"{key}:"
+    if stripped == prefix:
+        return True
+    if not stripped.startswith(prefix):
+        return False
+    suffix = stripped[len(prefix) :]
+    return suffix.startswith(YAML_SEPARATOR_SPACE) and suffix.lstrip(
+        YAML_SEPARATOR_SPACE
+    ).startswith("#")
+
+
+def strip_ascii_space_inline_comment(value: str) -> str:
+    """Remove a comment only when ``#`` has an ASCII space immediately before it."""
+    comment_index = next(
+        (
+            index
+            for index, character in enumerate(value)
+            if character == "#" and index > 0 and value[index - 1] == YAML_SEPARATOR_SPACE
+        ),
+        len(value),
+    )
+    return value[:comment_index].strip(YAML_SEPARATOR_SPACE)
+
+
+def is_skill_token_continuation(character: str) -> bool:
+    r"""Apply the explicit skill-token boundary contract without regex ``\w``."""
+    if not character:
+        return False
+    if character in YAML_TOKEN_ASCII_CONTINUATIONS:
+        return True
+    codepoint = ord(character)
+    if (
+        codepoint in YAML_TOKEN_EXPLICIT_CONTINUATIONS
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0xE0100 <= codepoint <= 0xE01EF
+    ):
+        return True
+    return unicodedata.category(character) in YAML_TOKEN_UNICODE_CONTINUATION_CATEGORIES
+
+
+def has_complete_skill_token(value: str, skill_name: str) -> bool:
+    """Require a boundary on both sides of at least one exact skill token."""
+    token = f"${skill_name}"
+    search_start = 0
+    while True:
+        index = value.find(token, search_start)
+        if index < 0:
+            return False
+        token_end = index + len(token)
+        before = value[index - 1] if index else ""
+        after = value[token_end] if token_end < len(value) else ""
+        if not is_skill_token_continuation(before) and not is_skill_token_continuation(after):
+            return True
+        search_start = index + 1
+
+
+def is_yaml_document_marker(stripped: str) -> bool:
+    stripped = stripped.removeprefix("\ufeff")
+    return any(
+        stripped == marker
+        or stripped.startswith(f"{marker} ")
+        or stripped.startswith(f"{marker}\t")
+        for marker in ("---", "...")
+    )
+
+
 def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
     """Parse the deliberately small policy mapping in an openai.yaml file.
 
     A full YAML dependency is unnecessary here. The supported policy shape is
-    intentionally strict: one root ``policy:`` mapping with one direct child.
+    intentionally strict: one root ``policy:`` mapping with one direct child,
+    alongside the optional ``interface:`` mapping. Every non-comment root line
+    must use one of those two supported mapping keys.
     """
+    if contains_unsupported_yaml_line_separator(text):
+        return None, YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR
+    if text.startswith("\ufeff"):
+        text = text[1:]
+
     blocks: list[list[tuple[int, str, int]]] = []
     current: list[tuple[int, str, int]] | None = None
     for line_number, raw_line in enumerate(text.splitlines(), 1):
         leading = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
         if "\t" in leading:
             return None, f"line {line_number}: tabs are not allowed for policy indentation"
-        stripped = raw_line.strip()
+        stripped = raw_line.strip(" \t")
         if not stripped or stripped.startswith("#"):
             continue
+        if is_yaml_document_marker(stripped):
+            return None, f"line {line_number}: {YAML_DOCUMENT_MARKER_ERROR}"
         indent = len(raw_line) - len(raw_line.lstrip(" "))
         if indent == 0:
-            if re.match(r"^policy\s*:", stripped):
-                if stripped != "policy:":
-                    return None, f"line {line_number}: policy must be a root mapping"
+            if not is_supported_root_mapping_line(stripped):
+                return None, f"line {line_number}: {YAML_ROOT_MAPPING_ERROR}"
+            root_key = supported_root_mapping_key(stripped)
+            if root_key not in YAML_SUPPORTED_ROOT_MAPPING_KEYS:
+                return None, f"line {line_number}: {YAML_UNSUPPORTED_ROOT_MAPPING_ERROR}"
+            if not is_supported_root_mapping_header(stripped, root_key):
+                return None, f"line {line_number}: {root_key} must be a root mapping"
+            if root_key == "policy":
                 blocks.append([])
                 current = blocks[-1]
             else:
@@ -366,9 +501,10 @@ def parse_skill_invocation_policy(text: str) -> tuple[bool | None, str | None]:
     key, separator, value = child.partition(":")
     if separator != ":" or key.strip() != "allow_implicit_invocation":
         return None, f"line {line_number}: unexpected policy child"
-    if value.strip() not in {"true", "false"}:
+    boolean_value = strip_ascii_space_inline_comment(value)
+    if boolean_value not in {"true", "false"}:
         return None, f"line {line_number}: allow_implicit_invocation must be boolean"
-    return value.strip() == "true", None
+    return boolean_value == "true", None
 
 
 INTERFACE_METADATA_SCALAR_ERROR = (
@@ -377,7 +513,6 @@ INTERFACE_METADATA_SCALAR_ERROR = (
     "ASCII space is the only separator, literal tabs are rejected, and "
     "single/double quotes with separation-space comments are supported)"
 )
-YAML_SEPARATOR_SPACE = " "
 LITERAL_SCALAR_CONTROL_ERROR = (
     "literal C0 and DEL control characters are not allowed in interface metadata scalars"
 )
@@ -393,9 +528,13 @@ def parse_yaml_string_scalar(value: str, line_number: int) -> tuple[str | None, 
     rejected. Double-quoted YAML escapes remain supported; single-quoted and
     plain backslashes remain literal.
     """
+    if contains_unsupported_yaml_line_separator(value):
+        return None, f"line {line_number}: {YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR}"
     source = value.strip(YAML_SEPARATOR_SPACE)
     if not source:
         return None, None
+    # The control-character contract is for literal source characters; valid
+    # double-quoted escape sequences are decoded below.
     if any(ord(character) <= 0x1F or ord(character) == 0x7F for character in source):
         return None, f"line {line_number}: {LITERAL_SCALAR_CONTROL_ERROR}"
 
@@ -475,7 +614,10 @@ def parse_yaml_string_scalar(value: str, line_number: int) -> tuple[str | None, 
                 index += width + 1
                 continue
             return None, f"line {line_number}: invalid double-quoted scalar escape"
-        return "".join(decoded), None
+        decoded_value = "".join(decoded)
+        if contains_unsupported_yaml_line_separator(decoded_value):
+            return None, f"line {line_number}: {YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR}"
+        return decoded_value, None
 
     if source.startswith("'"):
         end: int | None = None
@@ -535,7 +677,15 @@ def parse_yaml_string_scalar(value: str, line_number: int) -> tuple[str | None, 
 
 
 def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
-    """Validate required metadata as direct children of one interface mapping."""
+    """Validate direct children of one interface mapping in the supported subset.
+
+    The only supported root mapping keys are ``interface:`` and ``policy:``.
+    """
+    if contains_unsupported_yaml_line_separator(text):
+        return [YAML_UNSUPPORTED_LINE_SEPARATOR_ERROR]
+    if text.startswith("\ufeff"):
+        text = text[1:]
+
     blocks: list[dict[str, tuple[str | None, int]]] = []
     current: dict[str, tuple[str | None, int]] | None = None
     for line_number, raw_line in enumerate(text.splitlines(), 1):
@@ -544,17 +694,26 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
             return [f"line {line_number}: tabs are not allowed for interface indentation"]
         if "\t" in raw_line:
             return [f"line {line_number}: literal tabs are not supported in interface metadata"]
-        stripped = raw_line.strip()
+        stripped = raw_line.strip(" \t")
         if not stripped or stripped.startswith("#"):
             continue
+        if is_yaml_document_marker(stripped):
+            return [f"line {line_number}: {YAML_DOCUMENT_MARKER_ERROR}"]
         indent = len(raw_line) - len(raw_line.lstrip(" "))
         if indent == 0:
-            if re.match(r"^interface\s*:", stripped):
-                if stripped != "interface:":
+            if not is_supported_root_mapping_line(stripped):
+                return [f"line {line_number}: {YAML_ROOT_MAPPING_ERROR}"]
+            root_key = supported_root_mapping_key(stripped)
+            if root_key not in YAML_SUPPORTED_ROOT_MAPPING_KEYS:
+                return [f"line {line_number}: {YAML_UNSUPPORTED_ROOT_MAPPING_ERROR}"]
+            if root_key == "interface":
+                if not is_supported_root_mapping_header(stripped, "interface"):
                     return [f"line {line_number}: interface must be a root mapping"]
                 blocks.append({})
                 current = blocks[-1]
             else:
+                if not is_supported_root_mapping_header(stripped, "policy"):
+                    return [f"line {line_number}: policy must be a root mapping"]
                 current = None
             continue
         if current is None or indent != 2:
@@ -585,7 +744,7 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
     default_prompt = fields.get("default_prompt")
     if default_prompt is None or not default_prompt[0]:
         errors.append("default_prompt is missing")
-    elif f"${skill_name}" not in default_prompt[0]:
+    elif not has_complete_skill_token(default_prompt[0], skill_name):
         errors.append(f"default_prompt must mention ${skill_name}")
     return errors
 
