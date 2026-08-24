@@ -268,11 +268,39 @@ The initial v2 transport policy is fail-closed:
   filename. The artifact package path is `/<name>` for an unscoped name and
   `/@scope/<leaf>` for `@scope/leaf`; its scope separator is structural, while
   the packument lookup path may use `%2F` as specified in the scoped-name
-  section. A `%2F` that represents that scope separator is normalized to the
-  structural separator before comparison; an encoded slash inside any other
-  component remains encoded and never creates an extra segment. Every path
-  component uses the `registry_base` canonical percent-escape spelling. The
-  filename is one path component. Any extra segment or alternate path,
+  section. Artifact identity components use this canonical encoder before path
+  canonicalization. RPM first splits a scoped raw identity at its one literal
+  structural `/`. For each resulting UTF-8 component, the encoder emits bytes
+  in the RFC 3986 unreserved set `[A-Za-z0-9._~-]` unchanged. It preserves one
+  leading ASCII `@` only for the structural scope component; every other byte,
+  including `%`, `#`, `?`, and each byte of a non-ASCII UTF-8 sequence, becomes
+  `%HH` with uppercase hexadecimal digits. It never decodes existing percent
+  text. The selected version is encoded with the same function as its own
+  component before it enters the registry lookup version segment or the
+  artifact filename.
+
+  The packument path concatenates the encoded scope component, the structural
+  separator `%2F`, and the encoded leaf inside one name segment. The artifact
+  path concatenates the encoded scope component and leaf with a path `/`; the
+  artifact filename uses the encoded unscoped name or scoped leaf and encoded
+  version as its one path component. A URL spelling may encode the one scoped
+  artifact separator as `%2F`, but comparison may normalize only that exact
+  boundary to `/`. No `%2F` inside an identity component is decoded. The
+  canonical component examples are:
+
+  | raw component | encoded component |
+  | --- | --- |
+  | `foo%2Fbar` | `foo%252Fbar` |
+  | `foo%25bar` | `foo%2525bar` |
+  | `foo%252E%252E` | `foo%25252E%25252E` |
+  | `a#b` | `a%23b` |
+  | `a?b` | `a%3Fb` |
+  | `a+b` | `a%2Bb` |
+  | `café` | `caf%C3%A9` |
+  | structural `@scope` | `@scope` |
+  | non-structural `%40scope` | `%2540scope` |
+
+  The filename is one path component. Any extra segment or alternate path,
   including a token, signature, or expiry-bearing path segment, is rejected
   before archive acquisition. V2 has no runtime credential injection, so a
   private or expiring artifact path is ineligible until a future SPEC defines a
@@ -520,8 +548,14 @@ A scoped package name (`@scope/name`) identifies one registry document, so the
 registry lookup path must encode the name as a single path segment. npm's
 registry serves a scoped packument at `/<percent-encoded-name>` where every `/`
 in the scoped name is encoded as `%2F`; `@babel/core` is fetched from
-`/@babel%2Fcore`. The version segment, when present, is a separate path
-component following the encoded name.
+`/@babel%2Fcore`. Before that structural separator is encoded, each raw name
+component applies the identity-component encoding above, with only the
+structural leading `@` preserved. A literal `%2F` remains `%252F` inside a
+component; it is distinct from the `%2F` inserted for the structural separator.
+The unscoped identity `foo%2Fbar` therefore uses `/foo%252Fbar`, while the
+scoped structural separator in `@scope/name` uses `%2F`. The version segment,
+when present, is a separate path component following the encoded name and uses
+the same encoder.
 
 The package identity stays verbatim everywhere except this one registry path:
 the resolver package key, lockfile key, cache filename base, and linker path all
@@ -529,13 +563,16 @@ use the raw scoped name (`@scope/name`), and only the registry lookup path
 percent-encodes it. This keeps one encoding rule at one boundary instead of
 duplicating it across lockfile, cache, and linking.
 
-The production registry client (`src/lib/api/mod.rs`) percent-encodes `/` as
-`%2F` in the name segment via `registry_lookup_url` before the network request
-(issue #170). Offline fixture resolution is unaffected: it routes
-`@scope/name` to a local `@scope__name.json` file and never reaches the
-production URL builder, so the fixture-backed test suite exercises the fixture
-mapping rather than the encoded path. The encoded-path derivation itself is
-covered by a focused unit test on `registry_lookup_url`.
+#224 owns the planned v2 executable URL builder and canonical artifact-locator
+comparator, including the identity-component encoder, structural scoped
+separator handling, version encoding, and equality checks before any network or
+cache operation. The current scoped path behavior remains `@scope/name` to
+`@scope%2Fname`; v2 activation also requires the full encoder above rather than
+the current helper's slash-only transformation. Offline fixture resolution is
+unaffected: it routes `@scope/name` to a local `@scope__name.json` file and
+never reaches the production URL builder, so the fixture-backed test suite
+exercises the fixture mapping rather than the encoded path. The encoded-path
+derivation itself is covered by a focused unit test on `registry_lookup_url`.
 
 ## Error Cases
 
@@ -613,8 +650,12 @@ Fixture expectations are defined by the owning scenario and documented in
   `/npm/token=fixture-secret/` and `/npm/expires=2099-01-01T00:00:00Z/`, the
   raw bypass `/npm/token=fixture-secret/../registry`, and scoped encoding
   variants (`@scope%2Fname` and `@scope%2fname` canonicalize identically while
-  `%40scope%2Fname` remains a distinct encoded-`@` spelling) with no
-  packument/tarball requests or cache writes; query-bearing
+  `%40scope%2Fname` remains a distinct encoded-`@` spelling), plus encoder
+  fixtures for `%`, `#`, `?`, `+`, non-ASCII UTF-8, literal `%2F`, `%25`, and
+  `%252E%252E`; `foo%2Fbar` must use `foo%252Fbar`, remain one component, and
+  stay distinct from the structural scoped separator. `%2F` is decoded only at
+  that one scoped boundary. These collision, traversal, and alternate-encoding
+  cases produce no packument/tarball requests or cache writes; query-bearing
   credential/signature/expiry tarball URLs rejected with zero tarball requests
   and zero cache writes while diagnostics omit their raw query values,
   noncanonical path-segment token/signature/expiry tarball URLs and redirects

@@ -315,7 +315,9 @@ trailing-dot behavior, and reserved name semantics. Every external record must
 project to a distinct cache
 publication path. Before archive acquisition, #147 enumerates link destinations
 derivable from locked metadata and rejects any two distinct planned filesystem
-objects that project to the same host key. After stable-descriptor verification,
+objects that project to the same host key. A projection-computation failure or
+collision fails closed for both replay and fresh resolution/publication before
+tarball acquisition or filesystem mutation. After stable-descriptor verification,
 #147 separately enumerates archive-entry extraction destinations and link
 targets and applies the same rejection before extraction or publication. The
 sole intentional linker alias is two or more packages exposing the exact same
@@ -328,7 +330,8 @@ Every archive-derived extraction or link collision is invalid after verified
 descriptor acquisition and before extraction, cache publication, or install
 publication, even when the structured identities or UTF-8 path spellings
 differ. If the host semantics cannot be represented conservatively, v2 replay
-fails closed. The cache projection and
+and fresh resolution/publication fail closed before tarball acquisition or
+filesystem mutation. The cache projection and
 verified-read rules are owned by `docs/specs/core/install/cache/SPEC.md`; #147
 owns the extraction/link projection and layout, which this SPEC does not
 redefine.
@@ -364,6 +367,13 @@ a dist-tag and was selected through the semver facade. Selection may
 canonicalize an empty selector to `latest`, matching current resolver behavior,
 but the edge retains the raw empty text separately and the writer must not
 serialize `latest` in its place.
+
+Load validation enforces the source/relationship matrix before manifest-drift,
+selector, target, or reachability checks. A root or workspace source may have
+only `direct` or `dev` edges, and an external source may have only `transitive`
+edges. A relationship outside that matrix is invalid even when the edge is
+otherwise unique, reachable, and referentially valid; it must not be ignored by
+one comparison phase. Fresh writers apply the same matrix before serialization.
 
 Replay validates the recorded branch without consulting mutable registry
 metadata. `empty` requires an empty `requested`; `latest` requires the exact raw
@@ -655,13 +665,17 @@ candidate, leaves the bytes present at the commit attempt untouched, and cannot
 write an `rpm.lock` in the replacement directory.
 #221/#224 own this capability and its implementation contract. If the target
 platform cannot provide the atomic conditional proof, v2 lockfile publication
-is disabled and fails closed before lockfile or install state changes. No current
-supported RPM adapter is treated as having this capability: planned v2 lockfile
-publication and replay remain disabled on every current adapter until #224
-supplies a concrete atomic adapter and an executable capability test proves both
-the root-bound proof and the write-excluding lease/content-version CAS. An
-ordinary `renameat` or `renameat2`, even when called with descriptor-relative
-arguments after a separate check, cannot qualify as that adapter.
+is disabled and fails closed before lockfile or install state changes. A separate
+`fstatat`/`fstat` identity check followed by `renameat` or `renameat2`, including
+the sequence currently available through the Rust/POSIX adapters, is not an
+atomic parent-chain-and-destination CAS and cannot qualify as this adapter. No
+current supported RPM adapter is treated as having this capability: planned v2
+lockfile publication and replay remain disabled on every current adapter until
+#224 supplies a concrete platform adapter and an executable capability test
+proves both the root-bound proof and the write-excluding lease/content-version
+CAS. An ordinary `renameat` or `renameat2`, even when called with
+descriptor-relative arguments after a separate check, cannot qualify as that
+adapter.
 
 #### Migration and failure preservation
 
@@ -722,6 +736,10 @@ Planned workspace snapshots must cover:
 - a name present in both dependency maps emitting only the production `direct`
   edge under #145 precedence, plus a crafted overlapping `direct`/`dev` pair
   rejected during replay even when both target the same identity;
+- a fresh writer and reader rejecting root/workspace `transitive` edges and
+  external `direct`/`dev` edges by source/relationship validation even when
+  their targets are reachable; the crafted fresh-writer rejection occurs before
+  registry or tarball network access and lockfile publication;
 - distinct local and external identities with equal name and version text;
 - top-level/root metadata mismatch, external identity/field mismatch, missing
   or empty registry origin, canonical registry base, or tarball, same-origin/

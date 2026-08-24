@@ -89,8 +89,9 @@ distinct external identities that project to the same cache destination are an
 input error even when their UTF-8 spellings differ. A component that the host
 treats as reserved is also an input error. The complete set is checked before
 tarball download, extraction, linking, or creation of a final or staged cache file. If
-RPM cannot determine a conservative projection for the approved cache root, v2
-replay fails closed.
+RPM cannot determine a conservative projection for any destination or the
+approved cache root, v2 replay and fresh fetch/publication fail closed before
+tarball acquisition, cache mutation, or publication.
 
 The corresponding workspace and `node_modules` destination projections are
 owned by workspace discovery (#221) and the linker (#147). V2 external records
@@ -105,15 +106,39 @@ cache SPEC does not define the linker's path layout.
 A v2 cache hit is untrusted until its exact bytes pass the required SHA-512 SRI
 recorded in the selected registry provenance. A shasum-only cache hit is
 ineligible for v2 replay. Starting from the trusted workspace directory handle,
-RPM opens each `.rpm/.cache` component descriptor-relative with no-follow
-semantics and requires a directory at each step, establishing the approved
-cache-root handle without following a symlink. It retains the workspace-root
-identity and exact parent/name chain, plus the `.rpm` and `.cache` component
-identities and names, for the transaction. It then opens the derived entry
-relative to that handle with a no-follow operation. It rejects a symlink at the
-final component and rejects directories, devices, sockets, and every other
-non-regular file. Path-based prechecks alone are insufficient, and the entry
-must never be reopened by pathname after validation.
+RPM establishes the `.rpm/.cache` component chain descriptor-relative. For each
+component in order, an existing entry is opened with no-follow semantics and
+must be a directory. For an absent component, RPM chooses an unpredictable
+temporary sibling name and passes it to one atomic descriptor-relative
+`create_dir_retain(parent_descriptor, temporary_name)` capability. That single
+capability must create the empty directory, return its no-follow open
+descriptor, and bind the created object identity to the retained parent
+descriptor and temporary name before the result is observable. A separate
+`mkdirat` followed by `openat` or `openat2`, even with no-follow flags, does not
+qualify because an attacker can replace the name between creation and retain.
+The retained create capability then publishes the temporary directory to the
+component name with `renameat2(..., RENAME_NOREPLACE)` or an equivalent
+parent-handle no-replace primitive. A final name that appeared during creation
+or publication causes failure without replacing that entry. RPM verifies that
+the retained object identity is bound to the published parent/name, records
+that binding, and uses the retained descriptor thereafter; it never reopens the
+component through a pathname.
+
+Failure cleanup must use the retained create capability's identity-conditional
+remove operation with the original parent binding and object identity. If the
+temporary name or parent/name binding changed, cleanup fails closed and leaves
+the raced entry untouched. A name-only `unlinkat`/`rmdir` cleanup after a
+create/open race is forbidden. A platform without the atomic create-and-retain,
+no-replace publish, no-follow open, and identity-verification capabilities fails
+closed. This establishes the approved cache-root handle without following a
+symlink on a clean first install or an existing cache. It retains the
+workspace-root identity and exact parent/name chain, plus the `.rpm` and
+`.cache` component identities and names, for the transaction. It then opens the
+derived entry relative to that handle with a no-follow operation. It rejects a
+symlink at the final component and rejects directories, devices, sockets, and
+every other non-regular file.
+Path-based prechecks alone are insufficient, and the entry must never be
+reopened by pathname after validation.
 
 The installer must establish one stable verification descriptor for the archive
 bytes. The descriptor returned by the no-follow cache open may be used directly
@@ -183,6 +208,17 @@ the raced destination untouched. These requirements make pathname replacement
 after open irrelevant to the bytes consumed by extraction and keep cache replay
 and publication from introducing a verify/use race.
 
+The current Rust/POSIX adapters do not provide the required atomic
+create-and-retain capability for an absent `.rpm` or `.cache`, or the atomic
+parent-chain-and-destination CAS capability. They therefore fail closed for an
+absent cache component before network or cache mutation. A separate
+`fstatat`/`fstat` identity check followed by `renameat` or `renameat2` is not an
+atomic proof and does not satisfy this contract. Until #224 supplies concrete
+platform capabilities and executable tests for atomic create-and-retain,
+retained parent-chain proof, no-replace/CAS publication, and no-follow
+descriptor use, every v2 cache publication and replay path remains disabled and
+fails closed before cache, network, extraction, or install mutation.
+
 ## Error Cases
 
 If the selected registry metadata has no tarball URL, the download phase must
@@ -220,11 +256,22 @@ same cache filename shape.
 
 Planned v2 fixtures must additionally cover:
 
+- a clean first-install workspace with absent `.rpm` and `.cache`, proving each
+  component uses the atomic create-and-retain capability, descriptor-relative
+  `RENAME_NOREPLACE` publication, identity verification, and retained-descriptor
+  use; a barrier immediately after that atomic capability returns and before
+  no-replace publication lets an attacker replace the temporary source name or
+  create the final name, and a second barrier immediately before failure cleanup
+  lets the attacker replace the retained binding. Both barriers must preserve
+  the attacker entry, reject name-only cleanup, clean up only through the
+  retained identity capability, and make zero network or tarball requests or
+  cache mutation;
 - names that collide only after host case folding or Unicode normalization,
   plus trailing-dot, trailing-space, and reserved-name spellings, proving the
   whole cache destination set is rejected before download or cache creation;
-- a final cache entry replaced with a symlink or non-regular file, proving the
-  descriptor-relative no-follow open rejects it without reading the target;
+- a final cache entry replaced with a symlink or non-regular file in both fresh
+  and replay variants, proving the descriptor-relative no-follow open rejects
+  it without reading the target or making a network/tarball request;
 - a pathname swap after the cache entry is opened, proving verification and
   extraction consume the same stable descriptor bytes;
 - behind a barrier after workspace-root and `.rpm/.cache` parent/name-chain
