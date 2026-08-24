@@ -474,8 +474,8 @@ optional_interface_fields = """\
 interface:
   display_name: Fixture Governance
   short_description: Create deterministic fixtures.
-  icon_small: "icon-small"
-  icon_large: "icon-large"
+  icon_small: "assets/icon-small.svg"
+  icon_large: "assets/icon-large.png"
   brand_color: "#123456"
   default_prompt: Use $fixture-governance.
 """
@@ -488,6 +488,114 @@ if interface_errors:
         "supported optional interface fields were rejected: "
         f"errors={interface_errors!r}"
     )
+
+with tempfile.TemporaryDirectory(dir=".") as temp_dir:
+    skill_root = pathlib.Path(temp_dir) / "fixture-governance"
+    assets_dir = skill_root / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "icon-small.svg").write_text("<svg />")
+    (assets_dir / "icon-large.png").write_bytes(b"fixture")
+    outside_asset = pathlib.Path(temp_dir) / "outside.svg"
+    outside_asset.write_text("<svg />")
+    external_link = assets_dir / "external-link.svg"
+    try:
+        external_link.symlink_to(outside_asset)
+    except OSError as error:
+        raise SystemExit(f"could not create external icon symlink fixture: {error}")
+    valid_interface_asset_paths = """\
+interface:
+  display_name: Fixture Governance
+  short_description: Create deterministic fixtures.
+  icon_small: "./assets/icon-small.svg"
+  icon_large: "./assets/icon-large.png"
+  brand_color: "#123456"
+  default_prompt: Use $fixture-governance.
+"""
+    interface_errors = checker.validate_skill_interface_metadata(
+        valid_interface_asset_paths,
+        "fixture-governance",
+        skill_root,
+    )
+    if interface_errors:
+        raise SystemExit(
+            "valid interface asset paths were rejected: "
+            f"errors={interface_errors!r}"
+        )
+
+    invalid_interface_values = {
+        "icon-traversal": (
+            '  icon_small: "./assets/icon-small.svg"',
+            '  icon_small: "../../outside.png"',
+            "must stay inside the skill directory",
+        ),
+        "icon-missing": (
+            '  icon_large: "./assets/icon-large.png"',
+            '  icon_large: "./assets/missing.png"',
+            "points to a missing file",
+        ),
+        "icon-skill-file": (
+            '  icon_small: "./assets/icon-small.svg"',
+            '  icon_small: "./SKILL.md"',
+            "must stay inside the skill directory",
+        ),
+        "icon-absolute": (
+            '  icon_small: "./assets/icon-small.svg"',
+            '  icon_small: "/assets/icon-small.svg"',
+            "must stay inside the skill directory",
+        ),
+        "icon-unc": (
+            '  icon_small: "./assets/icon-small.svg"',
+            '  icon_small: "//server/share/icon.svg"',
+            "must stay inside the skill directory",
+        ),
+        "icon-windows-drive": (
+            '  icon_small: "./assets/icon-small.svg"',
+            '  icon_small: "C:/assets/icon-small.svg"',
+            "skill-relative POSIX path under 'assets'",
+        ),
+        "icon-windows-drive-backslash": (
+            '  icon_small: "./assets/icon-small.svg"',
+            r"  icon_small: 'C:\assets\icon-small.svg'",
+            "skill-relative POSIX path under 'assets'",
+        ),
+        "icon-unc-backslash": (
+            '  icon_small: "./assets/icon-small.svg"',
+            r"  icon_small: '\\server\share\icon.svg'",
+            "skill-relative POSIX path under 'assets'",
+        ),
+        "icon-backslash-traversal": (
+            '  icon_small: "./assets/icon-small.svg"',
+            r"  icon_small: 'assets\..\outside.svg'",
+            "skill-relative POSIX path under 'assets'",
+        ),
+        "icon-case-mismatch": (
+            '  icon_small: "./assets/icon-small.svg"',
+            '  icon_small: "./assets/ICON-small.svg"',
+            "path component spelling must match the on-disk name exactly",
+        ),
+        "icon-external-symlink": (
+            '  icon_small: "./assets/icon-small.svg"',
+            '  icon_small: "./assets/external-link.svg"',
+            "must resolve to a file inside skill assets",
+        ),
+        "invalid-brand-color": (
+            '  brand_color: "#123456"',
+            "  brand_color: not-a-color",
+            "interface field 'brand_color' must use #RRGGBB",
+        ),
+    }
+    for name, (needle, replacement, expected_error) in invalid_interface_values.items():
+        invalid_text = valid_interface_asset_paths.replace(needle, replacement)
+        interface_errors = checker.validate_skill_interface_metadata(
+            invalid_text,
+            "fixture-governance",
+            skill_root,
+        )
+        if len(interface_errors) != 1 or expected_error not in interface_errors[0]:
+            raise SystemExit(
+                f"invalid interface value {name} was accepted: "
+                f"errors={interface_errors!r}"
+            )
 
 invalid_interface_scalars = {
     "empty-display-name": ("display_name", '""', "display_name is missing", False),
@@ -914,6 +1022,26 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             f"errors={frontmatter_errors!r}"
         )
 
+    description_limit_path = pathlib.Path(temp_dir) / "description-limit-SKILL.md"
+    description_limit_path.write_text(
+        "---\n"
+        "name: fixture-governance\n"
+        "description: "
+        + ("a" * 1024)
+        + "\n---\n"
+    )
+    frontmatter_errors = []
+    checker.validate_skill_frontmatter_name(
+        "fixture-governance",
+        description_limit_path,
+        frontmatter_errors,
+    )
+    if frontmatter_errors:
+        raise SystemExit(
+            "description at the 1024-character limit was rejected: "
+            f"errors={frontmatter_errors!r}"
+        )
+
     malformed_frontmatter = {
         "nested-only-name": (
             "---\n"
@@ -949,6 +1077,28 @@ with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             "description: true\n"
             "---\n",
             "frontmatter description must be a non-empty string",
+        ),
+        "todo-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            'description: "[TODO: fill this in]"\n'
+            "---\n",
+            "frontmatter description contains an unfinished TODO placeholder",
+        ),
+        "angle-bracket-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            'description: "Use <path> safely."\n'
+            "---\n",
+            "frontmatter description cannot contain angle brackets (< or >)",
+        ),
+        "long-description": (
+            "---\n"
+            "name: fixture-governance\n"
+            "description: "
+            + ("a" * 1025)
+            + "\n---\n",
+            "frontmatter description is too long",
         ),
         "unsupported-metadata-child": (
             "---\n"

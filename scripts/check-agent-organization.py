@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tomllib
 import unicodedata
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -501,6 +501,30 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
                 "frontmatter description must be a non-empty string",
             )
             continue
+        if key == "description":
+            description = parsed_value.strip()
+            if description.startswith("[TODO:"):
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    "frontmatter description contains an unfinished TODO placeholder",
+                )
+                continue
+            if "<" in description or ">" in description:
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    "frontmatter description cannot contain angle brackets (< or >)",
+                )
+                continue
+            if len(description) > 1024:
+                fail(
+                    errors,
+                    f"{path.relative_to(ROOT)}: line {line_number}: "
+                    f"frontmatter description is too long ({len(description)} characters). "
+                    "Maximum is 1024 characters.",
+                )
+                continue
         if key in FRONTMATTER_NON_EMPTY_STRING_KEYS and (
             not isinstance(parsed_value, str) or not parsed_value.strip()
         ):
@@ -951,6 +975,9 @@ INTERFACE_METADATA_KEYS = frozenset((
     "brand_color",
     "default_prompt",
 ))
+INTERFACE_ICON_KEYS = frozenset(("icon_small", "icon_large"))
+INTERFACE_BRAND_COLOR_RE = re.compile(r"^#[0-9A-F]{6}$", re.IGNORECASE)
+WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:")
 LITERAL_SCALAR_CONTROL_ERROR = (
     "literal C0 and DEL control characters are not allowed in interface metadata scalars; "
     "C1 controls and YAML noncharacters are also forbidden"
@@ -1141,7 +1168,76 @@ def parse_frontmatter_scalar(
     return parsed, None
 
 
-def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
+def validate_interface_asset_path(
+    value: str,
+    key: str,
+    line_number: int,
+    skill_root: Path | None,
+) -> str | None:
+    """Validate an interface icon as a spelling-preserving skill asset path."""
+    error_prefix = f"line {line_number}: interface field {key!r}"
+    if "\\" in value or WINDOWS_DRIVE_PATH_RE.match(value):
+        return f"{error_prefix} must be a skill-relative POSIX path under 'assets'"
+    candidate = PurePosixPath(value)
+    if (
+        candidate.is_absolute()
+        or not candidate.parts
+        or candidate.parts[0] != "assets"
+        or ".." in candidate.parts
+    ):
+        return f"{error_prefix} must stay inside the skill directory"
+    if skill_root is None:
+        return None
+
+    try:
+        resolved_root = skill_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return f"{error_prefix} skill root cannot be resolved"
+    current = resolved_root
+    for component in candidate.parts:
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            return f"{error_prefix} path cannot be inspected"
+        requested_bytes = os.fsencode(component)
+        exact_entry = next(
+            (
+                entry
+                for entry in entries
+                if os.fsencode(entry.name) == requested_bytes
+            ),
+            None,
+        )
+        if exact_entry is None:
+            if any(entry.name.casefold() == component.casefold() for entry in entries):
+                return (
+                    f"{error_prefix} path component spelling must match the on-disk "
+                    "name exactly"
+                )
+            return f"{error_prefix} points to a missing file"
+        current = exact_entry
+
+    try:
+        assets_root = (resolved_root / "assets").resolve(strict=True)
+        resolved_target = current.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return f"{error_prefix} must resolve to a file inside skill assets"
+    if (
+        not assets_root.is_dir()
+        or not assets_root.is_relative_to(resolved_root)
+        or not resolved_target.is_relative_to(assets_root)
+    ):
+        return f"{error_prefix} must resolve to a file inside skill assets"
+    if not resolved_target.is_file():
+        return f"{error_prefix} points to a missing file"
+    return None
+
+
+def validate_skill_interface_metadata(
+    text: str,
+    skill_name: str,
+    skill_root: Path | None = None,
+) -> list[str]:
     """Validate direct children of one interface mapping in the supported subset.
 
     The supported root mapping keys are ``interface:``, ``dependencies:``, and
@@ -1236,6 +1332,22 @@ def validate_skill_interface_metadata(text: str, skill_name: str) -> list[str]:
         errors.append("default_prompt is missing")
     elif not has_complete_skill_token(default_prompt[0], skill_name):
         errors.append(f"default_prompt must mention ${skill_name}")
+    for key, (value, line_number) in fields.items():
+        if key in INTERFACE_ICON_KEYS:
+            if value is None:
+                continue
+            if asset_error := validate_interface_asset_path(
+                value,
+                key,
+                line_number,
+                skill_root,
+            ):
+                errors.append(asset_error)
+        elif key == "brand_color" and value is not None:
+            if INTERFACE_BRAND_COLOR_RE.fullmatch(value) is None:
+                errors.append(
+                    f"line {line_number}: interface field 'brand_color' must use #RRGGBB"
+                )
     return errors
 
 
@@ -1280,7 +1392,11 @@ def check_skill_inventory(errors: list[str]) -> None:
         except OSError as error:
             fail(errors, f"{metadata_path.relative_to(ROOT)}: cannot read: {error}")
             continue
-        for interface_error in validate_skill_interface_metadata(text, skill_name):
+        for interface_error in validate_skill_interface_metadata(
+            text,
+            skill_name,
+            metadata_path.parent.parent,
+        ):
             fail(
                 errors,
                 f"{metadata_path.relative_to(ROOT)}: invalid interface metadata: {interface_error}",
