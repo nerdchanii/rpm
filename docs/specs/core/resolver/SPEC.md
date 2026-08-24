@@ -213,7 +213,8 @@ semver range, and remains external because registry dist-tags have no local
 member mapping. Registry-owned dist-tag identity has precedence over local
 range matching. A dependency edge is classified against the discovered member
 table only after the registry boundary determines whether the canonical
-request matches a published dist-tag. A name absent from the table is an
+request matches a published dist-tag and returns or pins the immutable metadata
+snapshot used for that determination. A name absent from the table is an
 external edge. A name present in the table is workspace-local only when the
 request is confirmed to be a non-tag, the member has a valid declared semantic
 version, and that version satisfies the canonical range under
@@ -231,15 +232,18 @@ Resolution-root creation and edge classification are separate operations. RPM
 creates every root/member resolution-root record and seeds that record's
 snapshot dependencies exactly once during the ordered initial root-set pass.
 For each later edge, registry-owned tag classification runs first when tag
-identity is not already available; only a confirmed non-tag proceeds to the
-member-name and range-compatibility branch. A compatible local edge attaches to
-the already-created member node identified by `member_path_key`; after the
-non-tag result it does not read external package metadata, select an external
-version, create another member root, enqueue the member snapshot again, or
-replay that member's dependency maps. Multiple incoming local edges share that
-existing member node. The absent-member,
-missing/invalid/incompatible-member-version, and matching-dist-tag branches may
-enter external metadata lookup and version selection.
+identity is not already available; the result includes or pins the immutable
+metadata snapshot used for that classification. Only a confirmed non-tag
+proceeds to the member-name and range-compatibility branch. A compatible local
+edge attaches to the already-created member node identified by
+`member_path_key`; after the non-tag result it does not read external package
+metadata, select an external version, create another member root, enqueue the
+member snapshot again, or replay that member's dependency maps. Multiple
+incoming local edges share that existing member node. The absent-member,
+missing/invalid/incompatible-member-version, and matching-dist-tag branches
+must pass the same pinned snapshot to external metadata access and version
+selection; they must not reread mutable registry/cache state between tag
+classification and selection.
 
 Name collisions among members or between the root package and a member are
 invalid discovery input and must fail before graph traversal. A missing or
@@ -271,19 +275,23 @@ The first strategy is an iterative FIFO worklist:
 2. Pop the oldest pending request.
 3. Before local range matching, use the registry boundary's dist-tag identity
    classification for the canonical request, reusing an already available
-   result when present. This preceding tag-identity operation may read only the
-   registry or cache metadata needed to distinguish a published tag; it does
-   not select a version or retrieve per-version package metadata. A matching
-   tag enters the external branch. For a confirmed non-tag, apply the
+   result and its pinned snapshot when present. This preceding tag-identity
+   operation reads and pins the immutable registry or cache document needed to
+   distinguish a published tag and supply external selection; it does not
+   select a version. Its immutable snapshot must retain the fields needed for
+   any external branch. A matching tag enters the
+   external branch with that snapshot. For a confirmed non-tag, apply the
    workspace-local classification branch defined above. When a compatible
    member satisfies the request, attach the edge to that existing member
    resolution-root node and continue with the next pending request. This
    confirmed-local branch performs no further registry/cache metadata read,
    external version selection, member-root creation, or member dependency
    reseeding.
-4. For an external branch only, read package metadata through the metadata
-   abstraction.
-5. Select an external version through the version selection abstraction.
+4. For an external branch only, read package metadata from the pinned snapshot
+   through the metadata abstraction; if the snapshot is unavailable, stale, or
+   lacks the required fields, fail closed instead of rereading live state.
+5. Select an external version through the version selection abstraction using
+   that same pinned snapshot.
 6. Add or merge the resolved external package into the graph.
 7. Enqueue that external package's dependency requests as transitive requests.
 8. Continue until the worklist is empty or resolution fails.
@@ -500,7 +508,8 @@ fixture uses direct selectors `"foo": ""` and `"foo": "latest"`; both
 classify as external through canonical `latest` while retaining distinct raw
 selectors (`""` and `"latest"`) alongside their source origins. A local-branch
 fixture uses a tag-aware registry boundary that proves the selector is not a
-dist-tag, plus a package-metadata provider that records every
+dist-tag and returns the immutable metadata snapshot used for that result,
+plus a package-metadata provider that records every
 request and fails if queried for a compatible member; multiple root/member
 edges target the same compatible member and prove that its resolution root and
 snapshot dependency seeds are created exactly once. Paired incompatible and
@@ -516,7 +525,10 @@ lockfile owner. A paired registry-context fixture reaches the same external
 through a matching dist-tag and once through a confirmed non-tag semver
 external fallback; the expected edges retain distinct selection provenance,
 proving it is not inferred from the target or selector text alone. A
-tag-identity lookup failure fixture proves classification fails closed before
+registry-context mutation fixture changes the live packument between tag
+classification and external selection and proves the pinned snapshot keeps
+the selected version and metadata consistent. A tag-identity lookup failure
+fixture proves classification fails closed before
 local range matching and never falls back to a workspace-local edge.
 Resolver workspace fixtures stop at graph construction. Lifecycle activation
 and its fixtures remain deferred to #222.
