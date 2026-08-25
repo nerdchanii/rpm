@@ -90,6 +90,20 @@ def has_open_closing_pr(issue: dict[str, object]) -> bool:
     )
 
 
+def has_only_unfinished_open_closing_pr(issue: dict[str, object]) -> bool:
+    """Identify open draft PRs that are not adoption candidates yet."""
+    prs = issue.get("closing_prs", [])
+    if not isinstance(prs, list):
+        raise ValueError("closing_prs must be an array")
+    open_prs = [
+        pr
+        for pr in prs
+        if isinstance(pr, dict)
+        and str(pr.get("state", "")).casefold() == "open"
+    ]
+    return bool(open_prs) and all(pr.get("is_draft") is True for pr in open_prs)
+
+
 def execution_metadata(issue: dict[str, object]) -> dict[str, object] | None:
     metadata = issue.get("execution")
     if metadata is None:
@@ -347,6 +361,8 @@ def select_execution(
     adoption_required: list[int] = []
     for issue, state in states:
         if state != "untracked" or not has_open_closing_pr(issue):
+            continue
+        if has_only_unfinished_open_closing_pr(issue):
             continue
         completed = issue.get("completed_pr_evidence")
         adoption = adoption_contract(policy or {})

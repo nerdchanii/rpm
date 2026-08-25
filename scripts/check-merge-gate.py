@@ -119,7 +119,8 @@ def validate_findings_collection(
         if not isinstance(owner, str) or not owner.strip():
             return "finding-owner-missing"
         if disposition == "defer-follow-up":
-            if not isinstance(item.get("follow_up_issue"), int) and not (
+            follow_up_issue = item.get("follow_up_issue")
+            if not (type(follow_up_issue) is int and follow_up_issue > 0) and not (
                 isinstance(item.get("follow_up_creation_authority"), str)
                 and str(item["follow_up_creation_authority"]).strip()
             ):
@@ -534,6 +535,7 @@ def validate_dependent_prs(
             or record.get("repository") != repository
             or not isinstance(record.get("state"), str)
             or not record.get("state", "").strip()
+            or str(record.get("state", "")).casefold() != "open"
             or not isinstance(record.get("base_ref"), str)
             or not record.get("base_ref", "").strip()
             or not isinstance(record.get("head_ref"), str)

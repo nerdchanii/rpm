@@ -1222,6 +1222,7 @@ class AdoptionContractTest(unittest.TestCase):
             source_id: str = "thread-P2-fixture",
             disposition: str = "residual-risk",
             marker_count: int = 1,
+            marker_head_sha: str | None = HEAD_SHA,
         ) -> dict[str, object]:
             marker = {
                 "id": "P2-fixture",
@@ -1231,6 +1232,8 @@ class AdoptionContractTest(unittest.TestCase):
                 "owner": "issue-229",
                 "rationale": "deterministic review-thread fixture",
             }
+            if marker_head_sha is not None:
+                marker["head_sha"] = marker_head_sha
             body = (
                 "<!-- rpm-agent-finding:v1: "
                 + json.dumps(marker, sort_keys=True, separators=(",", ":"))
@@ -1261,6 +1264,10 @@ class AdoptionContractTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "author|actor|trusted|approved"):
             finder(thread(actor="attacker"), HEAD_SHA)
+        with self.assertRaisesRegex(RuntimeError, "head"):
+            finder(thread(actor=LEDGER_AUTHOR, marker_head_sha="c" * 40), HEAD_SHA)
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            finder(thread(actor=LEDGER_AUTHOR, marker_head_sha=None), HEAD_SHA)
         with self.assertRaisesRegex(RuntimeError, "identity|source|thread"):
             finder(
                 thread(actor=LEDGER_AUTHOR, source_id="forged-other-thread"),
@@ -1987,7 +1994,11 @@ class AdoptionContractTest(unittest.TestCase):
 
         prepared = self.load_adoption()
         api = FakeGithubApiRunner(prepared)
-        transport = github_transport(snapshot=prepared, runner=api)
+        transport = github_transport(
+            snapshot=prepared,
+            runner=api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+        )
         required = {
             "execution",
             "findings",
@@ -2011,7 +2022,11 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertEqual([kind for kind, _ in api.writes], ["comment"])
 
         missing_api = FakeGithubApiRunner(prepared)
-        missing = github_transport(snapshot=prepared, runner=missing_api)
+        missing = github_transport(
+            snapshot=prepared,
+            runner=missing_api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+        )
         missing.collectors.update(self.live_collectors(prepared))
         missing.collectors.pop("writers")
         with self.assertRaisesRegex(RuntimeError, "collector missing: writers"):
@@ -2019,7 +2034,11 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertEqual(missing_api.writes, [])
 
         partial_api = FakeGithubApiRunner(prepared)
-        partial = github_transport(snapshot=prepared, runner=partial_api)
+        partial = github_transport(
+            snapshot=prepared,
+            runner=partial_api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+        )
         partial.collectors.update(self.live_collectors(prepared))
         bad_writers = copy.deepcopy(prepared["evidence"]["writers"])
         bad_writers["read_complete"] = False
@@ -2127,6 +2146,28 @@ class AdoptionContractTest(unittest.TestCase):
             "2026-08-25T12:20:00Z",
         )
 
+        trusted_record = self.ledger_record(prepared, "prepared", comment_id=81001)
+        parsed = transitioned._ledger_comments(
+            [
+                {
+                    "id": 81000,
+                    "user": {"login": "untrusted-user"},
+                    "body": "<!-- rpm-agent-adoption:v1 -->\nnot-json",
+                },
+                {
+                    "id": 81001,
+                    "user": {"login": "nerdchanii"},
+                    "body": "<!-- rpm-agent-adoption:v1 -->\n"
+                    + json.dumps(trusted_record),
+                },
+            ],
+            "nerdchanii/rpm",
+            145,
+            210,
+            frozenset({"nerdchanii"}),
+        )
+        self.assertEqual(parsed, [trusted_record])
+
     def test_live_observation_clock_refreshes_each_refetch_and_keeps_phase_retry_safe(
         self,
     ) -> None:
@@ -2142,6 +2183,12 @@ class AdoptionContractTest(unittest.TestCase):
                 datetime(2026, 8, 26, 1, 2, 4, tzinfo=timezone.utc),
                 datetime(2026, 8, 26, 1, 3, 4, tzinfo=timezone.utc),
                 datetime(2026, 8, 26, 1, 3, 5, tzinfo=timezone.utc),
+                datetime(2026, 8, 26, 1, 4, 4, tzinfo=timezone.utc),
+                datetime(2026, 8, 26, 1, 4, 5, tzinfo=timezone.utc),
+                datetime(2026, 8, 26, 1, 4, 6, tzinfo=timezone.utc),
+                datetime(2026, 8, 26, 1, 4, 7, tzinfo=timezone.utc),
+                datetime(2026, 8, 26, 1, 4, 8, tzinfo=timezone.utc),
+                datetime(2026, 8, 26, 1, 4, 9, tzinfo=timezone.utc),
             ]
         )
         api = FakeGithubApiRunner(prepared)
@@ -2171,13 +2218,16 @@ class AdoptionContractTest(unittest.TestCase):
         transport.collectors["writers"] = writers
         first = writer(self.load_policy(), prepared, transport)
         second = writer(self.load_policy(), prepared, transport)
+        third = writer(self.load_policy(), prepared, transport)
         self.assertEqual(first.get("status"), "applied", first)
         self.assertEqual(first.get("phase"), "prepared", first)
         self.assertEqual(second.get("status"), "applied", second)
         self.assertEqual(second.get("phase"), "label-mutation", second)
+        self.assertEqual(third.get("status"), "applied", third)
+        self.assertEqual(third.get("phase"), "label-mutation", third)
         self.assertEqual(
             [kind for kind, _ in api.writes],
-            ["comment", "comment"],
+            ["comment", "comment", "labels"],
         )
 
     def test_writer_leases_are_global_and_marker_authors_are_bound(self) -> None:
@@ -2206,11 +2256,13 @@ class AdoptionContractTest(unittest.TestCase):
                     {
                         "number": 145,
                         "body": "",
+                        "labels": [],
                         "user": {"login": "nerdchanii"},
                     },
                     {
                         "number": 999,
                         "body": marker,
+                        "labels": [],
                         "user": {"login": "nerdchanii"},
                     },
                 ]
@@ -2260,6 +2312,29 @@ class AdoptionContractTest(unittest.TestCase):
             1,
         )
 
+        claimed_without_lease = github_transport(
+            snapshot=prepared,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+        )
+
+        def claimed_issue_paginate(endpoint: str, **kwargs: object) -> list[object]:
+            if endpoint == "repos/nerdchanii/rpm/issues?state=open":
+                return [
+                    {
+                        "number": 999,
+                        "body": "",
+                        "labels": [{"name": "agent:claimed"}],
+                        "user": {"login": "nerdchanii"},
+                    }
+                ]
+            if endpoint.endswith("/comments"):
+                return []
+            raise AssertionError(endpoint)
+
+        claimed_without_lease._paginate = claimed_issue_paginate
+        with self.assertRaisesRegex(RuntimeError, "claim lease"):
+            claimed_without_lease._collect_writers("nerdchanii/rpm", 145, 210)
+
     def test_dependent_inventory_filters_unrelated_forks_before_identity_checks(self) -> None:
         namespace = runpy.run_path(str(ADOPTION_WRITER))
         github_transport = namespace.get("GithubAdoptionTransport")
@@ -2306,6 +2381,7 @@ class AdoptionContractTest(unittest.TestCase):
         transport = github_transport(
             snapshot=prepared,
             runner=api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
             collectors=self.live_collectors(prepared),
         )
         expected_phases = [
@@ -2389,6 +2465,7 @@ class AdoptionContractTest(unittest.TestCase):
                 transport = github_transport(
                     snapshot=prepared,
                     runner=api,
+                    approved_marker_actors=frozenset({"nerdchanii"}),
                     collectors=self.live_collectors(prepared),
                 )
 
@@ -2831,6 +2908,14 @@ class AdoptionContractTest(unittest.TestCase):
                         {"issue_number": 145, "labels": ["agent:review-pending"]},
                     ),
                     (
+                        "mcp__github__submit_pending_pull_request_review",
+                        {"pull_request_number": 210, "event": "COMMENT"},
+                    ),
+                    (
+                        "mcp__github__resolve_review_thread",
+                        {"thread_id": "thread-1"},
+                    ),
+                    (
                         "exec_command",
                         {
                             "cmd": "gh api --method PATCH repos/nerdchanii/rpm/issues/145 -f labels[]=agent:review-pending"
@@ -3118,6 +3203,35 @@ class AdoptionContractTest(unittest.TestCase):
                 self.assertEqual(
                     data.get("reason"), "adoption-evidence-incomplete", data
                 )
+
+    def test_select_execution_skips_unfinished_draft_closing_prs(self) -> None:
+        fixture = self.load_adoption()
+        fixture["issues"][0].pop("completed_pr_evidence", None)
+        fixture["issues"][0]["closing_prs"][0]["is_draft"] = True
+        fixture["issues"].append(
+            {
+                "number": 146,
+                "url": "https://github.com/nerdchanii/rpm/issues/146",
+                "state": "OPEN",
+                "labels": ["agent:ready", "documentation"],
+                "closing_prs": [],
+                "execution": {
+                    "approval_id": "approval-146",
+                    "plan_revision": "plan-146",
+                    "scope_hash": "sha256:" + "3" * 64,
+                    "executor": "local",
+                },
+            }
+        )
+        fixture["execution_inventory"]["records"].append(
+            {"repository": "nerdchanii/rpm", "number": 146}
+        )
+        fixture["execution_inventory"]["count"] = 2
+        result, event = self.run_queue(fixture, operation="select-execution")
+        data = event["data"]
+        self.assertEqual(result.returncode, 0, data)
+        self.assertEqual(data.get("status"), "selected", data)
+        self.assertEqual(data.get("issues"), [146], data)
 
     def test_execution_inventory_is_complete_before_orphan_candidate_filtering(self) -> None:
         variants: list[tuple[str, dict[str, object]]] = []
@@ -3408,6 +3522,14 @@ class AdoptionContractTest(unittest.TestCase):
                 result, event = self.run_merge(changed)
                 self.assert_blocked(result, event)
 
+        closed = copy.deepcopy(fixture)
+        closed["issues"][0]["closing_prs"][0]["dependent_prs"]["records"][0][
+            "state"
+        ] = "CLOSED"
+        result, event = self.run_merge(closed)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(data.get("reason"), "dependent-pr-record-identity", data)
+
     def test_merge_inventory_preserves_closed_relationships_without_selecting_them(
         self,
     ) -> None:
@@ -3631,6 +3753,33 @@ class AdoptionContractTest(unittest.TestCase):
                 result, event = self.run_merge(fixture)
                 data = self.assert_blocked(result, event)
                 self.assertIn("checks", str(data.get("reason", "")), data)
+
+    def test_merge_gate_requires_a_positive_follow_up_issue(self) -> None:
+        fixture = json.loads(DEPENDENT_FIXTURE.read_text())
+        pr = fixture["issues"][0]["closing_prs"][0]
+        pr["dependent_prs"]["records"] = []
+        pr["dependent_prs"]["count"] = 0
+        for follow_up_issue in (True, 0, -1):
+            with self.subTest(follow_up_issue=follow_up_issue):
+                changed = copy.deepcopy(fixture)
+                changed_pr = changed["issues"][0]["closing_prs"][0]
+                changed_pr["findings"]["items"] = [
+                    {
+                        "id": "P2-follow-up",
+                        "source_id": "review-thread-follow-up",
+                        "head_sha": HEAD_SHA,
+                        "severity": "P2",
+                        "disposition": "defer-follow-up",
+                        "owner": "issue-229",
+                        "follow_up_issue": follow_up_issue,
+                    }
+                ]
+                changed_pr["findings"]["count"] = 1
+                result, event = self.run_merge(changed)
+                data = self.assert_blocked(result, event)
+                self.assertEqual(
+                    data.get("reason"), "follow-up-owner-incomplete", data
+                )
 
     def test_merge_checks_reject_legacy_lists_and_bind_repo_pr_head_and_runs(
         self,

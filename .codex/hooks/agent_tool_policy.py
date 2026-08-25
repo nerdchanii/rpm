@@ -35,6 +35,61 @@ MCP_READ_ROLES = {
     "rpm_ready_ticket_claimer",
     "rpm_followup_issue_creator",
 }
+# The existing-PR adopter may collect evidence through the host GitHub MCP
+# connector, but it must never receive an implicit allow for an unrecognized
+# operation.  Keep this list keyed by the operation suffix so host-specific
+# MCP namespaces (for example ``mcp__codex_apps__github_*``) share the same
+# fail-closed boundary.
+MCP_READ_ONLY_OPERATIONS = {
+    "compare_commits",
+    "download_user_content",
+    "fetch",
+    "fetch_blob",
+    "fetch_commit",
+    "fetch_commit_workflow_runs",
+    "fetch_file",
+    "fetch_issue",
+    "fetch_issue_comments",
+    "fetch_pr",
+    "fetch_pr_comments",
+    "fetch_pr_file_patch",
+    "fetch_pr_patch",
+    "fetch_workflow_job_logs",
+    "fetch_workflow_job_steps",
+    "fetch_workflow_run_artifacts",
+    "get_commit_combined_status",
+    "get_issue",
+    "get_issue_comment_reactions",
+    "get_pr_diff",
+    "get_pr_info",
+    "get_pr_reactions",
+    "get_pr_review_comment_reactions",
+    "get_pull_request",
+    "get_profile",
+    "get_repo",
+    "get_repo_collaborator_permission",
+    "get_user_login",
+    "get_users_recent_prs_in_repo",
+    "list_installations",
+    "list_installed_accounts",
+    "list_pr_changed_filenames",
+    "list_pull_request_review_threads",
+    "list_pull_request_reviews",
+    "list_recent_issues",
+    "list_repositories",
+    "list_repositories_by_affiliation",
+    "list_repositories_by_installation",
+    "list_user_org_memberships",
+    "list_user_orgs",
+    "search",
+    "search_branches",
+    "search_commits",
+    "search_installed_repositories_streaming",
+    "search_installed_repositories_v2",
+    "search_issues",
+    "search_prs",
+    "search_repositories",
+}
 GITHUB_MUTATION_ROLES = {
     "rpm_idea_issue_creator",
     "rpm_issue_refiner",
@@ -301,6 +356,15 @@ def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:
     return "unknown_mutation"
 
 
+def mcp_read_only_allowed(tool: str) -> bool:
+    """Return whether a host MCP operation is explicitly read-only."""
+    normalized = normalized_tool(tool)
+    if not normalized.startswith("mcp__"):
+        return False
+    operation = normalized.rsplit("__", 1)[-1]
+    return operation in MCP_READ_ONLY_OPERATIONS
+
+
 def allowed_github_mutation(
     role: str, kind: str, tool_input: object, shell_text: str = ""
 ) -> bool:
@@ -441,8 +505,12 @@ def check_tool(event: dict[str, object]) -> int:
         # The adopter's entrypoints own the write boundary, while read-only
         # MCP calls are required when the task receives only an issue/PR pair
         # and must collect the live evidence itself.
-        if tool.startswith("mcp__") and mcp_mutation_kind(tool, tool_input) is None:
-            return 0
+        if tool.startswith("mcp__"):
+            if mcp_read_only_allowed(tool):
+                return 0
+            return deny(
+                "existing PR adopter MCP operation is not on the explicit read-only allowlist"
+            )
         if adopter_command_allowed(tool, tool_input):
             return 0
         return deny("existing PR adopter is restricted to exact adoption entrypoints and read-only MCP")

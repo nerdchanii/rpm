@@ -475,13 +475,20 @@ class GithubAdoptionTransport:
             raise RuntimeError("GitHub unresolved review thread finding metadata is missing or ambiguous")
         finding, actor = markers[0]
         finding = copy.deepcopy(finding)
-        required = ("id", "source_id", "severity", "disposition", "owner")
+        required = (
+            "id",
+            "source_id",
+            "severity",
+            "disposition",
+            "owner",
+            "head_sha",
+        )
         if any(
             not isinstance(finding.get(field), str) or not str(finding.get(field)).strip()
             for field in required
         ):
             raise RuntimeError("GitHub review finding metadata is incomplete")
-        if finding.get("head_sha") not in (None, head_sha):
+        if finding.get("head_sha") != head_sha:
             raise RuntimeError("GitHub review finding head mismatch")
         if finding.get("source_id") != thread_id:
             raise RuntimeError("GitHub review finding source does not match thread")
@@ -489,7 +496,6 @@ class GithubAdoptionTransport:
             raise RuntimeError("GitHub review finding thread identity mismatch")
         if resolved:
             return None
-        finding["head_sha"] = head_sha
         finding["thread_id"] = thread_id
         return finding
 
@@ -668,8 +674,17 @@ class GithubAdoptionTransport:
             if not isinstance(item, dict) or not isinstance(item.get("number"), int):
                 raise RuntimeError("GitHub open-item inventory is invalid")
             number = int(item["number"])
+            labels = item.get("labels")
+            if not isinstance(labels, list):
+                raise RuntimeError("GitHub writer issue labels are invalid")
+            lifecycle_labels = {
+                label.get("name")
+                for label in labels
+                if isinstance(label, dict) and isinstance(label.get("name"), str)
+            }
             writer_pr = pr if number == issue else None
             writer_head_sha = target_head_sha if number == issue else None
+            item_records: list[dict[str, object]] = []
             execution_record = self._writer_record_from_execution(
                 item.get("execution"),
                 repository,
@@ -678,12 +693,12 @@ class GithubAdoptionTransport:
                 writer_head_sha,
             )
             if execution_record is not None:
-                records.append(execution_record)
+                item_records.append(execution_record)
             item_user = item.get("user")
             item_author = (
                 item_user.get("login") if isinstance(item_user, dict) else None
             )
-            records.extend(
+            item_records.extend(
                 self._writer_records_from_text(
                     item.get("body"),
                     repository,
@@ -707,7 +722,7 @@ class GithubAdoptionTransport:
                     if isinstance(comment_user, dict)
                     else None
                 )
-                records.extend(
+                item_records.extend(
                     self._writer_records_from_text(
                         comment.get("body"),
                         repository,
@@ -719,6 +734,14 @@ class GithubAdoptionTransport:
                         approved_marker_actors=self.approved_marker_actors,
                     )
                 )
+            if "agent:claimed" in lifecycle_labels and not any(
+                record.get("kind") == "claim" for record in item_records
+            ):
+                # A claim lease is part of the active-writer safety boundary.
+                # An older claimer or an incomplete connector response must
+                # stop adoption instead of allowing an unobserved worker.
+                raise RuntimeError("GitHub active claim lease is missing")
+            records.extend(item_records)
         observed_at = self._current_observation_time
         if not isinstance(observed_at, str) or not observed_at.strip():
             observed_at = self._collect_observation_time(repository, issue, pr)
@@ -1535,7 +1558,13 @@ class GithubAdoptionTransport:
             }
         )
 
-        comments = self._ledger_comments(comments_payload, repository, issue, pr)
+        comments = self._ledger_comments(
+            comments_payload,
+            repository,
+            issue,
+            pr,
+            self.approved_marker_actors,
+        )
         ledger = state.get("ledger")
         if isinstance(ledger, dict):
             ledger["comments"] = comments
@@ -1548,9 +1577,13 @@ class GithubAdoptionTransport:
         state["authorization"] = live_authorization
         return state
 
-    @staticmethod
     def _ledger_comments(
-        payload: object, repository: str, issue: int, pr: int
+        self,
+        payload: object,
+        repository: str,
+        issue: int,
+        pr: int,
+        approved_authors: frozenset[str],
     ) -> list[dict[str, object]]:
         if not isinstance(payload, list):
             raise RuntimeError("GitHub ledger comments payload is invalid")
@@ -1562,6 +1595,13 @@ class GithubAdoptionTransport:
             body = item["body"]
             if marker not in body:
                 continue
+            author = item.get("user")
+            actor = author.get("login") if isinstance(author, dict) else None
+            # Ordinary users can quote the ledger marker in issue comments.
+            # Ignore those comments before parsing attacker-controlled JSON;
+            # only the policy-approved ledger authors can contribute records.
+            if not isinstance(actor, str) or actor not in approved_authors:
+                continue
             encoded = body.split(marker, 1)[1].strip()
             try:
                 record = json.loads(encoded)
@@ -1569,9 +1609,8 @@ class GithubAdoptionTransport:
                 raise RuntimeError("GitHub ledger marker has invalid JSON")
             if not isinstance(record, dict):
                 raise RuntimeError("GitHub ledger record is invalid")
-            author = item.get("user")
             record["comment_id"] = item.get("id")
-            record["author"] = author.get("login") if isinstance(author, dict) else None
+            record["author"] = actor
             if (
                 record.get("repository") != repository
                 or record.get("issue") != issue
@@ -2032,7 +2071,9 @@ class GithubAdoptionTransport:
                     if isinstance(post_observation, dict)
                     else None
                 )
-                if post_state != expected_state:
+                if self._runtime_time_projection(post_state) != self._runtime_time_projection(
+                    expected_state
+                ):
                     return self._recover_label_conflict(
                         repository,
                         issue,
