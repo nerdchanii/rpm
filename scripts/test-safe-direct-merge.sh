@@ -29,7 +29,7 @@ if [ "${MOCK_COLLECTOR_SCENARIO:-ok}" = "malformed" ]; then
   exit 0
 fi
 if [ "${MOCK_COLLECTOR_SCENARIO:-ok}" = "identity-mismatch" ]; then
-  printf '{"pullRequest":{"number":2,"url":"https://github.com/owner/repo/pull/2"},"reviewThreads":[]}\n'
+  printf '{"pullRequest":{"number":2,"url":"https://github.com/nerdchanii/rpm/pull/2"},"reviewThreads":[]}\n'
   exit 0
 fi
 if [ "${MOCK_COLLECTOR_SCENARIO:-ok}" = "review-race" ]; then
@@ -38,13 +38,13 @@ if [ "${MOCK_COLLECTOR_SCENARIO:-ok}" = "review-race" ]; then
   count=$((count + 1))
   printf '%s\n' "$count" >"${REVIEW_CALL_LOG}"
   if [ "$count" -gt 1 ]; then
-    printf '{"pullRequest":{"number":1,"url":"https://github.com/owner/repo/pull/1"},"reviewThreads":[{"isResolved":false}]}\n'
+    printf '{"pullRequest":{"number":1,"url":"https://github.com/nerdchanii/rpm/pull/1"},"reviewThreads":[{"isResolved":false}]}\n'
   else
-    printf '{"pullRequest":{"number":1,"url":"https://github.com/owner/repo/pull/1"},"reviewThreads":[]}\n'
+    printf '{"pullRequest":{"number":1,"url":"https://github.com/nerdchanii/rpm/pull/1"},"reviewThreads":[]}\n'
   fi
   exit 0
 fi
-printf '{"pullRequest":{"number":1,"url":"https://github.com/owner/repo/pull/1"},"reviewThreads":[]}\n'
+printf '{"pullRequest":{"number":1,"url":"https://github.com/nerdchanii/rpm/pull/1"},"reviewThreads":[]}\n'
 MOCK_COLLECTOR
 chmod +x "${mock_repo}/scripts/collect-pr-review-context.sh"
 trusted_source="${tmp_dir}/trusted-source"
@@ -79,7 +79,7 @@ if [[ "$*" == *"reviewThreads"* ]]; then
   exit 1
 fi
 case "$*" in
-  *"api -X GET repos/owner/repo/commits/main"*)
+  *"api -X GET repos/nerdchanii/rpm/commits/main"*)
     if [ "${MOCK_GIT_REAL:-false}" = "true" ]; then
       printf '%s\n' "${ACTUAL_TRUSTED_SHA}"
     else
@@ -109,7 +109,7 @@ case "$*" in
       printf '%s\n' '[]'
     fi
     ;;
-  *"api -X GET repos/owner/repo/rulesets/42"*)
+  *"api -X GET repos/nerdchanii/rpm/rulesets/42"*)
     bypass='[]'
     [ "${MOCK_GH_SCENARIO:-ok}" = "ruleset-bypass" ] \
       && bypass='[{"actor_id":1,"actor_type":"RepositoryRole","bypass_mode":"always"}]'
@@ -118,15 +118,15 @@ case "$*" in
   *"--json number,url,state,headRefOid"*)
     merged_state='MERGED'
     [ "${MOCK_GH_SCENARIO:-ok}" = "merge-not-completed" ] && merged_state='OPEN'
-    printf '{"number":1,"url":"https://github.com/owner/repo/pull/1","state":"%s","headRefOid":"0123456789abcdef0123456789abcdef01234567"}\n' "$merged_state"
+    printf '{"number":1,"url":"https://github.com/nerdchanii/rpm/pull/1","state":"%s","headRefOid":"0123456789abcdef0123456789abcdef01234567"}\n' "$merged_state"
     ;;
   *"--json number,url,state,isDraft,mergeable,mergeStateStatus,baseRefName,headRefName,isCrossRepository,headRefOid"*)
     oid='0123456789abcdef0123456789abcdef01234567'
     cross_repository='false'
-    pr_url='https://github.com/owner/repo/pull/1'
+    pr_url='https://github.com/nerdchanii/rpm/pull/1'
     base_branch='main'
     head_branch='feature/mock'
-    [ "${MOCK_GH_SCENARIO:-ok}" = "mixed-url" ] && pr_url='https://GITHUB.com/OWNER/REPO/pull/1'
+    [ "${MOCK_GH_SCENARIO:-ok}" = "mixed-url" ] && pr_url='https://GITHUB.com/NERDCHANII/RPM/pull/1'
     [ "${MOCK_GH_SCENARIO:-ok}" = "cross-repo" ] && cross_repository='true'
     [ "${MOCK_GH_SCENARIO:-ok}" = "non-main-base" ] && base_branch='develop'
     [ "${MOCK_GH_SCENARIO:-ok}" = "hash-branch" ] && head_branch='feature#probe'
@@ -156,7 +156,7 @@ case "$*" in
     printf '%s\n' "$base_branch"
     ;;
   *"--json number,url,state,isDraft,baseRefName,headRefOid,mergeable,mergeStateStatus"*)
-    final_url='https://github.com/owner/repo/pull/1'
+    final_url='https://github.com/nerdchanii/rpm/pull/1'
     final_state='OPEN'
     final_draft='false'
     final_base='main'
@@ -225,11 +225,6 @@ if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "--path-format=absolute" ] \
   printf '%s\n' "${MOCK_COMMON_DIR}"
   exit 0
 fi
-if [ "${1:-}" = "config" ] && [ "${2:-}" = "--local" ] && [ "${3:-}" = "--path" ] \
-  && [ "${4:-}" = "--get" ] && [ "${5:-}" = "rpm.safeDirectMergeTrustedCheckout" ]; then
-  printf '%s\n' "${TRUSTED_CHECKOUT}"
-  exit 0
-fi
 if [ "${1:-}" = "hash-object" ]; then
   if [ "${2:-}" = "--stdin" ]; then
     exec "${REAL_GIT}" hash-object --stdin
@@ -292,14 +287,9 @@ if [ "${1:-}" = "-C" ]; then
     printf 'main\n'
     exit 0
   fi
-  if [ "${1:-}" = "config" ] && [ "${2:-}" = "--local" ] && [ "${3:-}" = "--path" ] \
-    && [ "${4:-}" = "--get" ] && [ "${5:-}" = "rpm.safeDirectMergeTrustedCheckout" ]; then
-    printf '%s\n' "${TRUSTED_CHECKOUT}"
-    exit 0
-  fi
   if [ "${1:-}" = "config" ] && [ "${2:-}" = "--local" ] && [ "${3:-}" = "--get" ] \
     && [ "${4:-}" = "remote.origin.url" ]; then
-    printf 'https://github.com/owner/repo.git\n'
+    printf 'https://github.com/nerdchanii/rpm.git\n'
     exit 0
   fi
   if [ "${1:-}" = "rev-parse" ] && [ "${2:-}" = "HEAD" ]; then
@@ -434,7 +424,8 @@ export MOCK_REPO="${mock_repo}" GH_LOG="${tmp_dir}/gh.log" \
   TRUSTED_CHECKOUT="${trusted_source}" MOCK_COMMON_DIR="${tmp_dir}/common.git" \
   TRUSTED_COMMIT_SOURCE="${trusted_commit_source}" \
   MOCK_LAUNCHER_PATH="${trusted_source}/scripts/safe-direct-merge.sh" \
-  RPM_SAFE_DIRECT_MERGE_BOOTSTRAPPED=1
+  RPM_SAFE_DIRECT_MERGE_BOOTSTRAPPED=1 \
+  RPM_SAFE_DIRECT_MERGE_TRUSTED_CHECKOUT="${trusted_source}"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -461,6 +452,7 @@ real_git="$(command -v git)"
 actual_repo="${tmp_dir}/actual-repo"
 actual_worktree="${tmp_dir}/actual-worktree"
 mkdir -p "${actual_repo}/scripts" "${actual_repo}/.agents/workflows"
+actual_repo="$(cd "${actual_repo}" && pwd -P)"
 cp "${repo_root}/scripts/safe-direct-merge.sh" "${actual_repo}/scripts/safe-direct-merge.sh"
 cp "${mock_repo}/scripts/collect-pr-review-context.sh" \
   "${actual_repo}/scripts/collect-pr-review-context.sh"
@@ -471,11 +463,12 @@ printf 'tracked-file\n' > "${actual_repo}/tracked.txt"
 git -C "${actual_repo}" init -q -b main
 git -C "${actual_repo}" config user.email test@example.invalid
 git -C "${actual_repo}" config user.name 'safe-direct-merge test'
-git -C "${actual_repo}" remote add origin https://github.com/owner/repo.git
+git -C "${actual_repo}" remote add origin https://github.com/nerdchanii/rpm.git
 git -C "${actual_repo}" config rpm.safeDirectMergeTrustedCheckout "${actual_repo}"
 git -C "${actual_repo}" add .
 git -C "${actual_repo}" commit -q -m 'test fixture'
 git -C "${actual_repo}" worktree add -q -b feature/mock "${actual_worktree}"
+actual_worktree="$(cd "${actual_worktree}" && pwd -P)"
 printf 'generated content\n' > "${actual_worktree}/ignored-file"
 actual_trusted_sha="$(git -C "${actual_repo}" rev-parse HEAD)"
 hostile_hook_dir="${tmp_dir}/hostile-hooks"
@@ -610,6 +603,7 @@ ignored_output="$(
   cd "${actual_repo}"
   PATH="${mock_bin}:${system_path}" MOCK_GIT_REAL=true REAL_GIT="${real_git}" \
     MOCK_GH_SCENARIO=ok MOCK_COLLECTOR_SCENARIO=ok \
+    RPM_SAFE_DIRECT_MERGE_TRUSTED_CHECKOUT="${actual_repo}" \
     "${actual_repo}/scripts/safe-direct-merge.sh" 1 2>&1
 )"
 ignored_rc=$?
@@ -644,6 +638,7 @@ for hidden_index_flag in --assume-unchanged --skip-worktree; do
     cd "${actual_repo}"
     PATH="${mock_bin}:${system_path}" MOCK_GIT_REAL=true REAL_GIT="${real_git}" \
       MOCK_GH_SCENARIO=ok MOCK_COLLECTOR_SCENARIO=ok \
+      RPM_SAFE_DIRECT_MERGE_TRUSTED_CHECKOUT="${actual_repo}" \
       "${actual_repo}/scripts/safe-direct-merge.sh" --dry-run 1 2>&1
   )"
   hidden_launcher_rc=$?
@@ -711,7 +706,7 @@ fi
 set +e
 mixed_input_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=ok \
   MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
-  "${safe_merge}" --dry-run HTTPS://GITHUB.com/OWNER/REPO/pull/1 2>&1)"
+  "${safe_merge}" --dry-run HTTPS://GITHUB.com/NERDCHANII/RPM/pull/1 2>&1)"
 mixed_input_rc=$?
 set -e
 if [ "${mixed_input_rc}" -ne 0 ] \
@@ -778,8 +773,8 @@ if ! grep -q '(dry-run) gates satisfied' <<<"${ruleset_output}" \
   fail 'ruleset-enforcement: active no-bypass ruleset was not recognized'
 fi
 
-# The configured clean-main launcher is the only executable trust root. A
-# current-checkout copy is rejected before it can inspect a PR.
+# The external bootstrap-selected clean-main launcher is the only executable
+# trust root. A current-checkout copy is rejected before it can inspect a PR.
 : > "${GH_LOG}"
 set +e
 untrusted_launcher_output="$(PATH="${mock_bin}:${system_path}" \
@@ -1072,19 +1067,22 @@ if ! grep -q '(dry-run) gates satisfied' <<<"${primary_merge_output}" \
   fail 'primary-worktree: clean primary was removed or audit did not proceed'
 fi
 
-# Both the inventory primary and the current checkout are preserved when the
-# current checkout is a second linked worktree.
+# A second linked worktree holding the PR branch is blocked while both the
+# inventory primary and current checkout remain untouched.
 : > "${GH_LOG}"
 : > "${HEAD_OID_LOG}"
 : > "${WORKTREE_LOG}"
 primary_current_output="$(PATH="${mock_bin}:${system_path}" MOCK_GH_SCENARIO=ok \
   MOCK_COLLECTOR_SCENARIO=ok MOCK_WORKTREE="${mock_worktree}" \
   MOCK_CURRENT_WORKTREE="${mock_repo}" MOCK_WORKTREE_STATUS='' \
-  "${safe_merge}" --dry-run 1 2>&1)"
-if ! grep -q '(dry-run) gates satisfied' <<<"${primary_current_output}" \
+  "${safe_merge}" --dry-run 1 2>&1)" || primary_current_rc=$?
+primary_current_rc="${primary_current_rc:-0}"
+if [ "${primary_current_rc}" -ne 1 ] \
+  || ! grep -q 'remove it manually and retry' <<<"${primary_current_output}" \
+  || grep -q 'pr merge' "${GH_LOG}" \
   || [ -s "${WORKTREE_LOG}" ]; then
   printf '%s\n' "${primary_current_output}" >&2
-  fail 'primary-and-current-worktrees: one of the protected paths was removed'
+  fail 'primary-and-current-worktrees: linked PR worktree was not blocked safely'
 fi
 
 # A linked worktree can gain ignored content after reporting a clean status.
@@ -1106,6 +1104,161 @@ if [ "${remove_failure_rc}" -ne 1 ] || ! grep -q 'remove it manually and retry' 
   || [ -s "${WORKTREE_LOG}" ] || [ ! -f "${mock_worktree}/late-ignored" ]; then
   printf '%s\n' "${remove_failure_output}" >&2
   fail 'concurrent-dirty-worktree: late ignored content was not preserved'
+fi
+
+# The bootstrap trust root is explicit and operator-owned. A second repository
+# with a poisoned local trust-root setting must fail before its launcher bytes
+# are read, while the known-good RPM repository remains usable through the
+# same external wrapper.
+fixture_root="${tmp_dir}/two-repo-bootstrap"
+known_good_repo="${fixture_root}/known-good-rpm"
+attacker_repo="${fixture_root}/attacker-rpm"
+fixture_bin="${fixture_root}/bin"
+bootstrap_wrapper="${fixture_root}/rpm-safe-direct-merge-bootstrap.sh"
+attacker_marker="${fixture_root}/attacker-launcher-evaluated"
+fixture_git_log="${fixture_root}/git.log"
+fixture_gh_log="${fixture_root}/gh.log"
+fixture_collector_log="${fixture_root}/collector.log"
+attacker_bootstrap_output_file="${fixture_root}/attacker-output.log"
+known_good_bootstrap_output_file="${fixture_root}/known-good-output.log"
+mkdir -p "${known_good_repo}/scripts" "${known_good_repo}/.agents/workflows" \
+  "${attacker_repo}/scripts" "${fixture_bin}"
+known_good_repo="$(cd "${known_good_repo}" && pwd -P)"
+attacker_repo="$(cd "${attacker_repo}" && pwd -P)"
+cp "${repo_root}/scripts/safe-direct-merge.sh" \
+  "${known_good_repo}/scripts/safe-direct-merge.sh"
+cp "${trusted_source}/scripts/collect-pr-review-context.sh" \
+  "${known_good_repo}/scripts/collect-pr-review-context.sh"
+cp "${repo_root}/.agents/workflows/backlog-policy.json" \
+  "${known_good_repo}/.agents/workflows/backlog-policy.json"
+chmod +x "${known_good_repo}/scripts/safe-direct-merge.sh" \
+  "${known_good_repo}/scripts/collect-pr-review-context.sh"
+printf 'known-good fixture\n' >"${known_good_repo}/fixture.txt"
+git -C "${known_good_repo}" init -q -b main
+git -C "${known_good_repo}" config user.email test@example.invalid
+git -C "${known_good_repo}" config user.name 'safe-direct-merge test'
+git -C "${known_good_repo}" remote add origin https://github.com/nerdchanii/rpm.git
+git -C "${known_good_repo}" add .
+git -C "${known_good_repo}" commit -q -m 'known-good bootstrap fixture'
+
+cat >"${attacker_repo}/scripts/safe-direct-merge.sh" <<ATTACKER_LAUNCHER
+#!/usr/bin/env bash
+printf 'attacker launcher evaluated\n' >"${attacker_marker}"
+ATTACKER_LAUNCHER
+chmod +x "${attacker_repo}/scripts/safe-direct-merge.sh"
+printf 'attacker fixture\n' >"${attacker_repo}/fixture.txt"
+git -C "${attacker_repo}" init -q -b main
+git -C "${attacker_repo}" config user.email test@example.invalid
+git -C "${attacker_repo}" config user.name 'safe-direct-merge test'
+git -C "${attacker_repo}" remote add origin https://github.com/attacker/rpm.git
+git -C "${attacker_repo}" add .
+git -C "${attacker_repo}" commit -q -m 'attacker bootstrap fixture'
+# This setting is intentionally poisoned. The official wrapper never reads it.
+git -C "${attacker_repo}" config rpm.safeDirectMergeTrustedCheckout "${attacker_repo}"
+git -C "${known_good_repo}" config rpm.safeDirectMergeTrustedCheckout "${attacker_repo}"
+known_good_sha="$(git -C "${known_good_repo}" rev-parse HEAD)"
+
+cat >"${fixture_bin}/git" <<'FIXTURE_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${FIXTURE_GIT_LOG}"
+exec "${FIXTURE_REAL_GIT}" "$@"
+FIXTURE_GIT
+chmod +x "${fixture_bin}/git"
+
+cat >"${bootstrap_wrapper}" <<'BOOTSTRAP_WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+trusted_input="${1:?trusted main checkout path}"
+pr="${2:?pull request number}"
+expected_repo='nerdchanii/rpm'
+case "$trusted_input" in /*) ;; *) exit 2 ;; esac
+[ -d "$trusted_input" ] && [ ! -L "$trusted_input" ] || exit 2
+trusted_checkout="$(cd "$trusted_input" && pwd -P)"
+[ "$trusted_input" = "$trusted_checkout" ] || exit 2
+[ "$(git -C "$trusted_checkout" rev-parse --show-toplevel)" = "$trusted_checkout" ] || exit 2
+[ "$(git -C "$trusted_checkout" symbolic-ref --short HEAD)" = 'main' ] || exit 2
+origin="$(git -C "$trusted_checkout" config --local --get remote.origin.url)"
+origin="${origin,,}"
+origin="${origin%.git}"
+case "$origin" in
+  git@github.com:*) origin="${origin#git@github.com:}" ;;
+  ssh://git@github.com/*) origin="${origin#ssh://git@github.com/}" ;;
+  https://github.com/*) origin="${origin#https://github.com/}" ;;
+  http://github.com/*) origin="${origin#http://github.com/}" ;;
+  *) exit 2 ;;
+esac
+[ "$origin" = "$expected_repo" ] || exit 2
+[ -z "$(git -C "$trusted_checkout" status --porcelain --untracked-files=all)" ] || exit 2
+trusted_sha="$(gh api -X GET "repos/$expected_repo/commits/main" --jq .sha)"
+[[ "$trusted_sha" =~ ^[[:xdigit:]]{40}$ ]]
+[ "$(git -C "$trusted_checkout" rev-parse HEAD)" = "$trusted_sha" ] || exit 2
+git -C "$trusted_checkout" cat-file -e "${trusted_sha}^{commit}"
+expected_blob="$(git -C "$trusted_checkout" rev-parse "$trusted_sha:scripts/safe-direct-merge.sh")"
+trusted_source="$(git -C "$trusted_checkout" show "$trusted_sha:scripts/safe-direct-merge.sh"; printf .)"
+trusted_source="${trusted_source%.}"
+[ "$(printf '%s' "$trusted_source" | git hash-object --stdin)" = "$expected_blob" ] || exit 2
+(
+  cd "$trusted_checkout"
+  RPM_SAFE_DIRECT_MERGE_BOOTSTRAPPED=1 \
+    RPM_SAFE_DIRECT_MERGE_TRUSTED_CHECKOUT="$trusted_checkout" \
+    bash -c "$trusted_source" \
+    "$trusted_checkout/scripts/safe-direct-merge.sh" --dry-run "$pr"
+)
+BOOTSTRAP_WRAPPER
+chmod +x "${bootstrap_wrapper}"
+
+: >"${fixture_git_log}"
+: >"${fixture_gh_log}"
+rm -f "${attacker_marker}"
+set +e
+(
+  cd "${known_good_repo}"
+  PATH="${fixture_bin}:${mock_bin}:${system_path}" \
+    FIXTURE_GIT_LOG="${fixture_git_log}" FIXTURE_REAL_GIT="${real_git}" \
+    GH_LOG="${fixture_gh_log}" COLLECTOR_LOG="${fixture_collector_log}" \
+    ACTUAL_TRUSTED_SHA="${known_good_sha}" MOCK_GIT_REAL=true \
+    MOCK_GH_SCENARIO=ok MOCK_COLLECTOR_SCENARIO=ok \
+    "${bootstrap_wrapper}" "${attacker_repo}" 1 >"${attacker_bootstrap_output_file}" 2>&1
+)
+attacker_bootstrap_rc=$?
+set -e
+attacker_bootstrap_output="$(cat "${attacker_bootstrap_output_file}")"
+if [ "${attacker_bootstrap_rc}" -eq 0 ] \
+  || [ -e "${attacker_marker}" ] \
+  || [ -s "${fixture_gh_log}" ] \
+  || grep -Eq '(^|[[:space:]])show([[:space:]]|$)' "${fixture_git_log}" \
+  || grep -Eiq '(^|[[:space:]])(commit|push|reset|checkout|update-ref)([[:space:]]|$)|worktree[[:space:]]+remove' "${fixture_git_log}" \
+  || grep -Fq 'rpm.safeDirectMergeTrustedCheckout' "${fixture_git_log}"; then
+  printf '%s\n' "${attacker_bootstrap_output}" >&2
+  fail 'bootstrap-attacker-repository: untrusted launcher was evaluated or mutated'
+fi
+
+: >"${fixture_git_log}"
+: >"${fixture_gh_log}"
+rm -f "${attacker_marker}"
+set +e
+(
+  cd "${known_good_repo}"
+  PATH="${fixture_bin}:${mock_bin}:${system_path}" \
+    FIXTURE_GIT_LOG="${fixture_git_log}" FIXTURE_REAL_GIT="${real_git}" \
+    GH_LOG="${fixture_gh_log}" COLLECTOR_LOG="${fixture_collector_log}" \
+    ACTUAL_TRUSTED_SHA="${known_good_sha}" MOCK_GIT_REAL=true \
+    MOCK_GH_SCENARIO=ok MOCK_COLLECTOR_SCENARIO=ok \
+    "${bootstrap_wrapper}" "${known_good_repo}" 1 >"${known_good_bootstrap_output_file}" 2>&1
+)
+known_good_bootstrap_rc=$?
+set -e
+known_good_bootstrap_output="$(cat "${known_good_bootstrap_output_file}")"
+if [ "${known_good_bootstrap_rc}" -ne 0 ] \
+  || ! grep -q '(dry-run) gates satisfied' <<<"${known_good_bootstrap_output}" \
+  || [ -e "${attacker_marker}" ] \
+  || ! grep -Eq '(^|[[:space:]])show([[:space:]]|$).*scripts/safe-direct-merge\.sh|scripts/safe-direct-merge\.sh.*(^|[[:space:]])show([[:space:]]|$)' "${fixture_git_log}" \
+  || grep -Fq 'rpm.safeDirectMergeTrustedCheckout' "${fixture_git_log}" \
+  || grep -Eiq '(^|[[:space:]])(commit|push|reset|checkout|update-ref)([[:space:]]|$)|worktree[[:space:]]+remove' "${fixture_git_log}" \
+  || grep -Eiq 'pr[[:space:]]+merge|api[[:space:]]+.*-X[[:space:]]+(POST|PATCH|DELETE)' "${fixture_gh_log}"; then
+  printf '%s\n' "${known_good_bootstrap_output}" >&2
+  fail 'bootstrap-known-good-repository: explicit trusted input did not reach audit safely'
 fi
 
 printf 'safe-direct-merge.status=ok\n'

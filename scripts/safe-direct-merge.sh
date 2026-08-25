@@ -35,9 +35,10 @@ Options:
                      conversation-resolution enforcement still applies
 
 Does NOT merge, delete refs, touch issue/PR labels, request @codex, or block on
-a fresh Automatic review. Execute only the clean-main launcher configured in
-rpm.safeDirectMergeTrustedCheckout; PR copies fail. The scheduled
-merge-gatekeeper is the sole mutation path.
+a fresh Automatic review. Execute only a clean-main launcher selected by an
+external bootstrap wrapper outside every PR checkout. The wrapper must pass
+RPM_SAFE_DIRECT_MERGE_TRUSTED_CHECKOUT; repository-local Git config is ignored.
+PR copies fail. The scheduled merge-gatekeeper is the sole mutation path.
 USAGE
 }
 
@@ -93,21 +94,30 @@ if [ "$trusted_stage" = "launcher" ]; then
     echo "safe-direct-merge.error=launcher-not-bootstrapped" >&2
     exit 2
   fi
-  # The trust root lives in repository-local Git config, outside PR content.
-  # The caller must load this launcher from the trusted commit before invoking
-  # it. A script in the current PR checkout is never a valid launcher.
+  # The trust root is supplied by an external bootstrap wrapper outside every
+  # PR checkout. Never read it from repository-local Git config: linked
+  # worktrees share that config and PR code can modify it.
   if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
     echo "safe-direct-merge.error=missing-repository" >&2
     exit 2
   fi
-  if ! trusted_checkout="$(git config --local --path --get rpm.safeDirectMergeTrustedCheckout 2>/dev/null)" \
-    || [[ "$trusted_checkout" != /* ]]; then
+  if ! repo_root="$(canonical_path "$repo_root")" || [ ! -d "$repo_root" ]; then
+    echo "safe-direct-merge.error=invalid-repository" >&2
+    exit 2
+  fi
+  trusted_checkout="${RPM_SAFE_DIRECT_MERGE_TRUSTED_CHECKOUT:-}"
+  if [[ "$trusted_checkout" != /* ]]; then
     echo "safe-direct-merge.error=missing-trusted-checkout" >&2
     exit 2
   fi
+  trusted_checkout_input="$trusted_checkout"
   if ! trusted_checkout="$(canonical_path "$trusted_checkout")" \
     || [ ! -d "$trusted_checkout" ]; then
     echo "safe-direct-merge.error=invalid-trusted-checkout" >&2
+    exit 2
+  fi
+  if [ -L "$trusted_checkout_input" ] || [ "$trusted_checkout_input" != "$trusted_checkout" ]; then
+    echo "safe-direct-merge.error=non-canonical-trusted-checkout" >&2
     exit 2
   fi
   launcher_path="$trusted_checkout/scripts/safe-direct-merge.sh"
@@ -132,9 +142,17 @@ if [ "$trusted_stage" = "launcher" ]; then
     echo "safe-direct-merge.error=trusted-checkout-dirty" >&2
     exit 2
   fi
+  expected_repo="nerdchanii/rpm"
   if ! origin_url="$(git -C "$trusted_checkout" config --local --get remote.origin.url 2>/dev/null)" \
-    || ! repo="$(normalize_github_repo "$origin_url")"; then
+    || ! repo="$(normalize_github_repo "$origin_url")" \
+    || [ "$repo" != "$expected_repo" ]; then
     echo "safe-direct-merge.error=unsupported-trusted-origin" >&2
+    exit 2
+  fi
+  if ! current_origin_url="$(git -C "$repo_root" config --local --get remote.origin.url 2>/dev/null)" \
+    || ! current_repo="$(normalize_github_repo "$current_origin_url")" \
+    || [ "$current_repo" != "$expected_repo" ]; then
+    echo "safe-direct-merge.error=unsupported-current-origin" >&2
     exit 2
   fi
   if ! trusted_main_sha="$(gh api -X GET "repos/$repo/commits/main" --jq .sha 2>/dev/null)" \
@@ -242,8 +260,7 @@ if [ -z "$trusted_checkout" ] || [ -z "$repo_root" ] \
   echo "safe-direct-merge.error=invalid-trusted-materialization" >&2
   exit 2
 fi
-if ! configured_checkout="$(git -C "$repo_root" config --local --path --get rpm.safeDirectMergeTrustedCheckout 2>/dev/null)" \
-  || [ "$(canonical_path "$configured_checkout")" != "$trusted_checkout" ] \
+if [ "${RPM_SAFE_DIRECT_MERGE_TRUSTED_CHECKOUT:-}" != "$trusted_checkout" ] \
   || [ "$(git -C "$trusted_checkout" symbolic-ref --short HEAD 2>/dev/null || true)" != "main" ] \
   || [ "$(git -C "$trusted_checkout" rev-parse HEAD 2>/dev/null || true)" != "$trusted_main_sha" ] \
   || [ -n "$(GIT_OPTIONAL_LOCKS=0 git -C "$trusted_checkout" \
@@ -256,6 +273,7 @@ if ! configured_checkout="$(git -C "$repo_root" config --local --path --get rpm.
 fi
 if ! origin_url="$(git -C "$trusted_checkout" config --local --get remote.origin.url 2>/dev/null)" \
   || ! repo="$(normalize_github_repo "$origin_url")" \
+  || [ "$repo" != "nerdchanii/rpm" ] \
   || [ "$(gh api -X GET "repos/$repo/commits/main" --jq .sha 2>/dev/null || true)" != "$trusted_main_sha" ]; then
   echo "safe-direct-merge.error=trusted-main-changed" >&2
   exit 2
