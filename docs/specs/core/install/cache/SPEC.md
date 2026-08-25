@@ -219,6 +219,21 @@ replaces the destination does not satisfy this contract. Planned v2 cache
 population uses the absent/no-replace branch unless an explicit update policy
 authorizes the matching-identity CAS branch.
 
+The final commit must also bind the published cache bytes to the bytes that were
+verified after the staged write and flush. An unlinked descriptor or a
+write-excluding handle may provide that binding. When the staged entry remains
+observable, the adapter must capture an opaque content-version value after the
+final flush and compare it atomically at the same commit point as the root,
+component, and destination conditions. Any in-place write or truncate, staged
+entry replacement, or other observable content-version drift after that capture
+must fail publication, discard only the retained staged object, and leave the
+prior cache entry and final destination untouched. Object identity, mtime, size,
+or a separately recomputed digest without an atomic content-version condition do
+not provide this guarantee. The cache contract covers the staged entry's
+content-binding race; it does not require an unobservable global filesystem,
+`mmap`, or mount snapshot. An adapter without a concrete staged-byte binding
+primitive fails closed before v2 publication.
+
 The final cache publication primitive takes the retained workspace-root handle
 and identity, its exact parent/name chain, the retained `.rpm/.cache` handle
 and each component's retained binding, staged descriptor/name, final name, and
@@ -351,6 +366,14 @@ Planned v2 fixtures must additionally cover:
   proving exclusive descriptor-relative no-follow creation fails without
   writing through the entry, publishing a final cache file, or changing install
   or lockfile output;
+- a barrier after staged cache bytes are fully written and flushed and before
+  final commit where an observable writer mutates the staged entry in place and,
+  separately, replaces its directory entry. The final commit must reject both
+  content-version/identity races, discard only the retained staged object, leave
+  the prior cache bytes and final destination untouched, and publish no cache or
+  install output. An adapter without an atomic staged-byte binding primitive
+  reports unsupported; this fixture does not require a global `mmap` or mount
+  snapshot;
 - concurrent content mutation where a stable direct descriptor cannot be
   guaranteed, proving the transaction-owned verified descriptor is used or the
   replay fails closed; and

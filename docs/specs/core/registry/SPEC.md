@@ -184,19 +184,25 @@ The planned v2 builder must parse the raw packument with duplicate-member
 detection before constructing any consumed map or provenance-bearing struct.
 A duplicate JSON member name is a metadata error even when the repeated values
 are equal, and names that become equal after JSON string-escape decoding are
-duplicates as well. Before selection or map construction, the check covers the
-consumed outer `dist-tags` and `versions` objects, including duplicate `latest`
-members and a `versions` collision such as `1.0.0` versus `\u0031.0.0`. It then
-covers the selected version object and its `dist` object, ordinary
-`dependencies` object, object-form `bin` map, and `scripts` map. It therefore
-rejects duplicate `dist`, `tarball`, `integrity`, or `shasum` members; duplicate
-dependency, binary-name, or script-name entries; and duplicate selected-record
-fields before last-value-wins deserialization can occur. The check runs before
-the corresponding `HashMap` or struct is built and before selection or selected
-per-version facts are consumed. Duplicate keys in metadata that is outside this
-provenance path are outside this v2 rule; current v1 interpretation remains
-unchanged. This rule is a precondition for #224's planned v2 writer and does
-not claim current runtime support.
+duplicates as well. Before the local-versus-external branch is known, the
+check is limited to the consumed outer `dist-tags` object needed for tag
+identity. It must not consume or validate the outer `versions` object, a
+selected version, or per-version provenance while a request may still take a
+compatible-local branch. Once the request is confirmed external, duplicate-key
+validation may inspect the outer `versions` object only to locate the selected
+key and reject an escape-equivalent collision; it must not require valid values
+for unused versions. Full provenance validation then covers only the selected
+version object and its `dist` object, ordinary `dependencies` object,
+object-form `bin` map, and `scripts` map. It therefore rejects duplicate
+`latest` members, escape-equivalent selected version keys such as `1.0.0`
+versus `\u0031.0.0`, duplicate `dist`, `tarball`, `integrity`, or `shasum`
+members, duplicate dependency, binary-name, or script-name entries, and
+duplicate selected-record fields before last-value-wins deserialization can
+occur. The check runs before the corresponding `HashMap` or struct is built
+and before selected external facts are consumed. Duplicate keys in metadata
+outside this provenance path remain outside this v2 rule; current v1
+interpretation remains unchanged. This rule is a precondition for #224's
+planned v2 writer and does not claim current runtime support.
 
 The legacy single-version registry shape remains supported by current v1 paths,
 but it is ineligible as a source for v2 publication. Its authoritative root
@@ -297,6 +303,14 @@ The initial v2 transport policy is fail-closed:
   text. The selected version is encoded with the same function as its own
   component before it enters the registry lookup version segment or the
   artifact filename.
+
+  For an artifact URL's selected-version component only, literal `+` and the
+  canonical uppercase `%2B` are the two exact equivalent spellings of that
+  encoded byte. The comparator may normalize that one pair before comparing the
+  complete canonical artifact locator. It must not decode arbitrary percent
+  escapes, accept lowercase or double-encoded alternatives, or extend the rule
+  to `%2F` inside an identity component; `%2F` remains a normalization only for
+  the one structural scoped separator described above.
 
   The packument path concatenates the encoded scope component, the structural
   separator `%2F`, and the encoded leaf inside one name segment. The artifact
@@ -815,16 +829,22 @@ Fixture expectations are defined by the owning scenario and documented in
   filenames are `token-1.0.0.tgz`, `auth-1.0.0.tgz`,
   `signature-1.0.0.tgz`, and `expires-1.0.0.tgz`, and those redirects are
   accepted only at the exact generated locators;
-- duplicate-key packuments with repeated consumed outer `dist-tags` and
-  `versions` members, including duplicate `latest` and the escape-equivalent
-  version keys `1.0.0` and `\u0031.0.0`, plus repeated selected-record, `dist`,
-  `tarball`, `integrity`, `shasum`, dependency, object-form `bin`, and
-  `scripts` members. Outer-map cases make exactly one required packument
-  request, then perform zero tag/version selection, selected-record or
-  per-version consumption, tarball requests, and cache/install publication;
-  nested cases fail before any provenance map or struct is constructed. Names
-  differing only by JSON escapes are compared after decoding. Duplicate keys in
-  ignored metadata remain outside this planned v2 fixture scope;
+- duplicate-key packuments with repeated consumed outer `dist-tags` members
+  and, after external classification, `versions` members, including duplicate
+  `latest` and the escape-equivalent version keys `1.0.0` and `\u0031.0.0`, plus
+  repeated selected-record, `dist`, `tarball`, `integrity`, `shasum`,
+  dependency, object-form `bin`, and `scripts` members. A duplicate outer
+  `dist-tags` case makes exactly one required packument request and zero
+  tag/version selection; a confirmed-external duplicate outer `versions` case
+  fails before selected-version/per-version consumption. Nested cases fail
+  before any provenance map or struct is constructed. Names differing only by
+  JSON escapes are compared after decoding. Duplicate keys in ignored metadata
+  remain outside this planned v2 fixture scope;
+- artifact URLs for a selected build-metadata version where literal `+` and
+  uppercase `%2B` are accepted as the exact equivalent version-component
+  spellings, while lowercase `%2b`, double-encoded `%252B`, arbitrary escape
+  decoding, and `%2F` inside an identity component are rejected; the structural
+  scoped `%2F` boundary remains the only other normalized spelling;
 - metadata redirects from a configured base such as
   `https://repo.example/npm-private/` to a same-origin alternate base such as
   `/npm-public/pkg/1`, or to a different package/version under

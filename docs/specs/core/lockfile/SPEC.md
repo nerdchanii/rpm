@@ -909,6 +909,12 @@ Planned workspace snapshots must cover:
   tag. A confirmed non-tag compatible-local request performs its one
   tag-identity lookup and zero per-version metadata lookups. An unavailable tag
   lookup fails closed before tarball, cache, or lockfile publication;
+- a non-tag request compatible with a workspace member whose packument contains
+  a duplicate, otherwise unused `versions` key. The fixture performs exactly one
+  side-effect-free tag-identity lookup, accepts the compatible-local branch, and
+  performs zero per-version metadata lookups; the same duplicate is rejected
+  before selected external facts are consumed when the request takes the
+  external branch;
 - an absent-member or incompatible-member external fresh-writer branch with
   exactly one tag-identity lookup and, after external classification, exactly
   one selected-version/per-version metadata lookup; the fixture records those
