@@ -317,7 +317,6 @@ class FakeGithubApiRunner:
                     "submitted_at": "2026-08-25T12:10:00Z",
                     "commit_id": HEAD_SHA,
                     "state": "COMMENTED",
-                    "finding_count": 0,
                 }
             ]
         elif route == "repos/nerdchanii/rpm/issues/210/reactions":
@@ -851,6 +850,20 @@ class AdoptionContractTest(unittest.TestCase):
                 result, event = self.run_queue(fixture)
                 self.assert_blocked(result, event)
 
+        third_party = self.load_adoption()
+        third_party_record = {
+            "name": "coverage-app",
+            "conclusion": "success",
+            "head_sha": HEAD_SHA,
+            "source": "third-party-app",
+            "workflow_run_id": 91001,
+        }
+        third_party["evidence"]["checks"]["records"].append(third_party_record)
+        third_party["evidence"]["checks"]["count"] = 3
+        self.resign(third_party)
+        result, event = self.run_queue(third_party)
+        self.assert_adoptable(result, event)
+
         fixture = self.load_adoption()
         failed_duplicate = copy.deepcopy(
             fixture["evidence"]["checks"]["records"][1]
@@ -959,6 +972,50 @@ class AdoptionContractTest(unittest.TestCase):
             with self.subTest(name=name):
                 result, event = self.run_queue(fixture)
                 self.assert_blocked(result, event)
+
+    def test_review_scans_all_automatic_records_before_accepting_a_clean_signal(self) -> None:
+        for records in (
+            [
+                {
+                    "actor": "chatgpt-codex-connector",
+                    "submitted_at": "2026-08-25T12:10:00Z",
+                    "reviewed_head_sha": HEAD_SHA,
+                    "state": "COMMENTED",
+                    "finding_count": 0,
+                },
+                {
+                    "actor": "chatgpt-codex-connector",
+                    "submitted_at": "2026-08-25T12:10:00Z",
+                    "reviewed_head_sha": HEAD_SHA,
+                    "state": "COMMENTED",
+                    "finding_count": 1,
+                },
+            ],
+            [
+                {
+                    "actor": "chatgpt-codex-connector",
+                    "submitted_at": "2026-08-25T12:10:00Z",
+                    "reviewed_head_sha": HEAD_SHA,
+                    "state": "COMMENTED",
+                    "finding_count": 1,
+                },
+                {
+                    "actor": "chatgpt-codex-connector",
+                    "submitted_at": "2026-08-25T12:10:00Z",
+                    "reviewed_head_sha": HEAD_SHA,
+                    "state": "COMMENTED",
+                    "finding_count": 0,
+                },
+            ],
+        ):
+            with self.subTest(records=records):
+                fixture = self.load_adoption()
+                fixture["evidence"]["review"]["automatic_reviews"]["records"] = records
+                fixture["evidence"]["review"]["automatic_reviews"]["count"] = len(records)
+                self.resign(fixture)
+                result, event = self.run_queue(fixture)
+                data = self.assert_blocked(result, event)
+                self.assertEqual(data.get("reason"), "automatic-review-duplicate", data)
 
     def p2(self, disposition: str, **extra: object) -> dict[str, object]:
         finding = {
@@ -1897,6 +1954,88 @@ class AdoptionContractTest(unittest.TestCase):
             partial.read("nerdchanii/rpm", 145, 210)
         self.assertEqual(partial_api.writes, [])
 
+    def test_default_observation_time_and_claim_lease_use_contract_evidence(self) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(github_transport), namespace.keys())
+        prepared = self.load_adoption()
+        transport = github_transport(snapshot=prepared)
+
+        self.assertEqual(
+            transport._collect_observation_time("nerdchanii/rpm", 145, 210),
+            prepared["now"],
+        )
+        lease = {
+            "lease": {
+                "run_id": "claim-run-1",
+                "owner": "cloud:executor",
+                "expires_at": "2026-08-25T13:00:00Z",
+            }
+        }
+        record = transport._writer_record_from_execution(
+            lease,
+            "nerdchanii/rpm",
+            145,
+            210,
+            HEAD_SHA,
+        )
+        self.assertEqual(
+            record,
+            {
+                "kind": "claim",
+                "repository": "nerdchanii/rpm",
+                "issue": 145,
+                "pr": 210,
+                "run_id": "claim-run-1",
+                "owner": "cloud:executor",
+                "lease_expires_at": "2026-08-25T13:00:00Z",
+                "head_sha": HEAD_SHA,
+            },
+        )
+        marker = "<!-- rpm-agent-execution: " + json.dumps(lease) + " -->"
+        self.assertEqual(
+            transport._writer_records_from_text(
+                marker,
+                "nerdchanii/rpm",
+                145,
+                210,
+                include_execution_lease=True,
+                head_sha=HEAD_SHA,
+            ),
+            [record],
+        )
+
+    def test_dependent_inventory_filters_unrelated_forks_before_identity_checks(self) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(github_transport), namespace.keys())
+        prepared = self.load_adoption()
+        transport = github_transport(snapshot=prepared)
+        target = {
+            "head": {"ref": "feat/issue-145-workspaces", "sha": HEAD_SHA}
+        }
+        transport._call = lambda endpoint, **kwargs: target
+        unrelated_fork = {
+            "number": 999,
+            "state": "OPEN",
+            "baseRefName": "main",
+            "baseRefOid": BASE_SHA,
+            "headRefName": "fork-change",
+            "headRefOid": "c" * 40,
+            "repository": {"nameWithOwner": "nerdchanii/rpm"},
+            "baseRepository": {"nameWithOwner": "nerdchanii/rpm"},
+            "headRepository": {"nameWithOwner": "someone/rpm"},
+        }
+        transport._graphql_connection = lambda query, variables, path: [unrelated_fork]
+        inventory = transport._collect_dependents("nerdchanii/rpm", 145, 210)
+        self.assertEqual(inventory["records"], [])
+
+        dependent_fork = copy.deepcopy(unrelated_fork)
+        dependent_fork["baseRefName"] = "feat/issue-145-workspaces"
+        transport._graphql_connection = lambda query, variables, path: [dependent_fork]
+        with self.assertRaisesRegex(RuntimeError, "identity"):
+            transport._collect_dependents("nerdchanii/rpm", 145, 210)
+
     def test_real_github_transport_recovers_all_phases_with_immutable_authorization(
         self,
     ) -> None:
@@ -1979,6 +2118,7 @@ class AdoptionContractTest(unittest.TestCase):
             ("agent:claimed", False),
             ("agent:blocked", False),
             ("agent:claimed", True),
+            ("priority:high", False),
         )
         for external_label, compensation_fails in cases:
             with self.subTest(
@@ -2419,6 +2559,16 @@ class AdoptionContractTest(unittest.TestCase):
                     }
                 )
                 self.assertEqual(writer.returncode, 0, writer.stderr)
+
+                read_only = self.run_hook(
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "transcript_path": transcript,
+                        "tool_name": "mcp__github__get_pull_request",
+                        "tool_input": {"repository": "nerdchanii/rpm", "number": 210},
+                    }
+                )
+                self.assertEqual(read_only.returncode, 0, read_only.stderr)
 
                 forbidden = [
                     (
@@ -3159,6 +3309,35 @@ class AdoptionContractTest(unittest.TestCase):
         data = event["data"]
         self.assertEqual(result.returncode, 0, data)
         self.assertEqual(data.get("status"), "merge", data)
+
+        third_party = copy.deepcopy(baseline)
+        third_party["issues"][0]["closing_prs"][0]["checks"]["records"].append(
+            {
+                "name": "coverage-app",
+                "conclusion": "success",
+                "head_sha": HEAD_SHA,
+                "source": "third-party-app",
+                "workflow_run_id": 91002,
+            }
+        )
+        third_party["issues"][0]["closing_prs"][0]["checks"]["count"] = 3
+        result, event = self.run_merge(third_party)
+        self.assertEqual(result.returncode, 0, event)
+        self.assertEqual(event["data"].get("status"), "merge", event)
+
+        p3 = copy.deepcopy(baseline)
+        p3["issues"][0]["closing_prs"][0]["findings"]["items"] = [
+            {
+                "id": "P3-fixture",
+                "source_id": "review-thread-P3-fixture",
+                "head_sha": HEAD_SHA,
+                "severity": "P3",
+            }
+        ]
+        p3["issues"][0]["closing_prs"][0]["findings"]["count"] = 1
+        result, event = self.run_merge(p3)
+        self.assertEqual(result.returncode, 0, event)
+        self.assertEqual(event["data"].get("status"), "merge", event)
 
         variants: list[tuple[str, dict[str, object]]] = []
         legacy = copy.deepcopy(baseline)

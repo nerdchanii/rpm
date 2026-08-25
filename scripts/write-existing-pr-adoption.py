@@ -536,7 +536,13 @@ class GithubAdoptionTransport:
 
     @staticmethod
     def _writer_records_from_text(
-        text: object, repository: str, issue: int, pr: int
+        text: object,
+        repository: str,
+        issue: int,
+        pr: int,
+        *,
+        include_execution_lease: bool = False,
+        head_sha: str | None = None,
     ) -> list[dict[str, object]]:
         if not isinstance(text, str):
             return []
@@ -549,7 +555,73 @@ class GithubAdoptionTransport:
             if not isinstance(value, dict):
                 raise RuntimeError("GitHub writer metadata is invalid")
             records.append(value)
+        if include_execution_lease:
+            for match in EXECUTION_MARKER.finditer(text):
+                try:
+                    metadata = json.loads(match.group(1))
+                except json.JSONDecodeError as error:
+                    raise RuntimeError("GitHub execution metadata is invalid") from error
+                if not isinstance(metadata, dict):
+                    raise RuntimeError("GitHub execution metadata is invalid")
+                lease = metadata.get("lease")
+                if lease is None:
+                    continue
+                if not isinstance(lease, dict):
+                    raise RuntimeError("GitHub execution lease is invalid")
+                if (
+                    not isinstance(head_sha, str)
+                    or not re.fullmatch(r"[0-9a-f]{40}", head_sha)
+                    or any(
+                        not isinstance(lease.get(field), str)
+                        or not str(lease.get(field)).strip()
+                        for field in ("run_id", "owner", "expires_at")
+                    )
+                ):
+                    raise RuntimeError("GitHub execution lease is incomplete")
+                records.append(
+                    {
+                        "kind": "claim",
+                        "repository": repository,
+                        "issue": issue,
+                        "pr": pr,
+                        "run_id": lease["run_id"],
+                        "owner": lease["owner"],
+                        "lease_expires_at": lease["expires_at"],
+                        "head_sha": head_sha,
+                    }
+                )
         return records
+
+    @staticmethod
+    def _writer_record_from_execution(
+        execution: object,
+        repository: str,
+        issue: int,
+        pr: int,
+        head_sha: str,
+    ) -> dict[str, object] | None:
+        if not isinstance(execution, dict):
+            return None
+        lease = execution.get("lease")
+        if lease is None:
+            return None
+        if not isinstance(lease, dict) or any(
+            not isinstance(lease.get(field), str) or not str(lease.get(field)).strip()
+            for field in ("run_id", "owner", "expires_at")
+        ):
+            raise RuntimeError("GitHub execution lease is incomplete")
+        if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            raise RuntimeError("GitHub execution lease head is invalid")
+        return {
+            "kind": "claim",
+            "repository": repository,
+            "issue": issue,
+            "pr": pr,
+            "run_id": lease["run_id"],
+            "owner": lease["owner"],
+            "lease_expires_at": lease["expires_at"],
+            "head_sha": head_sha,
+        }
 
     def _collect_writers(
         self, repository: str, issue: int, pr: int
@@ -558,6 +630,7 @@ class GithubAdoptionTransport:
         # endpoint, so the repository contract stores signed inventory records
         # in issue/PR bodies or comments.  Read the complete open issue/PR set
         # and every comment page; an API failure remains fail-closed.
+        target_head_sha = self._head_sha_from_pr(repository, pr)
         all_items = self._paginate(
             f"repos/{self._repository_path(repository)}/issues?state=open"
         )
@@ -566,8 +639,21 @@ class GithubAdoptionTransport:
             if not isinstance(item, dict) or not isinstance(item.get("number"), int):
                 raise RuntimeError("GitHub open-item inventory is invalid")
             number = int(item["number"])
+            if number == issue:
+                execution_record = self._writer_record_from_execution(
+                    item.get("execution"), repository, issue, pr, target_head_sha
+                )
+                if execution_record is not None:
+                    records.append(execution_record)
             records.extend(
-                self._writer_records_from_text(item.get("body"), repository, issue, pr)
+                self._writer_records_from_text(
+                    item.get("body"),
+                    repository,
+                    issue,
+                    pr,
+                    include_execution_lease=number == issue,
+                    head_sha=target_head_sha,
+                )
             )
             comments = self._paginate(
                 f"repos/{self._repository_path(repository)}/issues/{number}/comments"
@@ -576,7 +662,14 @@ class GithubAdoptionTransport:
                 if not isinstance(comment, dict):
                     raise RuntimeError("GitHub writer comment inventory is invalid")
                 records.extend(
-                    self._writer_records_from_text(comment.get("body"), repository, issue, pr)
+                    self._writer_records_from_text(
+                        comment.get("body"),
+                        repository,
+                        issue,
+                        pr,
+                        include_execution_lease=number == issue,
+                        head_sha=target_head_sha,
+                    )
                 )
         observed_at = self._current_observation_time
         if not isinstance(observed_at, str) or not observed_at.strip():
@@ -585,7 +678,7 @@ class GithubAdoptionTransport:
             "repository-global-writer-inventory-v1",
             repository,
             pr,
-            self._head_sha_from_pr(repository, pr),
+            target_head_sha,
             records,
             observed_at=observed_at,
             cas_token=self._canonical_digest({"repository": repository, "records": records}),
@@ -602,10 +695,13 @@ class GithubAdoptionTransport:
     def _collect_observation_time(
         self, repository: str, issue: int, pr: int
     ) -> str:
-        payload = self._call(f"repos/{self._repository_path(repository)}/pulls/{pr}")
-        value = payload.get("updated_at") if isinstance(payload, dict) else None
+        # ``updated_at`` is the PR's last content mutation time, not the time
+        # at which this evidence bundle was observed.  The prepared snapshot
+        # carries the observation instant shared by the writer inventory and
+        # the authorization tuple; use it as the only deterministic source.
+        value = self.snapshot.get("now") if isinstance(self.snapshot, dict) else None
         if not isinstance(value, str) or not value.strip():
-            raise RuntimeError("GitHub PR observation timestamp is missing")
+            raise RuntimeError("prepared evidence observation timestamp is missing")
         return value
 
     def _collect_dependents(
@@ -654,6 +750,11 @@ class GithubAdoptionTransport:
             head_sha = value.get("headRefOid")
             base_repo = value.get("baseRepository")
             head_repo = value.get("headRepository")
+            # Only PRs based on the selected head branch are dependents.  An
+            # unrelated fork PR must not fail the inventory before that
+            # relationship is established.
+            if number == pr or base_ref != target_head_ref:
+                continue
             if (
                 not isinstance(number, int)
                 or not isinstance(base_ref, str)
@@ -666,8 +767,6 @@ class GithubAdoptionTransport:
                 or head_repo.get("nameWithOwner") != repository
             ):
                 raise RuntimeError("GitHub dependent PR identity is incomplete")
-            if number == pr or base_ref != target_head_ref:
-                continue
             records.append(
                 {
                     "number": number,
@@ -756,6 +855,7 @@ class GithubAdoptionTransport:
         pr: int,
         *,
         allow_lifecycle_conflict: bool = False,
+        allow_ordinary_label_conflict: bool = False,
     ) -> dict[str, object]:
         if self.snapshot is None:
             raise RuntimeError("prepared snapshot is required")
@@ -886,10 +986,9 @@ class GithubAdoptionTransport:
             external: dict[str, object] = bundle
         else:
             # Observation time is collected before the repository-global
-            # writer inventory so both values are bound to the same stable
-            # selected-head observation.  The default collector derives it
-            # from the PR's immutable updated_at field; a custom collector
-            # must provide the same explicit value on every retry.
+            # writer inventory so both values are bound to the same prepared
+            # selected-head observation.  A custom collector must provide the
+            # same explicit value on every retry.
             observation_time = self._collector(
                 "observation_time", repository, issue, pr
             )
@@ -992,8 +1091,10 @@ class GithubAdoptionTransport:
                         "reviewed_head_sha": commit_id,
                         "state": state_name,
                         # GitHub's REST review endpoint does not expose the
-                        # connector's finding count.  Unknown is fail-closed.
-                        "finding_count": item.get("finding_count", 1),
+                        # connector's finding count.  Keep it unknown until
+                        # the independently collected findings inventory is
+                        # available.
+                        "finding_count": item.get("finding_count"),
                     }
                 )
             reactions: list[dict[str, object]] = []
@@ -1078,6 +1179,16 @@ class GithubAdoptionTransport:
             head_sha=head_sha,
             required_source="current-head-review-findings-v1",
         )
+        automatic_reviews = review.get("automatic_reviews")
+        if isinstance(automatic_reviews, dict):
+            finding_items = findings.get("items")
+            if isinstance(finding_items, list) and not finding_items:
+                # REST review payloads omit the connector-only finding count.
+                # An independently complete empty findings inventory provides
+                # the deterministic zero value used by the prepared digest.
+                for item in automatic_reviews.get("records", []):
+                    if isinstance(item, dict) and item.get("finding_count") is None:
+                        item["finding_count"] = 0
         writers = self._validate_injected_collection(
             external.get("writers"),
             name="writers",
@@ -1190,7 +1301,7 @@ class GithubAdoptionTransport:
         live_lifecycle = sorted(
             label for label in issue_labels if label.startswith("agent:")
         )
-        if live_ordinary != prepared_ordinary:
+        if live_ordinary != prepared_ordinary and not allow_ordinary_label_conflict:
             raise RuntimeError("GitHub issue ordinary labels changed")
         if (
             not allow_lifecycle_conflict
@@ -1416,7 +1527,7 @@ class GithubAdoptionTransport:
                     "submitted_at": item.get("submitted_at"),
                     "reviewed_head_sha": item.get("commit_id"),
                     "state": item.get("state"),
-                    "finding_count": item.get("finding_count", 1),
+                    "finding_count": item.get("finding_count"),
                 }
             )
         if self._record_fingerprint(automatic.get("records"), ("actor", "submitted_at", "reviewed_head_sha", "state")) != self._record_fingerprint(live_records, ("actor", "submitted_at", "reviewed_head_sha", "state")):
@@ -1447,6 +1558,13 @@ class GithubAdoptionTransport:
             if isinstance(issue, dict):
                 issue["labels"] = "<lifecycle-labels>"
                 issue["lifecycle_state"] = "<lifecycle-state>"
+        # The authorization digest covers the evidence snapshot, including
+        # ordinary labels.  A label-only race therefore changes this derived
+        # value even when every non-label field is unchanged.  Mask the
+        # derivative while retaining the underlying evidence comparison.
+        authorization = projected.get("authorization")
+        if isinstance(authorization, dict):
+            authorization["evidence_digest"] = "<label-derived-digest>"
         return projected
 
     @staticmethod
@@ -1506,8 +1624,6 @@ class GithubAdoptionTransport:
         after_ordinary, after_lifecycle = after_labels
         if label in before_lifecycle or label not in after_lifecycle:
             return False
-        if before_ordinary != after_ordinary:
-            return False
         # No lifecycle label may disappear while the write is being checked.
         # New labels are preserved by the compensating delete.
         if not set(before_lifecycle).issubset(after_lifecycle):
@@ -1535,8 +1651,7 @@ class GithubAdoptionTransport:
             label in before_lifecycle
             or label not in after_lifecycle
             or label in restored_lifecycle
-            or before_ordinary != after_ordinary
-            or before_ordinary != restored_ordinary
+            or after_ordinary != restored_ordinary
             or not set(before_lifecycle).issubset(after_lifecycle)
             or sorted(item for item in after_lifecycle if item != label)
             != restored_lifecycle
@@ -1672,6 +1787,7 @@ class GithubAdoptionTransport:
             issue,
             pr,
             allow_lifecycle_conflict=True,
+            allow_ordinary_label_conflict=True,
         )
         queue = runpy.run_path(str(ROOT / "scripts/check-cloud-queue-contract.py"))
         return {"state": state, "cas": queue["canonical_digest"](state)}

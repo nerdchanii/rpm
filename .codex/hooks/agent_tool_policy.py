@@ -435,9 +435,17 @@ def check_tool(event: dict[str, object]) -> int:
     text = "\n".join(flatten_strings(tool_input))
 
     if role == "rpm_existing_pr_adopter":
+        forbidden = has_forbidden_review_or_merge(f"{tool}\n{text}")
+        if forbidden:
+            return deny(forbidden)
+        # The adopter's entrypoints own the write boundary, while read-only
+        # MCP calls are required when the task receives only an issue/PR pair
+        # and must collect the live evidence itself.
+        if tool.startswith("mcp__") and mcp_mutation_kind(tool, tool_input) is None:
+            return 0
         if adopter_command_allowed(tool, tool_input):
             return 0
-        return deny("existing PR adopter is restricted to exact adoption entrypoints")
+        return deny("existing PR adopter is restricted to exact adoption entrypoints and read-only MCP")
 
     forbidden = has_forbidden_review_or_merge(f"{tool}\n{text}")
     if forbidden:

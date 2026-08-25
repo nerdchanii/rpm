@@ -42,10 +42,13 @@ verdict.
    decision with
    `python3 scripts/check-merge-gate.py --issues-file <normalized-file> --operation select-merge`.
    The script verdict is authoritative; do not merge on your own judgment.
-6. On `merge`: refetch the selected head and dependent inventory, then
-   squash-merge the PR through the GitHub plugin using the policy
-   method, delete the branch when the gate configures it, and verify the linked
-   issue closed. Lifecycle labels on the closed issue are inert; leave them.
+6. On `merge`: refetch the selected head and dependent inventory, normalize
+   that final evidence, and run `check-merge-gate.py` again for the exact
+   selected head immediately before mutation. Proceed only when the second
+   verdict is `merge` and its head matches the checked snapshot. Then
+   squash-merge the PR through the GitHub plugin using the policy method,
+   delete the branch when the gate configures it, and verify the linked issue
+   closed. Lifecycle labels on the closed issue are inert; leave them.
 7. On `no-work` (`checks-pending`, `mergeability-unknown`,
    `no-awaiting-merge-candidate`, `merge-gate-disabled`): report and make no
    mutation. `no-work` is a healthy idempotent result.

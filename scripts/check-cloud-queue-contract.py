@@ -749,6 +749,10 @@ def validate_checks(
         return "checks-invalid"
     if checks.get("count") != len(records):
         return "checks-count-mismatch"
+    required = contract.get("required_checks")
+    if not isinstance(required, list):
+        return "required-checks-invalid"
+    required_names = {str(name) for name in required}
     names: list[str] = []
     workflow_ids: list[int] = []
     conclusions: dict[str, str] = {}
@@ -756,6 +760,10 @@ def validate_checks(
         name = record.get("name")
         if not isinstance(name, str) or not name:
             return "check-name-invalid"
+        # Third-party runs remain visible in the complete inventory, while
+        # provenance is required for policy-required checks only.
+        if name not in required_names:
+            continue
         names.append(name)
         if record.get("head_sha") != head_sha:
             return "check-head-mismatch"
@@ -770,9 +778,6 @@ def validate_checks(
         conclusions[name] = conclusion.casefold()
     if len(names) != len(set(names)) or len(workflow_ids) != len(set(workflow_ids)):
         return "duplicate-check-name"
-    required = contract.get("required_checks")
-    if not isinstance(required, list):
-        return "required-checks-invalid"
     if any(conclusions.get(str(name)) != "success" for name in required):
         return "required-check-not-successful"
     return None
@@ -831,6 +836,7 @@ def validate_review(
     reaction_records = reactions["records"]
     assert isinstance(automatic_records, list) and isinstance(reaction_records, list)
     automatic_ids: set[tuple[object, object, object]] = set()
+    automatic_candidate = False
     for item in automatic_records:
         identity = (item.get("actor"), item.get("submitted_at"), item.get("reviewed_head_sha"))
         if identity in automatic_ids:
@@ -841,9 +847,17 @@ def validate_review(
             and item.get("reviewed_head_sha") == head_sha
             and str(item.get("state", "")).casefold()
             in {"approved", "commented"}
-            and item.get("finding_count") == 0
         ):
-            return None
+            finding_count = item.get("finding_count")
+            if finding_count == 0:
+                automatic_candidate = True
+            elif finding_count is None and validate_findings(
+                evidence, contract, head_sha
+            ) is None:
+                # The live REST review object has no finding_count.  A
+                # complete current-head findings inventory is the independent
+                # source of truth for the in-scope review gate.
+                automatic_candidate = True
     reaction_ids: set[tuple[object, object, object]] = set()
     for item in reaction_records:
         identity = (item.get("actor"), item.get("created_at"), item.get("content"))
@@ -864,7 +878,9 @@ def validate_review(
         except ValueError:
             continue
         if created_at >= head_updated_at:
-            return None
+            automatic_candidate = True
+    if automatic_candidate:
+        return None
     return "current-head-review-missing"
 
 

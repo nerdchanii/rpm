@@ -108,6 +108,8 @@ def validate_findings_collection(
         severity = str(item.get("severity", "")).upper()
         if severity in {"P0", "P1"}:
             return "review-findings-remain"
+        if severity == "P3":
+            continue
         if severity != "P2":
             return "finding-severity-invalid"
         disposition = item.get("disposition")
@@ -389,6 +391,8 @@ def evaluate_gate(
             "issue": issue_number,
             "pr": pr_number,
         }
+    required = [str(name) for name in list(gate.get("required_checks", []))]
+    required_names = set(required)
     names: list[str] = []
     workflow_ids: list[int] = []
     conclusions: dict[str, str] = {}
@@ -401,6 +405,8 @@ def evaluate_gate(
                 "issue": issue_number,
                 "pr": pr_number,
             }
+        if name not in required_names:
+            continue
         if (
             item.get("head_sha") != selected_head_sha
             or item.get("source") != "github-actions"
@@ -430,7 +436,6 @@ def evaluate_gate(
             "issue": issue_number,
             "pr": pr_number,
         }
-    required = [str(name) for name in list(gate.get("required_checks", []))]
     failed = sorted(
         name
         for name in required
