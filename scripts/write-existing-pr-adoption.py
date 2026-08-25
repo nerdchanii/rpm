@@ -539,15 +539,22 @@ class GithubAdoptionTransport:
         text: object,
         repository: str,
         issue: int,
-        pr: int,
+        pr: int | None,
         *,
         include_execution_lease: bool = False,
         head_sha: str | None = None,
+        author: str | None = None,
+        approved_marker_actors: frozenset[str] | None = None,
     ) -> list[dict[str, object]]:
         if not isinstance(text, str):
             return []
         records: list[dict[str, object]] = []
         for match in WRITER_MARKER.finditer(text):
+            if (
+                approved_marker_actors is not None
+                and (not isinstance(author, str) or author not in approved_marker_actors)
+            ):
+                continue
             try:
                 value = json.loads(match.group(1))
             except json.JSONDecodeError as error:
@@ -557,6 +564,11 @@ class GithubAdoptionTransport:
             records.append(value)
         if include_execution_lease:
             for match in EXECUTION_MARKER.finditer(text):
+                if (
+                    approved_marker_actors is not None
+                    and (not isinstance(author, str) or author not in approved_marker_actors)
+                ):
+                    continue
                 try:
                     metadata = json.loads(match.group(1))
                 except json.JSONDecodeError as error:
@@ -568,16 +580,20 @@ class GithubAdoptionTransport:
                     continue
                 if not isinstance(lease, dict):
                     raise RuntimeError("GitHub execution lease is invalid")
-                if (
-                    not isinstance(head_sha, str)
-                    or not re.fullmatch(r"[0-9a-f]{40}", head_sha)
-                    or any(
-                        not isinstance(lease.get(field), str)
-                        or not str(lease.get(field)).strip()
-                        for field in ("run_id", "owner", "expires_at")
-                    )
+                if any(
+                    not isinstance(lease.get(field), str)
+                    or not str(lease.get(field)).strip()
+                    for field in ("run_id", "owner", "expires_at")
                 ):
                     raise RuntimeError("GitHub execution lease is incomplete")
+                lease_head_sha = lease.get("head_sha")
+                record_head_sha = head_sha
+                if record_head_sha is None and isinstance(lease_head_sha, str):
+                    record_head_sha = lease_head_sha
+                if record_head_sha is not None and not re.fullmatch(
+                    r"[0-9a-f]{40}", record_head_sha
+                ):
+                    raise RuntimeError("GitHub execution lease head is invalid")
                 records.append(
                     {
                         "kind": "claim",
@@ -587,7 +603,7 @@ class GithubAdoptionTransport:
                         "run_id": lease["run_id"],
                         "owner": lease["owner"],
                         "lease_expires_at": lease["expires_at"],
-                        "head_sha": head_sha,
+                        "head_sha": record_head_sha,
                     }
                 )
         return records
@@ -597,8 +613,8 @@ class GithubAdoptionTransport:
         execution: object,
         repository: str,
         issue: int,
-        pr: int,
-        head_sha: str,
+        pr: int | None,
+        head_sha: str | None,
     ) -> dict[str, object] | None:
         if not isinstance(execution, dict):
             return None
@@ -610,7 +626,13 @@ class GithubAdoptionTransport:
             for field in ("run_id", "owner", "expires_at")
         ):
             raise RuntimeError("GitHub execution lease is incomplete")
-        if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        lease_head_sha = lease.get("head_sha")
+        record_head_sha = head_sha
+        if record_head_sha is None and isinstance(lease_head_sha, str):
+            record_head_sha = lease_head_sha
+        if record_head_sha is not None and not re.fullmatch(
+            r"[0-9a-f]{40}", record_head_sha
+        ):
             raise RuntimeError("GitHub execution lease head is invalid")
         return {
             "kind": "claim",
@@ -620,7 +642,7 @@ class GithubAdoptionTransport:
             "run_id": lease["run_id"],
             "owner": lease["owner"],
             "lease_expires_at": lease["expires_at"],
-            "head_sha": head_sha,
+            "head_sha": record_head_sha,
         }
 
     def _collect_writers(
@@ -630,6 +652,8 @@ class GithubAdoptionTransport:
         # endpoint, so the repository contract stores signed inventory records
         # in issue/PR bodies or comments.  Read the complete open issue/PR set
         # and every comment page; an API failure remains fail-closed.
+        if not self.approved_marker_actors:
+            raise RuntimeError("GitHub writer marker actor allowlist is missing")
         target_head_sha = self._head_sha_from_pr(repository, pr)
         all_items = self._paginate(
             f"repos/{self._repository_path(repository)}/issues?state=open"
@@ -639,20 +663,31 @@ class GithubAdoptionTransport:
             if not isinstance(item, dict) or not isinstance(item.get("number"), int):
                 raise RuntimeError("GitHub open-item inventory is invalid")
             number = int(item["number"])
-            if number == issue:
-                execution_record = self._writer_record_from_execution(
-                    item.get("execution"), repository, issue, pr, target_head_sha
-                )
-                if execution_record is not None:
-                    records.append(execution_record)
+            writer_pr = pr if number == issue else None
+            writer_head_sha = target_head_sha if number == issue else None
+            execution_record = self._writer_record_from_execution(
+                item.get("execution"),
+                repository,
+                number,
+                writer_pr,
+                writer_head_sha,
+            )
+            if execution_record is not None:
+                records.append(execution_record)
+            item_user = item.get("user")
+            item_author = (
+                item_user.get("login") if isinstance(item_user, dict) else None
+            )
             records.extend(
                 self._writer_records_from_text(
                     item.get("body"),
                     repository,
-                    issue,
-                    pr,
-                    include_execution_lease=number == issue,
-                    head_sha=target_head_sha,
+                    number,
+                    writer_pr,
+                    include_execution_lease=True,
+                    head_sha=writer_head_sha,
+                    author=item_author,
+                    approved_marker_actors=self.approved_marker_actors,
                 )
             )
             comments = self._paginate(
@@ -661,14 +696,22 @@ class GithubAdoptionTransport:
             for comment in comments:
                 if not isinstance(comment, dict):
                     raise RuntimeError("GitHub writer comment inventory is invalid")
+                comment_user = comment.get("user")
+                comment_author = (
+                    comment_user.get("login")
+                    if isinstance(comment_user, dict)
+                    else None
+                )
                 records.extend(
                     self._writer_records_from_text(
                         comment.get("body"),
                         repository,
-                        issue,
-                        pr,
-                        include_execution_lease=number == issue,
-                        head_sha=target_head_sha,
+                        number,
+                        writer_pr,
+                        include_execution_lease=True,
+                        head_sha=writer_head_sha,
+                        author=comment_author,
+                        approved_marker_actors=self.approved_marker_actors,
                     )
                 )
         observed_at = self._current_observation_time
@@ -691,6 +734,23 @@ class GithubAdoptionTransport:
         if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise RuntimeError("GitHub PR head SHA is invalid")
         return sha
+
+    def _head_commit_timestamp(self, repository: str, head_sha: str) -> str:
+        """Return the commit timestamp bound to the selected head SHA."""
+        payload = self._call(
+            f"repos/{self._repository_path(repository)}/commits/{head_sha}"
+        )
+        if not isinstance(payload, dict) or payload.get("sha") != head_sha:
+            raise RuntimeError("GitHub selected-head commit identity mismatch")
+        commit = payload.get("commit") if isinstance(payload, dict) else None
+        if not isinstance(commit, dict):
+            raise RuntimeError("GitHub selected-head commit metadata is missing")
+        for field in ("committer", "author"):
+            identity = commit.get(field)
+            value = identity.get("date") if isinstance(identity, dict) else None
+            if isinstance(value, str) and value.strip():
+                return value
+        raise RuntimeError("GitHub selected-head commit timestamp is missing")
 
     def _collect_observation_time(
         self, repository: str, issue: int, pr: int
@@ -1119,13 +1179,12 @@ class GithubAdoptionTransport:
                         "deleted": False,
                     }
                 )
-            if not isinstance(pr_payload.get("updated_at"), str):
-                raise RuntimeError("GitHub PR observation timestamp is missing")
+            head_updated_at = self._head_commit_timestamp(repository, head_sha)
             review = {
                 "repository": repository,
                 "pr": pr,
                 "head_sha": head_sha,
-                "head_updated_at": pr_payload["updated_at"],
+                "head_updated_at": head_updated_at,
                 "automatic_reviews": {
                     "source": "github-pull-request-reviews-v1",
                     "repository": repository,

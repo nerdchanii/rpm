@@ -197,6 +197,7 @@ class FakeGithubApiRunner:
         self.comments: list[dict[str, object]] = []
         self.writes: list[tuple[str, object]] = []
         self.next_comment_id = 81001
+        self.pr_updated_at = "2026-08-25T12:00:00Z"
 
     def __call__(
         self, argv: list[str], input_text: str | None = None
@@ -278,7 +279,7 @@ class FakeGithubApiRunner:
                 "number": 210,
                 "state": "open",
                 "draft": False,
-                "updated_at": "2026-08-25T12:00:00Z",
+                "updated_at": self.pr_updated_at,
                 "base": {
                     "ref": "main",
                     "sha": BASE_SHA,
@@ -292,6 +293,14 @@ class FakeGithubApiRunner:
             }
         elif route == "repos/nerdchanii/rpm/issues/145/comments":
             response = copy.deepcopy(self.comments)
+        elif route == f"repos/nerdchanii/rpm/commits/{HEAD_SHA}":
+            response = {
+                "sha": HEAD_SHA,
+                "commit": {
+                    "author": {"date": "2026-08-25T12:00:00Z"},
+                    "committer": {"date": "2026-08-25T12:00:00Z"},
+                },
+            }
         elif route == f"repos/nerdchanii/rpm/commits/{HEAD_SHA}/check-runs":
             response = {
                 "total_count": 2,
@@ -1064,6 +1073,19 @@ class AdoptionContractTest(unittest.TestCase):
                 self.resign(fixture)
                 result, event = self.run_queue(fixture)
                 self.assert_adoptable(result, event)
+
+        p3 = {
+            "id": "P3-fixture",
+            "source_id": "review-thread-P3-fixture",
+            "head_sha": HEAD_SHA,
+            "severity": "P3",
+        }
+        fixture = self.load_adoption()
+        fixture["evidence"]["findings"]["items"] = [p3]
+        fixture["evidence"]["findings"]["count"] = 1
+        self.resign(fixture)
+        result, event = self.run_queue(fixture)
+        self.assert_adoptable(result, event)
 
         rejected = [
             self.p2("accept-now", owner="issue-228", rationale="still open"),
@@ -2003,6 +2025,100 @@ class AdoptionContractTest(unittest.TestCase):
                 head_sha=HEAD_SHA,
             ),
             [record],
+        )
+
+        api = FakeGithubApiRunner(prepared)
+        api.pr_updated_at = "2026-08-25T13:00:00Z"
+        live = github_transport(
+            snapshot=prepared,
+            runner=api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+        )
+        live.collectors.update(self.live_collectors(prepared))
+        observed = live.read("nerdchanii/rpm", 145, 210)["state"]
+        self.assertEqual(
+            observed["evidence"]["review"]["head_updated_at"],
+            "2026-08-25T12:00:00Z",
+        )
+
+    def test_writer_leases_are_global_and_marker_authors_are_bound(self) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(github_transport), namespace.keys())
+        prepared = self.load_adoption()
+        transport = github_transport(
+            snapshot=prepared,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+        )
+        lease = {
+            "lease": {
+                "run_id": "claim-run-other-issue",
+                "owner": "cloud:executor",
+                "expires_at": "2026-08-25T13:00:00Z",
+            }
+        }
+        marker = "<!-- rpm-agent-execution: " + json.dumps(lease) + " -->"
+        transport._head_sha_from_pr = lambda repository, pr: HEAD_SHA
+        transport._current_observation_time = prepared["now"]
+
+        def paginate(endpoint: str, **kwargs: object) -> list[object]:
+            if endpoint == "repos/nerdchanii/rpm/issues?state=open":
+                return [
+                    {
+                        "number": 145,
+                        "body": "",
+                        "user": {"login": "nerdchanii"},
+                    },
+                    {
+                        "number": 999,
+                        "body": marker,
+                        "user": {"login": "nerdchanii"},
+                    },
+                ]
+            if endpoint.endswith("/comments"):
+                return []
+            raise AssertionError(endpoint)
+
+        transport._paginate = paginate
+        inventory = transport._collect_writers("nerdchanii/rpm", 145, 210)
+        self.assertEqual(inventory["records"][0]["issue"], 999)
+        self.assertIsNone(inventory["records"][0]["pr"])
+
+        writer_marker = "<!-- rpm-agent-writer: " + json.dumps(
+            {
+                "kind": "claim",
+                "repository": "nerdchanii/rpm",
+                "issue": 999,
+                "pr": None,
+                "run_id": "marker-run",
+                "owner": "cloud:executor",
+                "lease_expires_at": "2026-08-25T13:00:00Z",
+                "head_sha": None,
+            }
+        ) + " -->"
+        self.assertEqual(
+            transport._writer_records_from_text(
+                writer_marker,
+                "nerdchanii/rpm",
+                999,
+                None,
+                author="untrusted-user",
+                approved_marker_actors=frozenset({"nerdchanii"}),
+            ),
+            [],
+        )
+        self.assertEqual(
+            len(
+                transport._writer_records_from_text(
+                    writer_marker,
+                    "nerdchanii/rpm",
+                    999,
+                    None,
+                    author="nerdchanii",
+                    approved_marker_actors=frozenset({"nerdchanii"}),
+                )
+            ),
+            1,
         )
 
     def test_dependent_inventory_filters_unrelated_forks_before_identity_checks(self) -> None:

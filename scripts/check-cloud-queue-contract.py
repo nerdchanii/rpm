@@ -941,6 +941,8 @@ def validate_findings(
         disposition = item.get("disposition")
         if severity in {"P0", "P1"}:
             return "p0-p1-finding-remains"
+        if severity == "P3":
+            continue
         if severity != "P2" or disposition not in terminal_set:
             return "finding-disposition-incomplete"
         owner = item.get("owner")
