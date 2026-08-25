@@ -375,9 +375,11 @@ Findings:
   completed manifest/discovery contract and gap audit; (2) #221 is the first
   implementation, delivering the validated discovery table and resolver roots
   with its executable fixtures; (3) the follow-up tracks then respect their
-  dependencies: the #147 linker track (contract first, implementation after)
-  requires #145 and #146, #223 (command targeting) requires #221 plus the #148
-  and #151 CLI/diagnostics contracts and is independent of #147 and #224, and
+  dependencies: the #147 linker contract track can proceed from #145 and #146,
+  while its implementation gate additionally requires #221's member-table and
+  resolver-graph implementation; #223 (command targeting) requires #221 plus
+  the #148 and #151 CLI/diagnostics contracts and is independent of #147 and
+  #224, and
   #224 may split parser/schema work after #146 from runtime/replay/publication;
   the latter requires #221's graph/preflight implementation, the #147
   linker/extraction-validation implementation, and #149's end-to-end fixture;
