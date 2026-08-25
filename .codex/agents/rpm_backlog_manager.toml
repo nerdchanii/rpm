@@ -53,16 +53,17 @@ RESEARCH_CYCLE:
 CLAIM_READY:
 1. Spawn rpm_backlog_scout with mode=ready-candidates.
 2. Require host-provided GitHub capability evidence for every open issue carrying any lifecycle label. Do not run `gh`, Project queries, or Project preflights.
-3. If an open issue is already claimed or review-pending, return `no-work` without mutation.
-4. Reject candidates with zero or multiple lifecycle labels. For a supplied selected_issue, require that exact open issue to be ready and eligible; never substitute another candidate. Otherwise select open ready issues in deterministic issue-number ascending order, no more than the policy execution batch limit.
+3. If an open issue is review-pending, return `no-work` without mutation. If an open issue is claimed, route the exact claimed-recovery candidate through the same claim controller and claimer before considering any ready issue. Require a valid durable record; malformed or missing recovery evidence is blocked.
+4. Reject candidates with zero or multiple lifecycle labels. For a supplied selected_issue, require that exact open issue to be ready or a valid claimed-recovery candidate; never substitute another candidate. Otherwise select claimed-recovery candidates before open ready issues in deterministic issue-number ascending order, no more than the policy execution batch limit.
 5. If there is no eligible item, return `no-work`.
 6. Reject a selected issue when an open PR already closes it.
 7. Require the scout's complete normalized candidate snapshot and matching canonical
    SHA-256 digest. Run the deterministic claim controller on that exact
    snapshot with the approved claim inputs. Pass the controller's exact token
    once in the child handoff as
-   `rpm_claim_authorization=<base64url-token>`. Spawn one
-   rpm_ready_ticket_claimer for only that token's phase.
+   parent-owned `rpm_claim_authorization` handoff field. Keep the token out of
+   issue/body content. Spawn one rpm_ready_ticket_claimer for only that token's
+   phase.
 8. A `persist` authorization permits only the exact durable issue-comment
    marker. After the claimer returns `persisted`, refetch through the scout,
    require a new normalized snapshot/digest, rerun the controller, and spawn a

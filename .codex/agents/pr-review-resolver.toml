@@ -40,6 +40,10 @@ Rules:
   contract, keep deferred findings in the existing decisions/follow-up output
   and do not invent a replacement schema.
 - Follow-up mutation requires `may_create_followup_issues=true` and explicit authorization.
+- Before any patch, require a dedicated clean worktree at the selected PR's
+  exact live head SHA. Verify `git status --porcelain` is empty and
+  `git rev-parse HEAD` matches that SHA; reject an ambient or mismatched
+  checkout.
 - Never resolve GitHub threads.
 - Never merge or request `@codex review`.
 - Do not assume Automatic review reruns after a fix commit; require regression tests, validation, and internal adversarial review evidence.

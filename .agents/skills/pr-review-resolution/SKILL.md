@@ -50,7 +50,12 @@ without applying it.
 3. Return `no-work` without mutation when Codex review has not arrived.
 4. Use `pr-review-resolver` to classify actionable feedback.
 5. Apply only `accept-now` fixes.
-6. Rerun focused validation, the appropriate repository gate, and internal adversarial review after accepted fixes. Do not assume an Automatic review reruns after a push.
+6. Before spawning the resolver or applying a fix, establish a dedicated clean
+   worktree at the exact live PR head SHA. Verify `git status --porcelain` is
+   empty and `git rev-parse HEAD` equals that SHA; a dirty, mismatched, or
+   ambient checkout is blocked. Rerun focused validation, the appropriate
+   repository gate, and internal adversarial review after accepted fixes. Do
+   not assume an Automatic review reruns after a push.
 7. Preserve a validated #208 disposition when supplied. Until #208 defines
    that contract, keep deferred findings in the existing decision and
    follow-up output without inventing a replacement schema. The resolver

@@ -806,7 +806,7 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
         token = controller_token(fixture)
         Path(transcript).write_text(
             json.dumps(
-                {"role": "user", "content": f"rpm_claim_authorization={token}"}
+                {"role": "user", "rpm_claim_authorization": token}
             )
             + "\n"
         )

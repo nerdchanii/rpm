@@ -19,8 +19,9 @@ immediately before mutation and enforces the deterministic claim contract in
 The controller records `run_id`, `event_id`, lease owner and expiry, and the
 policy-defined idempotency key before it applies `agent:ready` to
 `agent:claimed`. A duplicate event with the same run is `no-work`. An active
-lease is `no-work`. A stale plan, scope, executor, or expired lease is
-`blocked` and requires recovery under the allowed lifecycle transitions.
+lease for the selected issue blocks a different event key from creating a
+second claim. A stale plan, scope, executor, or expired lease is `blocked` and
+requires recovery under the allowed lifecycle transitions.
 
 Codex scheduled tasks are the entry and recovery path. No GitHub Actions
 workflow dispatch is part of this harness. GitHub issue, PR, comment, and
@@ -78,11 +79,14 @@ transition any issue label. Never fall back to the gh CLI, curl, git
 credentials, or raw GitHub API calls. Credential handling remains inside the
 capability and must not appear in the task contract.
 
-If any open issue is agent:claimed or agent:review-pending, return no-work
-without mutation. Otherwise select at most one agent:ready issue in
-issue-number ascending order, refetch it, validate its approved execution
-metadata, and pass the claim contract with the current event key. Persist the
-lease and idempotency record before replacing agent:ready with agent:claimed.
+If any open issue is agent:review-pending, return no-work without mutation. An
+agent:claimed issue with a valid durable record is the first recovery candidate;
+route it through the claim controller before considering agent:ready. A
+malformed or missing record is blocked. Otherwise select at most one agent:ready
+issue in issue-number ascending order, refetch it, validate its approved
+execution metadata, and pass the claim contract with the current event key.
+Persist the lease and idempotency record before replacing agent:ready with
+agent:claimed.
 Skip an issue already closed by an open PR. Execute it in an isolated worktree, complete contract review, tests,
 just validate, internal adversarial review, intentional commits, push, and PR
 publication. Mark the PR review-ready for repository-configured Codex Automatic

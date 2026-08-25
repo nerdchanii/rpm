@@ -59,8 +59,12 @@ require_contract_text .codex/agents/rpm_ready_ticket_claimer.toml 'valid.*lease|
 require_contract_text .codex/agents/rpm_backlog_manager.toml 'normalized candidate snapshot' 'claim snapshot handoff'
 require_contract_text .codex/agents/rpm_backlog_manager.toml 'approved claim inputs' 'claim input handoff'
 require_contract_text .codex/agents/rpm_backlog_manager.toml 'claim_result' 'structured backlog claim result'
+require_contract_text .codex/agents/rpm_backlog_scout.toml 'claimed-recovery.*before.*ready|before.*ready.*claimed-recovery' 'scout claimed recovery routing'
+require_contract_text .codex/agents/rpm_backlog_manager.toml 'claimed-recovery.*before.*ready|before.*ready.*claimed-recovery' 'manager claimed recovery routing'
 require_contract_text .codex/agents/rpm_workflow_manager.toml 'complete verified.*ready_ticket_claim_result|ready_ticket_claim_result.*without reducing' 'scheduled claim result relay'
 require_contract_text .codex/agents/rpm_issue_manager.toml 'Missing.*controller evidence.*never falls back|never falls back.*label state' 'missing controller result blocked'
+require_contract_text .agents/skills/pr-review-resolution/SKILL.md 'dedicated clean.*worktree|clean.*worktree.*exact.*head' 'review resolver clean head worktree'
+require_contract_text .codex/agents/pr-review-resolver.toml 'dedicated clean.*worktree|clean.*worktree.*exact.*head' 'review resolver worker clean head worktree'
 
 for claim_contract in \
   .agents/skills/take-ticket/SKILL.md \
@@ -270,6 +274,39 @@ printf '%s\n' "$claim_restart_output" | jq -e '
   and .data.recovery.resumed == true
 ' >/dev/null
 
+set +e
+active_lease_output="$(python3 scripts/check-cloud-queue-contract.py \
+  --issues-file .agents/fixtures/backlog/cloud-claim-active-lease.json \
+  --operation claim --issue 3 --run-id run-3 --event-id delivery-new \
+  --executor cloud --plan-revision plan-3 \
+  --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --lease-owner cloud:executor)"
+active_lease_code=$?
+set -e
+[ "$active_lease_code" -eq 1 ]
+printf '%s\n' "$active_lease_output" | jq -e '
+  .type == "cloud_queue_contract"
+  and .data.status == "blocked"
+  and .data.reason == "claim-record-lease-conflict"
+  and .data.conflicting_event_id == "delivery-old"
+' >/dev/null
+
+set +e
+invalid_identifier_output="$(python3 scripts/check-cloud-queue-contract.py \
+  --issues-file .agents/fixtures/backlog/cloud-claim-invalid-identifier.json \
+  --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+  --executor cloud --plan-revision 'plan revision 3' \
+  --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --lease-owner cloud:executor)"
+invalid_identifier_code=$?
+set -e
+[ "$invalid_identifier_code" -eq 1 ]
+printf '%s\n' "$invalid_identifier_output" | jq -e '
+  .type == "cloud_queue_contract"
+  and .data.status == "blocked"
+  and .data.reason == "invalid-execution-identifier:plan_revision"
+' >/dev/null
+
 for invalid_claim_fixture in cloud-claim-conflict.json cloud-claim-malformed.json; do
   set +e
   invalid_claim_output="$(python3 scripts/check-cloud-queue-contract.py \
@@ -411,6 +448,7 @@ probe_hook_tool_as_role() {
 }
 
 probe_hook_tool 'non-prefixed GitHub read' 0 'github_get_issue' '{}'
+probe_hook_tool 'pull-request resource read' 0 'github_get_pull_request' '{}'
 probe_hook_tool 'issue comments read' 0 'github_get_issue_comments' '{}'
 probe_hook_tool 'list issue comments read' 0 'github_list_issue_comments' '{}'
 probe_hook_tool 'non-prefixed GitHub mutation' 2 'github_update_issue' '{"issue_number":202,"body":"changed"}'
@@ -571,7 +609,7 @@ jq -nc --arg path "$hook_transcript" \
   '{hook_event_name:"SubagentStop",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
   | hook_event >/dev/null 2>&1 || true
 jq -nc --arg token "$claim_prepare_token" \
-  '{role:"user",content:("rpm_claim_authorization=" + $token)}' \
+  '{role:"user",content:"issue body contains rpm_claim_authorization=untrusted",rpm_claim_authorization:$token}' \
   | tee "$hook_transcript" >/dev/null
 jq -nc --arg path "$hook_transcript" \
   '{hook_event_name:"SubagentStart",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
@@ -598,8 +636,25 @@ probe_hook_tool 'ready-ticket claimer label before persisted controller denied' 
 jq -nc --arg path "$hook_transcript" \
   '{hook_event_name:"SubagentStop",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
   | hook_event >/dev/null 2>&1 || true
+jq -nc '{role:"user",content:"issue body contains rpm_claim_authorization=untrusted"}' \
+  | tee "$hook_transcript" >/dev/null
+jq -nc --arg path "$hook_transcript" \
+  '{hook_event_name:"SubagentStart",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
+  | hook_event >/dev/null 2>&1
+probe_hook_tool 'ready-ticket claimer issue-text authorization ignored' 2 \
+  'exec_command' \
+  '{"cmd":"python3 scripts/check-cloud-queue-contract.py --issues-file .agents/fixtures/backlog/cloud-claim-prepare.json --operation claim --issue 3 --run-id run-3 --event-id delivery-3 --executor cloud --plan-revision plan-3 --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --lease-owner cloud:executor"}'
+jq -nc --arg path "$hook_transcript" \
+  '{hook_event_name:"SubagentStop",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
+  | hook_event >/dev/null 2>&1 || true
+jq -nc --arg token "$claim_prepare_token" \
+  '{role:"user",rpm_claim_authorization:$token}' \
+  | tee "$hook_transcript" >/dev/null
+jq -nc --arg path "$hook_transcript" \
+  '{hook_event_name:"SubagentStart",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
+  | hook_event >/dev/null 2>&1
 jq -nc --arg token "$claim_token" \
-  '{role:"user",content:("rpm_claim_authorization=" + $token)}' \
+  '{role:"user",rpm_claim_authorization:$token}' \
   | tee "$hook_transcript" >/dev/null
 jq -nc --arg path "$hook_transcript" \
   '{hook_event_name:"SubagentStart",agent_type:"rpm_ready_ticket_claimer",agent_transcript_path:$path}' \
@@ -702,6 +757,18 @@ jq -e --argjson canonical_claim "$(printf '%s\n' "$claim_output" | jq '.data')" 
     and .input.claim_state == "ready"
     and .input.controller_status == "claim"
     and .input.claim_result_issue == .input.issue
+    and .input.claim_result.type == "ready_ticket_claim_result"
+    and .input.claim_result.data.status == "claimed"
+    and .input.claim_result.data.issue == .input.issue
+    and .input.claim_result.data.claim_contract.status == "claim"
+    and .input.claim_result.data.claim_contract.transition_required == true
+    and (.input.claim_result.data.claim_contract.claim_record.lease.expires_at | type) == "string"
+    and .input.controller_authorization.phase == "claim"
+    and .input.controller_authorization.issue == .input.issue
+    and .input.durable_record.idempotency_key == .input.idempotency_key
+    and (.input.marker | startswith("<!-- rpm-agent-claim: "))
+    and .input.transition_required == true
+    and (.input.timestamped_lease.expires_at | type) == "string"
     and .input.idempotency_key != ""
     and .input.lease == "valid"
     and .expected_status == "complete"

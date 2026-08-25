@@ -82,7 +82,82 @@
       "claim_state": "ready",
       "controller_status": "claim",
       "claim_result_issue": 202,
-      "idempotency_key": "sha256:fixture",
+      "claim_result": {
+        "type": "ready_ticket_claim_result",
+        "data": {
+          "status": "claimed",
+          "issue": 202,
+          "before_state": "ready",
+          "after_state": "claimed",
+          "claim_contract": {
+            "status": "claim",
+            "snapshot_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "authorization_token": "ZXhwaWNpdC0yMDI",
+            "issue": 202,
+            "before": "ready",
+            "after": "claimed",
+            "transition_required": true,
+            "claim_record": {
+              "repository": "nerdchanii/rpm",
+              "issue": 202,
+              "run_id": "run-explicit-202",
+              "event_id": "explicit-202",
+              "executor": "cloud",
+              "plan_revision": "plan-explicit-202",
+              "scope_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "idempotency_key": "sha256:2390f8835b1b70be749baf9ebe7a2cc3ac3c7afbe7c41db9c9ced6f2ef19f47a",
+              "lease": {
+                "run_id": "run-explicit-202",
+                "owner": "cloud:executor",
+                "started_at": "2026-08-21T12:00:00Z",
+                "expires_at": "2026-08-21T13:00:00Z"
+              },
+              "started_at": "2026-08-21T12:00:00Z",
+              "expires_at": "2026-08-21T13:00:00Z"
+            },
+            "issue_comment_marker": "<!-- rpm-agent-claim: {\"event_id\":\"explicit-202\",\"executor\":\"cloud\",\"expires_at\":\"2026-08-21T13:00:00Z\",\"idempotency_key\":\"sha256:2390f8835b1b70be749baf9ebe7a2cc3ac3c7afbe7c41db9c9ced6f2ef19f47a\",\"issue\":202,\"lease\":{\"expires_at\":\"2026-08-21T13:00:00Z\",\"owner\":\"cloud:executor\",\"run_id\":\"run-explicit-202\",\"started_at\":\"2026-08-21T12:00:00Z\"},\"plan_revision\":\"plan-explicit-202\",\"repository\":\"nerdchanii/rpm\",\"run_id\":\"run-explicit-202\",\"scope_hash\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"started_at\":\"2026-08-21T12:00:00Z\"} -->",
+            "recovery": {
+              "state": "ready",
+              "resumed": false,
+              "evidence": ["durable-claim-record", "exact-persistence-marker", "refetched-runs-ledger"]
+            },
+            "lease": {
+              "run_id": "run-explicit-202",
+              "owner": "cloud:executor",
+              "started_at": "2026-08-21T12:00:00Z",
+              "expires_at": "2026-08-21T13:00:00Z"
+            },
+            "preserved_labels": ["priority:high"],
+            "labels": ["agent:claimed", "priority:high"]
+          },
+          "preserved_labels": ["priority:high"],
+          "verified": true,
+          "race_evidence": [],
+          "blockers": []
+        }
+      },
+      "controller_authorization": {
+        "phase": "claim",
+        "issue": 202,
+        "snapshot_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "authorization_token": "ZXhwaWNpdC0yMDI"
+      },
+      "durable_record": {
+        "run_id": "run-explicit-202",
+        "event_id": "explicit-202",
+        "idempotency_key": "sha256:2390f8835b1b70be749baf9ebe7a2cc3ac3c7afbe7c41db9c9ced6f2ef19f47a",
+        "started_at": "2026-08-21T12:00:00Z",
+        "expires_at": "2026-08-21T13:00:00Z"
+      },
+      "marker": "<!-- rpm-agent-claim: {\"event_id\":\"explicit-202\",\"executor\":\"cloud\",\"expires_at\":\"2026-08-21T13:00:00Z\",\"idempotency_key\":\"sha256:2390f8835b1b70be749baf9ebe7a2cc3ac3c7afbe7c41db9c9ced6f2ef19f47a\",\"issue\":202,\"lease\":{\"expires_at\":\"2026-08-21T13:00:00Z\",\"owner\":\"cloud:executor\",\"run_id\":\"run-explicit-202\",\"started_at\":\"2026-08-21T12:00:00Z\"},\"plan_revision\":\"plan-explicit-202\",\"repository\":\"nerdchanii/rpm\",\"run_id\":\"run-explicit-202\",\"scope_hash\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"started_at\":\"2026-08-21T12:00:00Z\"} -->",
+      "transition_required": true,
+      "timestamped_lease": {
+        "run_id": "run-explicit-202",
+        "owner": "cloud:executor",
+        "started_at": "2026-08-21T12:00:00Z",
+        "expires_at": "2026-08-21T13:00:00Z"
+      },
+      "idempotency_key": "sha256:2390f8835b1b70be749baf9ebe7a2cc3ac3c7afbe7c41db9c9ced6f2ef19f47a",
       "lease": "valid"
     },
     "owner": "take-ticket",

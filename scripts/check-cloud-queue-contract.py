@@ -14,6 +14,7 @@ from pathlib import Path
 
 SHA256_KEY = re.compile(r"sha256:[0-9a-f]{64}\Z")
 RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
+IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/+\-]{0,127}\Z")
 
 
 def load_json(path: str) -> dict[str, object]:
@@ -97,6 +98,9 @@ def validate_execution_metadata(
         return metadata, f"missing-execution-fields:{','.join(missing)}"
     if metadata["executor"] not in [str(value) for value in executors]:
         return metadata, "invalid-executor"
+    for field in ("approval_id", "plan_revision"):
+        if not IDENTIFIER.fullmatch(str(metadata[field])):
+            return metadata, f"invalid-execution-identifier:{field}"
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(metadata["scope_hash"])):
         return metadata, "invalid-scope-hash"
     return metadata, None
@@ -266,6 +270,9 @@ def validate_claim_record(
     for field in ("run_id", "event_id", "executor", "plan_revision", "scope_hash"):
         if not isinstance(record.get(field), str) or not str(record[field]).strip():
             return f"malformed-claim-record:{field}"
+    for field in ("run_id", "event_id", "plan_revision"):
+        if not IDENTIFIER.fullmatch(str(record[field])):
+            return f"malformed-claim-record:{field}"
     if not SHA256_KEY.fullmatch(str(record["scope_hash"])):
         return "malformed-claim-record:scope_hash"
     if not SHA256_KEY.fullmatch(str(record["idempotency_key"])):
@@ -304,6 +311,8 @@ def validate_claim_record(
         or lease["expires_at"] != record["expires_at"]
     ):
         return "claim-record-lease-mismatch"
+    if not IDENTIFIER.fullmatch(str(lease["owner"])):
+        return "malformed-claim-record:lease.owner"
     try:
         lease_started = parse_timestamp(lease["started_at"], "claim_record.lease.started_at")
         lease_expires = parse_timestamp(lease["expires_at"], "claim_record.lease.expires_at")
@@ -388,8 +397,9 @@ def claim(
     repository = fixture.get("repository")
     if not isinstance(repository, str) or not repository.strip():
         raise ValueError("fixture repository is required for claim")
-    if not run_id.strip() or not event_id.strip() or not lease_owner.strip():
-        raise ValueError("run_id, event_id, and lease_owner are required for claim")
+    for field, value in (("run_id", run_id), ("event_id", event_id), ("lease_owner", lease_owner)):
+        if not IDENTIFIER.fullmatch(value):
+            return {"status": "blocked", "reason": f"invalid-claim-identifier:{field}", "issue": issue_number}
     key = idempotency_key(repository, issue_number, plan_revision, scope_hash, event_id)
     try:
         runs, ledger_error = persisted_runs(fixture, contract, repository)
@@ -401,6 +411,18 @@ def claim(
     if len(matching_runs) > 1:
         return {"status": "blocked", "reason": "idempotency-conflict", "issue": issue_number}
     now = parse_timestamp(fixture.get("now"), "fixture now")
+    for run in runs:
+        if run.get("issue") != issue_number or run.get("idempotency_key") == key:
+            continue
+        expires_at = parse_timestamp(run["expires_at"], "claim_record.expires_at")
+        if expires_at > now:
+            return {
+                "status": "blocked",
+                "reason": "claim-record-lease-conflict",
+                "issue": issue_number,
+                "conflicting_run_id": run.get("run_id"),
+                "conflicting_event_id": run.get("event_id"),
+            }
     if matching_runs:
         persisted = matching_runs[0]
         record_error = validate_claim_record(persisted, contract, repository, issue_number)

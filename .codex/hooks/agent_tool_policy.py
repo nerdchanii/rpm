@@ -136,7 +136,7 @@ def transcript_role(value: object) -> str | None:
 def trusted_claim_authorization(
     event: dict[str, object],
 ) -> tuple[str, dict[str, object]] | None:
-    """Read the first parent-issued claim token before any assistant record."""
+    """Read one parent-issued token from a dedicated handoff field."""
     transcript = transcript_path(event)
     if transcript is None:
         return None
@@ -144,7 +144,7 @@ def trusted_claim_authorization(
         lines = Path(transcript).read_text().splitlines()
     except OSError:
         return None
-    parent_records: list[str] = []
+    parent_tokens: list[str] = []
     for line in lines:
         try:
             record = json.loads(line)
@@ -154,14 +154,13 @@ def trusted_claim_authorization(
         if role == "assistant":
             break
         if role in {"developer", "system", "user"}:
-            parent_records.append(json.dumps(record, ensure_ascii=False))
-    matches = re.findall(
-        r"rpm_claim_authorization=([A-Za-z0-9_-]+)",
-        "\n".join(parent_records),
-    )
-    if len(matches) != 1:
+            if isinstance(record, dict):
+                token = record.get("rpm_claim_authorization")
+                if isinstance(token, str):
+                    parent_tokens.append(token)
+    if len(parent_tokens) != 1:
         return None
-    token = matches[0]
+    token = parent_tokens[0]
     try:
         padding = "=" * (-len(token) % 4)
         payload = json.loads(base64.urlsafe_b64decode(token + padding))
@@ -445,7 +444,12 @@ def operation_tokens(value: str) -> list[str]:
 def is_generic_dispatcher(tool: str, tool_input: object) -> bool:
     """Reject generic provider calls whose registered operation is not inspectable."""
     tokens = operation_tokens(tool)
-    if any(token in GENERIC_EXECUTOR_WORDS for token in tokens):
+    has_pull_request_resource = (
+        "pull" in tokens
+        and "request" in tokens
+        and any(token in READ_OPERATION_WORDS for token in tokens)
+    )
+    if any(token in GENERIC_EXECUTOR_WORDS for token in tokens) and not has_pull_request_resource:
         return True
     has_ambiguous_namespace = any(
         token in AMBIGUOUS_PROVIDER_NAMESPACES for token in tokens
@@ -462,6 +466,7 @@ def is_generic_dispatcher(tool: str, tool_input: object) -> bool:
         "github" in tokens
         or "gh" in tokens
         or "pr" in tokens
+        or has_pull_request_resource
         or any(
             token.startswith(("issue", "project", "pullrequest")) for token in tokens
         )
@@ -559,9 +564,15 @@ def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:
     else:
         # REST-style capabilities expose the operation in an explicit field or
         # in the tool name. Do not scan ordinary search/read payload text.
-        generic_executor = any(
-            token in GENERIC_EXECUTOR_WORDS for token in operation_tokens(tool)
+        operation_tokens_value = operation_tokens(tool)
+        has_pull_request_read = (
+            "pull" in operation_tokens_value
+            and "request" in operation_tokens_value
+            and any(token in READ_OPERATION_WORDS for token in operation_tokens_value)
         )
+        generic_executor = any(
+            token in GENERIC_EXECUTOR_WORDS for token in operation_tokens_value
+        ) and not has_pull_request_read
         if generic_executor:
             # Generic executors cannot prove read-only semantics across hosts.
             return "raw_api_mutation"

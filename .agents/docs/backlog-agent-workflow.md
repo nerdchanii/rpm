@@ -163,11 +163,14 @@ terminal result.
 
 `$take-ticket scheduled` uses the host-provided GitHub capability to inventory open
 issues with lifecycle labels. Project membership is not an execution
-condition. It returns `no-work` while any open issue is claimed or
-review-pending. Otherwise it rejects conflicting lifecycle labels, rejects a
-ready issue without valid execution metadata, sorts ready issues by issue
-number, selects at most one, refetches it, checks for an existing closing open
-PR, and runs the claim contract before replacing ready with claimed. It first
+condition. It returns `no-work` while any open issue is review-pending. An open
+claimed issue with a valid durable record is selected as the first recovery
+candidate and runs through the claim controller before any ready issue. A
+malformed or missing record is blocked. Otherwise it rejects conflicting
+lifecycle labels, rejects a ready issue without valid execution metadata, sorts
+ready issues by issue number, selects at most one, refetches it, checks for an
+existing closing open PR, and runs the claim contract before replacing ready
+with claimed. It first
 persists the canonical issue-comment record, refetches and verifies the
 normalized ledger, then applies the label compare-and-set while preserving
 ordinary labels. Restarting after record persistence resumes the same claim;
