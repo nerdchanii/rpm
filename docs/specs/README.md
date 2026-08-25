@@ -141,6 +141,8 @@ docs/specs/
     README.md
     run/
       SPEC.md
+    workspace-targeting/
+      SPEC.md
   core/
     README.md
     manifest/
@@ -269,6 +271,10 @@ M1 should start from:
 ## Current Index
 
 - `docs/specs/cli/run/SPEC.md`: `rpm run` command contract
+- `docs/specs/cli/workspace-targeting/SPEC.md`: target selection for opted-in
+  workspace-aware CLI commands (currently `rpm run`), consuming the validated
+  #145 member table and deferring multi-target execution policy to #151 and the
+  adopting command
 - `docs/specs/core/manifest/SPEC.md`: `package.json` interpretation
 - `docs/specs/core/semver/SPEC.md`: npm-compatible semver selection baseline
 - `docs/specs/core/resolver/SPEC.md`: dependency graph resolution boundary

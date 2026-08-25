@@ -16,6 +16,7 @@ related_issues:
   - 138
   - 141
   - 142
+  - 222
 ---
 
 # Spec: Install Lifecycle Scripts
@@ -89,8 +90,9 @@ Lifecycle hooks do not introduce a second script-execution model. They reuse
 the `rpm run` shell invocation model (`docs/specs/cli/run/SPEC.md`): each hook
 value is executed through the platform shell (`/bin/sh -c` on Unix, `cmd /C` on
 Windows), so command chaining, quoting, and environment assignment follow
-normal package-script semantics. This contract does not define a departure from
-that model.
+normal package-script semantics. This shared-shell statement does not inherit
+`rpm run`'s target-specific PATH policy; lifecycle PATH is defined separately
+below.
 
 ### Ordering within an install
 
@@ -127,13 +129,16 @@ npm's. This contract defines only what RPM guarantees today:
   directory under `node_modules/` after the `write` phase. This gives hooks the
   package-local working directory they will have after publication while keeping
   the previous install untouched during failure handling.
-- **PATH.** Lifecycle hooks receive the same PATH prepend policy as `rpm run`:
-  the staged replacement tree's `.bin` directory is prepended to the inherited
+- **PATH.** Lifecycle hooks use their own staged project-level PATH policy: the
+  staged replacement tree's `.bin` directory is prepended to the inherited
   `PATH`. For resolved-package hooks, `.bin` generation
   (`docs/specs/core/linker/SPEC.md`) has already run in the preceding `link`
   phase, so the staged project `.bin` is populated before any hook runs. Root
   hooks use the same staged directory; the published layout is equivalent after
-  a successful `write` phase.
+  a successful `write` phase. This does not inherit `rpm run`'s root/member
+  target selection or member-local `.bin` path. Workspace-member lifecycle
+  execution remains disabled until #222 defines and tests its provenance,
+  staged working directory, PATH, and recovery behavior.
 - **Child status propagation.** The child process exit status is propagated per
   `docs/specs/cli/run/SPEC.md`: a hook that exits non-zero fails the phase with
   that status; a hook that cannot be spawned surfaces a readable run error.
@@ -192,17 +197,21 @@ the published install never reflects a partial lifecycle run.
 ### Relationship to `rpm run`
 
 Lifecycle hook execution and `rpm run` share a shell invocation model but are
-different execution paths:
+different execution paths with separate PATH policies:
 
 - `rpm run <script>` is a user-invoked command. It must not reinstall or mutate
-  install output (`docs/specs/cli/run/SPEC.md`). It reads the root manifest's
-  `scripts` map only.
+  install output (`docs/specs/cli/run/SPEC.md`). Its default mode reads the root
+  manifest's `scripts` map and uses the root `.bin`; its opted-in workspace
+  modes consume the selected immutable member snapshot and use that member's
+  target-local `.bin` as defined by the CLI SPEC.
 - Lifecycle hooks are install-driven. They run during the `scripts` phase, read
-  from both the root manifest and resolved-package registry metadata, and their
-  failure controls install state.
+  from both the root manifest and resolved-package registry metadata, use the
+  staged project-level `.bin`, and their failure controls install state.
 
-This contract does not redefine `rpm run`. It reuses `rpm run`'s shell
-invocation and PATH prepend so there is one script-execution contract, not two.
+This contract does not redefine `rpm run`. It reuses only `rpm run`'s shell
+invocation model, not its target-specific PATH policy. Workspace-member
+lifecycle activation remains owned by #222 and requires a later update to this
+contract before it can run.
 
 ## Error Cases
 
@@ -241,6 +250,11 @@ deterministic:
   normally;
 - `lifecycle-preinstall-root`: the root manifest's `preinstall` hook runs with
   the project root as its working directory.
+- Planned `lifecycle-preinstall-root-staged-bin`: a positive root lifecycle
+  fixture invokes a deterministic binary from the staged project-level `.bin`,
+  proving the lifecycle PATH policy without claiming new runtime
+  implementation. Focused fixture implementation is owned by #227.
+  Workspace-member lifecycle execution remains disabled and owned by #222.
 
 Each scenario is a single deterministic fixture under
 `tests/fixtures/install-projects/`, scaffolded by `scripts/new-install-fixture.sh`

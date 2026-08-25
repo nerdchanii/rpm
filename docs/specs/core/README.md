@@ -127,10 +127,10 @@ criteria.
 | scoped vs unscoped binary links in `.bin` | `linker/SPEC.md` | binary-name mapping is defined: scoped string form drops the scope prefix, object form uses keys verbatim | delivered: #139 |
 | executable shims / symlinks in `.bin` | `linker/SPEC.md` | `.bin` entries are symlinks on every platform; RPM does not synthesize or rewrite shebangs | delivered: #139 |
 | platform considerations (`.cmd`, shebang) | `linker/SPEC.md` | explicitly deferred inside #139: the link layout is defined; Windows `.cmd`/`.ps1` shim generation, executable-bit handling, and permission normalization are deferred until a platform-packaging strategy SPEC (M10 / #163) owns them | delivered: #139 (active layout); deferred to M10 (platform shims) |
-| `rpm run` PATH prepend | `cli/run/SPEC.md` | `rpm run` prepends the project `node_modules/.bin` to `PATH` and propagates the child exit code; running a script must not reinstall or mutate install output | none |
+| `rpm run` PATH prepend | `cli/run/SPEC.md` | root-only `rpm run` prepends the root project's `node_modules/.bin`; workspace-targeted `rpm run` prepends the selected member's target-local `.bin`; both propagate child exit status and do not reinstall or mutate install output | contract gap: none; M7 #223 runtime implementation; #147/#149 member `.bin` creation |
 | missing `.bin` directory behavior in `rpm run` | `cli/run/SPEC.md` | the run SPEC assumes `.bin` is populated and does not own how it is populated (that is linker work), but it already owns the absent-binary case: a binary that is missing from `PATH` (including when `node_modules/.bin` is absent) must surface the shell's readable error and non-zero status (`cli/run/SPEC.md` Error Cases); #143 proves project-local binaries are reachable without mutating install output rather than redefining that existing behavior | #143 |
 | lifecycle script fields (`preinstall`, `install`, `postinstall`, `prepare`, ...) | `registry/SPEC.md` (per-version read/preserve), `manifest/SPEC.md` (root read/preserve), `install/scripts/SPEC.md` (active execution) | per-version `scripts` is now read and preserved as a `string -> string` map at the registry boundary (moved out of the ignored list, with tolerant wrong-type handling kept) and the root `scripts` map is read and preserved by the manifest SPEC; active lifecycle execution is owned by `install/scripts/SPEC.md`, which fixes the supported hook names (`preinstall`, `install`, `postinstall`, `prepare`), the `string -> string` value type, and the working-directory and PATH policy | delivered: #141 |
-| script command parsing | `cli/run/SPEC.md` (shell invocation model), `install/scripts/SPEC.md` (lifecycle reuse) | lifecycle hook values are strings-only and reuse the `rpm run` shell invocation model (`/bin/sh -c` on Unix, `cmd /C` on Windows) and the same `node_modules/.bin` PATH prepend, so there is a single script-execution contract rather than two; the relationship is made explicit in both `cli/run/SPEC.md` and `install/scripts/SPEC.md` | delivered: #141 |
+| script command parsing | `cli/run/SPEC.md` (shell invocation model), `install/scripts/SPEC.md` (lifecycle reuse) | lifecycle hook values are strings-only and reuse the `rpm run` shell invocation model (`/bin/sh -c` on Unix, `cmd /C` on Windows); PATH remains execution-path-specific (`rpm run` root/member target-local `.bin`, lifecycle staged project `.bin`), so there is one shared shell model rather than one shared PATH rule | delivered: #141 |
 | lifecycle execution as an install phase | `install/recovery/SPEC.md`, `install/scripts/SPEC.md` | the recovery phase pipeline now includes a `scripts` phase between `link` and `write`, with the phase label and position contracted in `install/recovery/SPEC.md`; the within-package ordering (`preinstall`, `install`, `postinstall`, `prepare`) is owned by `install/scripts/SPEC.md`; active execution is deferred to #142 | delivered: #141 (contract); #142 (execution) |
 | lifecycle script failure preserving install state | `install/recovery/SPEC.md`, `install/scripts/SPEC.md` | a failed `scripts` phase cannot publish partial successful install state: it runs between `link` and `write`, so the staged tree is discarded and the previous `node_modules`, `rpm.lock`, and `package.json` remain unchanged; the invariant is stated in both SPECs and an M6 lifecycle row is added to the recovery side-effect audit | delivered: #141 |
 
@@ -162,15 +162,16 @@ Findings:
   wrong-type handling kept), the recovery SPEC adds a `scripts` phase between
   `link` and `write` plus an M6 lifecycle side-effect row, and the run SPEC
   records that lifecycle execution reuses the `rpm run` shell invocation model
-  rather than defining a second one. Active execution of the first phase is
+  while keeping PATH ownership execution-path-specific rather than defining a
+  second shell model. Active execution of the first phase is
   tracked by #142; cross-package ordering, npm-specific environment variables,
   and any opt-in skip-on-failure policy remain Open Questions in
   `install/scripts/SPEC.md`.
-- `rpm run` integration is mostly owned: `cli/run/SPEC.md` already prepends
-  `node_modules/.bin` to PATH and propagates exit codes without reinstalling. The
-  one remaining gap — behavior when `.bin` is absent — is owned by #143, which
-  proves project-local binaries are reachable through `rpm run` without mutating
-  install output.
+- `rpm run` integration is mostly owned: `cli/run/SPEC.md` prepends the root or
+  selected member's target-local `node_modules/.bin` to PATH and propagates
+  exit codes without reinstalling. The one remaining gap — behavior when
+  `.bin` is absent — is owned by #143, which proves project-local binaries are
+  reachable through `rpm run` without mutating install output.
 - The delivery order follows the issue: (1) this contract and gap audit, (2) #139
   `.bin` and `bin` contract, (3) `.bin` fixture coverage, (4) #140 first `.bin`
   link forms, (5) #141 lifecycle policy (delivered), (6) #142 first lifecycle
@@ -296,11 +297,12 @@ Workspace implementation remains a greenfield gap: no code path reads the
 `workspaces` field, no workspace-vs-external distinction exists in the
 lockfile, the linker creates only registry-resolved dependency links, and no
 CLI flag targets a workspace. The planned manifest-discovery and resolver
-boundary contracts are now defined by #145; their implementation and fixtures
-remain deferred to #221. The lockfile contract is tracked by #146 in PR #217,
-CLI targeting by #148 in PR #216, linker/integration work by #147/#149, and
-workspace lifecycle/recovery activation by #222. Workspace lifecycle remains
-disabled.
+boundary contracts are defined by #145, and the cross-command targeting
+contract is defined by #148 in PR #216. Discovery and resolver implementation
+remain deferred to #221, while CLI-targeting implementation remains deferred
+to #223. The lockfile contract is tracked by #146 in PR #217,
+linker/integration work by #147/#149, and workspace lifecycle/recovery
+activation by #222. Workspace lifecycle remains disabled.
 
 | M7 behavior area | Owning SPEC / ADR | Contract status | Follow-up |
 | --- | --- | --- | --- |
@@ -316,16 +318,16 @@ disabled.
 | workspace member lifecycle scripts | `install/scripts/SPEC.md`, `install/recovery/SPEC.md` | contract and implementation deferred: current behavior remains root-only; workspace hook provenance, order, working directory, environment/runtime boundary, staged read/write isolation, lockfile visibility, and failure recovery must remain disabled until #222 defines and tests them | #222 |
 | package-name and dependency-name root confinement | `resolver/SPEC.md`, `linker/SPEC.md` | existing package metadata and lockfile names are not fully confined before extraction and dependency linking; names such as `../../outside` can escape the staged tree, so the resolver/linker boundary must reject traversal and verify canonical destinations before any write; #147 must include this regression coverage for workspace and external edges | #147 |
 | workspace member binary links | `linker/SPEC.md` | absent: the existing `.bin` contract does not state whether a workspace member's `bin` field is exposed; #147 must decide the link layout and cover it in the minimal workspace fixture (#149) | #147; #149 |
-| workspace command targeting (`--workspace`, `--all`, root) | `cli/run/SPEC.md` and future CLI command SPECs | absent on this branch: `rpm run` reads only the root manifest; #148 owns the targeting contract in PR #216 | #148 / PR #216 |
-| partial workspace failure and exit behavior | `cli/run/SPEC.md` (deferred to M8 for stable exit codes) | absent: no contract for how a command behaves when one workspace member fails and others succeed; stable exit codes and stdout/stderr ownership for this are owned by the M8 diagnostics contract (#150, #151) before they become public | #148 (targeting); M8 (exit-code stability) |
+| workspace command targeting (`--workspace`, `--all`, root) | `cli/workspace-targeting/SPEC.md`, `cli/run/SPEC.md` | contract defined, implementation deferred: root-only default, all-member selection, exact name/path selectors, deterministic #145 table ordering, validation-before-execution, and command opt-in are specified; only `rpm run` opts in | #148 / PR #216; #223 implementation |
+| partial workspace failure and exit behavior | `cli/workspace-targeting/SPEC.md`, `cli/run/SPEC.md`, M8 #151 | target-set validation is defined, execution and diagnostic policy deferred: target lists resolve atomically before execution; fail-fast versus continue, failure aggregation, stable numeric exit code, diagnostic envelope, stdout/stderr ownership, sequential-versus-parallel spawning, and target output ordering remain explicitly owned by #151 and the adopting command; #223 may implement target-set resolution and fixtures, while parser/dispatch exposure waits for those decisions | #148 (target set); #223 implementation; #151 (execution/diagnostics) |
 
 Findings:
 
 - Workspace implementation remains a greenfield gap across manifest, resolver,
   lockfile, linker, and CLI, and every executable fixture is still single-root.
-  The manifest and resolver SPECs now own the planned `workspaces` contract, so
-  follow-up work starts from defined inputs and identities instead of an
-  implicit frontier.
+  The manifest and resolver SPECs now own the planned `workspaces` contract, and
+  the CLI targeting SPEC now owns target selection, so follow-up work starts
+  from defined inputs and identities instead of an implicit frontier.
 - The discovery boundary (#145) defines supported declarations, portable glob
   expansion, invalid-member behavior, canonical-root confinement, deterministic
   Unicode member keys with valid UTF-8 round-trip rejection before resolver
@@ -345,7 +347,9 @@ Findings:
   must disposition root-manifest write provenance, immutable runtime inputs,
   lockfile-candidate visibility, descriptor-confined source materialization,
   workspace-root relocation, and cross-owner staged read/write isolation before
-  activation. This PR does not change the install scripts or recovery contracts.
+  activation. This PR aligns `install/scripts/SPEC.md` PATH wording with the
+  shared shell model and target-specific `rpm run` paths; it does not activate
+  workspace lifecycle or change recovery behavior.
 - Lockfile representation and compatibility are outside this PR. #146 and PR
   #217 own that contract, and #224 owns its later implementation in two slices:
   parser/schema work may proceed from #146, while runtime/replay/publication
@@ -361,29 +365,32 @@ Findings:
   and rollback. The linker's existing `.bin` generation
   (`linker/SPEC.md` "Executable bin links") also needs a workspace-member
   decision and fixture coverage (#149).
-- CLI targeting (#148) depends on #145 but not on #146 or #147: command
-  targeting semantics (root, all, selected, unsupported selector) can be
-  specified as soon as discovery is owned. Partial-failure exit behavior is
-  explicitly aligned to M8 (#150, #151): this audit does not introduce stable
-  exit codes or stdout/stderr ownership for workspace commands, because that
-  ownership belongs to the diagnostics contract.
+- CLI targeting (#148) depends on #145 but not on #146 or #147. The
+  `cli/workspace-targeting/SPEC.md` contract now defines root, all, selected,
+  unsupported-filter, deterministic-order, and validation behavior; execution
+  and planned fixtures remain deferred. Fail-fast versus continue, failure
+  aggregation, stable numeric exit codes, diagnostic envelopes, and
+  stdout/stderr ownership, sequential-versus-parallel spawning, and target
+  output ordering remain explicitly owned by M8 #151 and the adopting command,
+  so this audit introduces no execution or diagnostic policy.
 - Root safety rules remain an explicit constraint and include existing package
   metadata and dependency-name traversal risks. #147 must confine workspace
   link targets and dependency-name writes. Workspace mutation, rollback, and
   recovery remain outside this PR and are owned by #222.
-- The delivery order records this contract as complete: (1) #145 owns the
-  completed manifest/discovery contract and gap audit; (2) #221 is the first
-  implementation, delivering the validated discovery table and resolver roots
-  with its executable fixtures; (3) the follow-up tracks then respect their
-  dependencies: the #147 linker track (contract first, implementation after)
-  requires #145 and #146, #223 (command targeting) requires #221 plus the #148
-  and #151 CLI/diagnostics contracts and is independent of #147 and #224, and
-  #224 may split parser/schema work after #146 from runtime/replay/publication;
-  the latter requires #221's graph/preflight implementation, the #147
-  linker/extraction-validation implementation, and #149's end-to-end fixture;
-  (4) #149's fixture follows the #145-#148 contracts and is a required input
-  to that #224 runtime slice and to lifecycle activation; (5) #222 is last and
-  requires #145, #146, #147, #149, #221, and the #224 runtime/replay/publication
-  slice before activating workspace lifecycle/recovery. #222 preserves its
-  existing ownership of lifecycle, staging, and recovery. No implementation
-  track treats completed #145 as a future delivery step.
+- The delivery order records the #145 discovery contract and this #148 command-
+  targeting contract as complete. (1) #221 is the first implementation,
+  delivering the validated discovery table and resolver roots with executable
+  fixtures. (2) The follow-up tracks then respect their dependencies: the #147
+  linker track (contract first, implementation after) requires #145 and #146;
+  #223 target resolution and dispatch requires #221 plus the #148 and #151
+  CLI/diagnostics contracts and is independent of #147 and #224; and #224 may
+  split parser/schema work after #146 from runtime/replay/publication, whose
+  implementation requires #221 graph/preflight, #147 linker/extraction
+  validation, and #149's end-to-end fixture. (3) #149 follows the #145-#148
+  contracts and is a required input to the #224 runtime slice and lifecycle
+  activation. (4) #222 is last and requires #145, #146, #147, #149, #221, and
+  the #224 runtime/replay/publication slice before activating workspace
+  lifecycle/recovery. #223 consumes #148 without redefining #145 member identity
+  or ordering or #151 failure/diagnostic ownership. #222 keeps lifecycle,
+  staging, and recovery ownership. No implementation track treats completed
+  #145 or #148 as a future delivery step.

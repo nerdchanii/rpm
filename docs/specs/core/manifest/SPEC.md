@@ -158,26 +158,32 @@ parent-referencing, or empty) is likewise rejected by the linker before any
 ### Scripts field
 
 RPM reads and preserves the root `scripts` map when it is present, using
-npm-accurate type (`string -> string`). Values are preserved verbatim; RPM does
-not rewrite, validate, or canonicalize script text. A present-but-wrong-type
-`scripts` value (for example a string, an array, or a map whose values are not
-strings) is discarded as absent during deserialization rather than failing the
-manifest, mirroring the lenient handling used for other preserved fields. A
-single non-string value drops the entire `scripts` map, not just the offending
-entry, matching the per-version registry boundary's whole-map drop semantics
-(`docs/specs/core/registry/SPEC.md`). A well-typed value round-trips into
-`Some(...)`. A manifest that omits `scripts` behaves identically to one without
-it.
+npm-accurate type (`string -> string`). Workspace discovery also preserves the
+same map in each member's immutable manifest snapshot. Values are preserved
+verbatim; RPM does not rewrite, validate, or canonicalize script text. A
+present-but-wrong-type `scripts` value (for example a string, an array, or a map
+whose values are not strings) is discarded as absent during deserialization
+rather than failing the manifest, mirroring the lenient handling used for other
+preserved fields. A single non-string value drops the entire `scripts` map, not
+just the offending entry, matching the per-version registry boundary's
+whole-map drop semantics (`docs/specs/core/registry/SPEC.md`). A well-typed
+value round-trips into `Some(...)`. A manifest that omits `scripts` behaves
+identically to one without it.
 
 The manifest boundary owns reading and preserving `scripts` only. The read
 entries do not influence resolution, version selection, the resolved graph, or
 the lockfile. They are consumed by two distinct downstream behaviors, each with
 its own contract:
 
-- **`rpm run`** reads the root manifest's `scripts` map to execute a
-  user-named script on demand. Running a script must not reinstall or mutate
-  install output (`docs/specs/cli/run/SPEC.md`). Any script name is reachable
-  through `rpm run`, not only the lifecycle names below.
+- **`rpm run`** reads the targeted immutable manifest snapshot's `scripts` map
+  to execute a user-named script on demand. The default target is the root;
+  workspace-targeted invocations consume the selected member snapshots and
+  retained descriptor-validated native identities under
+  `docs/specs/cli/workspace-targeting/SPEC.md`. They do not reopen a member
+  manifest or reconstruct native filesystem identity from `member_path_key`
+  during dispatch. Running a script must not reinstall or mutate install output
+  (`docs/specs/cli/run/SPEC.md`). Any script name is reachable through
+  `rpm run`, not only the lifecycle names below.
 - **Install lifecycle execution** reads the recognized lifecycle hooks from the
   `scripts` map and runs them as an install phase. The supported install
   lifecycle hook names are exactly `preinstall`, `install`, `postinstall`, and
