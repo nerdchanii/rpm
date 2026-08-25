@@ -617,8 +617,14 @@ def check_role_taxonomy(
             fail(errors, f"role taxonomy {role!r}: invalid coordination {coordination!r}")
         if write_scope != "none" and coordination != "single-writer":
             fail(errors, f"role taxonomy {role!r}: writer must be single-writer")
-        if write_scope == "none" and role in COORDINATOR_ROLES and coordination != "coordinator":
-            fail(errors, f"role taxonomy {role!r}: manager must be coordinator")
+        if role in COORDINATOR_ROLES:
+            if write_scope != "none":
+                fail(
+                    errors,
+                    f"role taxonomy {role!r}: coordinator must have write_scope='none'",
+                )
+            if coordination != "coordinator":
+                fail(errors, f"role taxonomy {role!r}: manager must be coordinator")
         if role in SEQUENTIAL_READ_ROLES and coordination != "sequential-read":
             fail(errors, f"role taxonomy {role!r}: dependent read role must be sequential-read")
         if (
@@ -971,6 +977,12 @@ def validate_external_role_entrypoint(
     if route_marker not in text:
         return [f"does not route to role {role!r} with marker {route_marker!r}"]
     return []
+
+
+def role_route_leaks(
+    text: str, allowed: set[str] | frozenset[str] = frozenset()
+) -> list[str]:
+    return sorted(role for role in ROLE_TAXONOMY if role not in allowed and role in text)
 
 
 def check_external_role_entrypoints(
@@ -2410,11 +2422,7 @@ def check_entries_and_assets(errors: list[str]) -> None:
             continue
         if "rpm_workflow_manager" not in text:
             fail(errors, f"{path.relative_to(ROOT)}: entry does not route to workflow manager")
-        leaked = sorted(
-            role
-            for role in EXPECTED_SANDBOX
-            if role != "rpm_workflow_manager" and role in text
-        )
+        leaked = role_route_leaks(text, {"rpm_workflow_manager"})
         if leaked:
             fail(
                 errors,
@@ -2446,7 +2454,7 @@ def check_entries_and_assets(errors: list[str]) -> None:
         ):
             if required not in text:
                 fail(errors, f"{gatekeeper.relative_to(ROOT)}: missing merge-gate contract {required!r}")
-        leaked = sorted(role for role in EXPECTED_SANDBOX if role in text)
+        leaked = role_route_leaks(text)
         if leaked:
             fail(
                 errors,
@@ -2572,6 +2580,13 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             2,
         ),
         (
+            "researcher-generic-provider-mutator",
+            "rpm_issue_researcher",
+            "mcp__provider__push_files",
+            {},
+            2,
+        ),
+        (
             "creator-create",
             "rpm_idea_issue_creator",
             "mcp__github__create_issue",
@@ -2670,6 +2685,20 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             2,
         ),
         (
+            "gh-api-compact-short-field-default-write",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example -fbody=value"},
+            2,
+        ),
+        (
+            "gh-api-compact-uppercase-short-field-default-write",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example -Fbody=value"},
+            2,
+        ),
+        (
             "gh-api-input-default-write",
             "rpm_issue_researcher",
             "exec_command",
@@ -2681,6 +2710,13 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "rpm_issue_researcher",
             "exec_command",
             {"cmd": "gh api repos/example/example"},
+            0,
+        ),
+        (
+            "gh-api-read-after-availability-test",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "test -x /usr/bin/jq && gh api repos/example/example"},
             0,
         ),
         (
@@ -2710,6 +2746,20 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "mcp__provider__get_commit",
             {},
             0,
+        ),
+        (
+            "mcp-get-or-create-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_or_create_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-and-update-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_and_update_issue",
+            {},
+            2,
         ),
         (
             "mcp-get-publish-log-read",
@@ -2759,6 +2809,27 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "mcp__provider__get_issue",
             {"publish": True},
             2,
+        ),
+        (
+            "mcp-codex-apps-github-get-commit-read",
+            "rpm_issue_researcher",
+            "mcp__codex_apps__github_get_commit",
+            {},
+            0,
+        ),
+        (
+            "mcp-plural-labels-refiner-authorized",
+            "rpm_issue_refiner",
+            "mcp__github__add_labels_to_issue",
+            {"labels": ["agent:claimed"]},
+            0,
+        ),
+        (
+            "mcp-plural-labels-claimer-authorized",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__add_labels_to_issue",
+            {"labels": ["agent:claimed"]},
+            0,
         ),
     )
     for verb in ("set", "assign", "archive", "publish", "transfer", "approve", "pin"):

@@ -1921,6 +1921,21 @@ if checker.validate_external_role_entrypoint(
     "Use `pr-review-resolver` to classify actionable feedback.",
 ):
     raise SystemExit("valid pr-review-resolution entrypoint was rejected")
+
+if checker.role_route_leaks("route pr-review-resolver", {"rpm_workflow_manager"}) != [
+    "pr-review-resolver"
+]:
+    raise SystemExit("hyphenated external role was omitted from route reachability")
+if checker.role_route_leaks("route pr-review-resolver", {"pr-review-resolver"}):
+    raise SystemExit("explicitly allowed external role was reported as leaked")
+
+taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
+taxonomy["rpm_backlog_manager"].update(
+    write_scope="github", mcp_scope="read", coordination="single-writer"
+)
+errors = check_taxonomy(taxonomy, agents)
+if not any("coordinator must have write_scope='none'" in error for error in errors):
+    raise SystemExit(f"coordinator mutation scope was accepted: {errors!r}")
 PY
 }
 
@@ -2083,6 +2098,10 @@ for mutation, expected in (
     ),
     (
         "match value:\n    case attrgetter:\n        pass",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "(dynamic_exec,) = (exec,)\ndynamic_exec(\"GITHUB_MUTATION_ROLES = {'rpm_backlog_scout'}\")",
         "dynamic/reflection names cannot be used or aliased",
     ),
     (

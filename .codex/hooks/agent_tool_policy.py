@@ -90,6 +90,7 @@ MCP_MUTATION_VERBS = {
     "resolve",
 }
 MCP_HTTP_MUTATION_VERBS = {"post", "patch", "put"}
+MCP_COMPOUND_MUTATION_VERBS = MCP_MUTATION_VERBS - {"commit", "publish"}
 MCP_OPERATION_KEYS = {
     "action",
     "operation",
@@ -104,6 +105,7 @@ MCP_OPERATION_KEYS = {
     "command",
     "intent",
 }
+SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", "&"}
 POLICY_DIR = Path(tempfile.gettempdir()) / "rpm-agent-tool-policy"
 PATCH_PATH = re.compile(
     r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$",
@@ -322,6 +324,94 @@ def has_forbidden_review_or_merge(text: str) -> str | None:
     return None
 
 
+def shell_words(text: str) -> list[str] | None:
+    try:
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def gh_api_invocations(text: str) -> list[list[str]] | None:
+    words = shell_words(text)
+    if words is None:
+        return None
+    invocations: list[list[str]] = []
+    index = 0
+    while index + 1 < len(words):
+        if words[index] != "gh" or words[index + 1] != "api":
+            index += 1
+            continue
+        end = index + 2
+        while end < len(words) and words[end] not in SHELL_CONTROL_TOKENS:
+            end += 1
+        invocations.append(words[index:end])
+        index = end
+    return invocations
+
+
+def gh_api_method(tokens: list[str]) -> list[str] | None:
+    methods: list[str] = []
+    index = 2
+    while index < len(tokens):
+        token = tokens[index].casefold()
+        method: str | None = None
+        if token in {"--method", "-x"}:
+            if index + 1 >= len(tokens):
+                return None
+            method = tokens[index + 1].casefold()
+            index += 1
+        elif token.startswith("--method="):
+            method = token.split("=", 1)[1]
+        elif token.startswith("-x="):
+            method = token.split("=", 1)[1]
+        elif token.startswith("-x") and len(token) > 2:
+            method = token[2:]
+        if method is not None:
+            methods.append(method)
+        index += 1
+    return methods
+
+
+def gh_api_has_payload_flag(tokens: list[str]) -> bool:
+    for raw_token in tokens[2:]:
+        token = raw_token.casefold()
+        if token in {
+            "--field",
+            "--raw-field",
+            "-f",
+            "-F",
+            "--input",
+            "--input-file",
+        }:
+            return True
+        if token.startswith(("--field=", "--raw-field=", "--input=", "--input-file=")):
+            return True
+        if token.startswith(("-f", "-F")) and len(token) > 2:
+            return True
+    return False
+
+
+def gh_api_mutation_kind(text: str) -> str | None:
+    invocations = gh_api_invocations(text)
+    if invocations is None:
+        return "raw_api_unknown" if re.search(r"\bgh\s+api\b", text.casefold()) else None
+    for tokens in invocations:
+        methods = gh_api_method(tokens)
+        if methods is None:
+            return "raw_api_unknown"
+        if any(method in {"post", "patch", "put", "delete"} for method in methods):
+            return "raw_api_mutation"
+        if any(method not in {"get", "head", "options"} for method in methods):
+            return "raw_api_unknown"
+        if gh_api_has_payload_flag(tokens) and not methods:
+            return "raw_api_mutation"
+        if any(token.casefold() == "mutation" for token in tokens[2:]):
+            return "raw_api_unknown"
+    return None
+
+
 def shell_mutation_kind(text: str) -> str | None:
     lowered = text.casefold()
     if re.search(r"\bgh\s+issue\s+create\b", lowered):
@@ -339,26 +429,7 @@ def shell_mutation_kind(text: str) -> str | None:
         lowered,
     ):
         return "other_github"
-    if re.search(r"\bgh\s+api\b", lowered):
-        method_flag = re.compile(r"(?<!\S)(?:--method|-x)(?=$|\s|=|[a-z])")
-        methods = re.findall(
-            r"(?<!\S)(?:--method|-x)(?:=|\s+|(?=[a-z]))([a-z][a-z0-9_-]*)\b",
-            lowered,
-        )
-        if method_flag.search(lowered) and not methods:
-            return "raw_api_unknown"
-        if any(method in {"post", "patch", "put", "delete"} for method in methods):
-            return "raw_api_mutation"
-        if any(method not in {"get", "head", "options"} for method in methods):
-            return "raw_api_unknown"
-        if re.search(
-            r"(?<!\S)(?:--field|--raw-field|-f|-F|--input|--input-file)(?=$|\s|=)",
-            lowered,
-        ) and not methods:
-            return "raw_api_mutation"
-        if re.search(r"\bmutation\b", lowered):
-            return "raw_api_unknown"
-    return None
+    return gh_api_mutation_kind(text)
 
 
 def has_mcp_word(text: str, word: str) -> bool:
@@ -368,24 +439,39 @@ def has_mcp_word(text: str, word: str) -> bool:
 def has_explicit_mcp_read_action(tool: str) -> bool:
     command = normalized_tool(tool).split("__")[-1]
     return any(
-        command == action or command.startswith(f"{action}_")
+        re.search(rf"(?:^|_){action}(?:_|$)", command) is not None
         for action in ("get", "list", "fetch", "read", "search", "view")
+    )
+
+
+def has_compound_mcp_mutation(tool: str) -> bool:
+    command = normalized_tool(tool).split("__")[-1]
+    reads = "|".join(("get", "list", "fetch", "read", "search", "view"))
+    mutations = "|".join(sorted(MCP_COMPOUND_MUTATION_VERBS))
+    return (
+        re.search(
+            rf"(?:^|_)(?:{reads})_(?:(?:or|and)_)?(?:{mutations})(?:_|$)",
+            command,
+        )
+        is not None
     )
 
 
 def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:
     operation_text = " ".join(operation_values(tool_input)).casefold()
-    lowered = f"{normalized_tool(tool)} {operation_text}"
+    command = normalized_tool(tool).split("__")[-1]
+    lowered = f"{command} {operation_text}"
     operation_mutation = any(
         has_mcp_word(operation_text, word)
         for word in MCP_MUTATION_VERBS | MCP_HTTP_MUTATION_VERBS
     )
-    if not operation_mutation and has_explicit_mcp_read_action(tool):
+    read_action = has_explicit_mcp_read_action(tool)
+    compound_mutation = has_compound_mcp_mutation(tool)
+    tool_mutation = any(has_mcp_word(command, word) for word in MCP_MUTATION_VERBS)
+    if not operation_mutation and read_action and not compound_mutation:
         return None
-    if not operation_mutation and not any(
-        has_mcp_word(lowered, word) for word in MCP_MUTATION_VERBS
-    ):
-        return None
+    if not operation_mutation and not compound_mutation and not tool_mutation:
+        return "unknown_mutation"
     if has_mcp_word(lowered, "merge"):
         return "merge"
     if has_mcp_word(lowered, "issue") and has_mcp_word(lowered, "create"):
@@ -396,7 +482,7 @@ def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:
         return "project_add"
     if has_mcp_word(lowered, "project"):
         return "project_other"
-    if has_mcp_word(lowered, "label"):
+    if any(has_mcp_word(lowered, word) for word in ("label", "labels")):
         return "label"
     if has_mcp_word(lowered, "issue") and any(
         has_mcp_word(lowered, word) for word in ("update", "edit")
