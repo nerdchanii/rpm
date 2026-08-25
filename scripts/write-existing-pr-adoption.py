@@ -10,6 +10,7 @@ import json
 import re
 import runpy
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 from urllib.parse import quote
@@ -60,9 +61,13 @@ class GithubAdoptionTransport:
         runner: Callable[..., object] | None = None,
         collectors: dict[str, Callable[..., object]] | None = None,
         approved_marker_actors: Sequence[str] | None = None,
+        observation_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.snapshot = copy.deepcopy(snapshot) if snapshot is not None else None
         self.runner = runner or self._subprocess_runner
+        self.observation_clock = observation_clock or (
+            lambda: datetime.now(timezone.utc)
+        )
         # Finding markers are review evidence, so their authors must come from
         # the policy-owned allowlist.  An omitted allowlist is intentionally an
         # empty set and causes the GitHub collector to fail closed.
@@ -752,17 +757,62 @@ class GithubAdoptionTransport:
                 return value
         raise RuntimeError("GitHub selected-head commit timestamp is missing")
 
+    def _head_transition_timestamp(
+        self, repository: str, pr: int, head_sha: str
+    ) -> str:
+        """Return the timestamp at which the selected head became current.
+
+        A force-push can select an old commit whose commit timestamp predates
+        a review reaction.  The timeline's head-ref transition is the
+        authoritative freshness boundary for that case.  Older repositories
+        may have no matching timeline event for a normal push, so retain the
+        commit timestamp only as that compatibility fallback.
+        """
+        events = self._paginate(
+            f"repos/{self._repository_path(repository)}/issues/{pr}/timeline"
+        )
+        transition_timestamps: list[tuple[datetime, str]] = []
+        for event in events:
+            if not isinstance(event, dict):
+                raise RuntimeError("GitHub PR timeline event is invalid")
+            if event.get("event") not in {
+                "head_ref_force_pushed",
+                "head_ref_restored",
+            }:
+                continue
+            if event.get("commit_id") != head_sha:
+                continue
+            created_at = event.get("created_at")
+            if not isinstance(created_at, str) or not created_at.strip():
+                raise RuntimeError("GitHub head transition timestamp is missing")
+            try:
+                parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            except ValueError as error:
+                raise RuntimeError(
+                    "GitHub head transition timestamp is invalid"
+                ) from error
+            if parsed.tzinfo is None:
+                raise RuntimeError("GitHub head transition timestamp is invalid")
+            transition_timestamps.append((parsed.astimezone(timezone.utc), created_at))
+        if transition_timestamps:
+            return max(transition_timestamps, key=lambda item: item[0])[1]
+        return self._head_commit_timestamp(repository, head_sha)
+
     def _collect_observation_time(
         self, repository: str, issue: int, pr: int
     ) -> str:
-        # ``updated_at`` is the PR's last content mutation time, not the time
-        # at which this evidence bundle was observed.  The prepared snapshot
-        # carries the observation instant shared by the writer inventory and
-        # the authorization tuple; use it as the only deterministic source.
-        value = self.snapshot.get("now") if isinstance(self.snapshot, dict) else None
-        if not isinstance(value, str) or not value.strip():
-            raise RuntimeError("prepared evidence observation timestamp is missing")
-        return value
+        # The prepared request's ``now`` is authorization input and may be
+        # stale or caller-controlled.  Capture one real instant for this
+        # refetch and let the writer inventory reuse it through
+        # ``_current_observation_time``.
+        if self._current_observation_time is None:
+            observed = self.observation_clock()
+            if not isinstance(observed, datetime) or observed.tzinfo is None:
+                raise RuntimeError("live observation clock returned invalid time")
+            self._current_observation_time = observed.astimezone(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
+        return self._current_observation_time
 
     def _collect_dependents(
         self, repository: str, issue: int, pr: int
@@ -924,6 +974,9 @@ class GithubAdoptionTransport:
             raise ValueError("issue and PR numbers must be positive")
 
         state = copy.deepcopy(self.snapshot)
+        # A retry is a new live observation.  Never reuse the prior read's
+        # timestamp when the same transport instance is used again.
+        self._current_observation_time = None
         issue_payload = self._call(f"repos/{repository}/issues/{issue}")
         pr_payload = self._call(f"repos/{repository}/pulls/{pr}")
         comments_payload = self._paginate(
@@ -1179,7 +1232,9 @@ class GithubAdoptionTransport:
                         "deleted": False,
                     }
                 )
-            head_updated_at = self._head_commit_timestamp(repository, head_sha)
+            head_updated_at = self._head_transition_timestamp(
+                repository, pr, head_sha
+            )
             review = {
                 "repository": repository,
                 "pr": pr,
@@ -1287,6 +1342,7 @@ class GithubAdoptionTransport:
         observation_time = external.get("observation_time")
         if not isinstance(observation_time, str) or not observation_time.strip():
             raise RuntimeError("live observation time is missing")
+        state["now"] = observation_time
         if state.get("now") != observation_time:
             raise RuntimeError("live observation time mismatch")
         if writers.get("observed_at") != observation_time:
@@ -1604,7 +1660,7 @@ class GithubAdoptionTransport:
         evidence, ledger, refs, checks, reviews, and writer/dependent
         inventories remain part of the comparison.
         """
-        projected = copy.deepcopy(state)
+        projected = GithubAdoptionTransport._runtime_time_projection(state)
         if not isinstance(projected, dict):
             return projected
         live = projected.get("live")
@@ -1624,6 +1680,24 @@ class GithubAdoptionTransport:
         authorization = projected.get("authorization")
         if isinstance(authorization, dict):
             authorization["evidence_digest"] = "<label-derived-digest>"
+        return projected
+
+    @staticmethod
+    def _runtime_time_projection(state: object) -> object:
+        """Mask per-read clock fields before comparing a live CAS snapshot."""
+        projected = copy.deepcopy(state)
+        if not isinstance(projected, dict):
+            return projected
+        if "now" in projected:
+            projected["now"] = "<observation-time>"
+        authorization = projected.get("authorization")
+        if isinstance(authorization, dict) and "observation_time" in authorization:
+            authorization["observation_time"] = "<observation-time>"
+        evidence = projected.get("evidence")
+        if isinstance(evidence, dict):
+            writers = evidence.get("writers")
+            if isinstance(writers, dict) and "observed_at" in writers:
+                writers["observed_at"] = "<observation-time>"
         return projected
 
     @staticmethod
@@ -1835,7 +1909,12 @@ class GithubAdoptionTransport:
     def read(self, repository: str, issue: int, pr: int) -> dict[str, object]:
         state = self._read_state(repository, issue, pr)
         queue = runpy.run_path(str(ROOT / "scripts/check-cloud-queue-contract.py"))
-        return {"state": state, "cas": queue["canonical_digest"](state)}
+        return {
+            "state": state,
+            "cas": queue["canonical_digest"](
+                self._runtime_time_projection(state)
+            ),
+        }
 
     def _read_label_recovery_state(
         self, repository: str, issue: int, pr: int
@@ -1849,7 +1928,12 @@ class GithubAdoptionTransport:
             allow_ordinary_label_conflict=True,
         )
         queue = runpy.run_path(str(ROOT / "scripts/check-cloud-queue-contract.py"))
-        return {"state": state, "cas": queue["canonical_digest"](state)}
+        return {
+            "state": state,
+            "cas": queue["canonical_digest"](
+                self._runtime_time_projection(state)
+            ),
+        }
 
     def compare_and_write(
         self,
@@ -1865,7 +1949,11 @@ class GithubAdoptionTransport:
             if observation.get("cas") != expected_cas:
                 return {"status": "cas-mismatch"}
             authorization = state.get("authorization") if isinstance(state, dict) else None
-            if authorization != mutation.get("authorization"):
+            if not exact_authorization(
+                mutation.get("authorization"),
+                authorization,
+                allow_observation_time_drift=True,
+            ):
                 return {"status": "cas-mismatch"}
             if not isinstance(authorization, dict):
                 return {"status": "cas-mismatch"}
@@ -1989,14 +2077,28 @@ AUTHORIZATION_FIELDS = (
 )
 
 
-def exact_authorization(prepared: object, live: object) -> bool:
-    """Require the complete prepared/live authorization tuple to match."""
+def exact_authorization(
+    prepared: object,
+    live: object,
+    *,
+    allow_observation_time_drift: bool = False,
+) -> bool:
+    """Require immutable authorization fields to match across a refetch.
+
+    ``observation_time`` can be refreshed for every live read so lease
+    validation cannot use a stale prepared clock.  It remains bound to the
+    live writer inventory and authorization in ``read``.  Callers must opt in
+    to that one runtime-field drift explicitly.
+    """
     if not isinstance(prepared, dict) or not isinstance(live, dict):
         return False
     return all(
         field in prepared
         and field in live
-        and prepared.get(field) == live.get(field)
+        and (
+            field == "observation_time" and allow_observation_time_drift
+            or prepared.get(field) == live.get(field)
+        )
         for field in AUTHORIZATION_FIELDS
     )
 
@@ -2027,7 +2129,11 @@ def execute_adoption_phase(
     if not isinstance(live, dict) or not isinstance(cas, str):
         return blocked("live-refetch-incomplete")
     live_authorization = live.get("authorization")
-    if not exact_authorization(authorization, live_authorization):
+    if not exact_authorization(
+        authorization,
+        live_authorization,
+        allow_observation_time_drift=True,
+    ):
         return blocked("live-authorization-mismatch")
 
     queue = runpy.run_path(str(ROOT / "scripts/check-cloud-queue-contract.py"))

@@ -146,14 +146,15 @@ terminal result.
 
 ## Claim-and-Execute Contract
 
-`$take-ticket scheduled` uses the connected GitHub plugin to inventory open
-issues with lifecycle labels. Project membership is not an execution
-condition. It returns `no-work` while any open issue is claimed or
-review-pending. Otherwise it rejects conflicting lifecycle labels, rejects a
-ready issue without valid execution metadata, sorts ready issues by issue
-number, selects at most one, refetches it, checks for an existing closing open
-PR, and runs the claim contract before replacing ready with claimed. The claim
-must record its lease and idempotency key while preserving ordinary labels.
+`$take-ticket scheduled` uses the connected GitHub plugin to inventory every
+open issue and its closing-PR relationships before filtering lifecycle labels.
+Project membership is not an execution condition. It returns `no-work` while
+any open issue is claimed or review-pending. Otherwise it rejects conflicting
+lifecycle labels, rejects a ready issue without valid execution metadata, sorts
+ready issues by issue number, selects at most one, refetches it, checks for an
+existing closing open PR, and runs the claim contract before replacing ready
+with claimed. The claim must record its lease and idempotency key while
+preserving ordinary labels.
 
 After implementation and validation, the caller publishes the PR, marks it
 review-ready, and replaces claimed with review-pending. Repository-configured

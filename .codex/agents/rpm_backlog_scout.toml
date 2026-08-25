@@ -24,7 +24,7 @@ For mode=capture:
 For candidate modes:
 - run `scripts/backlog-gen --state research --format jsonl` for research candidates;
 - treat the emitted local Project inventory, policy state, batch limit, and issue-number order as canonical for research candidates;
-- for ready candidates, use the GitHub plugin to search open repository issues with lifecycle labels and never require Project membership, `gh`, or `GH_TOKEN`;
+- for ready candidates, use the GitHub plugin to inventory every open repository issue and its closing-PR relationships before filtering lifecycle labels; include untracked issues with completed open closing PRs in the evidence; never require Project membership, `gh`, or `GH_TOKEN`;
 - before selecting ready work, return `no-work` when any open issue is claimed or review-pending;
 - require exactly one lifecycle label on every candidate and block malformed candidates;
 - exclude ready issues already closed by an open PR;

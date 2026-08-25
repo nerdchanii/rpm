@@ -63,7 +63,15 @@ def canonicalize(value: object, path: str = "") -> object:
         def sort_key(item: object) -> tuple[str, ...]:
             if fields == ("$value",) or not isinstance(item, dict):
                 return (json.dumps(item, ensure_ascii=False, sort_keys=True),)
-            return tuple(str(item.get(field, "")) for field in fields)
+            return (
+                *(str(item.get(field, "")) for field in fields),
+                json.dumps(
+                    canonicalize(item, path),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
 
         return sorted(normalized, key=sort_key)
     return value
@@ -104,6 +112,9 @@ def adoption_evidence_digest(value: object) -> str:
                     if not str(label).startswith("agent:")
                 )
             issue["lifecycle_state"] = "untracked"
+        writers = normalized.get("writers")
+        if isinstance(writers, dict) and "observed_at" in writers:
+            writers["observed_at"] = "<observation-time>"
     return canonical_digest(normalized)
 
 

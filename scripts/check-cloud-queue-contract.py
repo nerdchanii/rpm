@@ -507,7 +507,19 @@ def canonicalize(value: object, path: str = "") -> object:
         def sort_key(item: object) -> tuple[str, ...]:
             if fields == ("$value",) or not isinstance(item, dict):
                 return (json.dumps(item, ensure_ascii=False, sort_keys=True),)
-            return tuple(str(item.get(field, "")) for field in fields)
+            # The declared fields keep the common ordering readable.  The
+            # complete canonical item breaks ties when two records share the
+            # declared identity fields, including findings with distinct
+            # source IDs.
+            return (
+                *(str(item.get(field, "")) for field in fields),
+                json.dumps(
+                    canonicalize(item, path),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
 
         return sorted(normalized, key=sort_key)
     return value
@@ -556,11 +568,24 @@ def adoption_evidence(value: object) -> object:
                     if not str(label).startswith("agent:")
                 )
             issue["lifecycle_state"] = "untracked"
+        writers = normalized.get("writers")
+        if isinstance(writers, dict) and "observed_at" in writers:
+            # The live read binds this value to its current authorization, but
+            # it is a runtime clock and must not make an otherwise unchanged
+            # prepared ledger digest stale on a later retry.
+            writers["observed_at"] = "<observation-time>"
     return normalized
 
 
 def adoption_evidence_digest(value: object) -> str:
     return canonical_digest(adoption_evidence(value))
+
+
+def immutable_adoption_authorization(value: object) -> object:
+    normalized = copy.deepcopy(value)
+    if isinstance(normalized, dict) and "observation_time" in normalized:
+        normalized["observation_time"] = "<observation-time>"
+    return normalized
 
 
 def adoption_contract(policy: dict[str, object]) -> dict[str, object] | None:
@@ -952,7 +977,7 @@ def validate_findings(
             follow_up = item.get("follow_up_issue")
             authority = item.get("follow_up_creation_authority")
             if not (
-                isinstance(follow_up, int)
+                type(follow_up) is int and follow_up > 0
                 or (isinstance(authority, str) and authority.strip())
             ):
                 return "follow-up-owner-incomplete"
@@ -1202,7 +1227,9 @@ def validate_ledger(
             return None, "ledger-prepared-document-schema-mismatch"
         if comment.get("prepared_document_digest") != canonical_digest(document):
             return None, "ledger-prepared-document-digest-mismatch"
-        if document.get("authorization") != authorization:
+        if immutable_adoption_authorization(
+            document.get("authorization")
+        ) != immutable_adoption_authorization(authorization):
             return None, "ledger-prepared-document-mismatch"
         if adoption_evidence(document.get("evidence")) != adoption_evidence(
             fixture.get("evidence")

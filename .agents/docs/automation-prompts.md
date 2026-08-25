@@ -65,7 +65,8 @@ Recommended interval: every 2 hours.
 Use $take-ticket in scheduled mode for nerdchanii/rpm.
 
 Follow .agents/workflows/backlog-policy.json. Use the connected GitHub plugin
-and the open issue lifecycle-label queue. Do not require the gh CLI or Project
+to inventory every open issue and its closing-PR relationships before filtering
+the open issue lifecycle-label queue. Do not require the gh CLI or Project
 access.
 
 Preflight before any queue read and before any mutation: confirm the connected

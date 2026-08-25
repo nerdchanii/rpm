@@ -12,6 +12,7 @@ import runpy
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 from pathlib import Path
 
@@ -79,11 +80,17 @@ def canonicalize(value: object, path: str = "") -> object:
             return normalized
 
         def key(item: object) -> tuple[str, ...]:
-            if fields == ("$value",):
+            if fields == ("$value",) or not isinstance(item, dict):
                 return (json.dumps(item, ensure_ascii=False, sort_keys=True),)
-            if not isinstance(item, dict):
-                return (json.dumps(item, ensure_ascii=False, sort_keys=True),)
-            return tuple(str(item.get(field, "")) for field in fields)
+            return (
+                *(str(item.get(field, "")) for field in fields),
+                json.dumps(
+                    canonicalize(item, path),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
 
         return sorted(normalized, key=key)
     return value
@@ -101,6 +108,10 @@ def canonical_digest(value: object) -> str:
         "writers",
     }.issubset(value):
         root_path = "evidence"
+        value = copy.deepcopy(value)
+        writers = value.get("writers")
+        if isinstance(writers, dict) and "observed_at" in writers:
+            writers["observed_at"] = "<observation-time>"
     payload = json.dumps(
         canonicalize(value, root_path),
         ensure_ascii=False,
@@ -198,6 +209,7 @@ class FakeGithubApiRunner:
         self.writes: list[tuple[str, object]] = []
         self.next_comment_id = 81001
         self.pr_updated_at = "2026-08-25T12:00:00Z"
+        self.timeline_events: list[dict[str, object]] = []
 
     def __call__(
         self, argv: list[str], input_text: str | None = None
@@ -301,6 +313,8 @@ class FakeGithubApiRunner:
                     "committer": {"date": "2026-08-25T12:00:00Z"},
                 },
             }
+        elif route == "repos/nerdchanii/rpm/issues/210/timeline":
+            response = copy.deepcopy(self.timeline_events)
         elif route == f"repos/nerdchanii/rpm/commits/{HEAD_SHA}/check-runs":
             response = {
                 "total_count": 2,
@@ -694,6 +708,31 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertEqual(
             canonical_digest(first["evidence"]),
             canonical_digest(second["evidence"]),
+        )
+
+        tie_first = self.load_adoption()
+        tie_first["evidence"]["findings"]["items"] = [
+            self.p2(
+                "already-addressed",
+                owner="issue-228",
+                rationale="source a",
+                id="P2-same",
+                source_id="thread-a",
+            ),
+            self.p2(
+                "already-addressed",
+                owner="issue-228",
+                rationale="source b",
+                id="P2-same",
+                source_id="thread-b",
+            ),
+        ]
+        tie_first["evidence"]["findings"]["count"] = 2
+        tie_second = copy.deepcopy(tie_first)
+        tie_second["evidence"]["findings"]["items"].reverse()
+        self.assertEqual(
+            canonical_digest(tie_first["evidence"]),
+            canonical_digest(tie_second["evidence"]),
         )
 
         for fixture in (first, second):
@@ -1093,6 +1132,21 @@ class AdoptionContractTest(unittest.TestCase):
             self.p2("residual-risk", owner="platform-owner"),
             self.p2("reject-out-of-scope", owner="issue-229"),
             self.p2("defer-follow-up", owner="workflow-owner"),
+            self.p2(
+                "defer-follow-up",
+                owner="workflow-owner",
+                follow_up_issue=True,
+            ),
+            self.p2(
+                "defer-follow-up",
+                owner="workflow-owner",
+                follow_up_issue=0,
+            ),
+            self.p2(
+                "defer-follow-up",
+                owner="workflow-owner",
+                follow_up_issue=-1,
+            ),
             {"id": "P1-open", "severity": "P1", "disposition": "accept-now"},
         ]
         for finding in rejected:
@@ -1981,11 +2035,19 @@ class AdoptionContractTest(unittest.TestCase):
         github_transport = namespace.get("GithubAdoptionTransport")
         self.assertTrue(callable(github_transport), namespace.keys())
         prepared = self.load_adoption()
-        transport = github_transport(snapshot=prepared)
+        observed_at = datetime(2026, 8, 26, 1, 2, 3, 456789, tzinfo=timezone.utc)
+        transport = github_transport(
+            snapshot=prepared, observation_clock=lambda: observed_at
+        )
 
+        expected_observed_at = "2026-08-26T01:02:03.456789Z"
         self.assertEqual(
             transport._collect_observation_time("nerdchanii/rpm", 145, 210),
-            prepared["now"],
+            expected_observed_at,
+        )
+        self.assertEqual(
+            transport._collect_observation_time("nerdchanii/rpm", 145, 210),
+            expected_observed_at,
         )
         lease = {
             "lease": {
@@ -2039,6 +2101,83 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertEqual(
             observed["evidence"]["review"]["head_updated_at"],
             "2026-08-25T12:00:00Z",
+        )
+
+        api.timeline_events = [
+            {
+                "event": "head_ref_force_pushed",
+                "commit_id": "c" * 40,
+                "created_at": "2026-08-25T12:05:00Z",
+            },
+            {
+                "event": "head_ref_force_pushed",
+                "commit_id": HEAD_SHA,
+                "created_at": "2026-08-25T12:20:00Z",
+            },
+        ]
+        transitioned = github_transport(
+            snapshot=prepared,
+            runner=api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+        )
+        transitioned.collectors.update(self.live_collectors(prepared))
+        transitioned_state = transitioned.read("nerdchanii/rpm", 145, 210)["state"]
+        self.assertEqual(
+            transitioned_state["evidence"]["review"]["head_updated_at"],
+            "2026-08-25T12:20:00Z",
+        )
+
+    def test_live_observation_clock_refreshes_each_refetch_and_keeps_phase_retry_safe(
+        self,
+    ) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        github_transport = namespace.get("GithubAdoptionTransport")
+        writer = namespace.get("execute_adoption_phase")
+        self.assertTrue(callable(github_transport), namespace.keys())
+        self.assertTrue(callable(writer), namespace.keys())
+        prepared = self.load_adoption()
+        observation_times = iter(
+            [
+                datetime(2026, 8, 26, 1, 2, 3, tzinfo=timezone.utc),
+                datetime(2026, 8, 26, 1, 2, 4, tzinfo=timezone.utc),
+                datetime(2026, 8, 26, 1, 3, 4, tzinfo=timezone.utc),
+                datetime(2026, 8, 26, 1, 3, 5, tzinfo=timezone.utc),
+            ]
+        )
+        api = FakeGithubApiRunner(prepared)
+        transport = github_transport(
+            snapshot=prepared,
+            runner=api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+            observation_clock=lambda: next(observation_times),
+        )
+        evidence = prepared["evidence"]
+
+        def copy_evidence(name: str):
+            return lambda repository, issue, pr: copy.deepcopy(evidence[name])
+
+        transport.collectors.update(
+            {
+                name: copy_evidence(name)
+                for name in ("execution", "findings", "dependent_prs")
+            }
+        )
+
+        def writers(repository: str, issue: int, pr: int) -> dict[str, object]:
+            value = copy.deepcopy(evidence["writers"])
+            value["observed_at"] = transport._current_observation_time
+            return value
+
+        transport.collectors["writers"] = writers
+        first = writer(self.load_policy(), prepared, transport)
+        second = writer(self.load_policy(), prepared, transport)
+        self.assertEqual(first.get("status"), "applied", first)
+        self.assertEqual(first.get("phase"), "prepared", first)
+        self.assertEqual(second.get("status"), "applied", second)
+        self.assertEqual(second.get("phase"), "label-mutation", second)
+        self.assertEqual(
+            [kind for kind, _ in api.writes],
+            ["comment", "comment"],
         )
 
     def test_writer_leases_are_global_and_marker_authors_are_bound(self) -> None:
