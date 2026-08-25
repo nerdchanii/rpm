@@ -1,16 +1,31 @@
 {
+  "repository": "nerdchanii/rpm",
+  "selected_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "issue_inventory": {"repository": "nerdchanii/rpm", "source": "repository-open-issue-merge-inventory-v1", "read_complete": true, "pagination_complete": true, "has_next_page": false, "count": 1, "records": [{"number": 12, "state": "OPEN", "lifecycle_state": "awaiting-merge"}]},
   "issues": [
     {
       "number": 12,
       "state": "OPEN",
       "labels": ["agent:awaiting-merge", "kind:feature"],
+      "closing_pr_inventory": {"repository": "nerdchanii/rpm", "source": "github-closing-issue-references-v1", "read_complete": true, "pagination_complete": true, "has_next_page": false, "count": 1, "records": [{"repository": "nerdchanii/rpm", "number": 44, "pr": 44, "base_ref": "main", "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "head_ref": "feat/issue-12", "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]},
       "closing_prs": [
         {
           "number": 44,
           "state": "OPEN",
+          "repository": "nerdchanii/rpm",
+          "base_ref": "main",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "head_ref": "feat/issue-12",
+          "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "selected_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "checks_read_complete": true,
+          "checks": {"source": "github-check-runs-v1", "repository": "nerdchanii/rpm", "pr": 44, "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "read_complete": true, "pagination_complete": true, "has_next_page": false, "count": 2, "records": [
+            {"name": "metadata", "conclusion": "success", "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "source": "github-actions", "workflow_run_id": 44001},
+            {"name": "verify", "conclusion": "in_progress", "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "source": "github-actions", "workflow_run_id": 44002}
+          ]},
           "mergeable": true,
-          "checks": {"metadata": "success", "verify": "in_progress"},
-          "unresolved_p0_p1": false
+          "findings": {"source": "current-head-review-findings-v1", "repository": "nerdchanii/rpm", "pr": 44, "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "read_complete": true, "pagination_complete": true, "has_next_page": false, "count": 0, "items": []},
+          "dependent_prs": {"source": "repository-open-pr-base-inventory-v1", "repository": "nerdchanii/rpm", "pr": 44, "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "read_complete": true, "pagination_complete": true, "has_next_page": false, "count": 0, "records": []}
         }
       ]
     }

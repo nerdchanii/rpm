@@ -162,8 +162,32 @@ Codex Automatic reviews then run asynchronously.
 `$take-ticket explicit <issue>` executes a user-selected issue without running
 the scheduled candidate claim flow.
 
+Before ordinary execution selection, the queue checker classifies every
+completed open PR whose closing issue has no lifecycle label. When the
+dedicated contract is present it returns `adoption-required`; missing wiring
+returns `wiring-blocked`. Either result is a stable blocker and cannot be
+reported as healthy `no-work`.
+
 Scheduled runs do not post, request, or wait for `@codex review`. Repository
 code-review settings run independently after a pull request is published.
+
+## Existing-PR Adoption Contract
+
+`adopt-existing-pr` is the only operation that may move an untracked closing
+issue to review-pending. The generic lifecycle transition table keeps only
+untracked-to-research. The adopter processes one exact issue/PR pair and binds
+the repository, complete closing-issue set, base and head refs/SHAs, policy and
+operation versions, approval metadata, canonical evidence digest, complete
+current-head checks, current-head review or approved post-head plus-one,
+finding dispositions, repository-global writer inventory, and dependent-PR
+inventory.
+
+The issue-comment ledger progresses through `prepared`, `label-mutation`,
+`committed`, and `reconciled`. Every retry re-fetches the exact evidence and
+accepts only one matching run. Ambiguous, partial, stale, or conflicting
+records stop without mutation. The label authorization is add-only and
+preserves ordinary labels. Project membership synchronization is an inventory
+operation; Project read failure cannot change or block the lifecycle verdict.
 
 ## Review-Reconciliation Contract
 
@@ -186,6 +210,9 @@ through the GitHub plugin and lets GitHub close the linked issue; lifecycle
 labels on closed issues are inert. Pending checks or unknown mergeability
 return `no-work`. Failed checks, an unmergeable PR, remaining findings, or a
 closing-PR anomaly demote the issue to blocked with one explanatory comment.
+Complete repository/head-bound dependent-PR inventory is required before the
+gate decision. A child PR based on the selected head returns
+`retarget-required` before merge or branch deletion.
 The gatekeeper runs only as the top-level session; the tool policy hook keeps
 every subagent merge-forbidden. The workflow automation flag
 `automation.merge_pull_requests` stays `false`: subagent workflows never merge.

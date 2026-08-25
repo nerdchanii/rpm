@@ -603,7 +603,7 @@ check_just_test_verbosity() {
 for skill in .agents/skills/*; do
   [ -d "${skill}" ] || continue
   name="$(basename "${skill}")"
-  if [ "${name}" = "take-ticket" ] || [ "${name}" = "prepare-backlog" ] || [ "${name}" = "merge-gatekeeper" ]; then
+  if [ "${name}" = "take-ticket" ] || [ "${name}" = "prepare-backlog" ] || [ "${name}" = "merge-gatekeeper" ] || [ "${name}" = "adopt-existing-pr" ]; then
     emit_check \
       "skill_${name}" \
       "ok" \
@@ -628,7 +628,7 @@ if [ -d .codex/agents ]; then
 fi
 
 check "backlog_policy_schema" jq -e '
-  .version == 3
+  .version == 4
   and .repository == "nerdchanii/rpm"
   and .execution_queue == {
     source:"issue-labels",
@@ -662,6 +662,62 @@ check "backlog_policy_schema" jq -e '
       algorithm:"sha256-nul-joined"
     }
   }
+  and .existing_pr_adoption == {
+    operation:"adopt-existing-pr",
+    operation_version:1,
+    owner:"rpm_existing_pr_adopter",
+    from_state:"untracked",
+    to_state:"review-pending",
+    batch_limit:1,
+    required_checks:["metadata","verify"],
+    approved_plus_one_actors:["chatgpt-codex-connector"],
+    canonical_array_order:{
+      "authorization.closing_issues":["repository","number"],
+      "evidence.issue.labels":["$value"],
+      "evidence.issue.closing_prs":["$value"],
+      "evidence.pr.closing_issues":["repository","number"],
+      "evidence.checks.records":["name","workflow_run_id"],
+      "evidence.review.automatic_reviews.records":["submitted_at","actor","reviewed_head_sha"],
+      "evidence.review.reactions.records":["created_at","actor","content"],
+      "evidence.findings.items":["severity","id"],
+      "evidence.writers.records":["kind","repository","issue","pr","run_id"],
+      "evidence.dependent_prs.records":["number"]
+    },
+    p2_terminal_dispositions:[
+      "already-addressed",
+      "defer-follow-up",
+      "residual-risk",
+      "reject-out-of-scope"
+    ],
+    writer_inventory:{
+      source:"repository-global-writer-inventory-v1",
+      kinds:["claim","implementation","review-resolution","adoption"]
+    },
+    dependent_pr_inventory:{
+      source:"repository-open-pr-base-inventory-v1"
+    },
+    ledger:{
+      namespace:"rpm-agent-adoption",
+      marker:"<!-- rpm-agent-adoption:v1 -->",
+      approved_authors:["nerdchanii"],
+      phases:["prepared","label-mutation","committed","reconciled"]
+    }
+  }
+  and .lifecycle_contract.initial_states == ["untracked","research","ready"]
+  and .lifecycle_contract.safe_stop_states == ["awaiting-merge","blocked"]
+  and .lifecycle_contract.external_terminal_states == ["closed"]
+  and .lifecycle_contract.operation_fixtures == {
+    "adopt-existing-pr":"adopt-existing-pr"
+  }
+  and (.lifecycle_contract.edge_fixtures | keys) == ([
+    "untracked->research",
+    "research->research","research->ready","research->blocked",
+    "ready->claimed","ready->blocked",
+    "claimed->ready","claimed->review-pending","claimed->blocked",
+    "review-pending->review-pending","review-pending->awaiting-merge","review-pending->blocked",
+    "awaiting-merge->blocked",
+    "blocked->research","blocked->ready"
+  ] | sort)
   and .batch_limits == {research:1,execution:1}
   and .allowed_transitions == {
     untracked:["research"],

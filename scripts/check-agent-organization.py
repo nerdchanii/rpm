@@ -19,6 +19,7 @@ POLICY_PATH = ROOT / ".agents" / "workflows" / "backlog-policy.json"
 MANAGER_REPORTS = {
     "rpm_workflow_manager": {
         "rpm_backlog_manager",
+        "rpm_existing_pr_adopter",
         "rpm_issue_manager",
     },
     "rpm_backlog_manager": {
@@ -43,6 +44,7 @@ MANAGER_REPORTS = {
     },
 }
 LEAF_SANDBOX = {
+    "rpm_existing_pr_adopter": "read-only",
     "rpm_backlog_scout": "read-only",
     "rpm_idea_issue_creator": "read-only",
     "rpm_issue_researcher": "read-only",
@@ -113,6 +115,57 @@ EXPECTED_EXECUTION_CONTRACT = {
         "algorithm": "sha256-nul-joined",
     },
 }
+EXPECTED_ADOPTION_CONTRACT = {
+    "operation": "adopt-existing-pr",
+    "operation_version": 1,
+    "owner": "rpm_existing_pr_adopter",
+    "from_state": "untracked",
+    "to_state": "review-pending",
+    "batch_limit": 1,
+    "required_checks": ["metadata", "verify"],
+    "approved_plus_one_actors": ["chatgpt-codex-connector"],
+    "canonical_array_order": {
+        "authorization.closing_issues": ["repository", "number"],
+        "evidence.issue.labels": ["$value"],
+        "evidence.issue.closing_prs": ["$value"],
+        "evidence.pr.closing_issues": ["repository", "number"],
+        "evidence.checks.records": ["name", "workflow_run_id"],
+        "evidence.review.automatic_reviews.records": [
+            "submitted_at",
+            "actor",
+            "reviewed_head_sha",
+        ],
+        "evidence.review.reactions.records": ["created_at", "actor", "content"],
+        "evidence.findings.items": ["severity", "id"],
+        "evidence.writers.records": [
+            "kind",
+            "repository",
+            "issue",
+            "pr",
+            "run_id",
+        ],
+        "evidence.dependent_prs.records": ["number"],
+    },
+    "p2_terminal_dispositions": [
+        "already-addressed",
+        "defer-follow-up",
+        "residual-risk",
+        "reject-out-of-scope",
+    ],
+    "writer_inventory": {
+        "source": "repository-global-writer-inventory-v1",
+        "kinds": ["claim", "implementation", "review-resolution", "adoption"],
+    },
+    "dependent_pr_inventory": {
+        "source": "repository-open-pr-base-inventory-v1"
+    },
+    "ledger": {
+        "namespace": "rpm-agent-adoption",
+        "marker": "<!-- rpm-agent-adoption:v1 -->",
+        "approved_authors": ["nerdchanii"],
+        "phases": ["prepared", "label-mutation", "committed", "reconciled"],
+    },
+}
 
 
 def fail(errors: list[str], message: str) -> None:
@@ -157,8 +210,8 @@ def check_policy(errors: list[str]) -> None:
     if not isinstance(policy, dict):
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: policy must be an object")
         return
-    if policy.get("version") != 3:
-        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: version must be 3")
+    if policy.get("version") != 4:
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: version must be 4")
     if policy.get("repository") != "nerdchanii/rpm":
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: repository must be nerdchanii/rpm")
     queue = policy.get("execution_queue")
@@ -181,10 +234,43 @@ def check_policy(errors: list[str]) -> None:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: lifecycle labels changed")
     if policy.get("execution_contract") != EXPECTED_EXECUTION_CONTRACT:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid execution contract")
+    if policy.get("existing_pr_adoption") != EXPECTED_ADOPTION_CONTRACT:
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid existing PR adoption contract")
     if policy.get("batch_limits") != {"research": 1, "execution": 1}:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: both batch limits must equal 1")
     if policy.get("allowed_transitions") != EXPECTED_TRANSITIONS:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: transition allowlist changed")
+    lifecycle_contract = policy.get("lifecycle_contract")
+    expected_edges = {
+        f"{source}->{target}"
+        for source, targets in EXPECTED_TRANSITIONS.items()
+        for target in targets
+    }
+    if not isinstance(lifecycle_contract, dict):
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: lifecycle contract is missing")
+    else:
+        if lifecycle_contract.get("initial_states") != ["untracked", "research", "ready"]:
+            fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid lifecycle initial states")
+        if lifecycle_contract.get("safe_stop_states") != ["awaiting-merge", "blocked"]:
+            fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid lifecycle safe stops")
+        if lifecycle_contract.get("external_terminal_states") != ["closed"]:
+            fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid lifecycle terminal states")
+        edge_fixtures = lifecycle_contract.get("edge_fixtures")
+        if not isinstance(edge_fixtures, dict) or set(edge_fixtures) != expected_edges:
+            fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: lifecycle edge fixtures are incomplete")
+        elif any(
+            not isinstance(descriptor, dict)
+            or descriptor.get("case") != edge
+            or descriptor.get("path")
+            != "tests/fixtures/agent-workflow/lifecycle-edges.json"
+            or not (ROOT / str(descriptor.get("path"))).is_file()
+            for edge, descriptor in edge_fixtures.items()
+        ):
+            fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: lifecycle edge fixture is missing")
+        if lifecycle_contract.get("operation_fixtures") != {
+            "adopt-existing-pr": "adopt-existing-pr"
+        }:
+            fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: adoption fixture binding changed")
     automation = policy.get("automation")
     if not isinstance(automation, dict) or any(
         automation.get(key) is not False
@@ -316,7 +402,7 @@ def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str]:
 
 
 def check_entries_and_assets(errors: list[str]) -> None:
-    for skill_name in ("take-ticket", "prepare-backlog"):
+    for skill_name in ("take-ticket", "prepare-backlog", "adopt-existing-pr"):
         path = ROOT / ".agents" / "skills" / skill_name / "SKILL.md"
         values = parse_frontmatter(path, errors)
         if values.get("disable-model-invocation") != "true":
@@ -325,7 +411,7 @@ def check_entries_and_assets(errors: list[str]) -> None:
             text = path.read_text()
         except OSError:
             continue
-        if "rpm_workflow_manager" not in text:
+        if skill_name != "adopt-existing-pr" and "rpm_workflow_manager" not in text:
             fail(errors, f"{path.relative_to(ROOT)}: entry does not route to workflow manager")
         leaked = sorted(
             role
@@ -337,7 +423,15 @@ def check_entries_and_assets(errors: list[str]) -> None:
                 errors,
                 f"{path.relative_to(ROOT)}: entry duplicates internal routing: {', '.join(leaked)}",
             )
-        if skill_name == "take-ticket":
+        if skill_name == "adopt-existing-pr":
+            for required in (
+                "check-cloud-queue-contract.py",
+                "authorize-existing-pr-adoption-mutation.py",
+                "add-only",
+            ):
+                if required not in text:
+                    fail(errors, f"{path.relative_to(ROOT)}: missing adoption contract {required!r}")
+        elif skill_name == "take-ticket":
             for required in ("scheduled", "at most", "no-work"):
                 if required not in text:
                     fail(errors, f"{path.relative_to(ROOT)}: missing scheduled contract {required!r}")
@@ -403,6 +497,7 @@ def check_deterministic_assets(errors: list[str]) -> None:
         "scripts/check-cloud-queue-contract.py",
         "scripts/check-merge-gate.py",
         "scripts/check-agent-issue-readiness.py",
+        "scripts/authorize-existing-pr-adoption-mutation.py",
         ".codex/hooks/agent_tool_policy.py",
         ".codex/hooks/issue_manager_stop_gate.py",
         ".codex/hooks.json",
@@ -541,6 +636,77 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "pr-review-resolver",
             "exec_command",
             {"cmd": "gh pr merge 1 --squash"},
+            2,
+        ),
+        (
+            "adopter-helper",
+            "rpm_existing_pr_adopter",
+            "exec_command",
+            {
+                "cmd": "python3 scripts/authorize-existing-pr-adoption-mutation.py --request-file /tmp/request.json"
+            },
+            0,
+        ),
+        (
+            "adopter-writer",
+            "rpm_existing_pr_adopter",
+            "exec_command",
+            {
+                "cmd": "python3 scripts/write-existing-pr-adoption.py --policy .agents/workflows/backlog-policy.json --request-file /tmp/request.json"
+            },
+            0,
+        ),
+        (
+            "adopter-checker",
+            "rpm_existing_pr_adopter",
+            "exec_command",
+            {
+                "cmd": "python3 scripts/check-cloud-queue-contract.py --issues-file /tmp/issues.json --operation adopt-existing-pr"
+            },
+            0,
+        ),
+        (
+            "adopter-python-shell",
+            "rpm_existing_pr_adopter",
+            "exec_command",
+            {"cmd": "python3 -c 'import subprocess; subprocess.run([\"gh\", \"api\"])'"},
+            2,
+        ),
+        (
+            "adopter-network-shell",
+            "rpm_existing_pr_adopter",
+            "exec_command",
+            {"cmd": "curl -X POST https://api.github.com/repos/nerdchanii/rpm/issues"},
+            2,
+        ),
+        (
+            "adopter-terminal-shell",
+            "rpm_existing_pr_adopter",
+            "terminal",
+            {"cmd": "curl -X POST https://api.github.com/repos/nerdchanii/rpm/issues"},
+            2,
+        ),
+        (
+            "adopter-generic-executor",
+            "rpm_existing_pr_adopter",
+            "foo.execute",
+            {"cmd": "python3 scripts/write-existing-pr-adoption.py --request-file /tmp/request.json"},
+            2,
+        ),
+        (
+            "adopter-obfuscated-shell",
+            "rpm_existing_pr_adopter",
+            "exec_command",
+            {
+                "cmd": "python3 scripts/check-cloud-queue-contract.py --issues-file /tmp/issues.json --operation adopt-existing-pr; gh api repos/nerdchanii/rpm/issues"
+            },
+            2,
+        ),
+        (
+            "adopter-generic-mutation",
+            "rpm_existing_pr_adopter",
+            "mcp__github__update_issue",
+            {"issue_number": 145, "labels": ["agent:review-pending"]},
             2,
         ),
     )

@@ -25,6 +25,7 @@ LOCAL_WRITE_ROLES = {
 }
 MCP_READ_ROLES = {
     "pr-review-resolver",
+    "rpm_existing_pr_adopter",
     "rpm_backlog_scout",
     "rpm_idea_issue_creator",
     "rpm_issue_fetcher",
@@ -41,6 +42,7 @@ GITHUB_MUTATION_ROLES = {
     "rpm_followup_issue_creator",
 }
 RPM_ROLES = MANAGERS | LOCAL_WRITE_ROLES | MCP_READ_ROLES | {
+    "rpm_existing_pr_adopter",
     "rpm_spec_reviewer",
     "rpm_issue_spec_reconciler",
     "rpm_test_runner",
@@ -345,6 +347,82 @@ def allowed_github_mutation(
     return False
 
 
+def adopter_command_allowed(tool: str, tool_input: object) -> bool:
+    """Allow only the repository-local adoption checker/helper/writer.
+
+    The adopter's Python entry points own their own narrowly scoped GitHub
+    transport.  Allowing a general-purpose shell or Python interpreter would
+    let the role bypass that transport and its evidence/CAS checks.
+    """
+    if not is_shell_tool(tool):
+        return False
+    command = tool_input.get("cmd") if isinstance(tool_input, dict) else None
+    if not isinstance(command, str) or not command.strip():
+        return False
+    if any(
+        marker in command
+        for marker in (";", "&&", "||", "|", "`", "$(", "\n", "\r", ">", "<")
+    ):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if not words or words[0] != "python3":
+        return False
+
+    def request_path(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and bool(value)
+            and not value.startswith("-")
+            and not any(
+                char in value
+                for char in ("\\", "$", "*", "?", "[", "]", "~", "#")
+            )
+        )
+
+    helper = "scripts/authorize-existing-pr-adoption-mutation.py"
+    writer = "scripts/write-existing-pr-adoption.py"
+    checker = "scripts/check-cloud-queue-contract.py"
+    if len(words) >= 2 and words[1] == helper:
+        if len(words) == 4:
+            return (
+                words[2] == "--request-file"
+                and request_path(words[3])
+            )
+        return (
+            len(words) == 6
+            and words[2:4] == ["--policy", ".agents/workflows/backlog-policy.json"]
+            and words[4] == "--request-file"
+            and request_path(words[5])
+        )
+    if len(words) >= 2 and words[1] == writer:
+        if len(words) == 4:
+            return words[2] == "--request-file" and request_path(words[3])
+        return (
+            len(words) == 6
+            and words[2:4] == ["--policy", ".agents/workflows/backlog-policy.json"]
+            and words[4] == "--request-file"
+            and request_path(words[5])
+        )
+    if len(words) >= 2 and words[1] == checker:
+        if len(words) == 6:
+            return (
+                words[2] == "--issues-file"
+                and request_path(words[3])
+                and words[4:6] == ["--operation", "adopt-existing-pr"]
+            )
+        return (
+            len(words) == 8
+            and words[2:4] == ["--policy", ".agents/workflows/backlog-policy.json"]
+            and words[4] == "--issues-file"
+            and request_path(words[5])
+            and words[6:8] == ["--operation", "adopt-existing-pr"]
+        )
+    return False
+
+
 def check_tool(event: dict[str, object]) -> int:
     role = current_role(event)
     if role is None:
@@ -355,6 +433,11 @@ def check_tool(event: dict[str, object]) -> int:
         return deny(f"{role} supplied no tool_name")
     tool_input = event.get("tool_input")
     text = "\n".join(flatten_strings(tool_input))
+
+    if role == "rpm_existing_pr_adopter":
+        if adopter_command_allowed(tool, tool_input):
+            return 0
+        return deny("existing PR adopter is restricted to exact adoption entrypoints")
 
     forbidden = has_forbidden_review_or_merge(f"{tool}\n{text}")
     if forbidden:
