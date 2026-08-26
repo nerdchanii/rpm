@@ -338,6 +338,13 @@ def evaluate_gate(
     pr: dict[str, object],
     selected_head_sha: str | None = None,
 ) -> dict[str, object]:
+    pending_conclusions = {
+        "queued",
+        "in_progress",
+        "pending",
+        "requested",
+        "waiting",
+    }
     issue_number = int(issue.get("number", 0))
     pr_number = int(pr.get("number", 0))
     if (
@@ -437,20 +444,25 @@ def evaluate_gate(
             "issue": issue_number,
             "pr": pr_number,
         }
-    failed = sorted(
+    terminal_non_success = sorted(
         name
         for name in required
-        if conclusions.get(name) in {"failure", "cancelled", "timed_out", "action_required"}
+        if name in conclusions
+        and conclusions[name] not in {"success", *pending_conclusions}
     )
-    if failed:
+    if terminal_non_success:
         return {
             "status": "blocked",
             "reason": "checks-failed",
             "issue": issue_number,
             "pr": pr_number,
-            "checks": failed,
+            "checks": terminal_non_success,
         }
-    pending = sorted(name for name in required if conclusions.get(name) != "success")
+    pending = sorted(
+        name
+        for name in required
+        if name not in conclusions or conclusions[name] in pending_conclusions
+    )
     if pending:
         return {
             "status": "no-work",

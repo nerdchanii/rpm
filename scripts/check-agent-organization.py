@@ -427,6 +427,7 @@ def check_entries_and_assets(errors: list[str]) -> None:
             for required in (
                 "check-cloud-queue-contract.py",
                 "authorize-existing-pr-adoption-mutation.py",
+                "materialize-existing-pr-adoption.py",
                 "add-only",
             ):
                 if required not in text:
@@ -498,6 +499,7 @@ def check_deterministic_assets(errors: list[str]) -> None:
         "scripts/check-merge-gate.py",
         "scripts/check-agent-issue-readiness.py",
         "scripts/authorize-existing-pr-adoption-mutation.py",
+        "scripts/materialize-existing-pr-adoption.py",
         ".codex/hooks/agent_tool_policy.py",
         ".codex/hooks/issue_manager_stop_gate.py",
         ".codex/hooks.json",
@@ -644,6 +646,15 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "exec_command",
             {
                 "cmd": "python3 scripts/authorize-existing-pr-adoption-mutation.py --request-file /tmp/request.json"
+            },
+            0,
+        ),
+        (
+            "adopter-materializer",
+            "rpm_existing_pr_adopter",
+            "exec_command",
+            {
+                "cmd": "python3 scripts/materialize-existing-pr-adoption.py --run-id adoption-run-228 --kind issues --payload-base64 e30="
             },
             0,
         ),

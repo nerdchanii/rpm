@@ -22,11 +22,23 @@ at most one exact issue/PR pair.
 - Exact approval, plan revision, scope hash, executor, policy version, operation
   version, and canonical evidence digest
 
-Normalize the evidence and run:
+Normalize the evidence into a per-run temporary handoff. The issue/PR-only
+workflow uses the repository materializer, which accepts one base64-encoded
+JSON object and writes only the selected `issues.json` or `request.json` below
+`/tmp/rpm-existing-pr-adoption/<safe-run-id>/`:
+
+```sh
+python3 scripts/materialize-existing-pr-adoption.py \
+  --run-id <safe-run-id> \
+  --kind issues \
+  --payload-base64 <base64-encoded-json>
+```
+
+Use the returned path as the checker input:
 
 ```sh
 python3 scripts/check-cloud-queue-contract.py \
-  --issues-file /tmp/rpm-adopt-existing-pr.json \
+  --issues-file /tmp/rpm-existing-pr-adoption/<safe-run-id>/issues.json \
   --operation adopt-existing-pr
 ```
 
@@ -34,7 +46,9 @@ The checker is authoritative. A blocked result permits no mutation. For an
 adopt result, record the phase ledger exactly, re-fetch the current issue
 labels, and pass the exact add-only request through
 `scripts/authorize-existing-pr-adoption-mutation.py`. Preserve every ordinary
-label. Then invoke `scripts/write-existing-pr-adoption.py` with the prepared
+label. The execution tuple must come from exactly one complete issue comment
+authored by a policy-approved actor. The ordinary editable issue body is not
+an authorization source. Then invoke `scripts/write-existing-pr-adoption.py` with the prepared
 snapshot and policy. That entry point owns the narrow GitHub API transport for
 ledger comments and the add-only lifecycle label; it re-fetches and CAS-checks
 the full authorization tuple immediately before each write. Re-fetch after

@@ -328,9 +328,13 @@ class GithubAdoptionTransport:
         issue: int,
         pr: int,
         operation: object,
+        *,
+        source_actor: str,
     ) -> dict[str, object]:
         if not isinstance(body, str):
             raise RuntimeError("GitHub issue execution metadata is missing")
+        if not isinstance(source_actor, str) or not source_actor.strip():
+            raise RuntimeError("GitHub issue execution authorization actor is invalid")
         matches = [match.group(1) for match in EXECUTION_MARKER.finditer(body)]
         if len(matches) != 1:
             raise RuntimeError("GitHub issue execution metadata is ambiguous")
@@ -355,6 +359,8 @@ class GithubAdoptionTransport:
             "repository": repository,
             "issue": issue,
             "pr": pr,
+            "source": "github-approved-workflow-comment-v1",
+            "source_actor": source_actor,
             **metadata,
             "policy_version": operation.get("policy_version"),
             "operation_version": operation.get("version"),
@@ -363,15 +369,39 @@ class GithubAdoptionTransport:
     def _collect_execution(
         self, repository: str, issue: int, pr: int
     ) -> dict[str, object]:
+        # An issue body is editable workflow input.  The authorization marker
+        # is therefore accepted only from a complete issue comment authored by
+        # the policy-owned actor allowlist, whose identity is returned by the
+        # authenticated GitHub API response and carried into the evidence.
         if self.snapshot is None:
             raise RuntimeError("prepared snapshot is required")
-        payload = self._call(f"repos/{self._repository_path(repository)}/issues/{issue}")
+        if not self.approved_marker_actors:
+            raise RuntimeError("GitHub execution authorization actor allowlist is missing")
+        comments = self._paginate(
+            f"repos/{self._repository_path(repository)}/issues/{issue}/comments"
+        )
+        authorized: list[tuple[object, str]] = []
+        for comment in comments:
+            if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
+                continue
+            user = comment.get("user")
+            actor = user.get("login") if isinstance(user, dict) else None
+            if not isinstance(actor, str) or actor not in self.approved_marker_actors:
+                continue
+            if EXECUTION_MARKER.search(comment["body"]):
+                authorized.append((comment["body"], actor))
+        if len(authorized) != 1:
+            raise RuntimeError(
+                "GitHub workflow execution authorization is missing or ambiguous"
+            )
+        body, actor = authorized[0]
         return self._execution_from_body(
-            payload.get("body") if isinstance(payload, dict) else None,
+            body,
             repository,
             issue,
             pr,
             self.snapshot.get("operation"),
+            source_actor=actor,
         )
 
     def _graphql_connection(
@@ -763,33 +793,23 @@ class GithubAdoptionTransport:
             raise RuntimeError("GitHub PR head SHA is invalid")
         return sha
 
-    def _head_commit_timestamp(self, repository: str, head_sha: str) -> str:
-        """Return the commit timestamp bound to the selected head SHA."""
-        payload = self._call(
-            f"repos/{self._repository_path(repository)}/commits/{head_sha}"
-        )
-        if not isinstance(payload, dict) or payload.get("sha") != head_sha:
-            raise RuntimeError("GitHub selected-head commit identity mismatch")
-        commit = payload.get("commit") if isinstance(payload, dict) else None
-        if not isinstance(commit, dict):
-            raise RuntimeError("GitHub selected-head commit metadata is missing")
-        for field in ("committer", "author"):
-            identity = commit.get(field)
-            value = identity.get("date") if isinstance(identity, dict) else None
-            if isinstance(value, str) and value.strip():
-                return value
-        raise RuntimeError("GitHub selected-head commit timestamp is missing")
-
     def _head_transition_timestamp(
-        self, repository: str, pr: int, head_sha: str
+        self,
+        repository: str,
+        pr: int,
+        head_sha: str,
+        *,
+        updated_at: object = None,
     ) -> str:
         """Return the timestamp at which the selected head became current.
 
         A force-push can select an old commit whose commit timestamp predates
         a review reaction.  The timeline's head-ref transition is the
-        authoritative freshness boundary for that case.  Older repositories
-        may have no matching timeline event for a normal push, so retain the
-        commit timestamp only as that compatibility fallback.
+        authoritative freshness boundary for that case.  GitHub does not emit
+        a head-ref timeline event for every ordinary fast-forward push, so the
+        PR's ``updated_at`` high-water mark is the conservative fallback.  A
+        commit-authored timestamp cannot establish when that SHA became the
+        selected PR head and is therefore never used for freshness.
         """
         events = self._paginate(
             f"repos/{self._repository_path(repository)}/issues/{pr}/timeline"
@@ -819,7 +839,19 @@ class GithubAdoptionTransport:
             transition_timestamps.append((parsed.astimezone(timezone.utc), created_at))
         if transition_timestamps:
             return max(transition_timestamps, key=lambda item: item[0])[1]
-        return self._head_commit_timestamp(repository, head_sha)
+        if not isinstance(updated_at, str) or not updated_at.strip():
+            raise RuntimeError("GitHub head transition timestamp is unavailable")
+        try:
+            parsed_updated_at = datetime.fromisoformat(
+                updated_at.replace("Z", "+00:00")
+            )
+        except ValueError as error:
+            raise RuntimeError(
+                "GitHub head transition timestamp is invalid"
+            ) from error
+        if parsed_updated_at.tzinfo is None:
+            raise RuntimeError("GitHub head transition timestamp is invalid")
+        return updated_at
 
     def _collect_observation_time(
         self, repository: str, issue: int, pr: int
@@ -1256,7 +1288,10 @@ class GithubAdoptionTransport:
                     }
                 )
             head_updated_at = self._head_transition_timestamp(
-                repository, pr, head_sha
+                repository,
+                pr,
+                head_sha,
+                updated_at=pr_payload.get("updated_at"),
             )
             review = {
                 "repository": repository,
@@ -1354,6 +1389,12 @@ class GithubAdoptionTransport:
             for field in ("approval_id", "plan_revision", "scope_hash", "executor")
         ):
             raise RuntimeError("live execution authorization is incomplete")
+        if (
+            execution.get("source")
+            != "github-approved-workflow-comment-v1"
+            or execution.get("source_actor") not in self.approved_marker_actors
+        ):
+            raise RuntimeError("live execution authorization source is untrusted")
         if (
             execution.get("repository") != repository
             or execution.get("issue") != issue

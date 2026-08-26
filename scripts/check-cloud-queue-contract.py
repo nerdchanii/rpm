@@ -91,7 +91,14 @@ def has_open_closing_pr(issue: dict[str, object]) -> bool:
 
 
 def has_only_unfinished_open_closing_pr(issue: dict[str, object]) -> bool:
-    """Identify open draft PRs that are not adoption candidates yet."""
+    """Identify open closing PRs that have no completed adoption evidence.
+
+    An open closing PR becomes an adoption candidate only after its complete
+    current-head evidence has been materialized.  Draft status is one useful
+    signal, while a non-draft PR can still be in review or have pending checks.
+    Treat an issue without a completed evidence document as unfinished so it
+    does not strand unrelated ready work in the ordinary execution queue.
+    """
     prs = issue.get("closing_prs", [])
     if not isinstance(prs, list):
         raise ValueError("closing_prs must be an array")
@@ -101,7 +108,11 @@ def has_only_unfinished_open_closing_pr(issue: dict[str, object]) -> bool:
         if isinstance(pr, dict)
         and str(pr.get("state", "")).casefold() == "open"
     ]
-    return bool(open_prs) and all(pr.get("is_draft") is True for pr in open_prs)
+    return (
+        bool(open_prs)
+        and issue.get("implementation_complete") is not True
+        and not isinstance(issue.get("completed_pr_evidence"), dict)
+    )
 
 
 def execution_metadata(issue: dict[str, object]) -> dict[str, object] | None:
@@ -1247,9 +1258,9 @@ def validate_ledger(
             document.get("authorization")
         ) != immutable_adoption_authorization(authorization):
             return None, "ledger-prepared-document-mismatch"
-        if adoption_evidence(document.get("evidence")) != adoption_evidence(
-            fixture.get("evidence")
-        ):
+        if canonical_digest(
+            adoption_evidence(document.get("evidence"))
+        ) != canonical_digest(adoption_evidence(fixture.get("evidence"))):
             return None, "ledger-prepared-document-mismatch"
     present = {str(comment.get("phase")) for comment in comments}
     if "label-mutation" in present and "prepared" not in present:
@@ -1386,6 +1397,19 @@ def adopt_existing_pr(
     assert isinstance(issue, dict)
     assert isinstance(pr, dict)
     assert isinstance(execution, dict)
+    ledger_contract = contract.get("ledger")
+    approved_execution_actors = (
+        ledger_contract.get("approved_authors")
+        if isinstance(ledger_contract, dict)
+        else None
+    )
+    if (
+        execution.get("source") != "github-approved-workflow-comment-v1"
+        or not isinstance(approved_execution_actors, list)
+        or execution.get("source_actor")
+        not in {str(actor) for actor in approved_execution_actors}
+    ):
+        return blocked("execution-authorization-source-untrusted")
     if (
         execution.get("repository") != fixture.get("repository")
         or execution.get("issue") != issue.get("number")

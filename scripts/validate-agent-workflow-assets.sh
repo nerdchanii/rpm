@@ -776,6 +776,8 @@ check "script_check_cloud_queue_contract_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-cloud-queue-contract.py").read_text())'
 check "script_check_merge_gate_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-merge-gate.py").read_text())'
+check "script_materialize_existing_pr_adoption_syntax" \
+  python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/materialize-existing-pr-adoption.py").read_text())'
 check "script_check_claude_security_syntax" \
   bash -n scripts/check-claude-security.sh
 check "script_validate_agent_workflow_assets_syntax" \

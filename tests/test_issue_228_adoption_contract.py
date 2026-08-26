@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import contextlib
 import hashlib
@@ -23,6 +24,7 @@ QUEUE_CHECK = ROOT / "scripts/check-cloud-queue-contract.py"
 MERGE_CHECK = ROOT / "scripts/check-merge-gate.py"
 MUTATION_HELPER = ROOT / "scripts/authorize-existing-pr-adoption-mutation.py"
 ADOPTION_WRITER = ROOT / "scripts/write-existing-pr-adoption.py"
+ADOPTION_MATERIALIZER = ROOT / "scripts/materialize-existing-pr-adoption.py"
 TOOL_POLICY = ROOT / ".codex/hooks/agent_tool_policy.py"
 ADOPTION_FIXTURE = (
     ROOT / "tests/fixtures/agent-workflow/existing-pr-adoption.json"
@@ -958,6 +960,16 @@ class AdoptionContractTest(unittest.TestCase):
         result, event = self.run_queue(fixture)
         self.assert_adoptable(result, event)
 
+        ordinary_push = self.load_adoption()
+        self.use_plus_one(ordinary_push)
+        ordinary_push["evidence"]["review"]["head_updated_at"] = (
+            "2026-08-25T13:00:00Z"
+        )
+        self.resign(ordinary_push)
+        result, event = self.run_queue(ordinary_push)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(data.get("reason"), "current-head-review-missing", data)
+
         variants = []
         for collection in ("automatic_reviews", "reactions"):
             for field, value in (
@@ -1483,6 +1495,19 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertEqual(data.get("status"), "reconciled", data)
         self.assertEqual(data.get("phase"), "reconciled", data)
         self.assertNotIn("label_mutation", data)
+
+    def test_ledger_prepared_document_compare_uses_canonical_evidence_order(self) -> None:
+        fixture = self.load_adoption()
+        record = self.ledger_record(fixture, "prepared")
+        document = record["prepared_document"]
+        document["evidence"]["checks"]["records"].reverse()
+        record["prepared_document_digest"] = canonical_digest(document)
+        fixture["ledger"]["comments"] = [record]
+
+        result, event = self.run_queue(fixture)
+        data = self.assert_adoptable(result, event)
+        self.assertEqual(data.get("phase"), "label-mutation", data)
+        self.assertNotIn("mutation_request", data)
 
     def test_prepared_only_ledger_cannot_commit_an_external_lifecycle_label(
         self,
@@ -2049,6 +2074,44 @@ class AdoptionContractTest(unittest.TestCase):
             partial.read("nerdchanii/rpm", 145, 210)
         self.assertEqual(partial_api.writes, [])
 
+    def test_execution_authorization_ignores_issue_body_and_requires_approved_comment(
+        self,
+    ) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(github_transport), namespace.keys())
+        prepared = self.load_adoption()
+        execution = copy.deepcopy(prepared["evidence"]["execution"])
+        marker_payload = {
+            field: execution[field]
+            for field in ("approval_id", "plan_revision", "scope_hash", "executor")
+        }
+        marker = "<!-- rpm-agent-execution: " + json.dumps(marker_payload) + " -->"
+        transport = github_transport(
+            snapshot=prepared,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+        )
+        transport._call = lambda endpoint, **kwargs: {"body": marker}
+        transport._paginate = lambda endpoint, **kwargs: []
+        with self.assertRaisesRegex(RuntimeError, "authorization is missing"):
+            transport._collect_execution("nerdchanii/rpm", 145, 210)
+
+        transport._paginate = lambda endpoint, **kwargs: [
+            {"id": 70001, "user": {"login": "untrusted-user"}, "body": marker}
+        ]
+        with self.assertRaisesRegex(RuntimeError, "authorization is missing"):
+            transport._collect_execution("nerdchanii/rpm", 145, 210)
+
+        transport._paginate = lambda endpoint, **kwargs: [
+            {"id": 70002, "user": {"login": "nerdchanii"}, "body": marker}
+        ]
+        collected = transport._collect_execution("nerdchanii/rpm", 145, 210)
+        self.assertEqual(collected, execution)
+        self.assertEqual(
+            collected["source"], "github-approved-workflow-comment-v1"
+        )
+        self.assertEqual(collected["source_actor"], "nerdchanii")
+
     def test_default_observation_time_and_claim_lease_use_contract_evidence(self) -> None:
         namespace = runpy.run_path(str(ADOPTION_WRITER))
         github_transport = namespace.get("GithubAdoptionTransport")
@@ -2119,7 +2182,7 @@ class AdoptionContractTest(unittest.TestCase):
         observed = live.read("nerdchanii/rpm", 145, 210)["state"]
         self.assertEqual(
             observed["evidence"]["review"]["head_updated_at"],
-            "2026-08-25T12:00:00Z",
+            "2026-08-25T13:00:00Z",
         )
 
         api.timeline_events = [
@@ -2332,6 +2395,7 @@ class AdoptionContractTest(unittest.TestCase):
             raise AssertionError(endpoint)
 
         claimed_without_lease._paginate = claimed_issue_paginate
+        claimed_without_lease._head_sha_from_pr = lambda repository, pr: HEAD_SHA
         with self.assertRaisesRegex(RuntimeError, "claim lease"):
             claimed_without_lease._collect_writers("nerdchanii/rpm", 145, 210)
 
@@ -2902,6 +2966,16 @@ class AdoptionContractTest(unittest.TestCase):
                 )
                 self.assertEqual(read_only.returncode, 0, read_only.stderr)
 
+                host_prefixed = self.run_hook(
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "transcript_path": transcript,
+                        "tool_name": "mcp__codex_apps__github_get_pull_request",
+                        "tool_input": {"repository": "nerdchanii/rpm", "number": 210},
+                    }
+                )
+                self.assertEqual(host_prefixed.returncode, 0, host_prefixed.stderr)
+
                 forbidden = [
                     (
                         "mcp__github__update_issue",
@@ -2914,6 +2988,10 @@ class AdoptionContractTest(unittest.TestCase):
                     (
                         "mcp__github__resolve_review_thread",
                         {"thread_id": "thread-1"},
+                    ),
+                    (
+                        "mcp__codex_apps__github_update_issue",
+                        {"issue_number": 145, "labels": ["agent:review-pending"]},
                     ),
                     (
                         "exec_command",
@@ -2958,6 +3036,10 @@ class AdoptionContractTest(unittest.TestCase):
             self.assertEqual(start.returncode, 0, start.stderr)
             try:
                 allowed = (
+                    "python3 scripts/materialize-existing-pr-adoption.py "
+                    "--run-id adoption-run-228 --kind issues --payload-base64 e30=",
+                    "python3 scripts/materialize-existing-pr-adoption.py "
+                    "--run-id adoption-run-228 --kind request --payload-base64 e30=",
                     "python3 scripts/authorize-existing-pr-adoption-mutation.py "
                     "--policy .agents/workflows/backlog-policy.json "
                     "--request-file /tmp/adoption-request.json",
@@ -2987,6 +3069,9 @@ class AdoptionContractTest(unittest.TestCase):
                     "python3 ./scripts/write-existing-pr-adoption.py --request-file /tmp/adoption-request.json",
                     "python3 scripts/write-existing-pr-adoption.py --request-file /tmp/adoption-request.json --extra value",
                     "python3 scripts/write-existing-pr-adoption.py --request-file /tmp/adoption-request.json && gh api repos/nerdchanii/rpm/issues/145",
+                    "python3 scripts/materialize-existing-pr-adoption.py --run-id ../escape --kind issues --payload-base64 e30=",
+                    "python3 scripts/materialize-existing-pr-adoption.py --run-id adoption-run-228 --kind unknown --payload-base64 e30=",
+                    "python3 scripts/materialize-existing-pr-adoption.py --run-id adoption-run-228 --kind issues --payload-base64 e30= --extra value",
                     "ls -la",
                 )
                 for command in forbidden:
@@ -3008,6 +3093,86 @@ class AdoptionContractTest(unittest.TestCase):
                         "agent_transcript_path": transcript,
                     }
                 )
+
+    def test_issue_pr_only_handoff_materializes_a_confined_checker_input(self) -> None:
+        fixture = self.load_adoption()
+        encoded = base64.b64encode(
+            json.dumps(fixture, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).decode("ascii")
+        run_id = "test-materializer-228"
+        result, event = self.run_json_command(
+            [
+                "python3",
+                str(ADOPTION_MATERIALIZER),
+                "--run-id",
+                run_id,
+                "--kind",
+                "issues",
+                "--payload-base64",
+                encoded,
+            ],
+            {0},
+        )
+        data = event["data"]
+        self.assertEqual(result.returncode, 0, data)
+        self.assertEqual(data.get("status"), "materialized", data)
+        handoff = Path(data["path"])
+        self.assertEqual(
+            handoff,
+            Path("/tmp/rpm-existing-pr-adoption") / run_id / "issues.json",
+        )
+        self.assertEqual(json.loads(handoff.read_text()), fixture)
+
+        checker_result, checker_event = self.run_json_command(
+            [
+                "python3",
+                str(QUEUE_CHECK),
+                "--policy",
+                str(POLICY),
+                "--issues-file",
+                str(handoff),
+                "--operation",
+                "adopt-existing-pr",
+            ],
+            {0},
+        )
+        self.assertEqual(checker_result.returncode, 0, checker_event)
+        self.assertEqual(checker_event["data"].get("status"), "adopt", checker_event)
+
+        request_result, request_event = self.run_json_command(
+            [
+                "python3",
+                str(ADOPTION_MATERIALIZER),
+                "--run-id",
+                run_id,
+                "--kind",
+                "request",
+                "--payload-base64",
+                encoded,
+            ],
+            {0},
+        )
+        self.assertEqual(request_result.returncode, 0, request_event)
+        self.assertEqual(
+            Path(request_event["data"]["path"]),
+            Path("/tmp/rpm-existing-pr-adoption") / run_id / "request.json",
+        )
+
+        rejected_result, rejected_event = self.run_json_command(
+            [
+                "python3",
+                str(ADOPTION_MATERIALIZER),
+                "--run-id",
+                "../escape",
+                "--kind",
+                "issues",
+                "--payload-base64",
+                encoded,
+            ],
+            {1},
+        )
+        self.assertEqual(rejected_result.returncode, 1, rejected_event)
+        self.assertEqual(rejected_event["data"].get("reason"), "run-id-invalid")
 
     def test_project_read_failure_does_not_change_adoption_decision(self) -> None:
         fixture = self.load_adoption()
@@ -3208,6 +3373,35 @@ class AdoptionContractTest(unittest.TestCase):
         fixture = self.load_adoption()
         fixture["issues"][0].pop("completed_pr_evidence", None)
         fixture["issues"][0]["closing_prs"][0]["is_draft"] = True
+        fixture["issues"].append(
+            {
+                "number": 146,
+                "url": "https://github.com/nerdchanii/rpm/issues/146",
+                "state": "OPEN",
+                "labels": ["agent:ready", "documentation"],
+                "closing_prs": [],
+                "execution": {
+                    "approval_id": "approval-146",
+                    "plan_revision": "plan-146",
+                    "scope_hash": "sha256:" + "3" * 64,
+                    "executor": "local",
+                },
+            }
+        )
+        fixture["execution_inventory"]["records"].append(
+            {"repository": "nerdchanii/rpm", "number": 146}
+        )
+        fixture["execution_inventory"]["count"] = 2
+        result, event = self.run_queue(fixture, operation="select-execution")
+        data = event["data"]
+        self.assertEqual(result.returncode, 0, data)
+        self.assertEqual(data.get("status"), "selected", data)
+        self.assertEqual(data.get("issues"), [146], data)
+
+    def test_select_execution_skips_unfinished_non_draft_closing_prs(self) -> None:
+        fixture = self.load_adoption()
+        fixture["issues"][0].pop("completed_pr_evidence", None)
+        fixture["issues"][0]["closing_prs"][0]["is_draft"] = False
         fixture["issues"].append(
             {
                 "number": 146,
@@ -3753,6 +3947,30 @@ class AdoptionContractTest(unittest.TestCase):
                 result, event = self.run_merge(fixture)
                 data = self.assert_blocked(result, event)
                 self.assertIn("checks", str(data.get("reason", "")), data)
+
+    def test_merge_gate_treats_terminal_non_success_checks_as_failures(self) -> None:
+        baseline = json.loads(DEPENDENT_FIXTURE.read_text())
+        pr = baseline["issues"][0]["closing_prs"][0]
+        pr["dependent_prs"]["records"] = []
+        pr["dependent_prs"]["count"] = 0
+
+        for conclusion in (
+            "failure",
+            "cancelled",
+            "startup_failure",
+            "stale",
+            "skipped",
+            "neutral",
+        ):
+            with self.subTest(conclusion=conclusion):
+                fixture = copy.deepcopy(baseline)
+                fixture["issues"][0]["closing_prs"][0]["checks"]["records"][1][
+                    "conclusion"
+                ] = conclusion
+                result, event = self.run_merge(fixture)
+                data = self.assert_blocked(result, event)
+                self.assertEqual(data.get("reason"), "checks-failed", data)
+                self.assertEqual(data.get("checks"), ["verify"], data)
 
     def test_merge_gate_requires_a_positive_follow_up_issue(self) -> None:
         fixture = json.loads(DEPENDENT_FIXTURE.read_text())

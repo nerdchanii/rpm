@@ -362,6 +362,11 @@ def mcp_read_only_allowed(tool: str) -> bool:
     if not normalized.startswith("mcp__"):
         return False
     operation = normalized.rsplit("__", 1)[-1]
+    # Codex desktop exposes GitHub operations as ``github_<operation>`` while
+    # the policy is intentionally keyed by the provider-neutral suffix.  The
+    # namespace is part of the host transport, not a new permission.
+    if operation.startswith("github_"):
+        operation = operation.removeprefix("github_")
     return operation in MCP_READ_ONLY_OPERATIONS
 
 
@@ -449,6 +454,19 @@ def adopter_command_allowed(tool: str, tool_input: object) -> bool:
     helper = "scripts/authorize-existing-pr-adoption-mutation.py"
     writer = "scripts/write-existing-pr-adoption.py"
     checker = "scripts/check-cloud-queue-contract.py"
+    materializer = "scripts/materialize-existing-pr-adoption.py"
+    if len(words) == 8 and words[1] == materializer:
+        run_id, kind, payload = words[3], words[5], words[7]
+        return (
+            words[2] == "--run-id"
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", run_id)
+            is not None
+            and words[4] == "--kind"
+            and kind in {"issues", "request"}
+            and words[6] == "--payload-base64"
+            and re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", payload) is not None
+            and len(payload) <= 2_666_668
+        )
     if len(words) >= 2 and words[1] == helper:
         if len(words) == 4:
             return (
