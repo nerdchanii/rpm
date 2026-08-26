@@ -411,7 +411,7 @@ def check_entries_and_assets(errors: list[str]) -> None:
             text = path.read_text()
         except OSError:
             continue
-        if skill_name != "adopt-existing-pr" and "rpm_workflow_manager" not in text:
+        if "rpm_workflow_manager" not in text:
             fail(errors, f"{path.relative_to(ROOT)}: entry does not route to workflow manager")
         leaked = sorted(
             role

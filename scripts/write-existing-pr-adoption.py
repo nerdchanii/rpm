@@ -1129,8 +1129,12 @@ class GithubAdoptionTransport:
         head_repo = head_payload.get("repo")
         base_repository = base_repo.get("full_name") if isinstance(base_repo, dict) else None
         head_repository = head_repo.get("full_name") if isinstance(head_repo, dict) else None
-        if base_repository != repository or head_repository != repository:
+        if base_repository != repository:
             raise RuntimeError("GitHub PR repository identity mismatch")
+        try:
+            self._repository_path(str(head_repository))
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("GitHub PR head repository identity is invalid") from error
         head_sha = head_payload.get("sha")
         base_sha = base_payload.get("sha")
         if (
@@ -1531,7 +1535,7 @@ class GithubAdoptionTransport:
                 "sha": base_sha,
             },
             "head": {
-                "repository": repository,
+                "repository": head_repository,
                 "ref": head_payload.get("ref"),
                 "sha": head_sha,
             },

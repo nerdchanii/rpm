@@ -289,6 +289,9 @@ class FakeGithubApiRunner:
                 "labels": [{"name": label} for label in sorted(self.labels)],
             }
         elif route == "repos/nerdchanii/rpm/pulls/210":
+            head_repository = self.fixture["evidence"]["pr"]["head"][
+                "repository"
+            ]
             response = {
                 "number": 210,
                 "state": "open",
@@ -302,7 +305,7 @@ class FakeGithubApiRunner:
                 "head": {
                     "ref": "feat/issue-145-workspaces",
                     "sha": HEAD_SHA,
-                    "repo": {"full_name": "nerdchanii/rpm"},
+                    "repo": {"full_name": head_repository},
                 },
             }
         elif route == "repos/nerdchanii/rpm/issues/145/comments":
@@ -443,11 +446,15 @@ class AdoptionContractTest(unittest.TestCase):
         return path
 
     def run_json_command(
-        self, command: list[str], expected_codes: set[int] = {0, 1}
+        self,
+        command: list[str],
+        expected_codes: set[int] = {0, 1},
+        input_text: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
         result = subprocess.run(
             command,
             cwd=ROOT,
+            input=input_text,
             text=True,
             capture_output=True,
             check=False,
@@ -841,6 +848,37 @@ class AdoptionContractTest(unittest.TestCase):
             with self.subTest(name=name):
                 result, event = self.run_queue(fixture)
                 self.assert_blocked(result, event)
+
+    def test_fork_head_repository_is_bound_without_rejecting_adoption(self) -> None:
+        fixture = self.load_adoption()
+        fork_repository = "contributor/rpm"
+        fixture["authorization"]["head"]["repository"] = fork_repository
+        fixture["evidence"]["pr"]["head"]["repository"] = fork_repository
+        self.resign(fixture)
+
+        result, event = self.run_queue(fixture)
+        data = self.assert_adoptable(result, event)
+        self.assertEqual(data.get("phase"), "prepared", data)
+
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        writer = namespace.get("execute_adoption_phase")
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(writer), namespace.keys())
+        self.assertTrue(callable(github_transport), namespace.keys())
+        api = FakeGithubApiRunner(fixture)
+        transport = github_transport(
+            snapshot=fixture,
+            runner=api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+            collectors=self.live_collectors(fixture),
+        )
+        writer_result = writer(self.load_policy(), fixture, transport)
+        self.assertEqual(writer_result.get("status"), "applied", writer_result)
+        live_state = transport.read("nerdchanii/rpm", 145, 210)["state"]
+        self.assertEqual(
+            live_state["evidence"]["pr"]["head"]["repository"],
+            fork_repository,
+        )
 
     def test_checks_are_complete_current_head_provenanced_and_unique(self) -> None:
         variants = []
@@ -2936,6 +2974,7 @@ class AdoptionContractTest(unittest.TestCase):
                     self.assertEqual(transport.mutations, [])
 
     def run_hook(self, event: dict[str, object]) -> subprocess.CompletedProcess[str]:
+        event.setdefault("cwd", str(ROOT))
         return subprocess.run(
             ["python3", str(TOOL_POLICY)],
             cwd=ROOT,
@@ -3064,7 +3103,9 @@ class AdoptionContractTest(unittest.TestCase):
                     "python3 scripts/materialize-existing-pr-adoption.py "
                     "--run-id adoption-run-228 --kind issues --payload-base64 e30=",
                     "python3 scripts/materialize-existing-pr-adoption.py "
-                    "--run-id adoption-run-228 --kind request --payload-base64 e30=",
+                    "--run-id adoption-run-228 --kind prepared --payload-base64 e30=",
+                    "python3 scripts/materialize-existing-pr-adoption.py "
+                    "--run-id adoption-run-228 --kind request --payload-stdin",
                     "python3 scripts/authorize-existing-pr-adoption-mutation.py "
                     "--policy .agents/workflows/backlog-policy.json "
                     "--request-file /tmp/adoption-request.json",
@@ -3110,6 +3151,32 @@ class AdoptionContractTest(unittest.TestCase):
                             }
                         )
                         self.assertEqual(result.returncode, 2, result.stderr)
+
+                outside = Path(raw) / "outside"
+                outside.mkdir()
+                for event in (
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "transcript_path": transcript,
+                        "tool_name": "exec_command",
+                        "tool_input": {
+                            "cmd": "python3 scripts/write-existing-pr-adoption.py --request-file /tmp/adoption-request.json",
+                            "workdir": str(outside),
+                        },
+                    },
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "transcript_path": transcript,
+                        "cwd": str(outside),
+                        "tool_name": "exec_command",
+                        "tool_input": {
+                            "cmd": "python3 scripts/write-existing-pr-adoption.py --request-file /tmp/adoption-request.json",
+                        },
+                    },
+                ):
+                    with self.subTest(verdict="untrusted-workdir", event=event):
+                        result = self.run_hook(event)
+                        self.assertEqual(result.returncode, 2, result.stderr)
             finally:
                 self.run_hook(
                     {
@@ -3121,6 +3188,10 @@ class AdoptionContractTest(unittest.TestCase):
 
     def test_issue_pr_only_handoff_materializes_a_confined_checker_input(self) -> None:
         fixture = self.load_adoption()
+        fixture["ledger"]["comments"] = [
+            self.ledger_record(fixture, "prepared", comment_id=81001),
+            self.ledger_record(fixture, "label-mutation", comment_id=81002),
+        ]
         encoded = base64.b64encode(
             json.dumps(fixture, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).decode("ascii")
@@ -3163,7 +3234,17 @@ class AdoptionContractTest(unittest.TestCase):
         )
         self.assertEqual(checker_result.returncode, 0, checker_event)
         self.assertEqual(checker_event["data"].get("status"), "adopt", checker_event)
+        self.assertEqual(
+            checker_event["data"].get("phase"), "label-mutation", checker_event
+        )
 
+        mutation_request = checker_event["data"].get("mutation_request")
+        self.assertIsInstance(mutation_request, dict, checker_event)
+        request_encoded = base64.b64encode(
+            json.dumps(
+                mutation_request, ensure_ascii=False, sort_keys=True
+            ).encode("utf-8")
+        ).decode("ascii")
         request_result, request_event = self.run_json_command(
             [
                 "python3",
@@ -3173,14 +3254,71 @@ class AdoptionContractTest(unittest.TestCase):
                 "--kind",
                 "request",
                 "--payload-base64",
-                encoded,
+                request_encoded,
             ],
             {0},
         )
         self.assertEqual(request_result.returncode, 0, request_event)
+        request_path = Path(request_event["data"]["path"])
         self.assertEqual(
-            Path(request_event["data"]["path"]),
+            request_path,
             Path("/tmp/rpm-existing-pr-adoption") / run_id / "request.json",
+        )
+        helper_result, helper_event = self.run_json_command(
+            [
+                "python3",
+                str(MUTATION_HELPER),
+                "--policy",
+                str(POLICY),
+                "--request-file",
+                str(request_path),
+            ],
+            {0},
+        )
+        self.assertEqual(helper_result.returncode, 0, helper_event)
+        self.assertEqual(helper_event["data"].get("status"), "authorized", helper_event)
+
+        prepared_snapshot = mutation_request.get("adoption_input")
+        self.assertIsInstance(prepared_snapshot, dict, mutation_request)
+        prepared_encoded = base64.b64encode(
+            json.dumps(
+                prepared_snapshot, ensure_ascii=False, sort_keys=True
+            ).encode("utf-8")
+        ).decode("ascii")
+        prepared_result, prepared_event = self.run_json_command(
+            [
+                "python3",
+                str(ADOPTION_MATERIALIZER),
+                "--run-id",
+                run_id,
+                "--kind",
+                "prepared",
+                "--payload-base64",
+                prepared_encoded,
+            ],
+            {0},
+        )
+        self.assertEqual(prepared_result.returncode, 0, prepared_event)
+        prepared_path = Path(prepared_event["data"]["path"])
+        self.assertEqual(
+            prepared_path,
+            Path("/tmp/rpm-existing-pr-adoption") / run_id / "prepared.json",
+        )
+        self.assertNotEqual(request_path, prepared_path)
+        self.assertEqual(json.loads(prepared_path.read_text()), prepared_snapshot)
+
+        writer_namespace = runpy.run_path(str(ADOPTION_WRITER))
+        writer = writer_namespace.get("execute_adoption_phase")
+        self.assertTrue(callable(writer), writer_namespace.keys())
+        transport = FakeGithubAdoptionTransport(
+            json.loads(prepared_path.read_text())
+        )
+        writer_result = writer(
+            self.load_policy(), json.loads(prepared_path.read_text()), transport
+        )
+        self.assertEqual(writer_result.get("status"), "applied", writer_result)
+        self.assertEqual(
+            writer_result.get("phase"), "label-mutation", writer_result
         )
 
         rejected_result, rejected_event = self.run_json_command(
@@ -3198,6 +3336,62 @@ class AdoptionContractTest(unittest.TestCase):
         )
         self.assertEqual(rejected_result.returncode, 1, rejected_event)
         self.assertEqual(rejected_event["data"].get("reason"), "run-id-invalid")
+
+    def test_materializer_stdin_handles_payloads_larger_than_one_argv(self) -> None:
+        payload = {"records": [{"value": "x" * 120_000}]}
+        raw_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        result, event = self.run_json_command(
+            [
+                "python3",
+                str(ADOPTION_MATERIALIZER),
+                "--run-id",
+                "stdin-materializer-228",
+                "--kind",
+                "issues",
+                "--payload-stdin",
+            ],
+            {0},
+            input_text=raw_payload,
+        )
+        self.assertEqual(result.returncode, 0, event)
+        self.assertEqual(event["data"].get("status"), "materialized", event)
+        self.assertEqual(
+            json.loads(Path(event["data"]["path"]).read_text()), payload
+        )
+
+    def test_materializer_rejects_shared_or_symlinked_handoff_directories(self) -> None:
+        namespace = runpy.run_path(str(ADOPTION_MATERIALIZER))
+        materialize = namespace.get("materialize")
+        self.assertTrue(callable(materialize), namespace.keys())
+        with tempfile.TemporaryDirectory(prefix="rpm-materializer-root-") as raw:
+            parent = Path(raw)
+            outside = parent / "outside"
+            outside.mkdir()
+            materializer_globals = materialize.__globals__
+            original_root = materializer_globals["RUN_ROOT"]
+
+            try:
+                shared_root = parent / "shared-root"
+                shared_root.mkdir(mode=0o777)
+                materializer_globals["RUN_ROOT"] = shared_root
+                shared_result = materialize("run-228", "issues", encoded="e30=")
+                self.assertEqual(shared_result.get("status"), "blocked", shared_result)
+
+                symlink_root = parent / "symlink-root"
+                symlink_root.symlink_to(outside, target_is_directory=True)
+                materializer_globals["RUN_ROOT"] = symlink_root
+                symlink_result = materialize("run-228", "issues", encoded="e30=")
+                self.assertEqual(symlink_result.get("status"), "blocked", symlink_result)
+
+                private_root = parent / "private-root"
+                private_root.mkdir(mode=0o700)
+                run_dir = private_root / "run-228"
+                run_dir.symlink_to(outside, target_is_directory=True)
+                materializer_globals["RUN_ROOT"] = private_root
+                run_result = materialize("run-228", "issues", encoded="e30=")
+                self.assertEqual(run_result.get("status"), "blocked", run_result)
+            finally:
+                materializer_globals["RUN_ROOT"] = original_root
 
     def test_project_read_failure_does_not_change_adoption_decision(self) -> None:
         fixture = self.load_adoption()
@@ -4364,12 +4558,19 @@ class AdoptionContractTest(unittest.TestCase):
     def test_adoption_assets_contain_no_direct_review_or_merge_path(self) -> None:
         skill = ROOT / ".agents/skills/adopt-existing-pr/SKILL.md"
         role = ROOT / ".codex/agents/rpm_existing_pr_adopter.toml"
+        manager = ROOT / ".codex/agents/rpm_workflow_manager.toml"
         self.assertTrue(skill.is_file(), skill)
         self.assertTrue(role.is_file(), role)
+        self.assertTrue(manager.is_file(), manager)
         self.assertTrue(ADOPTION_WRITER.is_file(), ADOPTION_WRITER)
+        skill_text = skill.read_text()
+        manager_text = manager.read_text()
+        self.assertIn("rpm_workflow_manager", skill_text)
+        self.assertIn("workflow=adopt-existing-pr", skill_text)
+        self.assertIn("rpm_existing_pr_adopter", manager_text)
         text = "\n".join(
             [
-                skill.read_text(),
+                skill_text,
                 role.read_text(),
                 MUTATION_HELPER.read_text(),
                 ADOPTION_WRITER.read_text(),

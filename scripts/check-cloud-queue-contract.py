@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
+REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 CANONICAL_ARRAY_ORDER = {
     "authorization.closing_issues": ("repository", "number"),
     "evidence.issue.labels": ("$value",),
@@ -1467,7 +1468,8 @@ def adopt_existing_pr(
         return blocked("ref-identity-invalid")
     if (
         base.get("repository") != fixture.get("repository")
-        or head.get("repository") != fixture.get("repository")
+        or not isinstance(head.get("repository"), str)
+        or REPOSITORY.fullmatch(str(head.get("repository"))) is None
         or not isinstance(base.get("ref"), str)
         or not isinstance(head.get("ref"), str)
         or not re.fullmatch(r"[0-9a-f]{40}", str(base.get("sha", "")))

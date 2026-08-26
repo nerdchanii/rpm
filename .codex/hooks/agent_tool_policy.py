@@ -105,6 +105,7 @@ RPM_ROLES = MANAGERS | LOCAL_WRITE_ROLES | MCP_READ_ROLES | {
     "rpm_adversarial_reviewer",
 }
 POLICY_DIR = Path(tempfile.gettempdir()) / "rpm-agent-tool-policy"
+TRUSTED_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PATCH_PATH = re.compile(
     r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$",
     re.MULTILINE,
@@ -416,7 +417,9 @@ def allowed_github_mutation(
     return False
 
 
-def adopter_command_allowed(tool: str, tool_input: object) -> bool:
+def adopter_command_allowed(
+    tool: str, tool_input: object, event_cwd: object = None
+) -> bool:
     """Allow only the repository-local adoption checker/helper/writer.
 
     The adopter's Python entry points own their own narrowly scoped GitHub
@@ -440,6 +443,41 @@ def adopter_command_allowed(tool: str, tool_input: object) -> bool:
     if not words or words[0] != "python3":
         return False
 
+    requested_workdir = (
+        tool_input.get("workdir") if isinstance(tool_input, dict) else None
+    )
+    if requested_workdir is not None and not isinstance(requested_workdir, str):
+        return False
+    cwd_text = requested_workdir
+    if cwd_text is None:
+        cwd_text = event_cwd if isinstance(event_cwd, str) else str(Path.cwd())
+    cwd = Path(cwd_text)
+    if not cwd.is_absolute():
+        event_base = Path(event_cwd) if isinstance(event_cwd, str) else Path.cwd()
+        cwd = event_base / cwd
+    try:
+        cwd = cwd.resolve(strict=True)
+    except OSError:
+        return False
+    if cwd != TRUSTED_REPOSITORY_ROOT:
+        return False
+
+    def trusted_script(path_text: str) -> bool:
+        candidate = Path(path_text)
+        if candidate.is_absolute():
+            resolved = candidate
+        else:
+            resolved = cwd / candidate
+        try:
+            resolved = resolved.resolve(strict=True)
+        except OSError:
+            return False
+        try:
+            resolved.relative_to(TRUSTED_REPOSITORY_ROOT)
+        except ValueError:
+            return False
+        return resolved == TRUSTED_REPOSITORY_ROOT / candidate and resolved.is_file()
+
     def request_path(value: object) -> bool:
         return (
             isinstance(value, str)
@@ -455,19 +493,28 @@ def adopter_command_allowed(tool: str, tool_input: object) -> bool:
     writer = "scripts/write-existing-pr-adoption.py"
     checker = "scripts/check-cloud-queue-contract.py"
     materializer = "scripts/materialize-existing-pr-adoption.py"
-    if len(words) == 8 and words[1] == materializer:
-        run_id, kind, payload = words[3], words[5], words[7]
+    if len(words) in {7, 8} and words[1] == materializer:
+        if not trusted_script(words[1]):
+            return False
+        run_id, kind = words[3], words[5]
+        if (
+            words[2] != "--run-id"
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", run_id) is None
+            or words[4] != "--kind"
+            or kind not in {"issues", "prepared", "request"}
+        ):
+            return False
+        if len(words) == 7:
+            return words[6] == "--payload-stdin"
+        payload = words[7]
         return (
-            words[2] == "--run-id"
-            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", run_id)
-            is not None
-            and words[4] == "--kind"
-            and kind in {"issues", "request"}
-            and words[6] == "--payload-base64"
+            words[6] == "--payload-base64"
             and re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", payload) is not None
-            and len(payload) <= 2_666_668
+            and len(payload) <= 64_000
         )
     if len(words) >= 2 and words[1] == helper:
+        if not trusted_script(words[1]):
+            return False
         if len(words) == 4:
             return (
                 words[2] == "--request-file"
@@ -480,6 +527,8 @@ def adopter_command_allowed(tool: str, tool_input: object) -> bool:
             and request_path(words[5])
         )
     if len(words) >= 2 and words[1] == writer:
+        if not trusted_script(words[1]):
+            return False
         if len(words) == 4:
             return words[2] == "--request-file" and request_path(words[3])
         return (
@@ -489,6 +538,8 @@ def adopter_command_allowed(tool: str, tool_input: object) -> bool:
             and request_path(words[5])
         )
     if len(words) >= 2 and words[1] == checker:
+        if not trusted_script(words[1]):
+            return False
         if len(words) == 6:
             return (
                 words[2] == "--issues-file"
@@ -529,7 +580,7 @@ def check_tool(event: dict[str, object]) -> int:
             return deny(
                 "existing PR adopter MCP operation is not on the explicit read-only allowlist"
             )
-        if adopter_command_allowed(tool, tool_input):
+        if adopter_command_allowed(tool, tool_input, event.get("cwd")):
             return 0
         return deny("existing PR adopter is restricted to exact adoption entrypoints and read-only MCP")
 

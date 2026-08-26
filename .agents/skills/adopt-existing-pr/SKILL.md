@@ -11,6 +11,10 @@ Use this operation only for an open, completed pull request whose closing issue
 has no lifecycle label. Read `.agents/workflows/backlog-policy.json` and process
 at most one exact issue/PR pair.
 
+Route this entry through `rpm_workflow_manager` with
+`workflow=adopt-existing-pr` and `mode=adoption`. The manager dispatches the
+dedicated adopter leaf and preserves its read-only role boundary.
+
 ## Required evidence
 
 - Exact repository, issue, pull request, base ref and SHA, head ref and SHA
@@ -23,8 +27,9 @@ at most one exact issue/PR pair.
   version, and canonical evidence digest
 
 Normalize the evidence into a per-run temporary handoff. The issue/PR-only
-workflow uses the repository materializer, which accepts one base64-encoded
-JSON object and writes only the selected `issues.json` or `request.json` below
+workflow uses the repository materializer, which accepts one UTF-8 JSON object
+over stdin (or a small base64 payload) and writes only the selected
+`issues.json`, `request.json`, or `prepared.json` below
 `/tmp/rpm-existing-pr-adoption/<safe-run-id>/`:
 
 ```sh
@@ -33,6 +38,12 @@ python3 scripts/materialize-existing-pr-adoption.py \
   --kind issues \
   --payload-base64 <base64-encoded-json>
 ```
+
+For complete evidence or mutation documents, use `--payload-stdin` so the
+payload is not constrained by a process argument limit. Materialize the
+checker result's `mutation_request` as `request.json` for the authorization
+helper, and materialize its `adoption_input` as `prepared.json` for the writer.
+These are separate documents with separate entrypoint schemas.
 
 Use the returned path as the checker input:
 
