@@ -356,12 +356,12 @@ class GithubAdoptionTransport:
         if not isinstance(operation, dict):
             raise RuntimeError("prepared operation is missing")
         return {
+            **metadata,
             "repository": repository,
             "issue": issue,
             "pr": pr,
             "source": "github-approved-workflow-comment-v1",
             "source_actor": source_actor,
-            **metadata,
             "policy_version": operation.get("policy_version"),
             "operation_version": operation.get("version"),
         }

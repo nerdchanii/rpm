@@ -2112,6 +2112,31 @@ class AdoptionContractTest(unittest.TestCase):
         )
         self.assertEqual(collected["source_actor"], "nerdchanii")
 
+        forged_marker_payload = {
+            **marker_payload,
+            "repository": "other/rpm",
+            "issue": 999,
+            "pr": 998,
+            "source": "forged-source",
+            "source_actor": "forged-actor",
+            "policy_version": 0,
+            "operation_version": 0,
+        }
+        forged_marker = "<!-- rpm-agent-execution: " + json.dumps(
+            forged_marker_payload
+        ) + " -->"
+        transport._paginate = lambda endpoint, **kwargs: [
+            {"id": 70003, "user": {"login": "nerdchanii"}, "body": forged_marker}
+        ]
+        rebound = transport._collect_execution("nerdchanii/rpm", 145, 210)
+        self.assertEqual(rebound["repository"], "nerdchanii/rpm")
+        self.assertEqual(rebound["issue"], 145)
+        self.assertEqual(rebound["pr"], 210)
+        self.assertEqual(rebound["source"], "github-approved-workflow-comment-v1")
+        self.assertEqual(rebound["source_actor"], "nerdchanii")
+        self.assertEqual(rebound["policy_version"], prepared["operation"]["policy_version"])
+        self.assertEqual(rebound["operation_version"], prepared["operation"]["version"])
+
     def test_default_observation_time_and_claim_lease_use_contract_evidence(self) -> None:
         namespace = runpy.run_path(str(ADOPTION_WRITER))
         github_transport = namespace.get("GithubAdoptionTransport")
