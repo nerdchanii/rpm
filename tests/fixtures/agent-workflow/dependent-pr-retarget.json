@@ -7,7 +7,8 @@
     "base_ref": "main",
     "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "head_ref": "feat/issue-145-workspaces",
-    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "is_draft": false
   },
   "issue_inventory": {
     "repository": "nerdchanii/rpm",
@@ -39,7 +40,8 @@
         "records": [
           {
             "repository": "nerdchanii/rpm",
-            "pr": 210
+            "pr": 210,
+            "is_draft": false
           }
         ]
       },
@@ -52,6 +54,7 @@
           "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "head_ref": "feat/issue-145-workspaces",
           "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "is_draft": false,
           "selected_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "checks": {
             "source": "github-check-runs-v1",

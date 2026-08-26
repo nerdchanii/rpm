@@ -4055,7 +4055,7 @@ class AdoptionContractTest(unittest.TestCase):
         second["url"] = "https://github.com/nerdchanii/rpm/issues/146"
         second["closing_prs"][0]["number"] = 217
         second["closing_pr_inventory"]["records"] = [
-            {"repository": "nerdchanii/rpm", "pr": 217}
+            {"repository": "nerdchanii/rpm", "pr": 217, "is_draft": False}
         ]
         fixture["issues"].append(second)
         fixture["issue_inventory"]["records"].append(
@@ -4076,6 +4076,35 @@ class AdoptionContractTest(unittest.TestCase):
         changed["selected_head_sha"] = "c" * 40
         result, event = self.run_merge(changed)
         self.assert_blocked(result, event)
+
+    def test_merge_gate_requires_a_ready_non_draft_pull_request(self) -> None:
+        baseline = json.loads(DEPENDENT_FIXTURE.read_text())
+        pr = baseline["issues"][0]["closing_prs"][0]
+        pr["dependent_prs"]["records"] = []
+        pr["dependent_prs"]["count"] = 0
+
+        for name, field, value in (
+            ("normalized-draft", "is_draft", True),
+            ("raw-draft", "draft", True),
+        ):
+            with self.subTest(name=name):
+                fixture = copy.deepcopy(baseline)
+                fixture["issues"][0]["closing_prs"][0][field] = value
+                result, event = self.run_merge(fixture)
+                data = self.assert_blocked(result, event)
+                self.assertEqual(data.get("reason"), "pr-is-draft", data)
+
+        missing = copy.deepcopy(baseline)
+        missing["issues"][0]["closing_prs"][0].pop("is_draft")
+        result, event = self.run_merge(missing)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(data.get("reason"), "selected-pr-ready-state-invalid", data)
+
+        mismatched_evidence = copy.deepcopy(baseline)
+        mismatched_evidence["selected_pr_evidence"]["is_draft"] = True
+        result, event = self.run_merge(mismatched_evidence)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(data.get("reason"), "selected-pr-evidence-mismatch", data)
 
     def test_merge_checks_require_a_complete_selected_head_inventory(self) -> None:
         baseline = json.loads(DEPENDENT_FIXTURE.read_text())
@@ -4388,6 +4417,7 @@ class AdoptionContractTest(unittest.TestCase):
             "base_sha": pr["base_sha"],
             "head_ref": pr["head_ref"],
             "head_sha": pr["head_sha"],
+            "is_draft": pr["is_draft"],
         }
 
         result, event = self.run_merge(baseline)

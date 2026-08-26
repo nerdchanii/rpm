@@ -146,6 +146,19 @@ def normalized_issues(fixture: dict[str, object]) -> list[dict[str, object]]:
     return sorted(issues, key=lambda issue: (int(issue.get("number", 0)), str(issue.get("url", ""))))
 
 
+def validate_pr_ready_state(pr: dict[str, object]) -> str | None:
+    """Require the normalized PR evidence to identify a ready-for-review PR."""
+    is_draft = pr.get("is_draft")
+    raw_draft = pr.get("draft")
+    if raw_draft is not None and type(raw_draft) is not bool:
+        return "selected-pr-ready-state-invalid"
+    if raw_draft is True or is_draft is True:
+        return "pr-is-draft"
+    if type(is_draft) is not bool or is_draft is not False:
+        return "selected-pr-ready-state-invalid"
+    return None
+
+
 def selected_pr_evidence(
     fixture: dict[str, object],
     issue: dict[str, object],
@@ -156,11 +169,12 @@ def selected_pr_evidence(
 
     Dependent-PR comparison uses the selected PR head ref.  A mutable PR
     object must therefore be checked against the closing-PR inventory before
-    that comparison; otherwise a forged head ref can make a real dependent PR
-    disappear from the inventory query.
+    that comparison; otherwise a forged head ref or ready-state value can
+    make a real dependent PR or a draft PR disappear from the gate.
     """
     repository = fixture.get("repository")
     number = pr.get("number")
+    ready_state_error = validate_pr_ready_state(pr)
     if (
         not isinstance(repository, str)
         or not isinstance(number, int)
@@ -174,8 +188,9 @@ def selected_pr_evidence(
         or not re.fullmatch(r"[0-9a-f]{40}", str(pr.get("base_sha")))
         or not re.fullmatch(r"[0-9a-f]{40}", str(pr.get("head_sha")))
         or pr.get("head_sha") != selected_head_sha
+        or ready_state_error is not None
     ):
-        return "selected-pr-identity-invalid"
+        return ready_state_error or "selected-pr-identity-invalid"
 
     evidence: object = fixture.get("selected_pr_evidence")
     if evidence is None:
@@ -194,7 +209,14 @@ def selected_pr_evidence(
         evidence = evidence["pr"]
     if not isinstance(evidence, dict):
         return "selected-pr-evidence-missing"
-    for field in ("repository", "base_ref", "base_sha", "head_ref", "head_sha"):
+    for field in (
+        "repository",
+        "base_ref",
+        "base_sha",
+        "head_ref",
+        "head_sha",
+        "is_draft",
+    ):
         if evidence.get(field) != pr.get(field):
             return "selected-pr-evidence-mismatch"
     if evidence.get("number") != number:
@@ -347,6 +369,14 @@ def evaluate_gate(
     }
     issue_number = int(issue.get("number", 0))
     pr_number = int(pr.get("number", 0))
+    ready_state_error = validate_pr_ready_state(pr)
+    if ready_state_error:
+        return {
+            "status": "blocked",
+            "reason": ready_state_error,
+            "issue": issue_number,
+            "pr": pr_number,
+        }
     if (
         issue_number <= 0
         or pr_number <= 0

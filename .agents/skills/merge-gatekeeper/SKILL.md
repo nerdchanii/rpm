@@ -29,7 +29,8 @@ verdict.
    `agent:awaiting-merge` label, ordered by issue number ascending. Do not
    require the `gh` CLI. Select at most the gate batch limit.
 3. Refetch the selected issue and its closing PRs. Bind one `selected_head_sha`
-   to the exact repository, base ref/SHA, and head ref/SHA. Collect every
+   to the exact repository, base ref/SHA, head ref/SHA, and ready-for-review
+   state (`is_draft: false`). Collect every
    required check named in `merge_gate.required_checks` with its conclusion,
    selected head SHA, source, and workflow run id. Reject incomplete reads and
    duplicate check names. Collect mergeability and the current-head P0/P1
