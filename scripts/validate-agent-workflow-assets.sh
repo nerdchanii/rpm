@@ -1884,9 +1884,8 @@ fi
 with_fake_collect_gh() {
   local fixture="$1"
   shift
-  local temp_dir
+  local temp_dir command_status
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-collect-gh.XXXXXX")"
-  trap 'rm -rf "${temp_dir}"' RETURN
   cat >"${temp_dir}/gh" <<'GH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1912,11 +1911,29 @@ if [ "${1:-}" = "api" ] && [ "${2:-}" = "graphql" ]; then
   exit 0
 fi
 
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ]; then
+  if [ -f "${RPM_COLLECT_FIXTURE}/siblings-error" ]; then
+    exit 1
+  fi
+  if [ -f "${RPM_COLLECT_FIXTURE}/siblings.json" ]; then
+    cat "${RPM_COLLECT_FIXTURE}/siblings.json"
+  else
+    printf '[]\n'
+  fi
+  exit 0
+fi
+
 printf 'unexpected gh call: %s\n' "$*" >&2
 exit 99
 GH
   chmod +x "${temp_dir}/gh"
-  PATH="${temp_dir}:${PATH}" RPM_COLLECT_FIXTURE="${fixture}" "$@"
+  if PATH="${temp_dir}:${PATH}" RPM_COLLECT_FIXTURE="${fixture}" "$@"; then
+    command_status=0
+  else
+    command_status=$?
+  fi
+  rm -rf -- "${temp_dir}"
+  return "${command_status}"
 }
 
 check_collect_paginates_comments_and_reviews() {
@@ -2174,6 +2191,212 @@ check_collect_does_not_duplicate_exhausted_connections() {
     and (.reviews | length) == 3
     and ([.reviews[].body] == ["review page 1", "review page 2", "review page 3"])
   ' >/dev/null
+}
+
+check_collect_rejects_truncated_thread_comments() {
+  local fixture_dir
+  fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-collect-thread-comments.XXXXXX")"
+  trap 'rm -rf "${fixture_dir}"' RETURN
+
+  jq -n '
+    {
+      data: {
+        repository: {
+          pullRequest: {
+            number: 1,
+            title: "Fixture PR",
+            url: "https://example.test/pr/1",
+            state: "OPEN",
+            isDraft: false,
+            baseRefOid: "1111111111111111111111111111111111111111",
+            headRefOid: "2222222222222222222222222222222222222222",
+            comments: {
+              pageInfo: {hasNextPage: false, endCursor: null},
+              nodes: []
+            },
+            reviews: {
+              pageInfo: {hasNextPage: false, endCursor: null},
+              nodes: []
+            },
+            reviewThreads: {
+              pageInfo: {hasNextPage: false, endCursor: null},
+              nodes: [
+                {
+                  id: "thread-1",
+                  isResolved: false,
+                  isOutdated: false,
+                  path: "src/lib.rs",
+                  line: 1,
+                  comments: {
+                    pageInfo: {hasNextPage: true},
+                    nodes: [
+                      {
+                        id: "thread-comment-1",
+                        author: {login: "octocat"},
+                        createdAt: "2026-01-01T00:00:01Z",
+                        body: "hidden continuation",
+                        url: "https://example.test/thread-comment/1"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ' >"${fixture_dir}/page-1.json"
+  cp "${fixture_dir}/page-1.json" "${fixture_dir}/page-last.json"
+
+  local exit_code
+  set +e
+  with_fake_collect_gh \
+    "${fixture_dir}" \
+    bash scripts/collect-pr-review-context.sh 1 --format json \
+    >"${fixture_dir}/stdout" 2>"${fixture_dir}/stderr"
+  exit_code=$?
+  set -e
+  [ "${exit_code}" -ne 0 ] || {
+    printf 'FAIL: truncated thread comments must fail closed\n' >&2
+    cat "${fixture_dir}/stdout" "${fixture_dir}/stderr" >&2
+    return 1
+  }
+  rg -Fq -- \
+    'review_context.error=thread-comments-truncated' "${fixture_dir}/stderr" || {
+    printf 'FAIL: missing thread-comments-truncated error:\n' >&2
+    cat "${fixture_dir}/stderr" >&2
+    return 1
+  }
+}
+
+check_collect_includes_sibling_pull_requests() {
+  local fixture_dir
+  fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-collect-siblings.XXXXXX")"
+  trap 'rm -rf "${fixture_dir}"' RETURN
+
+  jq -n '
+    {
+      data: {
+        repository: {
+          pullRequest: {
+            number: 1,
+            title: "Fixture PR",
+            url: "https://example.test/pr/1",
+            state: "OPEN",
+            isDraft: false,
+            baseRefOid: "1111111111111111111111111111111111111111",
+            headRefOid: "2222222222222222222222222222222222222222",
+            comments: {
+              pageInfo: {hasNextPage: false, endCursor: null},
+              nodes: []
+            },
+            reviews: {
+              pageInfo: {hasNextPage: false, endCursor: null},
+              nodes: []
+            },
+            reviewThreads: {
+              pageInfo: {hasNextPage: false, endCursor: null},
+              nodes: []
+            }
+          }
+        }
+      }
+    }
+  ' >"${fixture_dir}/page-1.json"
+  cp "${fixture_dir}/page-1.json" "${fixture_dir}/page-last.json"
+  jq -n '[
+    {
+      number: 1,
+      title: "Fixture PR",
+      headRefName: "fixture-self",
+      baseRefName: "main",
+      files: [{path: "README.md"}],
+      body: "self must be excluded"
+    },
+    {
+      number: 2,
+      title: "Sibling PR",
+      headRefName: "feature/sibling",
+      baseRefName: "main",
+      files: [{path: "src/lib.rs"}, {path: "tests/lib.rs"}],
+      body: "sibling dependency context"
+    }
+  ]' >"${fixture_dir}/siblings.json"
+
+  local output
+  output="$(
+    with_fake_collect_gh \
+      "${fixture_dir}" \
+      bash scripts/collect-pr-review-context.sh 1 --format json
+  )"
+  printf '%s\n' "${output}" | jq -e '
+    (.siblingPullRequests | length) == 1
+    and .siblingPullRequests[0].number == 2
+    and .siblingPullRequests[0].title == "Sibling PR"
+    and .siblingPullRequests[0].headRefName == "feature/sibling"
+    and .siblingPullRequests[0].baseRefName == "main"
+    and .siblingPullRequests[0].files == ["src/lib.rs", "tests/lib.rs"]
+    and .siblingPullRequests[0].body == "sibling dependency context"
+  ' >/dev/null
+}
+
+check_collect_rejects_failed_sibling_query() {
+  local fixture_dir
+  fixture_dir="$(mktemp -d "${TMPDIR:-/tmp}/rpm-collect-sibling-error.XXXXXX")"
+  trap 'rm -rf "${fixture_dir}"' RETURN
+
+  jq -n '
+    {
+      data: {
+        repository: {
+          pullRequest: {
+            number: 1,
+            title: "Fixture PR",
+            url: "https://example.test/pr/1",
+            state: "OPEN",
+            isDraft: false,
+            baseRefOid: "1111111111111111111111111111111111111111",
+            headRefOid: "2222222222222222222222222222222222222222",
+            comments: {
+              pageInfo: {hasNextPage: false, endCursor: null},
+              nodes: []
+            },
+            reviews: {
+              pageInfo: {hasNextPage: false, endCursor: null},
+              nodes: []
+            },
+            reviewThreads: {
+              pageInfo: {hasNextPage: false, endCursor: null},
+              nodes: []
+            }
+          }
+        }
+      }
+    }
+  ' >"${fixture_dir}/page-1.json"
+  cp "${fixture_dir}/page-1.json" "${fixture_dir}/page-last.json"
+  : >"${fixture_dir}/siblings-error"
+
+  local exit_code
+  set +e
+  with_fake_collect_gh \
+    "${fixture_dir}" \
+    bash scripts/collect-pr-review-context.sh 1 --format json \
+    >"${fixture_dir}/stdout" 2>"${fixture_dir}/stderr"
+  exit_code=$?
+  set -e
+  [ "${exit_code}" -ne 0 ] || {
+    printf 'FAIL: failed sibling query must fail closed\n' >&2
+    cat "${fixture_dir}/stdout" "${fixture_dir}/stderr" >&2
+    return 1
+  }
+  rg -Fq -- \
+    'review_context.error=sibling-query-failed' "${fixture_dir}/stderr" || {
+    printf 'FAIL: missing sibling-query-failed error:\n' >&2
+    cat "${fixture_dir}/stderr" >&2
+    return 1
+  }
 }
 
 check_readiness_ready() {
@@ -2521,6 +2744,12 @@ check "just_test_verbosity" check_just_test_verbosity
 
 check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews
 check "collect_pr_review_context_no_duplicates" check_collect_does_not_duplicate_exhausted_connections
+check "collect_pr_review_context_rejects_truncated_thread_comments" \
+  check_collect_rejects_truncated_thread_comments
+check "collect_pr_review_context_includes_sibling_pull_requests" \
+  check_collect_includes_sibling_pull_requests
+check "collect_pr_review_context_rejects_failed_sibling_query" \
+  check_collect_rejects_failed_sibling_query
 check "readiness_ready_fixture" check_readiness_ready
 check "readiness_missing_execution_fixture" check_readiness_missing_execution
 check "readiness_missing_fixture" check_readiness_missing

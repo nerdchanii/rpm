@@ -44,6 +44,9 @@ jobs:
       - name: Run tests
         run: cargo test --locked
 
+      - name: Validate Codex artifact worker
+        run: ./scripts/test-agent-loop-artifact.sh
+
   post-merge-validation:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: macos-latest
@@ -76,6 +79,9 @@ jobs:
 
       - name: Validate agent assets
         run: ./scripts/validate-agent-workflow-assets.sh --format=summary
+
+      - name: Validate Codex artifact worker
+        run: ./scripts/test-agent-loop-artifact.sh
 
       - name: Check docs build warning-free
         env:
