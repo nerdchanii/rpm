@@ -112,8 +112,41 @@ def canonical_digest(value: object) -> str:
         root_path = "evidence"
         value = copy.deepcopy(value)
         writers = value.get("writers")
-        if isinstance(writers, dict) and "observed_at" in writers:
-            writers["observed_at"] = "<observation-time>"
+        if isinstance(writers, dict):
+            if "observed_at" in writers:
+                writers["observed_at"] = "<observation-time>"
+            records = writers.get("records")
+            if isinstance(records, list):
+                stable_records = [
+                    copy.deepcopy(record)
+                    for record in records
+                    if not isinstance(record, dict)
+                    or record.get("kind") != "adoption"
+                ]
+                stable_records.sort(
+                    key=lambda record: json.dumps(
+                        canonicalize(record, "evidence.writers.records"),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
+                writers["records"] = stable_records
+                writers["count"] = len(stable_records)
+                token_payload = json.dumps(
+                    canonicalize(
+                        {
+                            "repository": writers.get("repository"),
+                            "records": stable_records,
+                        }
+                    ),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                writers["cas_token"] = (
+                    "sha256:" + hashlib.sha256(token_payload).hexdigest()
+                )
     payload = json.dumps(
         canonicalize(value, root_path),
         ensure_ascii=False,
@@ -178,7 +211,27 @@ class FakeGithubAdoptionTransport:
         ):
             return {"status": "cas-mismatch"}
         kind = mutation.get("kind")
-        if kind == "append-ledger-comment":
+        if kind == "append-writer-lease-comment":
+            record = copy.deepcopy(mutation.get("record"))
+            if not isinstance(record, dict):
+                return {"status": "invalid-mutation"}
+            record["source_comment_id"] = 80001 + len(
+                self.state["evidence"]["writers"]["records"]
+            )
+            writers = self.state["evidence"]["writers"]
+            writers["records"].append(record)
+            writers["records"].sort(
+                key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))
+            )
+            writers["count"] = len(writers["records"])
+            writers["cas_token"] = canonical_digest(
+                {
+                    "repository": record["repository"],
+                    "records": writers["records"],
+                }
+            )
+            self.mutations.append(("append-writer-lease-comment", str(record["run_id"])))
+        elif kind == "append-ledger-comment":
             record = copy.deepcopy(mutation.get("record"))
             if not isinstance(record, dict):
                 return {"status": "invalid-mutation"}
@@ -1273,6 +1326,7 @@ class AdoptionContractTest(unittest.TestCase):
             disposition: str = "residual-risk",
             marker_count: int = 1,
             marker_head_sha: str | None = HEAD_SHA,
+            resolved: bool = False,
         ) -> dict[str, object]:
             marker = {
                 "id": "P2-fixture",
@@ -1299,7 +1353,7 @@ class AdoptionContractTest(unittest.TestCase):
             ]
             return {
                 "id": "thread-P2-fixture",
-                "isResolved": False,
+                "isResolved": resolved,
                 "comments": {
                     "nodes": comments,
                     "pageInfo": {"hasNextPage": False, "endCursor": None},
@@ -1312,8 +1366,11 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertEqual(trusted.get("severity"), "P2", trusted)
         self.assertEqual(trusted.get("disposition"), "residual-risk", trusted)
 
-        with self.assertRaisesRegex(RuntimeError, "author|actor|trusted|approved"):
+        with self.assertRaisesRegex(RuntimeError, "missing|ambiguous"):
             finder(thread(actor="attacker"), HEAD_SHA)
+        self.assertIsNone(
+            finder(thread(actor="attacker", resolved=True), HEAD_SHA)
+        )
         with self.assertRaisesRegex(RuntimeError, "head"):
             finder(thread(actor=LEDGER_AUTHOR, marker_head_sha="c" * 40), HEAD_SHA)
         with self.assertRaisesRegex(RuntimeError, "incomplete"):
@@ -1337,7 +1394,7 @@ class AdoptionContractTest(unittest.TestCase):
         owner: str,
         expires_at: str,
     ) -> dict[str, object]:
-        return {
+        record = {
             "kind": kind,
             "repository": "nerdchanii/rpm",
             "issue": 145,
@@ -1347,6 +1404,26 @@ class AdoptionContractTest(unittest.TestCase):
             "lease_expires_at": expires_at,
             "head_sha": HEAD_SHA,
         }
+        if kind == "adoption":
+            record["source_comment_id"] = 80001
+        return record
+
+    def install_current_adoption_lease(
+        self,
+        fixture: dict[str, object],
+        *,
+        source_comment_id: int = 80001,
+        expires_at: str = "2026-08-25T13:00:00Z",
+    ) -> None:
+        record = self.writer(
+            fixture,
+            kind="adoption",
+            run_id="adopt-run-001",
+            owner="rpm_existing_pr_adopter",
+            expires_at=expires_at,
+        )
+        record["source_comment_id"] = source_comment_id
+        self.set_writers(fixture, [record])
 
     def set_writers(
         self, fixture: dict[str, object], records: list[dict[str, object]]
@@ -1383,6 +1460,33 @@ class AdoptionContractTest(unittest.TestCase):
         self.set_writers(fixture, [record])
         result, event = self.run_queue(fixture)
         self.assert_adoptable(result, event)
+
+        fixture = self.load_adoption()
+        current = self.writer(
+            fixture,
+            kind="adoption",
+            run_id="adopt-run-001",
+            owner="rpm_existing_pr_adopter",
+            expires_at="2026-08-25T13:00:00Z",
+        )
+        contender = self.writer(
+            fixture,
+            kind="adoption",
+            run_id="other-run",
+            owner="rpm_existing_pr_adopter",
+            expires_at="2026-08-25T13:00:00Z",
+        )
+        current["source_comment_id"] = 80001
+        contender["source_comment_id"] = 80002
+        self.set_writers(fixture, [contender, current])
+        result, event = self.run_queue(fixture)
+        self.assert_adoptable(result, event)
+
+        current["source_comment_id"] = 80003
+        contender["source_comment_id"] = 80002
+        self.set_writers(fixture, [current, contender])
+        result, event = self.run_queue(fixture)
+        self.assert_blocked(result, event)
 
         fixture = self.load_adoption()
         record = self.writer(
@@ -1546,6 +1650,20 @@ class AdoptionContractTest(unittest.TestCase):
         data = self.assert_adoptable(result, event)
         self.assertEqual(data.get("phase"), "label-mutation", data)
         self.assertNotIn("mutation_request", data)
+
+    def test_equivalent_concurrent_ledger_phase_comments_reconcile(self) -> None:
+        fixture = self.load_adoption()
+        first = self.ledger_record(fixture, "prepared", comment_id=81001)
+        second = copy.deepcopy(first)
+        second["comment_id"] = 81002
+        fixture["ledger"]["comments"] = [second, first]
+
+        result, event = self.run_queue(fixture)
+        data = self.assert_adoptable(result, event)
+        self.assertEqual(data.get("phase"), "label-mutation", data)
+        self.assertEqual(
+            data.get("ledger_action", {}).get("phase"), "label-mutation", data
+        )
 
     def test_prepared_only_ledger_cannot_commit_an_external_lifecycle_label(
         self,
@@ -2081,8 +2199,11 @@ class AdoptionContractTest(unittest.TestCase):
         transport.collectors.update(self.live_collectors(prepared))
         result = writer(self.load_policy(), prepared, transport)
         self.assertEqual(result.get("status"), "applied", result)
-        self.assertEqual(result.get("phase"), "prepared", result)
+        self.assertEqual(result.get("phase"), "writer-lease", result)
         self.assertEqual([kind for kind, _ in api.writes], ["comment"])
+        self.assertTrue(
+            str(api.writes[0][1]).startswith("<!-- rpm-agent-writer:v1 -->\n")
+        )
 
         missing_api = FakeGithubApiRunner(prepared)
         missing = github_transport(
@@ -2303,6 +2424,9 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertTrue(callable(github_transport), namespace.keys())
         self.assertTrue(callable(writer), namespace.keys())
         prepared = self.load_adoption()
+        self.install_current_adoption_lease(
+            prepared, expires_at="2026-08-26T02:00:00Z"
+        )
         observation_times = iter(
             [
                 datetime(2026, 8, 26, 1, 2, 3, tzinfo=timezone.utc),
@@ -2462,6 +2586,56 @@ class AdoptionContractTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "claim lease"):
             claimed_without_lease._collect_writers("nerdchanii/rpm", 145, 210)
 
+    def test_writer_inventory_cas_is_independent_of_api_item_order(self) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(github_transport), namespace.keys())
+        prepared = self.load_adoption()
+        transport = github_transport(
+            snapshot=prepared,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+        )
+        transport._head_sha_from_pr = lambda repository, pr: HEAD_SHA
+        transport._current_observation_time = prepared["now"]
+
+        def item(number: int, run_id: str) -> dict[str, object]:
+            record = {
+                "kind": "implementation",
+                "repository": "nerdchanii/rpm",
+                "issue": number,
+                "pr": None,
+                "run_id": run_id,
+                "owner": "cloud:executor",
+                "lease_expires_at": "2026-08-25T13:00:00Z",
+                "head_sha": None,
+            }
+            return {
+                "number": number,
+                "body": "<!-- rpm-agent-writer:v1: "
+                + json.dumps(record, sort_keys=True)
+                + " -->",
+                "labels": [],
+                "user": {"login": "nerdchanii"},
+            }
+
+        items = [item(145, "run-z"), item(999, "run-a")]
+
+        def collect(order: list[dict[str, object]]) -> dict[str, object]:
+            def paginate(endpoint: str, **kwargs: object) -> list[object]:
+                if endpoint == "repos/nerdchanii/rpm/issues?state=open":
+                    return copy.deepcopy(order)
+                if endpoint.endswith("/comments"):
+                    return []
+                raise AssertionError(endpoint)
+
+            transport._paginate = paginate
+            return transport._collect_writers("nerdchanii/rpm", 145, 210)
+
+        forward = collect(items)
+        reverse = collect(list(reversed(items)))
+        self.assertEqual(forward["records"], reverse["records"])
+        self.assertEqual(forward["cas_token"], reverse["cas_token"])
+
     def test_dependent_inventory_filters_unrelated_forks_before_identity_checks(self) -> None:
         namespace = runpy.run_path(str(ADOPTION_WRITER))
         github_transport = namespace.get("GithubAdoptionTransport")
@@ -2503,6 +2677,7 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertTrue(callable(github_transport), namespace.keys())
 
         prepared = self.load_adoption()
+        self.install_current_adoption_lease(prepared)
         immutable_authorization = copy.deepcopy(prepared["authorization"])
         api = FakeGithubApiRunner(prepared)
         transport = github_transport(
@@ -2584,6 +2759,7 @@ class AdoptionContractTest(unittest.TestCase):
                 compensation_fails=compensation_fails,
             ):
                 prepared = self.load_adoption()
+                self.install_current_adoption_lease(prepared)
                 api = RacingLifecycleLabelApiRunner(
                     prepared,
                     external_label,
@@ -2664,6 +2840,7 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertIsNot(transport.state, prepared_snapshot)
 
         expected = [
+            ("append-writer-lease-comment", "adopt-run-001"),
             ("append-ledger-comment", "prepared"),
             ("append-ledger-comment", "label-mutation"),
             ("add-lifecycle-label", "agent:review-pending"),
@@ -2693,6 +2870,7 @@ class AdoptionContractTest(unittest.TestCase):
         prepared_snapshot = self.load_adoption()
         transport = FakeGithubAdoptionTransport(prepared_snapshot)
         expected = [
+            ("append-writer-lease-comment", "adopt-run-001"),
             ("append-ledger-comment", "prepared"),
             ("append-ledger-comment", "label-mutation"),
             ("add-lifecycle-label", "agent:review-pending"),
@@ -2753,6 +2931,7 @@ class AdoptionContractTest(unittest.TestCase):
     ) -> None:
         writer = self.load_adoption_writer()
         prepared_snapshot = self.load_adoption()
+        self.install_current_adoption_lease(prepared_snapshot)
 
         def change_authorization_and_execution(
             state: dict[str, object], field: str, value: object
@@ -2780,11 +2959,17 @@ class AdoptionContractTest(unittest.TestCase):
             "executor": lambda state: change_authorization_and_execution(
                 state, "executor", "cloud"
             ),
-            "evidence_digest": lambda state: (
-                state["evidence"]["writers"].__setitem__(
-                    "cas_token", "writer-inventory-version-18"
-                ),
-                self.resign(state),
+            "evidence_digest": lambda state: self.set_writers(
+                state,
+                [
+                    self.writer(
+                        state,
+                        kind="implementation",
+                        run_id="expired-different-evidence",
+                        owner="old-owner",
+                        expires_at="2026-08-25T12:00:00Z",
+                    )
+                ],
             ),
         }
         for field, mutate in variants.items():
@@ -2798,6 +2983,7 @@ class AdoptionContractTest(unittest.TestCase):
     def test_narrow_writer_refetches_and_cas_blocks_every_live_drift(self) -> None:
         writer = self.load_adoption_writer()
         prepared_snapshot = self.load_adoption()
+        self.install_current_adoption_lease(prepared_snapshot)
 
         stale_before_read = FakeGithubAdoptionTransport(prepared_snapshot)
         stale_before_read.state["live"]["head_sha"] = "c" * 40
@@ -2889,6 +3075,7 @@ class AdoptionContractTest(unittest.TestCase):
                 fixture["ledger"]["comments"].append(
                     self.ledger_record(fixture, "committed", comment_id=81003)
                 )
+            self.install_current_adoption_lease(fixture)
             return fixture
 
         def drift_reactions(state: dict[str, object]) -> None:
@@ -3318,7 +3505,7 @@ class AdoptionContractTest(unittest.TestCase):
         )
         self.assertEqual(writer_result.get("status"), "applied", writer_result)
         self.assertEqual(
-            writer_result.get("phase"), "label-mutation", writer_result
+            writer_result.get("phase"), "writer-lease", writer_result
         )
 
         rejected_result, rejected_event = self.run_json_command(
@@ -4598,10 +4785,15 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertIn("rpm_workflow_manager", skill_text)
         self.assertIn("workflow=adopt-existing-pr", skill_text)
         self.assertIn("rpm_existing_pr_adopter", manager_text)
+        self.assertIn("complete current-head evidence", manager_text)
+        self.assertIn("after dispatch", manager_text)
+        role_text = role.read_text()
+        self.assertIn("Required dispatch inputs", role_text)
+        self.assertIn("After dispatch, collect", role_text)
         text = "\n".join(
             [
                 skill_text,
-                role.read_text(),
+                role_text,
                 MUTATION_HELPER.read_text(),
                 ADOPTION_WRITER.read_text(),
             ]

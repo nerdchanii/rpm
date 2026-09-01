@@ -597,11 +597,41 @@ def adoption_evidence(value: object) -> object:
                 )
             issue["lifecycle_state"] = "untracked"
         writers = normalized.get("writers")
-        if isinstance(writers, dict) and "observed_at" in writers:
-            # The live read binds this value to its current authorization, but
-            # it is a runtime clock and must not make an otherwise unchanged
-            # prepared ledger digest stale on a later retry.
-            writers["observed_at"] = "<observation-time>"
+        if isinstance(writers, dict):
+            if "observed_at" in writers:
+                # The live read binds this value to its current authorization,
+                # but it is a runtime clock and must not make an otherwise
+                # unchanged prepared ledger digest stale on a later retry.
+                writers["observed_at"] = "<observation-time>"
+            records = writers.get("records")
+            if isinstance(records, list):
+                # The adopter publishes its own short-lived writer lease before
+                # the first ledger write.  That runtime lock is validated and
+                # CAS-bound independently, so it cannot make the user's
+                # immutable pre-lease authorization stale.  Other writer kinds
+                # remain part of the authorized evidence.
+                stable_records = [
+                    copy.deepcopy(record)
+                    for record in records
+                    if not isinstance(record, dict)
+                    or record.get("kind") != "adoption"
+                ]
+                stable_records.sort(
+                    key=lambda record: json.dumps(
+                        canonicalize(record, "evidence.writers.records"),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
+                writers["records"] = stable_records
+                writers["count"] = len(stable_records)
+                writers["cas_token"] = canonical_digest(
+                    {
+                        "repository": writers.get("repository"),
+                        "records": stable_records,
+                    }
+                )
     return normalized
 
 
@@ -1071,6 +1101,7 @@ def validate_writers(
         return "writer-observation-invalid"
     if observed_at != now:
         return "writer-observation-stale"
+    active_records: list[dict[str, object]] = []
     for record in records:
         required = (
             "kind",
@@ -1094,16 +1125,39 @@ def validate_writers(
             return "writer-lease-invalid"
         if expires_at <= now:
             continue
-        if (
-            record.get("kind") == "adoption"
-            and record.get("run_id") == operation.get("run_id")
-            and record.get("owner") == operation.get("owner")
-            and record.get("repository") == fixture.get("repository")
-            and record.get("issue") == authorization.get("issue")
-            and record.get("pr") == authorization.get("pr")
-            and record.get("head_sha") == head.get("sha")
-        ):
-            continue
+        active_records.append(record)
+
+    if any(record.get("kind") != "adoption" for record in active_records):
+        return "active-writer"
+
+    adoption_records = [
+        record for record in active_records if record.get("kind") == "adoption"
+    ]
+    if not adoption_records:
+        return None
+
+    source_ids: set[int] = set()
+    for record in adoption_records:
+        source_id = record.get("source_comment_id")
+        if type(source_id) is not int or source_id <= 0:
+            return "writer-adoption-source-invalid"
+        if source_id in source_ids:
+            return "writer-adoption-source-duplicate"
+        source_ids.add(source_id)
+
+    # GitHub issue-comment IDs are server-assigned and monotonically ordered.
+    # Requiring one acquisition-only round trip means concurrent contenders
+    # are all visible before any ledger write; the earliest trusted lease wins
+    # and later contenders stop without stranding the winner.
+    winner = min(adoption_records, key=lambda record: int(record["source_comment_id"]))
+    if not (
+        winner.get("run_id") == operation.get("run_id")
+        and winner.get("owner") == operation.get("owner")
+        and winner.get("repository") == fixture.get("repository")
+        and winner.get("issue") == authorization.get("issue")
+        and winner.get("pr") == authorization.get("pr")
+        and winner.get("head_sha") == head.get("sha")
+    ):
         return "active-writer"
     return None
 
@@ -1206,7 +1260,7 @@ def validate_ledger(
     if not isinstance(phases, list) or not isinstance(authors, list):
         return None, "ledger-contract-invalid"
     approved_authors = {str(author) for author in authors}
-    phase_counts: dict[str, int] = {}
+    accepted_by_phase: dict[str, dict[str, object]] = {}
     comment_ids: set[int] = set()
     for comment in comments:
         required = (
@@ -1233,9 +1287,6 @@ def validate_ledger(
         phase = comment.get("phase")
         if phase not in phases:
             return None, "ledger-phase-invalid"
-        phase_counts[str(phase)] = phase_counts.get(str(phase), 0) + 1
-        if phase_counts[str(phase)] > 1:
-            return None, "ledger-phase-ambiguous"
         if (
             comment.get("author") not in approved_authors
             or comment.get("marker") != ledger_contract.get("marker")
@@ -1263,7 +1314,25 @@ def validate_ledger(
             adoption_evidence(document.get("evidence"))
         ) != canonical_digest(adoption_evidence(fixture.get("evidence"))):
             return None, "ledger-prepared-document-mismatch"
-    present = {str(comment.get("phase")) for comment in comments}
+        phase_name = str(phase)
+        prior = accepted_by_phase.get(phase_name)
+        if prior is not None:
+            comparable_prior = copy.deepcopy(prior)
+            comparable_comment = copy.deepcopy(comment)
+            comparable_prior.pop("comment_id", None)
+            comparable_comment.pop("comment_id", None)
+            if canonical_digest(comparable_prior) != canonical_digest(
+                comparable_comment
+            ):
+                return None, "ledger-phase-ambiguous"
+            if int(comment["comment_id"]) < int(prior["comment_id"]):
+                accepted_by_phase[phase_name] = comment
+        else:
+            accepted_by_phase[phase_name] = comment
+    deduplicated = sorted(
+        accepted_by_phase.values(), key=lambda comment: int(comment["comment_id"])
+    )
+    present = {str(comment.get("phase")) for comment in deduplicated}
     if "label-mutation" in present and "prepared" not in present:
         return None, "ledger-phase-gap"
     if "committed" in present and not {"prepared", "label-mutation"} <= present:
@@ -1274,7 +1343,7 @@ def validate_ledger(
         "committed",
     } <= present:
         return None, "ledger-phase-gap"
-    return comments, None
+    return deduplicated, None
 
 
 def ledger_action(

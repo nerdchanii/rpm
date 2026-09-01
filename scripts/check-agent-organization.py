@@ -154,6 +154,8 @@ EXPECTED_ADOPTION_CONTRACT = {
     ],
     "writer_inventory": {
         "source": "repository-global-writer-inventory-v1",
+        "lease_ttl_seconds": 3600,
+        "adoption_acquisition_order": "source-comment-id-ascending",
         "kinds": ["claim", "implementation", "review-resolution", "adoption"],
     },
     "dependent_pr_inventory": {

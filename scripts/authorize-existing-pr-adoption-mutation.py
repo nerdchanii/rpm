@@ -113,8 +113,33 @@ def adoption_evidence_digest(value: object) -> str:
                 )
             issue["lifecycle_state"] = "untracked"
         writers = normalized.get("writers")
-        if isinstance(writers, dict) and "observed_at" in writers:
-            writers["observed_at"] = "<observation-time>"
+        if isinstance(writers, dict):
+            if "observed_at" in writers:
+                writers["observed_at"] = "<observation-time>"
+            records = writers.get("records")
+            if isinstance(records, list):
+                stable_records = [
+                    record
+                    for record in records
+                    if not isinstance(record, dict)
+                    or record.get("kind") != "adoption"
+                ]
+                stable_records.sort(
+                    key=lambda record: json.dumps(
+                        canonicalize(record, "evidence.writers.records"),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
+                writers["records"] = stable_records
+                writers["count"] = len(stable_records)
+                writers["cas_token"] = canonical_digest(
+                    {
+                        "repository": writers.get("repository"),
+                        "records": stable_records,
+                    }
+                )
     return canonical_digest(normalized)
 
 

@@ -10,7 +10,7 @@ import json
 import re
 import runpy
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 from urllib.parse import quote
@@ -483,9 +483,11 @@ class GithubAdoptionTransport:
                     or not actor.strip()
                     or actor not in approved_marker_actors
                 ):
-                    raise RuntimeError(
-                        "GitHub review finding marker author is not approved"
-                    )
+                    # Unapproved text is never evidence.  Resolved historical
+                    # threads can therefore be ignored safely, while an
+                    # unresolved thread with no trusted marker still fails the
+                    # required-finding check below.
+                    continue
                 try:
                     value = json.loads(match.group(1))
                 except json.JSONDecodeError as error:
@@ -586,6 +588,7 @@ class GithubAdoptionTransport:
         head_sha: str | None = None,
         author: str | None = None,
         approved_marker_actors: frozenset[str] | None = None,
+        source_comment_id: int | None = None,
     ) -> list[dict[str, object]]:
         if not isinstance(text, str):
             return []
@@ -602,6 +605,9 @@ class GithubAdoptionTransport:
                 raise RuntimeError("GitHub writer metadata is invalid") from error
             if not isinstance(value, dict):
                 raise RuntimeError("GitHub writer metadata is invalid")
+            if value.get("kind") == "adoption" and source_comment_id is not None:
+                value = copy.deepcopy(value)
+                value["source_comment_id"] = source_comment_id
             records.append(value)
         if include_execution_lease:
             for match in EXECUTION_MARKER.finditer(text):
@@ -746,6 +752,9 @@ class GithubAdoptionTransport:
             for comment in comments:
                 if not isinstance(comment, dict):
                     raise RuntimeError("GitHub writer comment inventory is invalid")
+                comment_id = comment.get("id")
+                if type(comment_id) is not int or comment_id <= 0:
+                    raise RuntimeError("GitHub writer comment identity is invalid")
                 comment_user = comment.get("user")
                 comment_author = (
                     comment_user.get("login")
@@ -762,6 +771,7 @@ class GithubAdoptionTransport:
                         head_sha=writer_head_sha,
                         author=comment_author,
                         approved_marker_actors=self.approved_marker_actors,
+                        source_comment_id=comment_id,
                     )
                 )
             if "agent:claimed" in lifecycle_labels and not any(
@@ -772,6 +782,14 @@ class GithubAdoptionTransport:
                 # stop adoption instead of allowing an unobserved worker.
                 raise RuntimeError("GitHub active claim lease is missing")
             records.extend(item_records)
+        records.sort(
+            key=lambda record: json.dumps(
+                record,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         observed_at = self._current_observation_time
         if not isinstance(observed_at, str) or not observed_at.strip():
             observed_at = self._collect_observation_time(repository, issue, pr)
@@ -2045,7 +2063,46 @@ class GithubAdoptionTransport:
                 return {"status": "cas-mismatch"}
             endpoint = f"repos/{self._repository_path(repository)}/issues/{issue}"
             kind = mutation.get("kind")
-            if kind == "append-ledger-comment":
+            if kind == "append-writer-lease-comment":
+                record = mutation.get("record")
+                author = mutation.get("author")
+                required = (
+                    "kind",
+                    "repository",
+                    "issue",
+                    "pr",
+                    "run_id",
+                    "owner",
+                    "lease_expires_at",
+                    "head_sha",
+                )
+                if (
+                    not isinstance(record, dict)
+                    or any(field not in record for field in required)
+                    or record.get("kind") != "adoption"
+                    or record.get("repository") != repository
+                    or record.get("issue") != issue
+                    or record.get("pr") != pr
+                    or not isinstance(author, str)
+                    or author not in self.approved_marker_actors
+                ):
+                    return {"status": "invalid-mutation"}
+                body = "<!-- rpm-agent-writer:v1 -->\n" + json.dumps(
+                    record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+                response = self._call(
+                    endpoint + "/comments", method="POST", payload={"body": body}
+                )
+                if not isinstance(response, dict) or not isinstance(response.get("id"), int):
+                    return {"status": "write-invalid-response"}
+                user = response.get("user")
+                if (
+                    not isinstance(user, dict)
+                    or user.get("login") != author
+                    or response.get("body") != body
+                ):
+                    return {"status": "write-author-mismatch"}
+            elif kind == "append-ledger-comment":
                 record = mutation.get("record")
                 if not isinstance(record, dict):
                     return {"status": "invalid-mutation"}
@@ -2163,6 +2220,103 @@ AUTHORIZATION_FIELDS = (
 )
 
 
+def adoption_writer_lease_mutation(
+    policy: dict[str, object], live: dict[str, object]
+) -> dict[str, object] | None:
+    """Return the acquisition-only lease write when this run has no live lease."""
+    contract = policy.get("existing_pr_adoption")
+    writer_contract = contract.get("writer_inventory") if isinstance(contract, dict) else None
+    ledger = contract.get("ledger") if isinstance(contract, dict) else None
+    operation = live.get("operation")
+    authorization = live.get("authorization")
+    evidence = live.get("evidence")
+    writers = evidence.get("writers") if isinstance(evidence, dict) else None
+    pr_evidence = evidence.get("pr") if isinstance(evidence, dict) else None
+    head = pr_evidence.get("head") if isinstance(pr_evidence, dict) else None
+    if not all(
+        isinstance(value, dict)
+        for value in (contract, writer_contract, ledger, operation, authorization, writers, head)
+    ):
+        raise ValueError("writer lease contract or evidence is incomplete")
+    records = writers.get("records")
+    authors = ledger.get("approved_authors")
+    ttl_seconds = writer_contract.get("lease_ttl_seconds")
+    now_text = live.get("now")
+    if (
+        not isinstance(records, list)
+        or not isinstance(authors, list)
+        or len(authors) != 1
+        or not isinstance(authors[0], str)
+        or type(ttl_seconds) is not int
+        or ttl_seconds <= 0
+        or not isinstance(now_text, str)
+    ):
+        raise ValueError("writer lease policy is invalid")
+    try:
+        now = datetime.fromisoformat(now_text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("writer lease observation time is invalid") from error
+    if now.tzinfo is None:
+        raise ValueError("writer lease observation time has no timezone")
+    now = now.astimezone(timezone.utc)
+    run_id = operation.get("run_id")
+    owner = operation.get("owner")
+    repository = authorization.get("repository")
+    issue = authorization.get("issue")
+    pr = authorization.get("pr")
+    head_sha = head.get("sha")
+    if (
+        not isinstance(run_id, str)
+        or not run_id.strip()
+        or not isinstance(owner, str)
+        or not owner.strip()
+        or not isinstance(repository, str)
+        or type(issue) is not int
+        or type(pr) is not int
+        or not isinstance(head_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", head_sha)
+    ):
+        raise ValueError("writer lease identity is invalid")
+    for record in records:
+        if not isinstance(record, dict) or record.get("kind") != "adoption":
+            continue
+        expires_at = record.get("lease_expires_at")
+        if not isinstance(expires_at, str):
+            continue
+        try:
+            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if expiry.tzinfo is None or expiry.astimezone(timezone.utc) <= now:
+            continue
+        if (
+            record.get("run_id") == run_id
+            and record.get("owner") == owner
+            and record.get("repository") == repository
+            and record.get("issue") == issue
+            and record.get("pr") == pr
+            and record.get("head_sha") == head_sha
+        ):
+            return None
+    expires_at = (now + timedelta(seconds=ttl_seconds)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    return {
+        "kind": "append-writer-lease-comment",
+        "author": authors[0],
+        "record": {
+            "kind": "adoption",
+            "repository": repository,
+            "issue": issue,
+            "pr": pr,
+            "run_id": run_id,
+            "owner": owner,
+            "lease_expires_at": expires_at,
+            "head_sha": head_sha,
+        },
+    }
+
+
 def exact_authorization(
     prepared: object,
     live: object,
@@ -2228,6 +2382,26 @@ def execute_adoption_phase(
         return blocked(str(decision.get("reason", "live-eligibility-failed")))
     if decision.get("status") == "reconciled" and "ledger_action" not in decision:
         return {"status": "reconciled", "phase": "reconciled"}
+
+    try:
+        lease_mutation = adoption_writer_lease_mutation(policy, live)
+    except (TypeError, ValueError, KeyError) as error:
+        return blocked(f"writer-lease-invalid:{error}")
+    if lease_mutation is not None:
+        lease_mutation["authorization"] = copy.deepcopy(live_authorization)
+        lease_mutation["evidence_digest"] = live_authorization.get("evidence_digest")
+        outcome = transport.compare_and_write(
+            repository, issue, pr, cas, lease_mutation
+        )
+        if not isinstance(outcome, dict) or outcome.get("status") != "applied":
+            return blocked("writer-lease-cas")
+        return {
+            "status": "applied",
+            "phase": "writer-lease",
+            "repository": repository,
+            "issue": issue,
+            "pr": pr,
+        }
 
     mutation: dict[str, object]
     ledger = decision.get("ledger_action")

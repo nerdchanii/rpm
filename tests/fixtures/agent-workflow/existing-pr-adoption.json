@@ -31,7 +31,7 @@
     ],
     "policy_version": 4,
     "operation_version": 1,
-    "evidence_digest": "sha256:f5144656c57725d53ff34cb3076afd6f3862a77e7e5be1986b6daa4fcb9a3c1b",
+    "evidence_digest": "sha256:dad1c2fea754d188c289643f40f362596191f61af9abebe1d8e8ebf8aa96f204",
     "approval_id": "user-authorization-thread-01a038a7-90bb-7923-b97e-ec7bbd6e67b2",
     "plan_revision": "issue-228-adoption-v1",
     "scope_hash": "sha256:ad186d411c94cb740ca40d52ba57965399c9bc9bf8e8c713896ba102b15932bc",

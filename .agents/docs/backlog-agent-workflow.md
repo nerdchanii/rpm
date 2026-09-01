@@ -183,12 +183,22 @@ current-head checks, current-head review or approved post-head plus-one,
 finding dispositions, repository-global writer inventory, and dependent-PR
 inventory.
 
+Before the first ledger write, the adopter publishes a short-lived
+`rpm-agent-writer` lease comment and stops. The next run re-fetches the complete
+repository-global writer inventory. When concurrent adoption leases exist,
+the trusted lease with the smallest server-assigned comment ID wins; other
+runs stop. Adoption lease records are runtime locks and are excluded from the
+immutable user-authorization digest while remaining live-validation and CAS
+inputs.
+
 The issue-comment ledger progresses through `prepared`, `label-mutation`,
 `committed`, and `reconciled`. Every retry re-fetches the exact evidence and
-accepts only one matching run. Ambiguous, partial, stale, or conflicting
-records stop without mutation. The label authorization is add-only and
-preserves ordinary labels. Project membership synchronization is an inventory
-operation; Project read failure cannot change or block the lifecycle verdict.
+accepts one matching run. Equivalent duplicate phase comments reconcile to the
+earliest comment; conflicting duplicates stop. Ambiguous, partial, stale, or
+conflicting records stop without mutation. The label authorization is
+add-only and preserves ordinary labels. Project membership synchronization is
+an inventory operation; Project read failure cannot change or block the
+lifecycle verdict.
 
 ## Review-Reconciliation Contract
 

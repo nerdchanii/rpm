@@ -13,7 +13,9 @@ at most one exact issue/PR pair.
 
 Route this entry through `rpm_workflow_manager` with
 `workflow=adopt-existing-pr` and `mode=adoption`. The manager dispatches the
-dedicated adopter leaf and preserves its read-only role boundary.
+dedicated adopter leaf with the exact issue/PR pair and authorization flags.
+The leaf collects the complete live evidence after dispatch while the manager
+preserves its read-only role boundary.
 
 ## Required evidence
 
@@ -59,11 +61,15 @@ labels, and pass the exact add-only request through
 `scripts/authorize-existing-pr-adoption-mutation.py`. Preserve every ordinary
 label. The execution tuple must come from exactly one complete issue comment
 authored by a policy-approved actor. The ordinary editable issue body is not
-an authorization source. Then invoke `scripts/write-existing-pr-adoption.py` with the prepared
-snapshot and policy. That entry point owns the narrow GitHub API transport for
-ledger comments and the add-only lifecycle label; it re-fetches and CAS-checks
-the full authorization tuple immediately before each write. Re-fetch after
-each phase and resume only an exact matching ledger run.
+an authorization source. Then invoke `scripts/write-existing-pr-adoption.py`
+with the prepared snapshot and policy. That entry point owns the narrow GitHub
+API transport for writer/ledger comments and the add-only lifecycle label.
+Before the first ledger comment, it publishes a short-lived adoption writer
+lease and stops at the `writer-lease` phase. A later invocation re-fetches the
+complete repository-global writer inventory, applies the server-assigned
+comment-ID winner rule, and proceeds only for the winning run. It re-fetches
+and CAS-checks the full authorization tuple immediately before each write.
+Re-fetch after each phase and resume only an exact matching ledger run.
 
 Project membership synchronization is a separate inventory operation. Project
 read failure does not change the adoption decision. This operation does not
