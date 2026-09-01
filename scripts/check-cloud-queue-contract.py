@@ -646,6 +646,20 @@ def immutable_adoption_authorization(value: object) -> object:
     return normalized
 
 
+def comparable_ledger_comment(value: dict[str, object]) -> dict[str, object]:
+    """Normalize runtime-only fields before comparing duplicate phase writes."""
+    normalized = copy.deepcopy(value)
+    normalized.pop("comment_id", None)
+    document = normalized.get("prepared_document")
+    if isinstance(document, dict):
+        document["authorization"] = immutable_adoption_authorization(
+            document.get("authorization")
+        )
+        document["evidence"] = adoption_evidence(document.get("evidence"))
+        normalized["prepared_document_digest"] = canonical_digest(document)
+    return normalized
+
+
 def adoption_contract(policy: dict[str, object]) -> dict[str, object] | None:
     value = policy.get("existing_pr_adoption")
     return value if isinstance(value, dict) else None
@@ -1317,10 +1331,8 @@ def validate_ledger(
         phase_name = str(phase)
         prior = accepted_by_phase.get(phase_name)
         if prior is not None:
-            comparable_prior = copy.deepcopy(prior)
-            comparable_comment = copy.deepcopy(comment)
-            comparable_prior.pop("comment_id", None)
-            comparable_comment.pop("comment_id", None)
+            comparable_prior = comparable_ledger_comment(prior)
+            comparable_comment = comparable_ledger_comment(comment)
             if canonical_digest(comparable_prior) != canonical_digest(
                 comparable_comment
             ):

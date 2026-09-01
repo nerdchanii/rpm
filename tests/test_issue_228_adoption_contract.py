@@ -1656,6 +1656,15 @@ class AdoptionContractTest(unittest.TestCase):
         first = self.ledger_record(fixture, "prepared", comment_id=81001)
         second = copy.deepcopy(first)
         second["comment_id"] = 81002
+        second["prepared_document"]["authorization"][
+            "observation_time"
+        ] = "2026-08-25T12:30:01Z"
+        second["prepared_document"]["evidence"]["writers"][
+            "observed_at"
+        ] = "2026-08-25T12:30:01Z"
+        second["prepared_document_digest"] = canonical_digest(
+            second["prepared_document"]
+        )
         fixture["ledger"]["comments"] = [second, first]
 
         result, event = self.run_queue(fixture)
