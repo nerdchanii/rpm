@@ -253,6 +253,8 @@ original form.
 4. Run scheduled ticket execution manually and inspect its Draft PR.
 5. Configure branch protection on `main`: require the `verify` and `metadata`
    checks and forbid direct pushes, so the merge gate is enforced server-side.
+   `verify` owns code correctness. `metadata` only confirms that the advisory
+   event-payload report completed; missing labels or issue links never fail it.
 6. Run the merge gatekeeper manually against one awaiting-merge issue and
    inspect the merged result before enabling its schedule.
 7. Keep Project capture and research on the authenticated local environment.

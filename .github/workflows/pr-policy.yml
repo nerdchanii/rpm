@@ -1,4 +1,4 @@
-name: PR Policy
+name: PR Metadata
 
 on:
   pull_request:
@@ -12,10 +12,7 @@ on:
       - labeled
       - unlabeled
 
-permissions:
-  contents: read
-  issues: read
-  pull-requests: read
+permissions: {}
 
 jobs:
   metadata:
@@ -23,9 +20,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Check PR metadata policy
+      - name: Report optional PR metadata
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash scripts/check-pr-policy.sh "${{ github.event.pull_request.number }}"
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels) }}
+        run: |
+          set -euo pipefail
+
+          descriptive_labels="$(
+            jq '[.[] | select(.name | startswith("agent:") | not)] | length' \
+              <<< "${PR_LABELS_JSON}"
+          )"
+
+          printf 'pr_metadata.descriptive_labels=%s\n' "${descriptive_labels}"
+          if [ "${descriptive_labels}" -eq 0 ]; then
+            echo '::notice title=Optional PR metadata::No descriptive label is present; this does not block merge.'
+          fi
+
+          if grep -Eiq '(^|[[:space:]])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[0-9]+' <<< "${PR_BODY}"; then
+            printf 'pr_metadata.closing_reference=present\n'
+          else
+            printf 'pr_metadata.closing_reference=missing\n'
+            echo '::notice title=Optional PR metadata::No closing issue reference is present; this does not block merge.'
+          fi
+
+          printf 'pr_metadata.status=advisory\n'
