@@ -3,7 +3,7 @@ spec_id: package_manifest
 title: Package Manifest
 status: draft
 owner: core/manifest
-last_reviewed: 2026-08-24
+last_reviewed: 2026-09-01
 authors:
   - nerdchanii
 deciders:
@@ -28,7 +28,7 @@ related_issues:
 
 Status: Draft
 Owner: core/manifest
-Last reviewed: 2026-08-24
+Last reviewed: 2026-09-01
 
 ## Purpose
 
@@ -394,12 +394,17 @@ resource is an advisory lock bound to the retained canonical root-parent
 directory descriptor and its validated filesystem identity, or the exact
 supported platform equivalent. It is not a lock file: discovery creates no
 file. The lock deliberately covers the whole retained parent descriptor, so
-sibling workspace roots under that parent may contend. Every RPM process
-operating on the workspace derives and uses this same parent-bound resource; a
-path alias, root replacement, member path, or newly created lock file is not
-another valid coordination resource. An RPM-owned operation that would replace
-the parent lock anchor itself is unsupported while another operation targets a
-child workspace through that anchor.
+sibling workspace roots under that parent may contend. Every RPM process that
+consumes the discovery result for the same supplied root derives and uses this
+same parent-bound resource; a path alias, root replacement, member path, or newly
+created lock file is not another valid coordination resource. A process supplied
+with a member directory as an independent root does not search for or adopt an
+outer workspace and therefore uses that member's own root coordination resource.
+Concurrent mutation across those independently supplied roots is unsupported
+until #222 and #223 define and implement an explicit cross-root coordination
+boundary. An RPM-owned operation that would replace the parent lock anchor
+itself is unsupported while another operation targets a child workspace through
+that anchor.
 
 The deterministic acquisition order is: validate and retain the canonical
 ancestor chain through the root parent, acquire that parent's shared lock, open
@@ -791,6 +796,11 @@ observed replacement to fail closed before consumer access.
   result; canonical aliases converge on the same parent-bound resource,
   abandoned descriptors permit a later acquisition, and validation descriptors
   remain open after successful unlock until every consumer finishes;
+- an independently supplied member-root adapter proving that the member does not
+  search for or adopt an outer workspace and therefore uses its own root
+  coordination resource; an observed mutation during an outer discovery rejects
+  that outer attempt, while cross-root serialization remains disabled until
+  #222 and #223 own it;
 - a root-replacement coordination race in which an RPM writer holds the
   exclusive parent-bound lock while replacing the named root, proving a later
   discovery cannot acquire a non-conflicting lock on the replacement inode and
