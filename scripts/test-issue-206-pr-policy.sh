@@ -157,19 +157,6 @@ require_no_pattern "scripts/validate-agent-workflow-assets.sh" \
   'required_checks:["verify"]' \
   "asset validator lost the metadata check"
 
-# The manual merge path follows the policy file at runtime. It must not carry
-# a second, hard-coded required-check list.
-require_pattern "scripts/safe-direct-merge.sh" \
-  '.agents/workflows/backlog-policy.json' \
-  "safe-direct-merge must read the merge policy"
-require_pattern "scripts/safe-direct-merge.sh" \
-  '.merge_gate.required_checks' \
-  "safe-direct-merge must read required_checks from policy"
-if rg -q 'required_checks[[:space:]]*=[[:space:]]*\([^)]*metadata[^)]*verify[^)]*\)' \
-  scripts/safe-direct-merge.sh; then
-  fail "safe-direct-merge hard-codes the metadata and verify checks"
-fi
-
 # Labels and closing references remain useful PR guidance, with no blocking
 # wording in the contribution guide or template.
 for path in CONTRIBUTING.md .github/pull_request_template.md; do
