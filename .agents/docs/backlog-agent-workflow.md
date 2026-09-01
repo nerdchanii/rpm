@@ -220,12 +220,28 @@ current-head checks, current-head review or approved post-head plus-one,
 finding dispositions, repository-global writer inventory, and dependent-PR
 inventory.
 
-Adoption approval comes from one policy-authorized issue comment. The marker
-itself contains the exact repository, issue, pull request, base repository,
-base ref/SHA, head repository, head ref/SHA, and canonical evidence digest.
-The digest field is masked only while hashing its containing evidence. A marker
-for another target, changed evidence, or an earlier PR identity cannot be
-rebound or reused.
+Adoption starts with a read-only authorization checkpoint. After collecting the
+live prospective packet, the adopter runs
+`scripts/prepare-existing-pr-adoption-authorization.py`. The helper reuses the
+canonical adoption digest and prints exactly one JSONL event with
+`status: authorization-required`, the exact target tuple, and one
+`rpm-agent-execution` marker. The checkpoint states
+`requires_external_approval: true`, `mutation_count: 0`, and that the exact
+marker must be published as an issue comment. The adopter and workflow manager
+cannot approve themselves or publish this marker.
+
+The user or an already trusted top-level caller reviews the checkpoint and
+publishes the unchanged marker as an issue comment. The manager returns the
+checkpoint and waits for that external approval; manager and adopter remain
+read-only. On resume, the adopter re-reads the issue comments and requires
+exactly one comment from a policy-authorized actor, then compares every
+repository, issue, PR, base/head ref and SHA, and canonical evidence digest
+with fresh live evidence. Missing, ambiguous, forged, legacy, or drifted
+comments return `blocked` with no mutation. The marker itself contains the
+exact repository, issue, pull request, base repository, base ref/SHA, head
+repository, head ref/SHA, and canonical evidence digest. The digest field is
+masked only while hashing its containing evidence. A marker for another target,
+changed evidence, or an earlier PR identity cannot be rebound or reused.
 
 Before the first ledger write, the adopter publishes a short-lived
 `rpm-agent-writer` lease comment and stops. The next run re-fetches the complete

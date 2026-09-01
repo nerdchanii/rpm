@@ -1696,10 +1696,39 @@ class AdoptionContractTest(unittest.TestCase):
                 self.assert_blocked(result, event)
 
     def test_writer_observation_time_and_same_run_exemption_are_exactly_bound(self) -> None:
+        for name, mutate in (
+            ("missing-now", lambda fixture: fixture.pop("now")),
+            ("malformed-now", lambda fixture: fixture.__setitem__("now", "not-a-timestamp")),
+        ):
+            with self.subTest(now=name):
+                fixture = self.load_adoption()
+                mutate(fixture)
+                result, event = self.run_queue(fixture)
+                data = self.assert_blocked(result, event)
+                self.assertEqual(data.get("reason"), "writer-observation-invalid", data)
+
         fixture = self.load_adoption()
         fixture["now"] = "2026-08-25T14:00:00Z"
         result, event = self.run_queue(fixture)
         self.assert_blocked(result, event)
+
+        fixture = self.load_adoption()
+        fixture["evidence"]["dependent_prs"]["records"] = [
+            {
+                "number": 216,
+                "state": "CLOSED",
+                "repository": "nerdchanii/rpm",
+                "base_ref": "feat/issue-145-workspaces",
+                "base_sha": BASE_SHA,
+                "head_ref": "feat/issue-148-workspace-targeting",
+                "head_sha": "c" * 40,
+            }
+        ]
+        fixture["evidence"]["dependent_prs"]["count"] = 1
+        self.resign(fixture)
+        result, event = self.run_queue(fixture)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(data.get("reason"), "dependent-pr-record-identity-invalid", data)
 
         for field, value in (
             ("issue", 146),
@@ -2396,6 +2425,27 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertTrue(
             str(api.writes[0][1]).startswith("<!-- rpm-agent-writer:v1 -->\n")
         )
+        transport._head_sha_from_pr = lambda repository, pr: HEAD_SHA
+
+        def writer_paginate(endpoint: str, **kwargs: object) -> list[object]:
+            if endpoint == "repos/nerdchanii/rpm/issues?state=open":
+                return [
+                    {
+                        "number": 145,
+                        "body": "",
+                        "labels": [{"name": "documentation"}],
+                        "user": {"login": "nerdchanii"},
+                    }
+                ]
+            if endpoint.endswith("/comments"):
+                return copy.deepcopy(api.comments)
+            raise AssertionError(endpoint)
+
+        transport._paginate = writer_paginate
+        writer_inventory = transport._collect_writers("nerdchanii/rpm", 145, 210)
+        writer_records = writer_inventory["records"]
+        self.assertEqual(len(writer_records), 1, writer_inventory)
+        self.assertEqual(writer_records[0].get("kind"), "adoption", writer_inventory)
 
         missing_api = FakeGithubApiRunner(prepared)
         missing = github_transport(
@@ -2830,7 +2880,7 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertEqual(inventory["records"][0]["issue"], 999)
         self.assertIsNone(inventory["records"][0]["pr"])
 
-        writer_marker = "<!-- rpm-agent-writer: " + json.dumps(
+        writer_marker = "<!-- rpm-agent-writer:v1 -->\n" + json.dumps(
             {
                 "kind": "claim",
                 "repository": "nerdchanii/rpm",
@@ -2841,7 +2891,7 @@ class AdoptionContractTest(unittest.TestCase):
                 "lease_expires_at": "2026-08-25T13:00:00Z",
                 "head_sha": None,
             }
-        ) + " -->"
+        )
         self.assertEqual(
             transport._writer_records_from_text(
                 writer_marker,
@@ -2865,6 +2915,21 @@ class AdoptionContractTest(unittest.TestCase):
                 )
             ),
             1,
+        )
+        legacy_writer_marker = writer_marker.replace(
+            "<!-- rpm-agent-writer:v1 -->\n",
+            "<!-- rpm-agent-writer:v1: ",
+        ) + " -->"
+        self.assertEqual(
+            transport._writer_records_from_text(
+                legacy_writer_marker,
+                "nerdchanii/rpm",
+                999,
+                None,
+                author="nerdchanii",
+                approved_marker_actors=frozenset({"nerdchanii"}),
+            ),
+            [],
         )
 
         claimed_without_lease = github_transport(
@@ -2916,9 +2981,10 @@ class AdoptionContractTest(unittest.TestCase):
             }
             return {
                 "number": number,
-                "body": "<!-- rpm-agent-writer:v1: "
-                + json.dumps(record, sort_keys=True)
-                + " -->",
+                "body": (
+                    "<!-- rpm-agent-writer:v1 -->\n"
+                    + json.dumps(record, sort_keys=True)
+                ),
                 "labels": [],
                 "user": {"login": "nerdchanii"},
             }
@@ -4611,7 +4677,10 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertEqual(data.get("issues"), [145], data)
 
     def run_merge(
-        self, fixture: dict[str, object], policy: dict[str, object] | None = None
+        self,
+        fixture: dict[str, object],
+        policy: dict[str, object] | None = None,
+        gate_phase: str | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
         with tempfile.TemporaryDirectory(prefix="rpm-merge-228-") as raw:
             directory = Path(raw)
@@ -4619,19 +4688,19 @@ class AdoptionContractTest(unittest.TestCase):
             policy_path = POLICY
             if policy is not None:
                 policy_path = self.write_json(directory, "policy.json", policy)
-            return self.run_json_command(
-                [
-                    "python3",
-                    str(MERGE_CHECK),
-                    "--policy",
-                    str(policy_path),
-                    "--issues-file",
-                    str(fixture_path),
-                    "--operation",
-                    "select-merge",
-                ],
-                {0, 1},
-            )
+            command = [
+                "python3",
+                str(MERGE_CHECK),
+                "--policy",
+                str(policy_path),
+                "--issues-file",
+                str(fixture_path),
+                "--operation",
+                "select-merge",
+            ]
+            if gate_phase is not None:
+                command.extend(["--gate-phase", gate_phase])
+            return self.run_json_command(command, {0, 1})
 
     def test_dependent_pr_inventory_is_complete_and_requires_retarget(self) -> None:
         fixture = json.loads(DEPENDENT_FIXTURE.read_text())
@@ -4751,10 +4820,11 @@ class AdoptionContractTest(unittest.TestCase):
         )
         fixture["issue_inventory"]["count"] = 2
 
-        result, event = self.run_merge(fixture)
+        result, event = self.run_merge(fixture, gate_phase="initial")
         data = event["data"]
         self.assertEqual(result.returncode, 0, data)
         self.assertEqual(data.get("status"), "merge", data)
+        self.assertEqual(data.get("phase"), "initial", data)
         self.assertEqual(data.get("issue"), 145, data)
         self.assertEqual(data.get("pr"), 210, data)
 
@@ -4840,6 +4910,12 @@ class AdoptionContractTest(unittest.TestCase):
             },
             data,
         )
+
+        result, event = self.run_merge(fixture, gate_phase="final")
+        data = event["data"]
+        self.assertEqual(result.returncode, 0, data)
+        self.assertEqual(data.get("status"), "merge", data)
+        self.assertEqual(data.get("phase"), "final", data)
 
         changed = copy.deepcopy(fixture)
         changed["selected_head_sha"] = "c" * 40

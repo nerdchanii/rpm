@@ -14,8 +14,10 @@ at most one exact issue/PR pair.
 Route this entry through `rpm_workflow_manager` with
 `workflow=adopt-existing-pr` and `mode=adoption`. The manager dispatches the
 dedicated adopter leaf with the exact issue/PR pair and authorization flags.
-The leaf collects the complete live evidence after dispatch while the manager
-preserves its read-only role boundary.
+The manager and adopter remain read-only. The leaf collects the complete live
+evidence after dispatch while the manager preserves its read-only role
+boundary. The authorization flags describe the proposed execution metadata;
+they do not approve the adoption.
 
 ## Required evidence
 
@@ -25,11 +27,46 @@ preserves its read-only role boundary.
 - A current-head approved Automatic review or approved post-head plus-one
 - Complete finding dispositions with no P0/P1 and no `accept-now` P2
 - Complete repository-global writer, ledger, and dependent-PR inventories
-- Exact approval comment whose marker explicitly names the repository, issue,
-  pull request, base repository/ref/SHA, head repository/ref/SHA, and canonical
-  evidence digest, plus plan revision, scope hash, executor, policy version,
-  and operation version. Never rebind a marker written for another target,
-  identity, head, or evidence snapshot.
+- An external approval comment whose marker explicitly names the repository,
+  issue, pull request, base repository/ref/SHA, head repository/ref/SHA, and
+  canonical evidence digest, plus plan revision, scope hash, and executor.
+  Never rebind a marker written for another target, identity, head, or evidence
+  snapshot.
+
+## Authorization checkpoint
+
+The first adopter phase is a read-only evidence phase. After the live packet is
+complete, run the local helper below against that exact packet:
+
+```sh
+python3 scripts/prepare-existing-pr-adoption-authorization.py \
+  --policy .agents/workflows/backlog-policy.json \
+  --evidence-file /tmp/rpm-existing-pr-adoption/<safe-run-id>/prepared.json \
+  --approval-id <approval-id> \
+  --plan-revision <plan-revision> \
+  --scope-hash sha256:<64-lowercase-hex> \
+  --executor local|cloud
+```
+
+The helper reuses the canonical digest function from
+`authorize-existing-pr-adoption-mutation.py`. It prints exactly one JSONL
+checkpoint with `status: authorization-required`, the complete target tuple,
+and one exact `rpm-agent-execution` marker. The checkpoint has
+`requires_external_approval: true` and `mutation_count: 0`. The helper does
+not publish a comment, add a label, or call GitHub.
+
+The manager returns this checkpoint to the caller and stops. The user or an
+already trusted top-level caller must review the exact marker and publish that
+unchanged marker as an issue comment. The adopter and workflow manager may not
+approve themselves or publish this marker. The external publisher must return
+the comment identity with the checkpoint when resuming the operation.
+
+On resume, the adopter re-reads the issue comments and requires exactly one
+comment from a policy-approved actor with the exact marker. It compares every
+repository, issue, PR, base/head ref and SHA, and evidence digest with the
+fresh live packet. Missing, ambiguous, forged, legacy, or drifted comments
+return `blocked` and perform no mutation. Only this verified comment permits
+the existing checker and writer phases to continue.
 
 Normalize the evidence into a per-run temporary handoff. The issue/PR-only
 workflow uses the repository materializer, which accepts one UTF-8 JSON object

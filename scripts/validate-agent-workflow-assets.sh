@@ -2550,6 +2550,8 @@ check "backlog_policy_schema" jq -e '
 ' .agents/workflows/backlog-policy.json
 
 check "agent_organization" python3 scripts/check-agent-organization.py
+check "existing_pr_adoption_authorization_checkpoint" \
+  bash scripts/test-existing-pr-adoption-authorization.sh
 check "issue_206_pr_metadata" bash scripts/test-issue-206-pr-policy.sh
 check "agent_hooks_json" jq -e . .codex/hooks.json
 for hook in .codex/hooks/agent_tool_policy.py .codex/hooks/issue_manager_stop_gate.py; do

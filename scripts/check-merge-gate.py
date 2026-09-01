@@ -781,6 +781,10 @@ def main() -> int:
     parser.add_argument("--policy", default=".agents/workflows/backlog-policy.json")
     parser.add_argument("--issues-file", required=True)
     parser.add_argument("--operation", required=True, choices=("select-merge",))
+    # The hook requires this flag on every merge-gate command.  Keep the
+    # default for older read-only fixture probes: an omitted flag is treated
+    # as the preflight phase and can never create a merge grant.
+    parser.add_argument("--gate-phase", choices=("initial", "final"), default="initial")
     args = parser.parse_args()
 
     policy = load_json(args.policy)
@@ -797,6 +801,7 @@ def main() -> int:
             lifecycle_labels(policy),
             merge_gate(policy),
         )
+    result["phase"] = args.gate_phase
     print(json.dumps({"type": "merge_gate_contract", "data": result}, sort_keys=True))
     return 1 if result.get("status") == "blocked" else 0
 

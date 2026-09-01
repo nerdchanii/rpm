@@ -27,7 +27,10 @@ FINDING_MARKER = re.compile(
     re.DOTALL,
 )
 WRITER_MARKER = re.compile(
-    r"<!--\s*rpm-agent-writer(?::v1)?:\s*(\{.*?\})\s*-->",
+    # The writer emits the marker as a standalone HTML comment followed by
+    # the JSON record.  Keep the parser tied to that one canonical form so a
+    # legacy inline marker cannot silently acquire lease authority.
+    r"<!--\s*rpm-agent-writer:v1\s*-->\s*(\{.*\})\s*$",
     re.DOTALL,
 )
 

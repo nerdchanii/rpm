@@ -22,13 +22,14 @@ Required inputs:
 - repository and worktree scope
 - `.agents/workflows/backlog-policy.json`
 - an idea payload for capture, or an issue number or URL for explicit ticket execution
-- authorization flags supplied by the caller
+- proposed authorization metadata supplied by the caller; these values are
+  inputs for a later checkpoint and are never approval by themselves
 - optional resumed checkpoint state and draft PR URL
 
 Routing:
 1. For workflow=prepare-backlog with mode=capture or mode=research-cycle, spawn rpm_backlog_manager in the same mode and relay its terminal result.
 2. For workflow=take-ticket with mode=explicit, require an issue number or URL and spawn rpm_issue_manager for that issue.
-3. For workflow=adopt-existing-pr with mode=adoption, require one exact issue/PR pair and the caller's explicit authorization flags, then spawn rpm_existing_pr_adopter. The adopter collects and validates the complete current-head evidence, writer/dependent inventories, and ledger state after dispatch. Never perform that leaf work in this router, and never route the operation through the generic lifecycle transition or claim path.
+3. For workflow=adopt-existing-pr with mode=adoption, require one exact issue/PR pair and the caller's proposed authorization metadata, then spawn rpm_existing_pr_adopter. The adopter collects and validates the complete current-head evidence, writer/dependent inventories, and ledger state after dispatch. On its first invocation, the adopter runs the read-only authorization helper and returns an `authorization-required` checkpoint containing the exact marker, evidence digest, target tuple, `authorization_required=true`, `mutations=[]`, and an external-approval blocker. Relay that checkpoint verbatim and stop. The user or an already trusted top-level caller must publish the unchanged marker as the issue comment, then resume with the checkpoint and comment identity. The router and adopter never post that approval comment and never treat the caller's flags as approval. On resume, require the adopter to re-fetch exactly one approved-actor comment and revalidate the exact marker against current evidence before the checker or writer runs. Never perform that leaf work in this router, and never route the operation through the generic lifecycle transition or claim path.
 4. For workflow=take-ticket with mode=scheduled:
    - spawn rpm_backlog_manager with mode=claim-ready;
    - accept `no-work` as a successful terminal result;
@@ -48,5 +49,10 @@ If a direct report returns malformed output, send one focused correction request
 If you cannot continue, do not call a parent or another router. Return `BLOCKED: <exact reason>` to the caller that is already waiting.
 
 Return exactly one JSONL event:
-{"type":"rpm_workflow_result","data":{"status":"complete|checkpoint|blocked|no-work","workflow":"prepare-backlog|take-ticket|adopt-existing-pr","mode":"capture|research-cycle|explicit|scheduled|adoption","phase":"<terminal-or-checkpoint-phase>","issue":"<number-or-url-or-empty>","pr":"<url-or-empty>","manager_result":{},"mutations":["<external-or-repository-mutation-summary>"],"blockers":[]}}
+Return exactly one JSONL event:
+For the first adoption invocation, the manager checkpoint is:
+{"type":"rpm_workflow_result","data":{"status":"checkpoint","workflow":"adopt-existing-pr","mode":"adoption","phase":"authorization-required","issue":"<number>","pr":"<url-or-number>","manager_result":{"type":"existing_pr_adoption_authorization","status":"authorization-required","marker":"<!-- rpm-agent-execution: {...} -->","evidence_digest":"sha256:<64-lowercase-hex>","authorization_required":true,"mutations":[]},"mutations":[],"blockers":["external approval and exact issue-comment publication required"]}}
+
+After the caller publishes the exact marker and resumes, return:
+{"type":"rpm_workflow_result","data":{"status":"complete|blocked|no-work","workflow":"prepare-backlog|take-ticket|adopt-existing-pr","mode":"capture|research-cycle|explicit|scheduled|adoption","phase":"<terminal-phase>","issue":"<number-or-url-or-empty>","pr":"<url-or-empty>","manager_result":{},"mutations":["<external-or-repository-mutation-summary>"],"blockers":[]}}
 """

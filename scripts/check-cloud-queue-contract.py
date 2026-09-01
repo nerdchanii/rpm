@@ -1138,7 +1138,10 @@ def validate_writers(
     allowed_kinds = writer_contract.get("kinds")
     if not isinstance(allowed_kinds, list):
         return "writer-contract-invalid"
-    now = parse_timestamp(fixture.get("now"), "fixture.now")
+    try:
+        now = parse_timestamp(fixture.get("now"), "fixture.now")
+    except ValueError:
+        return "writer-observation-invalid"
     try:
         observed_at = parse_timestamp(writers.get("observed_at"), "writers.observed_at")
     except ValueError:
@@ -1257,7 +1260,7 @@ def validate_dependent_inventory(
             or number in seen_numbers
             or record.get("repository") != repository
             or not isinstance(record.get("state"), str)
-            or not record.get("state", "").strip()
+            or record.get("state") != "OPEN"
             or not isinstance(record.get("base_ref"), str)
             or not record.get("base_ref", "").strip()
             or not isinstance(record.get("head_ref"), str)
