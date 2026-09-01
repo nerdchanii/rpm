@@ -25,8 +25,11 @@ preserves its read-only role boundary.
 - A current-head approved Automatic review or approved post-head plus-one
 - Complete finding dispositions with no P0/P1 and no `accept-now` P2
 - Complete repository-global writer, ledger, and dependent-PR inventories
-- Exact approval, plan revision, scope hash, executor, policy version, operation
-  version, and canonical evidence digest
+- Exact approval comment whose marker explicitly names the repository, issue,
+  pull request, base repository/ref/SHA, head repository/ref/SHA, and canonical
+  evidence digest, plus plan revision, scope hash, executor, policy version,
+  and operation version. Never rebind a marker written for another target,
+  identity, head, or evidence snapshot.
 
 Normalize the evidence into a per-run temporary handoff. The issue/PR-only
 workflow uses the repository materializer, which accepts one UTF-8 JSON object
@@ -60,8 +63,12 @@ adopt result, record the phase ledger exactly, re-fetch the current issue
 labels, and pass the exact add-only request through
 `scripts/authorize-existing-pr-adoption-mutation.py`. Preserve every ordinary
 label. The execution tuple must come from exactly one complete issue comment
-authored by a policy-approved actor. The ordinary editable issue body is not
-an authorization source. Then invoke `scripts/write-existing-pr-adoption.py`
+authored by a policy-approved actor. Its marker must carry the exact
+`repository`, `issue`, `pr`, `base_repository`, `base_ref`, `base_sha`,
+`head_repository`, `head_ref`, `head_sha`, and `evidence_digest` values
+refetched for this run. The ordinary editable issue body is not an
+authorization source. Then invoke
+`scripts/write-existing-pr-adoption.py`
 with the prepared snapshot and policy. That entry point owns the narrow GitHub
 API transport for writer/ledger comments and the add-only lifecycle label.
 Before the first ledger comment, it publishes a short-lived adoption writer
@@ -70,6 +77,10 @@ complete repository-global writer inventory, applies the server-assigned
 comment-ID winner rule, and proceeds only for the winning run. It re-fetches
 and CAS-checks the full authorization tuple immediately before each write.
 Re-fetch after each phase and resume only an exact matching ledger run.
+When stale-head recovery removes this run's interrupted review-pending label,
+retain its exact prepared and label-mutation comments as compensated old-head
+history. A fresh authorization uses a new run ID and only that run's ledger
+phases may advance the current head.
 
 Project membership synchronization is a separate inventory operation. Project
 read failure does not change the adoption decision. This operation does not

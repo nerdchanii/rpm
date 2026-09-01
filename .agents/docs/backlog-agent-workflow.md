@@ -220,6 +220,13 @@ current-head checks, current-head review or approved post-head plus-one,
 finding dispositions, repository-global writer inventory, and dependent-PR
 inventory.
 
+Adoption approval comes from one policy-authorized issue comment. The marker
+itself contains the exact repository, issue, pull request, base repository,
+base ref/SHA, head repository, head ref/SHA, and canonical evidence digest.
+The digest field is masked only while hashing its containing evidence. A marker
+for another target, changed evidence, or an earlier PR identity cannot be
+rebound or reused.
+
 Before the first ledger write, the adopter publishes a short-lived
 `rpm-agent-writer` lease comment and stops. The next run re-fetches the complete
 repository-global writer inventory. When concurrent adoption leases exist,
@@ -262,6 +269,14 @@ closing-PR anomaly demote the issue to blocked with one explanatory comment.
 Complete head-repository/ref-bound dependent-PR inventory is required before
 the gate decision. A child PR based on the selected head returns
 `retarget-required` before merge or branch deletion.
+Scheduled branch deletion is disabled for every selected PR. The gate blocks
+when `merge_gate.delete_branch` is not false because the final mutation cannot
+prove cross-repository branch ownership and dependent-PR safety. It also
+requires complete GitHub repository metadata with
+`delete_branch_on_merge: false` on both gate reads; the merge request cannot
+override repository-side automatic deletion. Missing connector support is a
+run-level `repository-setting-unavailable` stop without mutation. The explicit
+`safe-direct-merge` path remains outside this lifecycle queue.
 Issue #195 owns the planned deterministic blocking CI aggregate contract. Until
 that implementation exists, current `merge_gate.required_checks` consumes the
 policy's `metadata` and `verify` statuses and conclusions as individual
@@ -270,6 +285,15 @@ issue #202 preserving and
 organizing that lifecycle ownership. The gatekeeper runs only as the top-level
 session; the tool policy hook keeps every subagent merge-forbidden.
 The merge automation setting stays disabled. Subagent workflows never merge.
+Immediately before the mutation, the second gate verdict supplies the exact
+GitHub plugin input, including `expected_head_sha`. The merge call must use that
+value. The top-level tool-policy hook records the dedicated normalized evidence
+path and SHA-256 together with the policy/checker/hook SHA-256 values,
+recomputes the unchanged gate, exact-compares all four merge request fields,
+and consumes the transcript-bound grant once. The top-level session also pins
+those trusted contract digests from its first tool call. Missing, changed,
+ambiguous, replayed, or mismatched grants are blocked. A connector without the
+expected-head field returns blocked without a merge or branch deletion.
 
 ## Suggested Automation Split
 

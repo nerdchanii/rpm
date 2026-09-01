@@ -79,6 +79,18 @@
       "metadata",
       "verify"
     ],
+    "approval_identity_fields": [
+      "repository",
+      "issue",
+      "pr",
+      "base_repository",
+      "base_ref",
+      "base_sha",
+      "head_repository",
+      "head_ref",
+      "head_sha",
+      "evidence_digest"
+    ],
     "approved_plus_one_actors": [
       "chatgpt-codex-connector"
     ],
@@ -120,6 +132,14 @@
       "approved_authors": [
         "nerdchanii"
       ],
+      "terminal_history": {
+        "classification": "compensated-old-head",
+        "phases": [
+          "prepared",
+          "label-mutation"
+        ],
+        "require_head_change": true
+      },
       "phases": [
         "prepared",
         "label-mutation",
@@ -210,6 +230,6 @@
     "required_mergeable": true,
     "forbid_unresolved_p0_p1": true,
     "method": "squash",
-    "delete_branch": true
+    "delete_branch": false
   }
 }

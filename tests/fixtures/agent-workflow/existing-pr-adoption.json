@@ -31,7 +31,7 @@
     ],
     "policy_version": 4,
     "operation_version": 1,
-    "evidence_digest": "sha256:dad1c2fea754d188c289643f40f362596191f61af9abebe1d8e8ebf8aa96f204",
+    "evidence_digest": "sha256:944080986b14cd8f572bdaff105820641e1bc0a3a17cdfff25631e0716db1ab1",
     "approval_id": "user-authorization-thread-01a038a7-90bb-7923-b97e-ec7bbd6e67b2",
     "plan_revision": "issue-228-adoption-v1",
     "scope_hash": "sha256:ad186d411c94cb740ca40d52ba57965399c9bc9bf8e8c713896ba102b15932bc",
@@ -83,6 +83,13 @@
       "repository": "nerdchanii/rpm",
       "issue": 145,
       "pr": 210,
+      "base_repository": "nerdchanii/rpm",
+      "base_ref": "main",
+      "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "head_repository": "nerdchanii/rpm",
+      "head_ref": "feat/issue-145-workspaces",
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "evidence_digest": "sha256:944080986b14cd8f572bdaff105820641e1bc0a3a17cdfff25631e0716db1ab1",
       "source": "github-approved-workflow-comment-v1",
       "source_actor": "nerdchanii",
       "approval_id": "user-authorization-thread-01a038a7-90bb-7923-b97e-ec7bbd6e67b2",
@@ -104,6 +111,7 @@
       "records": [
         {
           "name": "metadata",
+          "status": "completed",
           "conclusion": "success",
           "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "source": "github-actions",
@@ -111,6 +119,7 @@
         },
         {
           "name": "verify",
+          "status": "completed",
           "conclusion": "success",
           "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "source": "github-actions",

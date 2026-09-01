@@ -6,11 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 
 def load_json(path: str) -> dict[str, object]:
-    value = json.loads(Path(path).read_text())
+    value = json.loads(sys.stdin.read() if path == "-" else Path(path).read_text())
     if not isinstance(value, dict):
         raise ValueError("fixture must be a JSON object")
     return value
@@ -447,6 +448,20 @@ def evaluate_gate(
                 "issue": issue_number,
                 "pr": pr_number,
             }
+        conclusion = item.get("conclusion")
+        status = item.get("status")
+        if isinstance(status, str) and (
+            status.casefold() in pending_conclusions and conclusion is not None
+            or status.casefold() == "completed"
+            and isinstance(conclusion, str)
+            and conclusion.casefold() in pending_conclusions
+        ):
+            return {
+                "status": "blocked",
+                "reason": "check-status-conclusion-conflict",
+                "issue": issue_number,
+                "pr": pr_number,
+            }
         if name not in required_names:
             continue
         if (
@@ -460,18 +475,42 @@ def evaluate_gate(
                 "issue": issue_number,
                 "pr": pr_number,
             }
-        conclusion = item.get("conclusion")
-        status = item.get("status")
-        if (
-            conclusion is None
-            and isinstance(status, str)
-            and status.casefold() in pending_conclusions
-        ):
-            conclusion = status
-        elif not isinstance(conclusion, str):
+        if not isinstance(status, str):
             return {
                 "status": "blocked",
-                "reason": "check-conclusion-invalid",
+                "reason": "check-status-invalid",
+                "issue": issue_number,
+                "pr": pr_number,
+            }
+        normalized_status = status.casefold()
+        if normalized_status in pending_conclusions:
+            if conclusion is not None:
+                return {
+                    "status": "blocked",
+                    "reason": "check-status-conclusion-conflict",
+                    "issue": issue_number,
+                    "pr": pr_number,
+                }
+            conclusion = normalized_status
+        elif normalized_status == "completed":
+            if not isinstance(conclusion, str):
+                return {
+                    "status": "blocked",
+                    "reason": "check-conclusion-invalid",
+                    "issue": issue_number,
+                    "pr": pr_number,
+                }
+            if conclusion.casefold() in pending_conclusions:
+                return {
+                    "status": "blocked",
+                    "reason": "check-status-conclusion-conflict",
+                    "issue": issue_number,
+                    "pr": pr_number,
+                }
+        else:
+            return {
+                "status": "blocked",
+                "reason": "check-status-invalid",
                 "issue": issue_number,
                 "pr": pr_number,
             }
@@ -525,13 +564,27 @@ def evaluate_gate(
                 "issue": issue_number,
                 "pr": pr_number,
             }
+    if gate.get("delete_branch") is not False:
+        return {
+            "status": "blocked",
+            "reason": "automatic-branch-deletion-unsupported",
+            "issue": issue_number,
+            "pr": pr_number,
+        }
+    merge_method = str(gate.get("method", ""))
     result = {
         "status": "merge",
         "reason": "gate-passed",
         "issue": issue_number,
         "pr": pr_number,
-        "method": str(gate.get("method", "")),
-        "delete_branch": gate.get("delete_branch") is True,
+        "method": merge_method,
+        "delete_branch": False,
+        "merge_request": {
+            "repository_full_name": pr.get("repository"),
+            "pr_number": pr_number,
+            "merge_method": merge_method,
+            "expected_head_sha": selected_head_sha,
+        },
     }
     if selected_head_sha is not None:
         result["head_sha"] = selected_head_sha
@@ -618,6 +671,27 @@ def validate_dependent_prs(
     return None
 
 
+def validate_repository_settings(
+    fixture: dict[str, object], gate: dict[str, object]
+) -> str | None:
+    """Require live proof that GitHub will preserve the merged head branch."""
+    settings = fixture.get("repository_settings")
+    if not isinstance(settings, dict):
+        return "repository-settings-missing"
+    if (
+        settings.get("source") != "github-repository-metadata-v1"
+        or settings.get("repository") != fixture.get("repository")
+        or settings.get("read_complete") is not True
+        or type(settings.get("delete_branch_on_merge")) is not bool
+    ):
+        return "repository-settings-invalid"
+    if gate.get("delete_branch") is not False:
+        return "automatic-branch-deletion-unsupported"
+    if settings.get("delete_branch_on_merge") is not False:
+        return "automatic-branch-deletion-enabled"
+    return None
+
+
 def select_merge(
     fixture: dict[str, object],
     lifecycle: dict[str, str],
@@ -682,6 +756,14 @@ def select_merge(
             "issue": int(selected.get("number", 0)),
             "pr": int(pr.get("number", 0)),
         }
+    repository_settings_error = validate_repository_settings(fixture, gate)
+    if repository_settings_error is not None:
+        return {
+            "status": "blocked",
+            "reason": repository_settings_error,
+            "issue": int(selected.get("number", 0)),
+            "pr": int(pr.get("number", 0)),
+        }
     dependent_error = validate_dependent_prs(fixture, pr)
     if dependent_error is not None:
         dependent_error.update(
@@ -703,11 +785,18 @@ def main() -> int:
 
     policy = load_json(args.policy)
     fixture = load_json(args.issues_file)
-    result = select_merge(
-        fixture,
-        lifecycle_labels(policy),
-        merge_gate(policy),
-    )
+    policy_repository = policy.get("repository")
+    if (
+        not isinstance(policy_repository, str)
+        or fixture.get("repository") != policy_repository
+    ):
+        result = {"status": "blocked", "reason": "repository-mismatch"}
+    else:
+        result = select_merge(
+            fixture,
+            lifecycle_labels(policy),
+            merge_gate(policy),
+        )
     print(json.dumps({"type": "merge_gate_contract", "data": result}, sort_keys=True))
     return 1 if result.get("status") == "blocked" else 0
 

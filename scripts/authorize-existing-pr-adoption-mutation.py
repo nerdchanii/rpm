@@ -102,6 +102,9 @@ def adoption_evidence_digest(value: object) -> str:
     """Digest immutable evidence while ignoring the authorized label delta."""
     normalized = json.loads(json.dumps(value))
     if isinstance(normalized, dict):
+        execution = normalized.get("execution")
+        if isinstance(execution, dict) and "evidence_digest" in execution:
+            execution["evidence_digest"] = "<evidence-digest>"
         issue = normalized.get("issue")
         if isinstance(issue, dict):
             labels = issue.get("labels")
@@ -218,6 +221,15 @@ def validate_prepared_record(
         or repository.get("read_complete") is not True
         or issue.get("repository") != policy.get("repository")
         or pr.get("repository") != policy.get("repository")
+        or not isinstance(pr.get("base"), dict)
+        or not isinstance(pr.get("head"), dict)
+        or execution.get("base_repository") != pr.get("base", {}).get("repository")
+        or execution.get("base_ref") != pr.get("base", {}).get("ref")
+        or execution.get("base_sha") != pr.get("base", {}).get("sha")
+        or execution.get("head_repository") != pr.get("head", {}).get("repository")
+        or execution.get("head_ref") != pr.get("head", {}).get("ref")
+        or execution.get("head_sha") != pr.get("head", {}).get("sha")
+        or execution.get("evidence_digest") != evidence_digest
         or issue.get("closing_prs_complete") is not True
         or pr.get("closing_issues_complete") is not True
         or issue.get("closing_prs") != [pr.get("number")]

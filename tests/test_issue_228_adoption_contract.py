@@ -111,6 +111,9 @@ def canonical_digest(value: object) -> str:
     }.issubset(value):
         root_path = "evidence"
         value = copy.deepcopy(value)
+        execution = value.get("execution")
+        if isinstance(execution, dict) and "evidence_digest" in execution:
+            execution["evidence_digest"] = "<evidence-digest>"
         writers = value.get("writers")
         if isinstance(writers, dict):
             if "observed_at" in writers:
@@ -259,6 +262,7 @@ class FakeGithubApiRunner:
 
     def __init__(self, fixture: dict[str, object]) -> None:
         self.fixture = copy.deepcopy(fixture)
+        self.head_sha = str(self.fixture["evidence"]["pr"]["head"]["sha"])
         self.labels = set(self.fixture["evidence"]["issue"]["labels"])
         self.comments: list[dict[str, object]] = []
         self.writes: list[tuple[str, object]] = []
@@ -357,15 +361,15 @@ class FakeGithubApiRunner:
                 },
                 "head": {
                     "ref": "feat/issue-145-workspaces",
-                    "sha": HEAD_SHA,
+                    "sha": self.head_sha,
                     "repo": {"full_name": head_repository},
                 },
             }
         elif route == "repos/nerdchanii/rpm/issues/145/comments":
             response = copy.deepcopy(self.comments)
-        elif route == f"repos/nerdchanii/rpm/commits/{HEAD_SHA}":
+        elif route == f"repos/nerdchanii/rpm/commits/{self.head_sha}":
             response = {
-                "sha": HEAD_SHA,
+                "sha": self.head_sha,
                 "commit": {
                     "author": {"date": "2026-08-25T12:00:00Z"},
                     "committer": {"date": "2026-08-25T12:00:00Z"},
@@ -373,19 +377,21 @@ class FakeGithubApiRunner:
             }
         elif route == "repos/nerdchanii/rpm/issues/210/timeline":
             response = copy.deepcopy(self.timeline_events)
-        elif route == f"repos/nerdchanii/rpm/commits/{HEAD_SHA}/check-runs":
+        elif route == f"repos/nerdchanii/rpm/commits/{self.head_sha}/check-runs":
             response = {
                 "total_count": 2,
                 "check_runs": [
                     {
                         "id": 41001,
                         "name": "metadata",
+                        "status": "completed",
                         "conclusion": "success",
                         "app": {"slug": "github-actions"},
                     },
                     {
                         "id": 41002,
                         "name": "verify",
+                        "status": "completed",
                         "conclusion": "success",
                         "app": {"slug": "github-actions"},
                     },
@@ -396,7 +402,7 @@ class FakeGithubApiRunner:
                 {
                     "user": {"login": "chatgpt-codex-connector"},
                     "submitted_at": "2026-08-25T12:10:00Z",
-                    "commit_id": HEAD_SHA,
+                    "commit_id": self.head_sha,
                     "state": "COMMENTED",
                 }
             ]
@@ -451,6 +457,64 @@ class RacingLifecycleLabelApiRunner(FakeGithubApiRunner):
         return super().__call__(argv, input_text)
 
 
+class InterruptedLabelThenHeadChangeApiRunner(FakeGithubApiRunner):
+    """Persist the label, fail its refetch, then expose a changed PR head."""
+
+    def __init__(self, fixture: dict[str, object]) -> None:
+        super().__init__(fixture)
+        self.current_head_sha = HEAD_SHA
+        self.fail_issue_reads = 0
+        self.delete_count = 0
+
+    def __call__(
+        self, argv: list[str], input_text: str | None = None
+    ) -> tuple[int, str, str]:
+        if (
+            argv[:3] != ["gh", "api", "graphql"]
+            and argv[:2] == ["gh", "api"]
+            and len(argv) >= 3
+        ):
+            endpoint = argv[2]
+            method = argv[argv.index("--method") + 1]
+            route = endpoint.split("?", 1)[0]
+            if method == "POST" and route.endswith("/labels"):
+                result = super().__call__(argv, input_text)
+                self.fail_issue_reads = 1
+                return result
+            if (
+                method == "GET"
+                and route == "repos/nerdchanii/rpm/issues/145"
+                and self.fail_issue_reads > 0
+            ):
+                self.fail_issue_reads -= 1
+                return 500, "", "deterministic post-write refetch failure"
+            if method == "GET" and route == "repos/nerdchanii/rpm/pulls/210":
+                response = {
+                    "number": 210,
+                    "state": "open",
+                    "draft": False,
+                    "updated_at": self.pr_updated_at,
+                    "base": {
+                        "ref": "main",
+                        "sha": BASE_SHA,
+                        "repo": {"full_name": "nerdchanii/rpm"},
+                    },
+                    "head": {
+                        "ref": "feat/issue-145-workspaces",
+                        "sha": self.current_head_sha,
+                        "repo": {"full_name": "nerdchanii/rpm"},
+                    },
+                }
+                return 0, json.dumps(response), ""
+            if method == "DELETE" and "/labels/" in route:
+                label = route.rsplit("/", 1)[-1].replace("%3A", ":")
+                self.labels.discard(label)
+                self.delete_count += 1
+                self.writes.append(("delete-label", label))
+                return 0, "", ""
+        return super().__call__(argv, input_text)
+
+
 class AdoptionContractTest(unittest.TestCase):
     maxDiff = None
 
@@ -487,9 +551,9 @@ class AdoptionContractTest(unittest.TestCase):
         return {name: collector(value) for name, value in values.items()}
 
     def resign(self, fixture: dict[str, object]) -> None:
-        fixture["authorization"]["evidence_digest"] = canonical_digest(
-            fixture["evidence"]
-        )
+        digest = canonical_digest(fixture["evidence"])
+        fixture["evidence"]["execution"]["evidence_digest"] = digest
+        fixture["authorization"]["evidence_digest"] = digest
 
     def write_json(self, directory: Path, name: str, value: object) -> Path:
         path = directory / name
@@ -652,6 +716,11 @@ class AdoptionContractTest(unittest.TestCase):
                 "namespace": "rpm-agent-adoption",
                 "marker": LEDGER_MARKER,
                 "approved_authors": [LEDGER_AUTHOR],
+                "terminal_history": {
+                    "classification": "compensated-old-head",
+                    "phases": ["prepared", "label-mutation"],
+                    "require_head_change": True,
+                },
                 "phases": [
                     "prepared",
                     "label-mutation",
@@ -902,11 +971,77 @@ class AdoptionContractTest(unittest.TestCase):
                 result, event = self.run_queue(fixture)
                 self.assert_blocked(result, event)
 
+    def test_execution_authorization_is_bound_to_the_exact_head(self) -> None:
+        fixture = self.load_adoption()
+        fixture["evidence"]["execution"]["head_sha"] = "c" * 40
+        self.resign(fixture)
+
+        result, event = self.run_queue(fixture)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(data.get("reason"), "execution-authorization-unbound", data)
+
+    def test_execution_marker_binds_full_pr_identity_and_evidence_digest(self) -> None:
+        variants: list[tuple[str, dict[str, object]]] = []
+
+        base_ref = self.load_adoption()
+        base_ref["evidence"]["pr"]["base"]["ref"] = "release"
+        base_ref["authorization"]["base"]["ref"] = "release"
+        base_ref["closing_pr_inventory"]["records"][0]["base_ref"] = "release"
+        base_ref["authorization"]["evidence_digest"] = canonical_digest(
+            base_ref["evidence"]
+        )
+        variants.append(("base-ref", base_ref))
+
+        head_ref = self.load_adoption()
+        head_ref["evidence"]["pr"]["head"]["ref"] = "retargeted-head"
+        head_ref["authorization"]["head"]["ref"] = "retargeted-head"
+        head_ref["closing_pr_inventory"]["records"][0]["head_ref"] = (
+            "retargeted-head"
+        )
+        head_ref["authorization"]["evidence_digest"] = canonical_digest(
+            head_ref["evidence"]
+        )
+        variants.append(("head-ref", head_ref))
+
+        head_repository = self.load_adoption()
+        head_repository["evidence"]["pr"]["head"]["repository"] = "fork/rpm"
+        head_repository["authorization"]["head"]["repository"] = "fork/rpm"
+        head_repository["authorization"]["evidence_digest"] = canonical_digest(
+            head_repository["evidence"]
+        )
+        variants.append(("head-repository", head_repository))
+
+        changed_evidence = self.load_adoption()
+        changed_evidence["evidence"]["checks"]["records"].append(
+            {
+                "name": "coverage-app",
+                "status": "completed",
+                "conclusion": "success",
+                "head_sha": HEAD_SHA,
+                "source": "third-party-app",
+                "workflow_run_id": 91003,
+            }
+        )
+        changed_evidence["evidence"]["checks"]["count"] = 3
+        changed_evidence["authorization"]["evidence_digest"] = canonical_digest(
+            changed_evidence["evidence"]
+        )
+        variants.append(("evidence-digest", changed_evidence))
+
+        for name, fixture in variants:
+            with self.subTest(name=name):
+                result, event = self.run_queue(fixture)
+                data = self.assert_blocked(result, event)
+                self.assertEqual(
+                    data.get("reason"), "execution-authorization-unbound", data
+                )
+
     def test_fork_head_repository_is_bound_without_rejecting_adoption(self) -> None:
         fixture = self.load_adoption()
         fork_repository = "contributor/rpm"
         fixture["authorization"]["head"]["repository"] = fork_repository
         fixture["evidence"]["pr"]["head"]["repository"] = fork_repository
+        fixture["evidence"]["execution"]["head_repository"] = fork_repository
         self.resign(fixture)
 
         result, event = self.run_queue(fixture)
@@ -1005,6 +1140,17 @@ class AdoptionContractTest(unittest.TestCase):
         result, event = self.run_queue(third_party)
         self.assert_adoptable(result, event)
 
+        contradictory_third_party = copy.deepcopy(third_party)
+        extra = contradictory_third_party["evidence"]["checks"]["records"][-1]
+        extra["status"] = "in_progress"
+        extra["conclusion"] = "success"
+        self.resign(contradictory_third_party)
+        result, event = self.run_queue(contradictory_third_party)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(
+            data.get("reason"), "check-status-conclusion-conflict", data
+        )
+
         fixture = self.load_adoption()
         failed_duplicate = copy.deepcopy(
             fixture["evidence"]["checks"]["records"][1]
@@ -1044,6 +1190,24 @@ class AdoptionContractTest(unittest.TestCase):
         ]
         review["reactions"]["count"] = 1
         self.resign(fixture)
+
+    def test_adoption_checks_reject_status_conclusion_conflicts(self) -> None:
+        cases = (
+            ("in_progress", "success", "check-status-conclusion-conflict"),
+            ("completed", "queued", "check-status-conclusion-conflict"),
+            ("in_progress", None, "required-check-not-successful"),
+            ("unknown", "success", "check-status-invalid"),
+        )
+        for status, conclusion, reason in cases:
+            with self.subTest(status=status, conclusion=conclusion):
+                fixture = self.load_adoption()
+                verify = fixture["evidence"]["checks"]["records"][1]
+                verify["status"] = status
+                verify["conclusion"] = conclusion
+                self.resign(fixture)
+                result, event = self.run_queue(fixture)
+                data = self.assert_blocked(result, event)
+                self.assertEqual(data.get("reason"), reason, data)
 
     def test_review_is_current_or_an_approved_post_head_plus_one(self) -> None:
         fixture = self.load_adoption()
@@ -1901,7 +2065,14 @@ class AdoptionContractTest(unittest.TestCase):
             {"repository": repository, "number": issue}
         ]
         evidence["execution"].update(
-            {"repository": repository, "issue": issue, "pr": pr}
+            {
+                "repository": repository,
+                "issue": issue,
+                "pr": pr,
+                "base_repository": repository,
+                "head_repository": repository,
+                "head_ref": f"feat/issue-{issue}-fixture",
+            }
         )
         evidence["checks"].update({"repository": repository, "pr": pr})
         evidence["review"].update(
@@ -2252,13 +2423,36 @@ class AdoptionContractTest(unittest.TestCase):
         execution = copy.deepcopy(prepared["evidence"]["execution"])
         marker_payload = {
             field: execution[field]
-            for field in ("approval_id", "plan_revision", "scope_hash", "executor")
+            for field in (
+                "repository",
+                "issue",
+                "pr",
+                "base_repository",
+                "base_ref",
+                "base_sha",
+                "head_repository",
+                "head_ref",
+                "head_sha",
+                "evidence_digest",
+                "approval_id",
+                "plan_revision",
+                "scope_hash",
+                "executor",
+            )
         }
         marker = "<!-- rpm-agent-execution: " + json.dumps(marker_payload) + " -->"
         transport = github_transport(
             snapshot=prepared,
             approved_marker_actors=frozenset({"nerdchanii"}),
         )
+        transport._pr_identity_from_pr = lambda repository, pr: {
+            "base_repository": "nerdchanii/rpm",
+            "base_ref": "main",
+            "base_sha": BASE_SHA,
+            "head_repository": "nerdchanii/rpm",
+            "head_ref": "feat/issue-145-workspaces",
+            "head_sha": HEAD_SHA,
+        }
         transport._call = lambda endpoint, **kwargs: {"body": marker}
         transport._paginate = lambda endpoint, **kwargs: []
         with self.assertRaisesRegex(RuntimeError, "authorization is missing"):
@@ -2280,30 +2474,80 @@ class AdoptionContractTest(unittest.TestCase):
         )
         self.assertEqual(collected["source_actor"], "nerdchanii")
 
-        forged_marker_payload = {
+        for field, value in (
+            ("repository", "other/rpm"),
+            ("issue", 999),
+            ("pr", 998),
+            ("base_repository", "other/rpm"),
+            ("base_ref", "release"),
+            ("base_sha", "c" * 40),
+            ("head_repository", "fork/rpm"),
+            ("head_ref", "retargeted"),
+            ("head_sha", "c" * 40),
+        ):
+            with self.subTest(field=field):
+                forged_marker_payload = {**marker_payload, field: value}
+                forged_marker = "<!-- rpm-agent-execution: " + json.dumps(
+                    forged_marker_payload
+                ) + " -->"
+                transport._paginate = lambda endpoint, marker=forged_marker, **kwargs: [
+                    {"id": 70003, "user": {"login": "nerdchanii"}, "body": marker}
+                ]
+                with self.assertRaisesRegex(RuntimeError, "authorization is missing"):
+                    transport._collect_execution("nerdchanii/rpm", 145, 210)
+
+        old_marker_payload = {
             **marker_payload,
-            "repository": "other/rpm",
-            "issue": 999,
-            "pr": 998,
-            "source": "forged-source",
-            "source_actor": "forged-actor",
-            "policy_version": 0,
-            "operation_version": 0,
+            "head_sha": "c" * 40,
+            "evidence_digest": "sha256:" + "d" * 64,
         }
-        forged_marker = "<!-- rpm-agent-execution: " + json.dumps(
-            forged_marker_payload
+        old_marker = "<!-- rpm-agent-execution: " + json.dumps(
+            old_marker_payload
+        ) + " -->"
+        old_evidence_marker = "<!-- rpm-agent-execution: " + json.dumps(
+            {**marker_payload, "evidence_digest": "sha256:" + "e" * 64}
+        ) + " -->"
+        legacy_marker = "<!-- rpm-agent-execution: " + json.dumps(
+            {
+                field: marker_payload[field]
+                for field in (
+                    "approval_id",
+                    "plan_revision",
+                    "scope_hash",
+                    "executor",
+                )
+            }
         ) + " -->"
         transport._paginate = lambda endpoint, **kwargs: [
-            {"id": 70003, "user": {"login": "nerdchanii"}, "body": forged_marker}
+            {"id": 69998, "user": {"login": "nerdchanii"}, "body": legacy_marker},
+            {"id": 69999, "user": {"login": "nerdchanii"}, "body": old_marker},
+            {
+                "id": 70000,
+                "user": {"login": "nerdchanii"},
+                "body": old_evidence_marker,
+            },
+            {"id": 70002, "user": {"login": "nerdchanii"}, "body": marker},
         ]
-        rebound = transport._collect_execution("nerdchanii/rpm", 145, 210)
-        self.assertEqual(rebound["repository"], "nerdchanii/rpm")
-        self.assertEqual(rebound["issue"], 145)
-        self.assertEqual(rebound["pr"], 210)
-        self.assertEqual(rebound["source"], "github-approved-workflow-comment-v1")
-        self.assertEqual(rebound["source_actor"], "nerdchanii")
-        self.assertEqual(rebound["policy_version"], prepared["operation"]["policy_version"])
-        self.assertEqual(rebound["operation_version"], prepared["operation"]["version"])
+        self.assertEqual(
+            transport._collect_execution("nerdchanii/rpm", 145, 210), execution
+        )
+
+        transport._paginate = lambda endpoint, **kwargs: [
+            {"id": 70002, "user": {"login": "nerdchanii"}, "body": marker},
+            {"id": 70003, "user": {"login": "nerdchanii"}, "body": marker},
+        ]
+        with self.assertRaisesRegex(RuntimeError, "authorization is missing or ambiguous"):
+            transport._collect_execution("nerdchanii/rpm", 145, 210)
+
+        extra_marker_payload = {**marker_payload, "source": "forged-source"}
+        extra_marker = "<!-- rpm-agent-execution: " + json.dumps(
+            extra_marker_payload
+        ) + " -->"
+        transport._paginate = lambda endpoint, **kwargs: [
+            {"id": 70004, "user": {"login": "nerdchanii"}, "body": extra_marker}
+        ]
+        with self.assertRaisesRegex(RuntimeError, "unexpected fields"):
+            transport._collect_execution("nerdchanii/rpm", 145, 210)
 
     def test_default_observation_time_and_claim_lease_use_contract_evidence(self) -> None:
         namespace = runpy.run_path(str(ADOPTION_WRITER))
@@ -2366,6 +2610,8 @@ class AdoptionContractTest(unittest.TestCase):
 
         api = FakeGithubApiRunner(prepared)
         api.pr_updated_at = "2026-08-25T13:00:00Z"
+        prepared["evidence"]["review"]["head_updated_at"] = api.pr_updated_at
+        self.resign(prepared)
         live = github_transport(
             snapshot=prepared,
             runner=api,
@@ -2390,6 +2636,10 @@ class AdoptionContractTest(unittest.TestCase):
                 "created_at": "2026-08-25T12:20:00Z",
             },
         ]
+        prepared["evidence"]["review"]["head_updated_at"] = (
+            "2026-08-25T12:20:00Z"
+        )
+        self.resign(prepared)
         transitioned = github_transport(
             snapshot=prepared,
             runner=api,
@@ -2841,6 +3091,333 @@ class AdoptionContractTest(unittest.TestCase):
                 self.assertEqual(
                     retry_phases, ["prepared", "label-mutation"]
                 )
+
+    def test_stale_authorization_compensates_an_interrupted_label_write(
+        self,
+    ) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        writer = namespace.get("execute_adoption_phase")
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(writer), namespace.keys())
+        self.assertTrue(callable(github_transport), namespace.keys())
+
+        prepared = self.load_adoption()
+        self.install_current_adoption_lease(prepared)
+        api = InterruptedLabelThenHeadChangeApiRunner(prepared)
+        transport = github_transport(
+            snapshot=prepared,
+            runner=api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+            collectors=self.live_collectors(prepared),
+        )
+
+        for expected_phase in ("prepared", "label-mutation"):
+            result = writer(self.load_policy(), prepared, transport)
+            self.assertEqual(result.get("status"), "applied", result)
+            self.assertEqual(result.get("phase"), expected_phase, result)
+
+        interrupted = writer(self.load_policy(), prepared, transport)
+        self.assertEqual(interrupted.get("status"), "blocked", interrupted)
+        self.assertIn("agent:review-pending", api.labels)
+        self.assertEqual(api.delete_count, 0)
+
+        api.current_head_sha = "c" * 40
+        recovered = writer(self.load_policy(), prepared, transport)
+        self.assertEqual(recovered.get("status"), "blocked", recovered)
+        self.assertEqual(
+            recovered.get("reason"), "fresh-authorization-required", recovered
+        )
+        self.assertEqual(
+            recovered.get("recovery", {}).get("status"), "restored", recovered
+        )
+        self.assertNotIn("agent:review-pending", api.labels)
+        self.assertEqual(api.labels, {"documentation"})
+        self.assertEqual(api.delete_count, 1)
+        phases = [
+            json.loads(str(comment["body"]).split("\n", 1)[1])["phase"]
+            for comment in api.comments
+            if "rpm-agent-adoption:v1" in str(comment.get("body"))
+        ]
+        self.assertEqual(phases, ["prepared", "label-mutation"])
+
+        writes_before_replay = copy.deepcopy(api.writes)
+        replay = writer(self.load_policy(), prepared, transport)
+        self.assertEqual(replay.get("status"), "blocked", replay)
+        self.assertEqual(api.writes, writes_before_replay)
+        self.assertEqual(api.delete_count, 1)
+
+        # The compensated run remains immutable audit history. A new exact
+        # authorization for the new head must be able to complete with its own
+        # run ID while the old prepared/label-mutation comments remain present.
+        fresh_head = "c" * 40
+        fresh = json.loads(
+            json.dumps(self.load_adoption()).replace(HEAD_SHA, fresh_head)
+        )
+        fresh["operation"]["run_id"] = "adopt-run-002"
+        fresh_writer = self.writer(
+            fresh,
+            kind="adoption",
+            run_id="adopt-run-002",
+            owner="rpm_existing_pr_adopter",
+            expires_at="2026-08-25T13:00:00Z",
+        )
+        fresh_writer["head_sha"] = fresh_head
+        fresh_writer["source_comment_id"] = 90001
+        self.set_writers(fresh, [fresh_writer])
+        fresh_api = FakeGithubApiRunner(fresh)
+        fresh_api.comments = copy.deepcopy(api.comments)
+        fresh_api.next_comment_id = 82001
+        fresh_transport = github_transport(
+            snapshot=fresh,
+            runner=fresh_api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+            collectors=self.live_collectors(fresh),
+        )
+        for expected_phase in (
+            "prepared",
+            "label-mutation",
+            "label-mutation",
+            "committed",
+            "reconciled",
+        ):
+            result = writer(self.load_policy(), fresh, fresh_transport)
+            self.assertEqual(result.get("status"), "applied", result)
+            self.assertEqual(result.get("phase"), expected_phase, result)
+        reconciled = writer(self.load_policy(), fresh, fresh_transport)
+        self.assertEqual(
+            reconciled,
+            {"status": "reconciled", "phase": "reconciled"},
+        )
+        self.assertEqual(
+            fresh_api.labels,
+            {"documentation", "agent:review-pending"},
+        )
+        parsed_records = [
+            json.loads(str(comment["body"]).split("\n", 1)[1])
+            for comment in fresh_api.comments
+            if "rpm-agent-adoption:v1" in str(comment.get("body"))
+        ]
+        self.assertEqual(
+            [
+                record["phase"]
+                for record in parsed_records
+                if record["run_id"] == "adopt-run-001"
+            ],
+            ["prepared", "label-mutation"],
+        )
+        self.assertEqual(
+            [
+                record["phase"]
+                for record in parsed_records
+                if record["run_id"] == "adopt-run-002"
+            ],
+            ["prepared", "label-mutation", "committed", "reconciled"],
+        )
+
+    def test_stale_label_recovery_requires_the_exact_active_adoption_winner(
+        self,
+    ) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        writer = namespace.get("execute_adoption_phase")
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(writer), namespace.keys())
+        self.assertTrue(callable(github_transport), namespace.keys())
+
+        variants = (
+            ("same-run-claim", {"kind": "claim"}, False),
+            ("wrong-owner", {"owner": "other-owner"}, False),
+            ("wrong-repository", {"repository": "other/rpm"}, False),
+            ("wrong-issue", {"issue": 999}, False),
+            ("wrong-pr", {"pr": 999}, False),
+            ("wrong-head", {"head_sha": "d" * 40}, False),
+            ("earlier-server-winner", {}, True),
+        )
+        for name, updates, add_earlier_winner in variants:
+            with self.subTest(name=name):
+                prepared = self.load_adoption()
+                self.install_current_adoption_lease(prepared)
+                writer_inventory = copy.deepcopy(prepared["evidence"]["writers"])
+                collectors = self.live_collectors(prepared)
+                collectors["writers"] = (
+                    lambda repository, issue, pr: copy.deepcopy(writer_inventory)
+                )
+                api = InterruptedLabelThenHeadChangeApiRunner(prepared)
+                transport = github_transport(
+                    snapshot=prepared,
+                    runner=api,
+                    approved_marker_actors=frozenset({"nerdchanii"}),
+                    collectors=collectors,
+                )
+                for expected_phase in ("prepared", "label-mutation"):
+                    result = writer(self.load_policy(), prepared, transport)
+                    self.assertEqual(result.get("status"), "applied", result)
+                    self.assertEqual(result.get("phase"), expected_phase, result)
+                interrupted = writer(self.load_policy(), prepared, transport)
+                self.assertEqual(interrupted.get("status"), "blocked", interrupted)
+
+                records = copy.deepcopy(writer_inventory["records"])
+                records[0].update(updates)
+                records[0]["lease_expires_at"] = "2999-01-01T00:00:00Z"
+                if records[0].get("kind") != "adoption":
+                    records[0].pop("source_comment_id", None)
+                if add_earlier_winner:
+                    contender = copy.deepcopy(records[0])
+                    contender.update(
+                        {
+                            "run_id": "other-run",
+                            "owner": "other-owner",
+                            "source_comment_id": 70001,
+                        }
+                    )
+                    records.append(contender)
+                writer_inventory["records"] = records
+                writer_inventory["count"] = len(records)
+                api.current_head_sha = "c" * 40
+
+                recovery = transport.recover_stale_label(
+                    self.load_policy(),
+                    "nerdchanii/rpm",
+                    145,
+                    210,
+                    prepared["authorization"],
+                )
+                self.assertEqual(recovery.get("status"), "not-safe", recovery)
+                self.assertEqual(
+                    recovery.get("reason"), "recovery-writer-active", recovery
+                )
+                self.assertEqual(api.delete_count, 0)
+                self.assertIn("agent:review-pending", api.labels)
+
+    def test_stale_label_recovery_rechecks_writer_inventory_before_delete(
+        self,
+    ) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        writer = namespace.get("execute_adoption_phase")
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(writer), namespace.keys())
+        self.assertTrue(callable(github_transport), namespace.keys())
+
+        prepared = self.load_adoption()
+        self.install_current_adoption_lease(prepared)
+        writer_inventory = copy.deepcopy(prepared["evidence"]["writers"])
+        drifted_inventory = copy.deepcopy(writer_inventory)
+        expired_claim = copy.deepcopy(writer_inventory["records"][0])
+        expired_claim.update(
+            {
+                "kind": "claim",
+                "run_id": "expired-other-run",
+                "owner": "other-owner",
+                "lease_expires_at": "2026-08-25T12:00:00Z",
+            }
+        )
+        expired_claim.pop("source_comment_id", None)
+        drifted_inventory["records"].append(expired_claim)
+        drifted_inventory["count"] = len(drifted_inventory["records"])
+        collection_state = {"recovery_reads": 0, "enabled": False}
+
+        def collect_writers(repository: str, issue: int, pr: int) -> object:
+            if collection_state["enabled"]:
+                collection_state["recovery_reads"] += 1
+                if collection_state["recovery_reads"] >= 2:
+                    return copy.deepcopy(drifted_inventory)
+            return copy.deepcopy(writer_inventory)
+
+        collectors = self.live_collectors(prepared)
+        collectors["writers"] = collect_writers
+        api = InterruptedLabelThenHeadChangeApiRunner(prepared)
+        transport = github_transport(
+            snapshot=prepared,
+            runner=api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+            collectors=collectors,
+        )
+        for expected_phase in ("prepared", "label-mutation"):
+            result = writer(self.load_policy(), prepared, transport)
+            self.assertEqual(result.get("status"), "applied", result)
+            self.assertEqual(result.get("phase"), expected_phase, result)
+        interrupted = writer(self.load_policy(), prepared, transport)
+        self.assertEqual(interrupted.get("status"), "blocked", interrupted)
+
+        api.current_head_sha = "c" * 40
+        collection_state["enabled"] = True
+        recovery = transport.recover_stale_label(
+            self.load_policy(),
+            "nerdchanii/rpm",
+            145,
+            210,
+            prepared["authorization"],
+        )
+        self.assertEqual(recovery.get("status"), "not-safe", recovery)
+        self.assertEqual(recovery.get("reason"), "recovery-writer-drift", recovery)
+        self.assertEqual(collection_state["recovery_reads"], 2)
+        self.assertEqual(api.delete_count, 0)
+        self.assertIn("agent:review-pending", api.labels)
+
+    def test_stale_recovery_never_deletes_after_a_new_head_run_starts(
+        self,
+    ) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        writer = namespace.get("execute_adoption_phase")
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(writer), namespace.keys())
+        self.assertTrue(callable(github_transport), namespace.keys())
+
+        prepared = self.load_adoption()
+        self.install_current_adoption_lease(prepared)
+        api = InterruptedLabelThenHeadChangeApiRunner(prepared)
+        transport = github_transport(
+            snapshot=prepared,
+            runner=api,
+            approved_marker_actors=frozenset({"nerdchanii"}),
+            collectors=self.live_collectors(prepared),
+        )
+        for expected_phase in ("prepared", "label-mutation"):
+            result = writer(self.load_policy(), prepared, transport)
+            self.assertEqual(result.get("status"), "applied", result)
+            self.assertEqual(result.get("phase"), expected_phase, result)
+        interrupted = writer(self.load_policy(), prepared, transport)
+        self.assertEqual(interrupted.get("status"), "blocked", interrupted)
+        self.assertIn("agent:review-pending", api.labels)
+
+        fresh_head = "c" * 40
+        api.current_head_sha = fresh_head
+        fresh = json.loads(
+            json.dumps(self.load_adoption()).replace(HEAD_SHA, fresh_head)
+        )
+        fresh["operation"]["run_id"] = "adopt-run-002"
+        self.resign(fresh)
+        for offset, phase in enumerate(("prepared", "label-mutation"), start=1):
+            record = self.ledger_record(
+                fresh,
+                phase,
+                comment_id=82000 + offset,
+                run_id="adopt-run-002",
+            )
+            comment_id = int(record.pop("comment_id"))
+            record.pop("author")
+            api.comments.append(
+                {
+                    "id": comment_id,
+                    "body": LEDGER_MARKER
+                    + "\n"
+                    + json.dumps(record, ensure_ascii=False, sort_keys=True),
+                    "user": {"login": LEDGER_AUTHOR},
+                }
+            )
+
+        recovery = transport.recover_stale_label(
+            self.load_policy(),
+            "nerdchanii/rpm",
+            145,
+            210,
+            prepared["authorization"],
+        )
+        self.assertEqual(recovery.get("status"), "not-safe", recovery)
+        self.assertEqual(
+            recovery.get("reason"), "recovery-ledger-owner-conflict", recovery
+        )
+        self.assertEqual(api.delete_count, 0)
+        self.assertIn("agent:review-pending", api.labels)
 
     def test_narrow_writer_performs_every_phase_and_exact_replay(self) -> None:
         writer = self.load_adoption_writer()
@@ -4117,6 +4694,29 @@ class AdoptionContractTest(unittest.TestCase):
         result, event = self.run_merge(fork_head)
         self.assertEqual(result.returncode, 0, event)
         self.assertEqual(event["data"].get("status"), "merge", event)
+        self.assertFalse(event["data"].get("delete_branch"), event)
+
+        unsafe_delete = self.load_policy()
+        unsafe_delete["merge_gate"]["delete_branch"] = True
+        same_repository = copy.deepcopy(fixture)
+        same_repository["issues"][0]["closing_prs"][0]["dependent_prs"][
+            "records"
+        ] = []
+        same_repository["issues"][0]["closing_prs"][0]["dependent_prs"][
+            "count"
+        ] = 0
+        for name, target in (
+            ("same-repository", same_repository),
+            ("fork", fork_head),
+        ):
+            with self.subTest(delete_branch_target=name):
+                result, event = self.run_merge(target, unsafe_delete)
+                data = self.assert_blocked(result, event)
+                self.assertEqual(
+                    data.get("reason"),
+                    "automatic-branch-deletion-unsupported",
+                    data,
+                )
 
         divergent = copy.deepcopy(fixture)
         divergent["issues"][0]["closing_prs"][0]["dependent_prs"]["records"][0][
@@ -4276,6 +4876,16 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertEqual(data.get("pr"), 210, data)
         self.assertEqual(data.get("head_sha"), HEAD_SHA, data)
         self.assertEqual(data.get("batch_limit"), 1, data)
+        self.assertEqual(
+            data.get("merge_request"),
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "pr_number": 210,
+                "merge_method": "squash",
+                "expected_head_sha": HEAD_SHA,
+            },
+            data,
+        )
 
         changed = copy.deepcopy(fixture)
         changed["selected_head_sha"] = "c" * 40
@@ -4348,6 +4958,18 @@ class AdoptionContractTest(unittest.TestCase):
         result, event = self.run_merge(third_party)
         self.assertEqual(result.returncode, 0, event)
         self.assertEqual(event["data"].get("status"), "merge", event)
+
+        contradictory_third_party = copy.deepcopy(third_party)
+        extra = contradictory_third_party["issues"][0]["closing_prs"][0][
+            "checks"
+        ]["records"][-1]
+        extra["status"] = "in_progress"
+        extra["conclusion"] = "success"
+        result, event = self.run_merge(contradictory_third_party)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(
+            data.get("reason"), "check-status-conclusion-conflict", data
+        )
 
         p3 = copy.deepcopy(baseline)
         p3["issues"][0]["closing_prs"][0]["findings"]["items"] = [
@@ -4447,6 +5069,30 @@ class AdoptionContractTest(unittest.TestCase):
         result, event = self.run_merge(invalid)
         data = self.assert_blocked(result, event)
         self.assertEqual(data.get("reason"), "check-conclusion-invalid", data)
+
+        contradictory = copy.deepcopy(baseline)
+        contradictory_verify = contradictory["issues"][0]["closing_prs"][0][
+            "checks"
+        ]["records"][1]
+        contradictory_verify["status"] = "in_progress"
+        contradictory_verify["conclusion"] = "success"
+        result, event = self.run_merge(contradictory)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(
+            data.get("reason"), "check-status-conclusion-conflict", data
+        )
+
+        completed_pending = copy.deepcopy(baseline)
+        completed_pending_verify = completed_pending["issues"][0]["closing_prs"][
+            0
+        ]["checks"]["records"][1]
+        completed_pending_verify["status"] = "completed"
+        completed_pending_verify["conclusion"] = "queued"
+        result, event = self.run_merge(completed_pending)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(
+            data.get("reason"), "check-status-conclusion-conflict", data
+        )
 
     def test_merge_gate_requires_a_positive_follow_up_issue(self) -> None:
         fixture = json.loads(DEPENDENT_FIXTURE.read_text())
@@ -4779,6 +5425,19 @@ class AdoptionContractTest(unittest.TestCase):
             with self.subTest(fixture=relative):
                 fixture = json.loads((ROOT / relative).read_text())
                 self.assertIsInstance(fixture.get("selected_head_sha"), str)
+                repository_settings = fixture.get("repository_settings")
+                self.assertIsInstance(repository_settings, dict)
+                self.assertEqual(
+                    repository_settings.get("source"),
+                    "github-repository-metadata-v1",
+                )
+                self.assertEqual(
+                    repository_settings.get("repository"), fixture["repository"]
+                )
+                self.assertTrue(repository_settings.get("read_complete"))
+                self.assertIs(
+                    repository_settings.get("delete_branch_on_merge"), False
+                )
                 issue_inventory = fixture.get("issue_inventory")
                 self.assertIsInstance(issue_inventory, dict)
                 self.assertEqual(
@@ -4823,6 +5482,56 @@ class AdoptionContractTest(unittest.TestCase):
                         self.assertEqual(
                             inventory.get("count"), len(inventory.get("records", []))
                         )
+
+    def test_merge_gate_requires_live_repository_branch_deletion_setting(
+        self,
+    ) -> None:
+        baseline = json.loads(DEPENDENT_FIXTURE.read_text())
+        dependents = baseline["issues"][0]["closing_prs"][0]["dependent_prs"]
+        dependents["records"] = []
+        dependents["count"] = 0
+
+        result, event = self.run_merge(baseline)
+        self.assertEqual(result.returncode, 0, event)
+        self.assertEqual(event["data"].get("status"), "merge", event)
+
+        missing = copy.deepcopy(baseline)
+        missing.pop("repository_settings")
+        result, event = self.run_merge(missing)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(data.get("reason"), "repository-settings-missing", data)
+
+        for field, value in (
+            ("source", "unknown-source"),
+            ("repository", "attacker/rpm"),
+            ("read_complete", False),
+            ("delete_branch_on_merge", "false"),
+        ):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(baseline)
+                changed["repository_settings"][field] = value
+                result, event = self.run_merge(changed)
+                data = self.assert_blocked(result, event)
+                self.assertEqual(
+                    data.get("reason"), "repository-settings-invalid", data
+                )
+
+        enabled = copy.deepcopy(baseline)
+        enabled["repository_settings"]["delete_branch_on_merge"] = True
+        result, event = self.run_merge(enabled)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(
+            data.get("reason"), "automatic-branch-deletion-enabled", data
+        )
+
+    def test_merge_gate_rejects_a_policy_repository_mismatch(self) -> None:
+        fixture = json.loads(DEPENDENT_FIXTURE.read_text())
+        fixture = json.loads(
+            json.dumps(fixture).replace("nerdchanii/rpm", "attacker/rpm")
+        )
+        result, event = self.run_merge(fixture)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(data.get("reason"), "repository-mismatch", data)
 
     def test_adoption_assets_contain_no_direct_review_or_merge_path(self) -> None:
         skill = ROOT / ".agents/skills/adopt-existing-pr/SKILL.md"

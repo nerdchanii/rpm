@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unicodedata
 from pathlib import Path, PurePosixPath
@@ -137,6 +138,18 @@ EXPECTED_ADOPTION_CONTRACT = {
     "to_state": "review-pending",
     "batch_limit": 1,
     "required_checks": ["metadata", "verify"],
+    "approval_identity_fields": [
+        "repository",
+        "issue",
+        "pr",
+        "base_repository",
+        "base_ref",
+        "base_sha",
+        "head_repository",
+        "head_ref",
+        "head_sha",
+        "evidence_digest",
+    ],
     "approved_plus_one_actors": ["chatgpt-codex-connector"],
     "canonical_array_order": {
         "authorization.closing_issues": ["repository", "number"],
@@ -179,6 +192,11 @@ EXPECTED_ADOPTION_CONTRACT = {
         "namespace": "rpm-agent-adoption",
         "marker": "<!-- rpm-agent-adoption:v1 -->",
         "approved_authors": ["nerdchanii"],
+        "terminal_history": {
+            "classification": "compensated-old-head",
+            "phases": ["prepared", "label-mutation"],
+            "require_head_change": True,
+        },
         "phases": ["prepared", "label-mutation", "committed", "reconciled"],
     },
 }
@@ -309,7 +327,7 @@ def check_policy(errors: list[str]) -> None:
         "required_mergeable": True,
         "forbid_unresolved_p0_p1": True,
         "method": "squash",
-        "delete_branch": True,
+        "delete_branch": False,
     }:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid merge-gate contract")
 
@@ -1767,6 +1785,8 @@ def check_entries_and_assets(errors: list[str]) -> None:
             "check-merge-gate.py",
             "At most one merge per run",
             "merge_gate",
+            "expected_head_sha",
+            "merge-cas-unsupported",
         ):
             if required not in text:
                 fail(errors, f"{gatekeeper.relative_to(ROOT)}: missing merge-gate contract {required!r}")
@@ -2037,6 +2057,318 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
         actual = pre_tool(role, tool, tool_input)
         if actual != expected:
             fail(errors, f"tool policy probe {name} expected exit {expected}, got {actual}")
+
+    gate_transcript = f"/tmp/rpm-merge-gate-probe-{os.getpid()}"
+    gate_path = Path(tempfile.gettempdir()) / f"rpm-merge-gate-issue{os.getpid()}.json"
+    second_gate_path = Path(tempfile.gettempdir()) / (
+        f"rpm-merge-gate-issue{os.getpid() + 1}.json"
+    )
+    merge_request = {
+        "repository_full_name": "nerdchanii/rpm",
+        "pr_number": 44,
+        "merge_method": "squash",
+        "expected_head_sha": "b" * 40,
+    }
+
+    def top_pre(tool: str, tool_input: object, *, transcript_name: str = gate_transcript) -> int:
+        return run(
+            {
+                "hook_event_name": "PreToolUse",
+                "transcript_path": transcript_name,
+                "cwd": str(ROOT),
+                "tool_name": tool,
+                "tool_input": tool_input,
+            }
+        ).returncode
+
+    def record_gate(
+        path: Path = gate_path, *, transcript_name: str = gate_transcript
+    ) -> int:
+        return top_pre(
+            "exec_command",
+            {
+                "cmd": (
+                    "python3 scripts/check-merge-gate.py --issues-file "
+                    f"{path} --operation select-merge"
+                ),
+                "workdir": str(ROOT),
+            },
+            transcript_name=transcript_name,
+        )
+
+    try:
+        source_fixture = ROOT / ".agents/fixtures/backlog/merge-ready.json"
+        gate_path.write_bytes(source_fixture.read_bytes())
+        second_gate_path.write_bytes(source_fixture.read_bytes())
+        merge_tool = "mcp__codex_apps__github_merge_pull_request"
+        if top_pre(merge_tool, merge_request, transcript_name=gate_transcript + "-none") != 2:
+            fail(errors, "tool policy allowed a merge without a transcript-bound gate")
+        if record_gate() != 0:
+            fail(errors, "tool policy rejected the exact merge-gate checker command")
+        if top_pre("exec_command", {"cmd": "git status --short"}) != 0:
+            fail(errors, "tool policy rejected an unrelated root shell read")
+        read_only_merge_search = {
+            "cmd": "rg -n merge_pull_request .codex/hooks/agent_tool_policy.py"
+        }
+        if top_pre("exec_command", read_only_merge_search) != 0:
+            fail(errors, "tool policy rejected a root read-only merge search")
+        if pre_tool(
+            "rpm_workflow_manager", "exec_command", read_only_merge_search
+        ) != 0:
+            fail(errors, "tool policy rejected a manager read-only merge search")
+        protected_patch = """*** Begin Patch
+*** Update File: .agents/workflows/backlog-policy.json
+@@
+-  \"version\": 4,
++  \"version\": 999,
+*** End Patch"""
+        if top_pre(
+            "apply_patch",
+            protected_patch,
+            transcript_name=gate_transcript + "-protected-patch",
+        ) != 2:
+            fail(errors, "tool policy allowed a root patch to the trusted merge policy")
+        if top_pre(
+            "functions.exec",
+            "const hits = ALL_TOOLS.filter(({name}) => name.includes('search')); "
+            "text(hits.length);",
+            transcript_name=gate_transcript + "-general-orchestration",
+        ) != 0:
+            fail(errors, "tool policy rejected unrelated root orchestration")
+        if top_pre(
+            "exec_command",
+            {
+                "cmd": (
+                    "python3 scripts/check-merge-gate.py --issues-file "
+                    f"{gate_path} --operation select-merge"
+                ),
+                "workdir": str(ROOT),
+                "shell": "/tmp/untrusted-shell",
+            },
+            transcript_name=gate_transcript + "-execution-override",
+        ) != 2:
+            fail(errors, "tool policy allowed merge-gate execution overrides")
+        without_head = dict(merge_request)
+        without_head.pop("expected_head_sha")
+        if top_pre(merge_tool, without_head) != 2:
+            fail(errors, "tool policy allowed a merge without expected_head_sha")
+        if top_pre(merge_tool, merge_request) != 2:
+            fail(errors, "tool policy reused a consumed merge-gate grant")
+        if record_gate() != 0 or top_pre(merge_tool, merge_request) != 0:
+            fail(errors, "tool policy rejected the exact checker-bound merge request")
+        if top_pre(merge_tool, merge_request) != 2:
+            fail(errors, "tool policy allowed replay of a successful merge-gate grant")
+        if record_gate() != 0:
+            fail(errors, "tool policy could not record the repository mismatch probe")
+        wrong_repository = {**merge_request, "repository_full_name": "attacker/rpm"}
+        if top_pre(merge_tool, wrong_repository) != 2:
+            fail(errors, "tool policy allowed a repository-mismatched merge request")
+        if record_gate() != 0 or record_gate(second_gate_path) != 0:
+            fail(errors, "tool policy could not record the ambiguous gate probe")
+        if top_pre(merge_tool, merge_request) != 2:
+            fail(errors, "tool policy allowed multiple evidence paths for one merge grant")
+        if top_pre(
+            "mcp__codex_apps__github_enable_auto_merge",
+            {"repository_full_name": "nerdchanii/rpm", "pr_number": 44},
+        ) != 2:
+            fail(errors, "tool policy allowed automatic merge to bypass the gate")
+        if top_pre(
+            "exec_command", {"cmd": "gh pr merge 44 --squash"}
+        ) != 2:
+            fail(errors, "tool policy allowed a raw top-level merge command")
+        for raw_delete in (
+            "git push origin --delete feat/parent",
+            "git push origin -d feat/parent",
+            "git push origin :refs/heads/feat/parent",
+            "git push origin +:refs/heads/feat/parent",
+            "git push origin refs/heads/feat/parent:",
+            "git branch -D feat/parent",
+            "git update-ref -d refs/heads/feat/parent",
+            (
+                "gh api --method DELETE "
+                "repos/nerdchanii/rpm/git/refs/heads/feat/parent"
+            ),
+            (
+                "gh api --method=DELETE "
+                "https://api.github.com/repos/nerdchanii/rpm/git/refs/heads/feat/parent"
+            ),
+            (
+                "curl -X DELETE "
+                "https://api.github.com/repos/nerdchanii/rpm/git/refs/heads/feat/parent"
+            ),
+            (
+                "wget --method=DELETE "
+                "https://api.github.com/repos/nerdchanii/rpm/git/refs/heads/feat/parent"
+            ),
+        ):
+            if top_pre("exec_command", {"cmd": raw_delete}) != 2:
+                fail(
+                    errors,
+                    f"tool policy allowed automatic branch deletion: {raw_delete}",
+                )
+        if top_pre(
+            "exec_command",
+            {
+                "cmd": (
+                    "gh api --method PUT "
+                    "repos/nerdchanii/rpm/pulls/44/merge -f sha=" + "b" * 40
+                )
+            },
+        ) != 2:
+            fail(errors, "tool policy allowed a raw top-level merge API request")
+        if top_pre(
+            "exec_command",
+            {
+                "cmd": (
+                    "gh api --method=PUT "
+                    "https://api.github.com/repos/nerdchanii/rpm/pulls/44/merge"
+                )
+            },
+        ) != 2:
+            fail(errors, "tool policy allowed a full-URL raw merge API request")
+
+        overwrite_transcript = gate_transcript + "-evidence-overwrite"
+        if record_gate(transcript_name=overwrite_transcript) != 0:
+            fail(errors, "tool policy could not record the evidence-overwrite probe")
+        gate_path.write_bytes(source_fixture.read_bytes() + b"\n")
+        if top_pre(
+            merge_tool,
+            merge_request,
+            transcript_name=overwrite_transcript,
+        ) != 2:
+            fail(errors, "tool policy allowed changed evidence after the gate grant")
+        gate_path.write_bytes(source_fixture.read_bytes())
+
+        identity_transcript = gate_transcript + "-evidence-identity"
+        if record_gate(transcript_name=identity_transcript) != 0:
+            fail(errors, "tool policy could not record the evidence-identity probe")
+        replacement_path = gate_path.with_suffix(".replacement")
+        replacement_path.write_bytes(source_fixture.read_bytes())
+        replacement_path.replace(gate_path)
+        if top_pre(
+            merge_tool,
+            merge_request,
+            transcript_name=identity_transcript,
+        ) != 2:
+            fail(errors, "tool policy allowed replaced evidence with the same bytes")
+        gate_path.write_bytes(source_fixture.read_bytes())
+
+        nested_transcript = gate_transcript + "-nested"
+        nested_gate_source = (
+            "const result = await tools.exec_command("
+            + json.dumps(
+                {
+                    "cmd": (
+                        "python3 scripts/check-merge-gate.py --issues-file "
+                        f"{gate_path} --operation select-merge"
+                    ),
+                    "workdir": str(ROOT),
+                },
+                separators=(",", ":"),
+            )
+            + "); text(JSON.stringify(result));"
+        )
+        if top_pre(
+            "functions.exec", nested_gate_source, transcript_name=nested_transcript
+        ) != 0:
+            fail(errors, "tool policy rejected a direct nested merge-gate command")
+        overwritten_gate_source = (
+            "const hidden=['g','h',' pr ','mer','ge 44 --squash'].join(''); "
+            "const result = await tools.exec_command({"
+            f'"cmd":"python3 scripts/check-merge-gate.py --issues-file {gate_path} '
+            '--operation select-merge",...{"cmd":hidden}}); '
+            "text(JSON.stringify(result));"
+        )
+        if top_pre(
+            "functions.exec",
+            overwritten_gate_source,
+            transcript_name=nested_transcript + "-overwritten",
+        ) != 2:
+            fail(errors, "tool policy allowed an overwritten nested gate command")
+        nested_merge_source = (
+            "const result = await tools.mcp__codex_apps__github_merge_pull_request("
+            + json.dumps(merge_request, separators=(",", ":"))
+            + "); text(JSON.stringify(result));"
+        )
+        if top_pre(
+            "functions.exec", nested_merge_source, transcript_name=nested_transcript
+        ) != 0:
+            fail(errors, "tool policy rejected the exact nested merge request")
+        dynamic_source = (
+            "const name = ['mcp__codex_apps__github_', 'merge_pull_request'].join(''); "
+            "const result = await tools[name]({}); text(JSON.stringify(result));"
+        )
+        if top_pre(
+            "functions.exec",
+            dynamic_source,
+            transcript_name=nested_transcript + "-dynamic",
+        ) != 2:
+            fail(errors, "tool policy allowed computed nested tool access")
+        split_dynamic_source = (
+            "const name = ['mcp__codex_apps__github_', 'merge', "
+            "'_pull_request'].join(''); "
+            "const result = await tools[name]({}); text(JSON.stringify(result));"
+        )
+        if top_pre(
+            "functions.exec",
+            split_dynamic_source,
+            transcript_name=nested_transcript + "-split-dynamic",
+        ) != 2:
+            fail(errors, "tool policy allowed a split computed merge tool invocation")
+        charcode_dynamic_source = (
+            "const name=String.fromCharCode(109,99,112,95,95,99,111,100,101,120,"
+            "95,97,112,112,115,95,95,103,105,116,104,117,98,95,109,101,114,103,"
+            "101,95,112,117,108,108,95,114,101,113,117,101,115,116); "
+            "const result=await tools[name]("
+            + json.dumps(merge_request, separators=(",", ":"))
+            + "); text(JSON.stringify(result));"
+        )
+        if top_pre(
+            "functions.exec",
+            charcode_dynamic_source,
+            transcript_name=nested_transcript + "-charcode-dynamic",
+        ) != 2:
+            fail(errors, "tool policy allowed a charcode-computed root merge")
+        if pre_tool(
+            "rpm_workflow_manager",
+            "functions.exec",
+            charcode_dynamic_source,
+        ) != 2:
+            fail(errors, "tool policy allowed a charcode-computed manager merge")
+        escaped_dynamic_source = (
+            "const name = ['mcp__codex_apps__github_', 'merge_pull_request'].join(''); "
+            "const result = await to\\u006fls[name]({}); text(JSON.stringify(result));"
+        )
+        if top_pre(
+            "functions.exec",
+            escaped_dynamic_source,
+            transcript_name=nested_transcript + "-escaped-dynamic",
+        ) != 2:
+            fail(errors, "tool policy allowed escaped computed nested tool access")
+        if top_pre(
+            "functions.exec", nested_gate_source, transcript_name=nested_transcript
+        ) != 0:
+            fail(errors, "tool policy could not record the malformed nested probe")
+        malformed_nested_merge = nested_merge_source.replace(
+            "); text(JSON.stringify(result));",
+            "); notify('unexpected'); text(JSON.stringify(result));",
+        )
+        if top_pre(
+            "functions.exec",
+            malformed_nested_merge,
+            transcript_name=nested_transcript,
+        ) != 2:
+            fail(errors, "tool policy allowed a non-exact nested merge wrapper")
+        if top_pre(
+            "functions.exec", nested_merge_source, transcript_name=nested_transcript
+        ) != 2:
+            fail(errors, "tool policy reused a grant after a malformed nested merge")
+    finally:
+        for path in (gate_path, second_gate_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
     run(
         {
             "hook_event_name": "SubagentStop",

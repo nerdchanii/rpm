@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
+import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -106,6 +110,14 @@ RPM_ROLES = MANAGERS | LOCAL_WRITE_ROLES | MCP_READ_ROLES | {
 }
 POLICY_DIR = Path(tempfile.gettempdir()) / "rpm-agent-tool-policy"
 TRUSTED_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+MERGE_POLICY_FILE = TRUSTED_REPOSITORY_ROOT / ".agents/workflows/backlog-policy.json"
+MERGE_CHECKER_FILE = TRUSTED_REPOSITORY_ROOT / "scripts/check-merge-gate.py"
+MERGE_HOOK_FILE = Path(__file__).resolve()
+MERGE_PROTECTED_FILES = {
+    MERGE_POLICY_FILE,
+    MERGE_CHECKER_FILE,
+    MERGE_HOOK_FILE,
+}
 PATCH_PATH = re.compile(
     r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+?)\s*$",
     re.MULTILINE,
@@ -152,6 +164,16 @@ def policy_path(transcript: str) -> Path:
     return POLICY_DIR / f"{digest}.json"
 
 
+def merge_gate_grant_path(transcript: str) -> Path:
+    digest = hashlib.sha256(transcript.encode()).hexdigest()
+    return POLICY_DIR / f"{digest}.merge-gate.json"
+
+
+def root_merge_guard_path(transcript: str) -> Path:
+    digest = hashlib.sha256(transcript.encode()).hexdigest()
+    return POLICY_DIR / f"{digest}.merge-root.json"
+
+
 def register(event: dict[str, object]) -> int:
     role = event.get("agent_type")
     transcript = transcript_path(event, start_or_stop=True)
@@ -168,6 +190,10 @@ def cleanup(event: dict[str, object]) -> int:
         return 0
     try:
         policy_path(transcript).unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        merge_gate_grant_path(transcript).unlink()
     except FileNotFoundError:
         pass
     return 0
@@ -265,6 +291,433 @@ def normalized_tool(tool: str) -> str:
     return tool.replace("-", "_").casefold()
 
 
+def merge_tool_kind(tool: str) -> str | None:
+    operation = normalized_tool(tool).rsplit("__", 1)[-1]
+    if operation.startswith("github_"):
+        operation = operation.removeprefix("github_")
+    if operation == "merge_pull_request":
+        return "merge"
+    if operation == "enable_auto_merge":
+        return "auto-merge"
+    return None
+
+
+def functions_exec_source(tool: str, tool_input: object) -> str | None:
+    if normalized_tool(tool) not in {"functions.exec", "functions_exec"}:
+        return None
+    return tool_input if isinstance(tool_input, str) else None
+
+
+def direct_nested_tool_names(source: str) -> list[str]:
+    return re.findall(r"\btools\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source)
+
+
+def decode_javascript_identifier_escapes(source: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        raw = match.group(1) or match.group(2) or match.group(3)
+        try:
+            return chr(int(raw, 16))
+        except (TypeError, ValueError, OverflowError):
+            return "<invalid-escape>"
+
+    return re.sub(
+        r"\\u([0-9A-Fa-f]{4})|\\u\{([0-9A-Fa-f]+)\}|\\x([0-9A-Fa-f]{2})",
+        replacement,
+        source,
+    )
+
+
+def has_dynamic_nested_tool_access(source: str) -> bool:
+    decoded = decode_javascript_identifier_escapes(source)
+    without_direct_calls = re.sub(
+        r"\btools\.[A-Za-z_][A-Za-z0-9_]*\s*\(", "(", decoded
+    )
+    return bool(
+        re.search(r"\btools\b", without_direct_calls)
+        or re.search(r"\bglobalThis\s*\[", decoded)
+        or re.search(r"\bglobalThis\s*(?:\.|\[)[^;\n]*\btools\b", decoded)
+        or (
+            re.search(
+                r"\b(?:eval|Function|Reflect|getOwnPropertyDescriptor)\s*\(",
+                decoded,
+            )
+            and re.search(r"\b(?:tools|ALL_TOOLS|globalThis)\b", decoded)
+        )
+    )
+
+
+def file_sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def trusted_merge_digests() -> dict[str, str | None]:
+    return {
+        "policy_sha256": file_sha256(MERGE_POLICY_FILE),
+        "checker_sha256": file_sha256(MERGE_CHECKER_FILE),
+        "hook_sha256": file_sha256(MERGE_HOOK_FILE),
+    }
+
+
+def read_merge_evidence(path: Path) -> tuple[bytes, dict[str, int]] | None:
+    """Read one regular, private-owner evidence file through a pinned fd."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.getuid()
+            or before.st_nlink != 1
+            or before.st_mode & 0o022
+            or before.st_size <= 0
+            or before.st_size > 10 * 1024 * 1024
+        ):
+            return None
+        chunks: list[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                return None
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            return None
+        after = os.fstat(descriptor)
+        identity = {
+            "device": int(before.st_dev),
+            "inode": int(before.st_ino),
+            "size": int(before.st_size),
+            "mtime_ns": int(before.st_mtime_ns),
+        }
+        if identity != {
+            "device": int(after.st_dev),
+            "inode": int(after.st_ino),
+            "size": int(after.st_size),
+            "mtime_ns": int(after.st_mtime_ns),
+        }:
+            return None
+        return b"".join(chunks), identity
+    finally:
+        os.close(descriptor)
+
+
+def enforce_root_merge_guard(event: dict[str, object]) -> str | None:
+    transcript = transcript_path(event)
+    if transcript is None:
+        return "top-level merge owner has no transcript identity"
+    current = trusted_merge_digests()
+    if any(value is None for value in current.values()):
+        return "trusted merge contract is unreadable"
+    POLICY_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = root_merge_guard_path(transcript)
+    try:
+        recorded = json.loads(path.read_text())
+    except FileNotFoundError:
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(current, sort_keys=True))
+        temporary.chmod(0o600)
+        temporary.replace(path)
+        return None
+    except (json.JSONDecodeError, OSError):
+        return "top-level merge contract guard is invalid"
+    if recorded != current:
+        return "trusted merge contract changed during the top-level session"
+    return None
+
+
+def protected_root_patch(event: dict[str, object], tool_input: object) -> list[str]:
+    cwd_text = event.get("cwd")
+    cwd = Path(cwd_text) if isinstance(cwd_text, str) else TRUSTED_REPOSITORY_ROOT
+    if not cwd.is_absolute():
+        cwd = TRUSTED_REPOSITORY_ROOT / cwd
+    rejected: list[str] = []
+    for text in flatten_strings(tool_input):
+        for raw in PATCH_PATH.findall(text):
+            candidate = Path(raw.strip())
+            if not candidate.is_absolute():
+                candidate = cwd / candidate
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved in MERGE_PROTECTED_FILES:
+                rejected.append(str(resolved.relative_to(TRUSTED_REPOSITORY_ROOT)))
+    return sorted(set(rejected))
+
+
+def merge_gate_command(event: dict[str, object], tool: str, tool_input: object) -> Path | None:
+    """Return the normalized evidence path for one exact top-level gate call."""
+    if not is_shell_tool(tool):
+        return None
+    source = functions_exec_source(tool, tool_input)
+    if source is not None:
+        if "check-merge-gate.py" not in source:
+            return None
+        if direct_nested_tool_names(source) != ["exec_command"]:
+            raise ValueError("merge gate must use one direct exec_command call")
+        match = re.fullmatch(
+            r"\s*const result = await tools\.exec_command\((\{[^{}]*\})\);\s*"
+            r"text\(JSON\.stringify\(result\)\);\s*",
+            source,
+            re.DOTALL,
+        )
+        if match is None:
+            raise ValueError("nested merge gate wrapper is not exact")
+        try:
+            nested_input = json.loads(match.group(1))
+        except json.JSONDecodeError as error:
+            raise ValueError("nested merge gate input is not strict JSON") from error
+        if not isinstance(nested_input, dict) or set(nested_input) != {
+            "cmd",
+            "workdir",
+        }:
+            raise ValueError("nested merge gate input fields are not exact")
+        command = nested_input.get("cmd")
+        direct_input = nested_input
+    elif isinstance(tool_input, dict):
+        command = tool_input.get("cmd")
+        if not isinstance(command, str) or "check-merge-gate.py" not in command:
+            return None
+        direct_name = normalized_tool(tool)
+        if not (
+            direct_name == "exec_command"
+            or direct_name.endswith("__exec_command")
+            or direct_name.endswith(".exec_command")
+        ):
+            raise ValueError("merge gate must use exec_command")
+        if not set(tool_input).issubset(
+            {"cmd", "workdir", "yield_time_ms", "max_output_tokens"}
+        ):
+            raise ValueError("merge gate command fields are not exact")
+        if "cmd" not in tool_input or "workdir" not in tool_input:
+            raise ValueError("merge gate command fields are incomplete")
+        direct_input = tool_input
+    else:
+        return None
+    if not isinstance(command, str) or "check-merge-gate.py" not in command:
+        return None
+    if any(marker in command for marker in (";", "&&", "||", "|", "`", "$(", "\n", "\r", ">", "<")):
+        raise ValueError("merge gate command contains shell composition")
+    try:
+        words = shlex.split(command)
+    except ValueError as error:
+        raise ValueError("merge gate command is unparsable") from error
+    if len(words) != 6 or words[2] != "--issues-file" or words[4:6] != [
+        "--operation",
+        "select-merge",
+    ]:
+        raise ValueError("merge gate command does not use the exact select operation")
+    interpreter = shutil.which(words[0])
+    if (
+        Path(words[0]).name not in {"python", "python3"}
+        or interpreter is None
+        or Path(interpreter).resolve() != Path(sys.executable).resolve()
+    ):
+        raise ValueError("merge gate command uses an untrusted interpreter")
+    cwd_value = direct_input.get("workdir", event.get("cwd", str(Path.cwd())))
+    if not isinstance(cwd_value, str):
+        raise ValueError("merge gate command has no working directory")
+    cwd = Path(cwd_value)
+    if not cwd.is_absolute():
+        cwd = Path(str(event.get("cwd", Path.cwd()))) / cwd
+    try:
+        cwd = cwd.resolve(strict=True)
+        checker = (cwd / words[1]).resolve(strict=True)
+        evidence = Path(words[3]).resolve(strict=True)
+    except OSError as error:
+        raise ValueError("merge gate command path is invalid") from error
+    if cwd != TRUSTED_REPOSITORY_ROOT or checker != (
+        TRUSTED_REPOSITORY_ROOT / "scripts/check-merge-gate.py"
+    ):
+        raise ValueError("merge gate command is outside the trusted repository")
+    expected_parents = {
+        Path(tempfile.gettempdir()).resolve(),
+        Path("/tmp").resolve(),
+    }
+    if (
+        evidence.parent not in expected_parents
+        or re.fullmatch(r"rpm-merge-gate-issue[1-9][0-9]*\.json", evidence.name)
+        is None
+    ):
+        raise ValueError("merge gate evidence path is not the dedicated temporary file")
+    return evidence
+
+
+def nested_merge_request(
+    tool: str, tool_input: object
+) -> tuple[dict[str, object] | None, str | None]:
+    source = functions_exec_source(tool, tool_input)
+    if source is None:
+        return None, None
+    names = direct_nested_tool_names(source)
+    merge_names = [name for name in names if merge_tool_kind(name) == "merge"]
+    if not merge_names:
+        return None, None
+    if len(names) != 1 or len(merge_names) != 1:
+        return None, "nested merge must contain one direct merge tool call"
+    match = re.fullmatch(
+        r"\s*const result = await tools\."
+        + re.escape(merge_names[0])
+        + r"\((\{[^{}]*\})\);\s*"
+        r"text\(JSON\.stringify\(result\)\);\s*",
+        source,
+        re.DOTALL,
+    )
+    if match is None:
+        return None, "nested merge source does not match the exact wrapper"
+    try:
+        value = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None, "nested merge request is not strict JSON"
+    if not isinstance(value, dict):
+        return None, "nested merge request is not an object"
+    return value, None
+
+
+def record_merge_gate_grant(event: dict[str, object], evidence: Path) -> str | None:
+    transcript = transcript_path(event)
+    if transcript is None:
+        return "merge gate command has no transcript identity"
+    POLICY_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = merge_gate_grant_path(transcript)
+    evidence_read = read_merge_evidence(evidence)
+    if evidence_read is None:
+        return "merge gate evidence is not a trusted regular file"
+    evidence_bytes, evidence_identity = evidence_read
+    digests = {
+        "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+        **trusted_merge_digests(),
+    }
+    if any(value is None for value in digests.values()):
+        return "merge gate evidence or trusted contract is unreadable"
+    value: dict[str, object] = {
+        "evidence_path": str(evidence),
+        "evidence_identity": evidence_identity,
+        "ambiguous": False,
+        **digests,
+    }
+    try:
+        prior = json.loads(path.read_text())
+    except FileNotFoundError:
+        prior = None
+    except (json.JSONDecodeError, OSError):
+        prior = {"ambiguous": True}
+    if isinstance(prior, dict):
+        if prior.get("ambiguous") is True or prior.get("evidence_path") != str(evidence):
+            value["ambiguous"] = True
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, sort_keys=True))
+    temporary.chmod(0o600)
+    temporary.replace(path)
+    return None
+
+
+def authorize_merge_request(event: dict[str, object], tool_input: object) -> str | None:
+    transcript = transcript_path(event)
+    if transcript is None:
+        return "merge request has no transcript-bound gate grant"
+    grant_path = merge_gate_grant_path(transcript)
+    try:
+        grant = json.loads(grant_path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return "merge request has no valid gate grant"
+    try:
+        grant_path.unlink()
+    except OSError:
+        return "merge gate grant could not be consumed"
+    if not isinstance(tool_input, dict) or set(tool_input) != {
+        "repository_full_name",
+        "pr_number",
+        "merge_method",
+        "expected_head_sha",
+    }:
+        return "merge request must exactly match the gate verdict fields"
+    if (
+        not isinstance(tool_input.get("repository_full_name"), str)
+        or type(tool_input.get("pr_number")) is not int
+        or int(tool_input.get("pr_number", 0)) <= 0
+        or tool_input.get("merge_method") != "squash"
+        or not isinstance(tool_input.get("expected_head_sha"), str)
+        or re.fullmatch(r"[0-9a-f]{40}", str(tool_input.get("expected_head_sha")))
+        is None
+    ):
+        return "merge request identity or expected head SHA is invalid"
+    if not isinstance(grant, dict) or grant.get("ambiguous") is True:
+        return "merge gate grant is ambiguous"
+    evidence_text = grant.get("evidence_path")
+    if not isinstance(evidence_text, str):
+        return "merge gate grant has no evidence path"
+    evidence = Path(evidence_text)
+    evidence_read = read_merge_evidence(evidence)
+    if evidence_read is None:
+        return "merge gate evidence is not a trusted regular file"
+    evidence_bytes, evidence_identity = evidence_read
+    expected_digests = {
+        "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+        "policy_sha256": file_sha256(MERGE_POLICY_FILE),
+        "checker_sha256": file_sha256(MERGE_CHECKER_FILE),
+        "hook_sha256": file_sha256(MERGE_HOOK_FILE),
+    }
+    if any(
+        not isinstance(grant.get(field), str)
+        or grant.get(field) != digest
+        for field, digest in expected_digests.items()
+    ):
+        return "merge gate evidence or trusted contract changed after validation"
+    if grant.get("evidence_identity") != evidence_identity:
+        return "merge gate evidence file identity changed after validation"
+    checker = MERGE_CHECKER_FILE
+    try:
+        evidence_text_value = evidence_bytes.decode("utf-8")
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(checker),
+                "--issues-file",
+                "-",
+                "--operation",
+                "select-merge",
+            ],
+            cwd=TRUSTED_REPOSITORY_ROOT,
+            input=evidence_text_value,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, UnicodeDecodeError, subprocess.SubprocessError):
+        return "merge gate could not be recomputed"
+    lines = [line for line in completed.stdout.splitlines() if line.strip()]
+    if completed.returncode != 0 or len(lines) != 1:
+        return "merge gate did not return one successful verdict"
+    try:
+        event_value = json.loads(lines[0])
+    except json.JSONDecodeError:
+        return "merge gate verdict is invalid"
+    if not isinstance(event_value, dict):
+        return "merge gate verdict is invalid"
+    data = event_value.get("data")
+    if (
+        event_value.get("type") != "merge_gate_contract"
+        or not isinstance(data, dict)
+        or data.get("status") != "merge"
+        or data.get("merge_request") != tool_input
+        or data.get("head_sha") != tool_input.get("expected_head_sha")
+    ):
+        return "merge request does not exactly match the recomputed gate verdict"
+    return None
+
+
 def is_agent_tool(tool: str) -> bool:
     normalized = normalized_tool(tool)
     return (
@@ -284,12 +737,64 @@ def is_shell_tool(tool: str) -> bool:
     )
 
 
+def is_read_only_rg(tool: str, tool_input: object) -> bool:
+    if not is_shell_tool(tool) or not isinstance(tool_input, dict):
+        return False
+    command = tool_input.get("cmd")
+    if not isinstance(command, str) or any(
+        marker in command
+        for marker in (";", "&&", "||", "|", "`", "$(", "\n", "\r", ">", "<")
+    ):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    return bool(
+        words
+        and Path(words[0]).name == "rg"
+        and not any(word == "--pre" or word.startswith("--pre=") for word in words)
+    )
+
+
 def has_forbidden_review_or_merge(text: str) -> str | None:
     lowered = text.casefold()
     if "@codex review" in lowered:
         return "`@codex review` is owned by external repository review configuration"
     if re.search(r"\bgh\s+pr\s+merge\b", lowered):
         return "RPM subagents cannot merge pull requests"
+    if re.search(
+        r"\bgit\b[^\n;|&]*\bpush\b[^\n;|&]*"
+        r"(?:--delete(?:=|\b)|(?:^|\s)-d(?:\s|$)|"
+        r"(?:^|\s)\+?:(?:refs/heads/)?[^\s]+|"
+        r"(?:^|\s)(?:refs/heads/)?[^\s:]+:(?:\s|$))",
+        lowered,
+    ):
+        return "automatic branch deletion is disabled by the merge policy"
+    if re.search(
+        r"\bgit\b[^\n;|&]*\b(?:branch|update-ref)\b[^\n;|&]*"
+        r"(?:--delete(?:=|\b)|(?:^|\s)-[dD](?:\s|$))",
+        lowered,
+    ):
+        return "automatic branch deletion is disabled by the merge policy"
+    if re.search(r"\bdelete_(?:branch|git_ref)\b", lowered):
+        return "automatic branch deletion is disabled by the merge policy"
+    raw_repository = (
+        r"(?:https?://api\.github\.com/)?/?repos/"
+        r"[^/\s\"']+/[^/\s\"']+"
+    )
+    if re.search(
+        r"(?:^|[\s\"'])" + raw_repository + r"/git/refs/heads/[^\s\"']+",
+        lowered,
+    ):
+        return "automatic branch deletion is disabled by the merge policy"
+    if re.search(
+        r"(?:^|[\s\"'])"
+        + raw_repository
+        + r"/pulls/[1-9][0-9]*/merge(?:$|[\s?\"'])",
+        lowered,
+    ):
+        return "raw pull-request merge endpoints bypass the deterministic merge gate"
     if "mergepullrequest" in lowered or re.search(
         r"\bmerge(?:_pull_request|pullrequest)\b", lowered
     ):
@@ -557,18 +1062,61 @@ def adopter_command_allowed(
 
 
 def check_tool(event: dict[str, object]) -> int:
-    role = current_role(event)
-    if role is None:
-        return 0
-
     tool = event.get("tool_name")
     if not isinstance(tool, str):
-        return deny(f"{role} supplied no tool_name")
+        return deny("tool call supplied no tool_name")
     tool_input = event.get("tool_input")
     text = "\n".join(flatten_strings(tool_input))
+    role = current_role(event)
+    source = functions_exec_source(tool, tool_input)
+    if source is not None and has_dynamic_nested_tool_access(source):
+        if role is None:
+            authorize_merge_request(event, {})
+        return deny("dynamic nested tool access cannot prove a merge-gate CAS")
+    read_only_rg = is_read_only_rg(tool, tool_input)
+
+    if role is None:
+        guard_error = enforce_root_merge_guard(event)
+        if guard_error is not None:
+            return deny(guard_error)
+        rejected = protected_root_patch(event, tool_input)
+        if rejected:
+            return deny(
+                "top-level merge owner cannot patch trusted merge files: "
+                + ", ".join(rejected)
+            )
+        try:
+            evidence = merge_gate_command(event, tool, tool_input)
+        except ValueError as error:
+            return deny(str(error))
+        if evidence is not None:
+            grant_error = record_merge_gate_grant(event, evidence)
+            return 0 if grant_error is None else deny(grant_error)
+        merge_kind = merge_tool_kind(tool)
+        if merge_kind == "auto-merge":
+            return deny("automatic merge bypasses the deterministic merge gate")
+        if merge_kind == "merge":
+            merge_error = authorize_merge_request(event, tool_input)
+            return 0 if merge_error is None else deny(merge_error)
+        nested_request, nested_error = nested_merge_request(tool, tool_input)
+        if nested_error is not None:
+            # Consume any outstanding grant on a malformed merge attempt.
+            authorize_merge_request(event, {})
+            return deny(nested_error)
+        if nested_request is not None:
+            merge_error = authorize_merge_request(event, nested_request)
+            return 0 if merge_error is None else deny(merge_error)
+        forbidden = None if read_only_rg else has_forbidden_review_or_merge(
+            f"{tool}\n{text}"
+        )
+        if forbidden:
+            return deny(forbidden)
+        return 0
 
     if role == "rpm_existing_pr_adopter":
-        forbidden = has_forbidden_review_or_merge(f"{tool}\n{text}")
+        forbidden = None if read_only_rg else has_forbidden_review_or_merge(
+            f"{tool}\n{text}"
+        )
         if forbidden:
             return deny(forbidden)
         # The adopter's entrypoints own the write boundary, while read-only
@@ -584,7 +1132,9 @@ def check_tool(event: dict[str, object]) -> int:
             return 0
         return deny("existing PR adopter is restricted to exact adoption entrypoints and read-only MCP")
 
-    forbidden = has_forbidden_review_or_merge(f"{tool}\n{text}")
+    forbidden = None if read_only_rg else has_forbidden_review_or_merge(
+        f"{tool}\n{text}"
+    )
     if forbidden:
         return deny(forbidden)
 

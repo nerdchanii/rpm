@@ -344,22 +344,87 @@ class GithubAdoptionTransport:
             raise RuntimeError("GitHub issue execution metadata is invalid") from error
         if not isinstance(metadata, dict):
             raise RuntimeError("GitHub issue execution metadata is invalid")
-        required = ("approval_id", "plan_revision", "scope_hash", "executor")
+        required = (
+            "repository",
+            "issue",
+            "pr",
+            "base_repository",
+            "base_ref",
+            "base_sha",
+            "head_repository",
+            "head_ref",
+            "head_sha",
+            "evidence_digest",
+            "approval_id",
+            "plan_revision",
+            "scope_hash",
+            "executor",
+        )
+        legacy_required = {
+            "approval_id",
+            "plan_revision",
+            "scope_hash",
+            "executor",
+        }
+        if set(metadata) == legacy_required:
+            raise RuntimeError("GitHub issue execution metadata uses legacy schema")
+        if set(metadata) != set(required):
+            raise RuntimeError("GitHub issue execution metadata has unexpected fields")
         if any(
             not isinstance(metadata.get(field), str)
             or not str(metadata.get(field)).strip()
-            for field in required
+            for field in (
+                "repository",
+                "base_repository",
+                "base_ref",
+                "base_sha",
+                "head_repository",
+                "head_ref",
+                "head_sha",
+                "evidence_digest",
+                "approval_id",
+                "plan_revision",
+                "scope_hash",
+                "executor",
+            )
         ):
             raise RuntimeError("GitHub issue execution metadata is incomplete")
+        if type(metadata.get("issue")) is not int or type(metadata.get("pr")) is not int:
+            raise RuntimeError("GitHub issue execution target is invalid")
+        if (
+            metadata.get("repository") != repository
+            or metadata.get("issue") != issue
+            or metadata.get("pr") != pr
+        ):
+            raise RuntimeError("GitHub issue execution target does not match")
+        if any(
+            not re.fullmatch(r"[0-9a-f]{40}", str(metadata[field]))
+            for field in ("base_sha", "head_sha")
+        ):
+            raise RuntimeError("GitHub issue execution target SHA is invalid")
+        if not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(metadata["evidence_digest"])
+        ):
+            raise RuntimeError("GitHub issue execution evidence digest is invalid")
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(metadata["scope_hash"])):
             raise RuntimeError("GitHub issue execution scope hash is invalid")
         if not isinstance(operation, dict):
             raise RuntimeError("prepared operation is missing")
         return {
-            **metadata,
             "repository": repository,
             "issue": issue,
             "pr": pr,
+            "base_repository": metadata["base_repository"],
+            "base_ref": metadata["base_ref"],
+            "base_sha": metadata["base_sha"],
+            "head_repository": metadata["head_repository"],
+            "head_ref": metadata["head_ref"],
+            "head_sha": metadata["head_sha"],
+            "evidence_digest": metadata["evidence_digest"],
+            "approval_id": metadata["approval_id"],
+            "plan_revision": metadata["plan_revision"],
+            "scope_hash": metadata["scope_hash"],
+            "executor": metadata["executor"],
             "source": "github-approved-workflow-comment-v1",
             "source_actor": source_actor,
             "policy_version": operation.get("policy_version"),
@@ -380,7 +445,18 @@ class GithubAdoptionTransport:
         comments = self._paginate(
             f"repos/{self._repository_path(repository)}/issues/{issue}/comments"
         )
-        authorized: list[tuple[object, str]] = []
+        authorization = self.snapshot.get("authorization")
+        expected_digest = (
+            authorization.get("evidence_digest")
+            if isinstance(authorization, dict)
+            else None
+        )
+        if not isinstance(expected_digest, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", expected_digest
+        ):
+            raise RuntimeError("prepared authorization evidence digest is invalid")
+        live_identity = self._pr_identity_from_pr(repository, pr)
+        applicable: list[dict[str, object]] = []
         for comment in comments:
             if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
                 continue
@@ -389,20 +465,42 @@ class GithubAdoptionTransport:
             if not isinstance(actor, str) or actor not in self.approved_marker_actors:
                 continue
             if EXECUTION_MARKER.search(comment["body"]):
-                authorized.append((comment["body"], actor))
-        if len(authorized) != 1:
+                try:
+                    execution = self._execution_from_body(
+                        comment["body"],
+                        repository,
+                        issue,
+                        pr,
+                        self.snapshot.get("operation"),
+                        source_actor=actor,
+                    )
+                except RuntimeError as error:
+                    if str(error) in {
+                        "GitHub issue execution target does not match",
+                        "GitHub issue execution metadata uses legacy schema",
+                    }:
+                        continue
+                    raise
+                if execution.get("evidence_digest") != expected_digest:
+                    continue
+                if any(
+                    execution.get(field) != live_identity.get(field)
+                    for field in (
+                        "base_repository",
+                        "base_ref",
+                        "base_sha",
+                        "head_repository",
+                        "head_ref",
+                        "head_sha",
+                    )
+                ):
+                    continue
+                applicable.append(execution)
+        if len(applicable) != 1:
             raise RuntimeError(
                 "GitHub workflow execution authorization is missing or ambiguous"
             )
-        body, actor = authorized[0]
-        return self._execution_from_body(
-            body,
-            repository,
-            issue,
-            pr,
-            self.snapshot.get("operation"),
-            source_actor=actor,
-        )
+        return applicable[0]
 
     def _graphql_connection(
         self,
@@ -804,12 +902,36 @@ class GithubAdoptionTransport:
         )
 
     def _head_sha_from_pr(self, repository: str, pr: int) -> str:
+        return str(self._pr_identity_from_pr(repository, pr)["head_sha"])
+
+    def _pr_identity_from_pr(
+        self, repository: str, pr: int
+    ) -> dict[str, str]:
         payload = self._call(f"repos/{self._repository_path(repository)}/pulls/{pr}")
+        base = payload.get("base") if isinstance(payload, dict) else None
         head = payload.get("head") if isinstance(payload, dict) else None
-        sha = head.get("sha") if isinstance(head, dict) else None
-        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
-            raise RuntimeError("GitHub PR head SHA is invalid")
-        return sha
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        head_repo = head.get("repo") if isinstance(head, dict) else None
+        identity = {
+            "base_repository": base_repo.get("full_name")
+            if isinstance(base_repo, dict)
+            else None,
+            "base_ref": base.get("ref") if isinstance(base, dict) else None,
+            "base_sha": base.get("sha") if isinstance(base, dict) else None,
+            "head_repository": head_repo.get("full_name")
+            if isinstance(head_repo, dict)
+            else None,
+            "head_ref": head.get("ref") if isinstance(head, dict) else None,
+            "head_sha": head.get("sha") if isinstance(head, dict) else None,
+        }
+        if any(not isinstance(value, str) or not value for value in identity.values()):
+            raise RuntimeError("GitHub PR ref identity is invalid")
+        if identity["base_repository"] != repository:
+            raise RuntimeError("GitHub PR base repository identity is invalid")
+        for field in ("base_sha", "head_sha"):
+            if not re.fullmatch(r"[0-9a-f]{40}", str(identity[field])):
+                raise RuntimeError("GitHub PR ref SHA is invalid")
+        return {field: str(value) for field, value in identity.items()}
 
     def _head_transition_timestamp(
         self,
@@ -1220,18 +1342,21 @@ class GithubAdoptionTransport:
                     raise RuntimeError("GitHub check-run record is invalid")
                 app = item.get("app")
                 name = item.get("name")
+                status = item.get("status")
                 conclusion = item.get("conclusion")
                 run_id = item.get("id")
                 if (
                     not isinstance(name, str)
                     or not name.strip()
-                    or not isinstance(conclusion, str)
+                    or not isinstance(status, str)
+                    or (conclusion is not None and not isinstance(conclusion, str))
                     or not isinstance(run_id, int)
                 ):
                     raise RuntimeError("GitHub check-run record is incomplete")
                 normalized_checks.append(
                     {
                         "name": name,
+                        "status": status,
                         "conclusion": conclusion,
                         "head_sha": head_sha,
                         "source": "github-actions"
@@ -1421,6 +1546,12 @@ class GithubAdoptionTransport:
             execution.get("repository") != repository
             or execution.get("issue") != issue
             or execution.get("pr") != pr
+            or execution.get("base_repository") != base_repository
+            or execution.get("base_ref") != base_payload.get("ref")
+            or execution.get("base_sha") != base_sha
+            or execution.get("head_repository") != head_repository
+            or execution.get("head_ref") != head_payload.get("ref")
+            or execution.get("head_sha") != head_sha
             or execution.get("policy_version") != operation.get("policy_version")
             or execution.get("operation_version") != operation.get("version")
         ):
@@ -1574,6 +1705,13 @@ class GithubAdoptionTransport:
             "dependent_prs": dependent_prs,
             "execution": execution,
         }
+        queue = runpy.run_path(str(ROOT / "scripts/check-cloud-queue-contract.py"))
+        if (
+            not allow_ordinary_label_conflict
+            and execution.get("evidence_digest")
+            != queue["adoption_evidence_digest"](evidence)
+        ):
+            raise RuntimeError("live execution authorization evidence digest changed")
         state["evidence"] = evidence
         state["closing_pr_inventory"] = {
             "repository": repository,
@@ -1633,7 +1771,6 @@ class GithubAdoptionTransport:
             ledger["comments"] = comments
             ledger["count"] = len(comments)
 
-        queue = runpy.run_path(str(ROOT / "scripts/check-cloud-queue-contract.py"))
         live_authorization["evidence_digest"] = queue["adoption_evidence_digest"](
             evidence
         )
@@ -1710,13 +1847,14 @@ class GithubAdoptionTransport:
             live_records.append(
                 {
                     "name": item.get("name"),
+                    "status": item.get("status"),
                     "conclusion": item.get("conclusion"),
                     "head_sha": head_sha,
                     "source": "github-actions" if isinstance(app, dict) and app.get("slug") == "github-actions" else "unknown",
                     "workflow_run_id": item.get("id"),
                 }
             )
-        if self._record_fingerprint(checks.get("records"), ("name", "conclusion", "head_sha", "workflow_run_id")) != self._record_fingerprint(live_records, ("name", "conclusion", "head_sha", "workflow_run_id")):
+        if self._record_fingerprint(checks.get("records"), ("name", "status", "conclusion", "head_sha", "workflow_run_id")) != self._record_fingerprint(live_records, ("name", "status", "conclusion", "head_sha", "workflow_run_id")):
             checks["records"] = live_records
             checks["count"] = len(live_records)
             checks["head_sha"] = head_sha
@@ -2035,6 +2173,316 @@ class GithubAdoptionTransport:
             "cas": queue["canonical_digest"](
                 self._runtime_time_projection(state)
             ),
+        }
+
+    @staticmethod
+    def _issue_label_names(payload: object) -> list[str] | None:
+        if not isinstance(payload, dict):
+            return None
+        labels = payload.get("labels")
+        if not isinstance(labels, list) or any(
+            not isinstance(item, dict) or not isinstance(item.get("name"), str)
+            for item in labels
+        ):
+            return None
+        return sorted(str(item["name"]) for item in labels)
+
+    def recover_stale_label(
+        self,
+        policy: dict[str, object],
+        repository: str,
+        issue: int,
+        pr: int,
+        prepared_authorization: dict[str, object],
+    ) -> dict[str, object]:
+        """Compensate only a durable, interrupted old-head label mutation.
+
+        This path never reuses an old authorization for forward progress.  It
+        reads the narrow target, durable ledger, and global writer inventory,
+        then deletes only this run's review-pending label after the PR head has
+        changed and before a fresh authorization can continue adoption.
+        """
+        if self.snapshot is None or self.snapshot.get("authorization") != prepared_authorization:
+            return {"status": "not-safe", "reason": "prepared-authorization-mismatch"}
+        if (
+            prepared_authorization.get("repository") != repository
+            or prepared_authorization.get("issue") != issue
+            or prepared_authorization.get("pr") != pr
+        ):
+            return {"status": "not-safe", "reason": "prepared-target-mismatch"}
+        prepared_head = prepared_authorization.get("head")
+        prepared_base = prepared_authorization.get("base")
+        if not isinstance(prepared_head, dict) or not isinstance(prepared_base, dict):
+            return {"status": "not-safe", "reason": "prepared-ref-missing"}
+        expected_digest = prepared_authorization.get("evidence_digest")
+        operation = self.snapshot.get("operation")
+        if (
+            not isinstance(expected_digest, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest)
+            or not isinstance(operation, dict)
+            or not isinstance(operation.get("run_id"), str)
+        ):
+            return {"status": "not-safe", "reason": "prepared-recovery-invalid"}
+
+        try:
+            live_identity = self._pr_identity_from_pr(repository, pr)
+            issue_payload = self._call(
+                f"repos/{self._repository_path(repository)}/issues/{issue}"
+            )
+            comments_payload = self._paginate(
+                f"repos/{self._repository_path(repository)}/issues/{issue}/comments"
+            )
+        except (RuntimeError, ValueError, KeyError, TypeError) as error:
+            return {"status": "unknown", "reason": f"recovery-read-failed:{error}"}
+        old_identity = {
+            "base_repository": prepared_base.get("repository"),
+            "base_ref": prepared_base.get("ref"),
+            "base_sha": prepared_base.get("sha"),
+            "head_repository": prepared_head.get("repository"),
+            "head_ref": prepared_head.get("ref"),
+            "head_sha": prepared_head.get("sha"),
+        }
+        if live_identity == old_identity:
+            return {"status": "not-needed", "reason": "prepared-head-still-current"}
+        labels = self._issue_label_names(issue_payload)
+        if labels is None:
+            return {"status": "not-safe", "reason": "recovery-labels-invalid"}
+        target_label = "agent:review-pending"
+        lifecycle = sorted(label for label in labels if label.startswith("agent:"))
+        if lifecycle != [target_label]:
+            return {"status": "not-safe", "reason": "recovery-lifecycle-conflict"}
+
+        try:
+            ledger_comments = self._ledger_comments(
+                comments_payload,
+                repository,
+                issue,
+                pr,
+                self.approved_marker_actors,
+            )
+        except (RuntimeError, ValueError, KeyError, TypeError) as error:
+            return {"status": "not-safe", "reason": f"recovery-ledger-invalid:{error}"}
+        # A label has no per-write owner identity. If any other run or head
+        # reached the ledger, the live review-pending label may belong to that
+        # newer work. The stale run must never infer ownership from an expired
+        # lease and delete it.
+        if any(
+            comment.get("run_id") != operation.get("run_id")
+            or comment.get("head_sha") != prepared_head.get("sha")
+            for comment in ledger_comments
+        ):
+            return {"status": "not-safe", "reason": "recovery-ledger-owner-conflict"}
+        recovery_fixture = copy.deepcopy(self.snapshot)
+        ledger = recovery_fixture.get("ledger")
+        if not isinstance(ledger, dict):
+            return {"status": "not-safe", "reason": "recovery-ledger-missing"}
+        ledger["comments"] = ledger_comments
+        ledger["count"] = len(ledger_comments)
+        queue = runpy.run_path(str(ROOT / "scripts/check-cloud-queue-contract.py"))
+        contract = queue["adoption_contract"](policy)
+        if not isinstance(contract, dict):
+            return {"status": "not-safe", "reason": "recovery-contract-invalid"}
+        writer_contract = contract.get("writer_inventory")
+        allowed_writer_kinds = (
+            writer_contract.get("kinds")
+            if isinstance(writer_contract, dict)
+            else None
+        )
+        if not isinstance(allowed_writer_kinds, list):
+            return {"status": "not-safe", "reason": "recovery-writer-contract-invalid"}
+        accepted, ledger_error = queue["validate_ledger"](
+            recovery_fixture,
+            contract,
+            str(prepared_head.get("sha", "")),
+            expected_digest,
+        )
+        if ledger_error is not None or not isinstance(accepted, list):
+            return {
+                "status": "not-safe",
+                "reason": f"recovery-ledger-{ledger_error or 'invalid'}",
+            }
+        phases = {str(record.get("phase")) for record in accepted}
+        if not {"prepared", "label-mutation"} <= phases or phases & {
+            "committed",
+            "reconciled",
+        }:
+            return {"status": "not-safe", "reason": "recovery-ledger-phase-invalid"}
+
+        try:
+            self._current_observation_time = None
+            observed_at = self._collect_observation_time(repository, issue, pr)
+            writers = self._collector("writers", repository, issue, pr)
+            observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        except (RuntimeError, ValueError, KeyError, TypeError) as error:
+            return {"status": "unknown", "reason": f"recovery-writers-failed:{error}"}
+        def validate_recovery_writers(
+            inventory: object,
+            observation: datetime,
+        ) -> tuple[str | None, str | None]:
+            records = inventory.get("records") if isinstance(inventory, dict) else None
+            if (
+                not isinstance(inventory, dict)
+                or inventory.get("source")
+                != "repository-global-writer-inventory-v1"
+                or inventory.get("repository") != repository
+                or inventory.get("read_complete") is not True
+                or inventory.get("pagination_complete") is not True
+                or inventory.get("has_next_page") is not False
+                or not isinstance(records, list)
+                or inventory.get("count") != len(records)
+            ):
+                return None, "recovery-writers-invalid"
+
+            active_records: list[dict[str, object]] = []
+            required = (
+                "kind",
+                "repository",
+                "issue",
+                "pr",
+                "run_id",
+                "owner",
+                "lease_expires_at",
+                "head_sha",
+            )
+            for record in records:
+                if not isinstance(record, dict) or any(
+                    field not in record for field in required
+                ):
+                    return None, "recovery-writer-invalid"
+                if record.get("kind") not in allowed_writer_kinds:
+                    return None, "recovery-writer-invalid"
+                expiry = record.get("lease_expires_at")
+                if not isinstance(expiry, str):
+                    return None, "recovery-writer-invalid"
+                try:
+                    expiry_time = datetime.fromisoformat(
+                        expiry.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    return None, "recovery-writer-invalid"
+                if expiry_time.tzinfo is None:
+                    return None, "recovery-writer-invalid"
+                if expiry_time.astimezone(timezone.utc) > observation.astimezone(
+                    timezone.utc
+                ):
+                    active_records.append(record)
+
+            # The repository-global writer lease is exclusive across kinds.
+            # A matching run_id never exempts a claim, implementation, or
+            # review-resolution writer from the recovery gate.
+            if any(
+                record.get("kind") != "adoption" for record in active_records
+            ):
+                return None, "recovery-writer-active"
+
+            adoption_records = [
+                record
+                for record in active_records
+                if record.get("kind") == "adoption"
+            ]
+            source_ids: set[int] = set()
+            for record in adoption_records:
+                source_id = record.get("source_comment_id")
+                if type(source_id) is not int or source_id <= 0:
+                    return None, "recovery-writer-invalid"
+                if source_id in source_ids:
+                    return None, "recovery-writer-invalid"
+                source_ids.add(source_id)
+
+            if adoption_records:
+                winner = min(
+                    adoption_records,
+                    key=lambda record: int(record["source_comment_id"]),
+                )
+                if not (
+                    winner.get("run_id") == operation.get("run_id")
+                    and winner.get("owner") == operation.get("owner")
+                    and winner.get("repository") == repository
+                    and winner.get("issue") == issue
+                    and winner.get("pr") == pr
+                    and winner.get("head_sha") == prepared_head.get("sha")
+                ):
+                    return None, "recovery-writer-active"
+
+            return (
+                self._canonical_digest(
+                    {"repository": repository, "records": records}
+                ),
+                None,
+            )
+
+        writer_cas, writer_error = validate_recovery_writers(writers, observed)
+        if writer_error is not None or writer_cas is None:
+            return {
+                "status": "not-safe",
+                "reason": writer_error or "recovery-writers-invalid",
+            }
+
+        # Recheck the exact head, labels, and durable ledger immediately before
+        # the one-label compensation.  A concurrent change fails closed.
+        try:
+            if self._pr_identity_from_pr(repository, pr) != live_identity:
+                return {"status": "not-safe", "reason": "recovery-head-drift"}
+            refreshed_issue = self._call(
+                f"repos/{self._repository_path(repository)}/issues/{issue}"
+            )
+            refreshed_comments = self._paginate(
+                f"repos/{self._repository_path(repository)}/issues/{issue}/comments"
+            )
+            if self._issue_label_names(refreshed_issue) != labels:
+                return {"status": "not-safe", "reason": "recovery-label-drift"}
+            if self._ledger_comments(
+                refreshed_comments,
+                repository,
+                issue,
+                pr,
+                self.approved_marker_actors,
+            ) != ledger_comments:
+                return {"status": "not-safe", "reason": "recovery-ledger-drift"}
+            self._current_observation_time = None
+            refreshed_writers = self._collector("writers", repository, issue, pr)
+            refreshed_observed_at = (
+                refreshed_writers.get("observed_at")
+                if isinstance(refreshed_writers, dict)
+                else None
+            )
+            if not isinstance(refreshed_observed_at, str):
+                return {"status": "not-safe", "reason": "recovery-writer-drift"}
+            try:
+                refreshed_observed = datetime.fromisoformat(
+                    refreshed_observed_at.replace("Z", "+00:00")
+                )
+            except ValueError:
+                return {"status": "not-safe", "reason": "recovery-writer-drift"}
+            if refreshed_observed.tzinfo is None:
+                return {"status": "not-safe", "reason": "recovery-writer-drift"}
+            refreshed_writer_cas, refreshed_writer_error = (
+                validate_recovery_writers(refreshed_writers, refreshed_observed)
+            )
+            if (
+                refreshed_writer_error is not None
+                or refreshed_writer_cas != writer_cas
+            ):
+                return {"status": "not-safe", "reason": "recovery-writer-drift"}
+            encoded_label = quote(target_label, safe="")
+            self._call(
+                f"repos/{self._repository_path(repository)}/issues/{issue}/labels/{encoded_label}",
+                method="DELETE",
+            )
+            restored_issue = self._call(
+                f"repos/{self._repository_path(repository)}/issues/{issue}"
+            )
+        except (RuntimeError, ValueError, KeyError, TypeError) as error:
+            return {"status": "unknown", "reason": f"recovery-delete-failed:{error}"}
+        restored_labels = self._issue_label_names(restored_issue)
+        if restored_labels != sorted(label for label in labels if label != target_label):
+            return {"status": "unknown", "reason": "recovery-verification-failed"}
+        return {
+            "status": "restored",
+            "reason": "stale-label-compensated",
+            "fresh_authorization_required": True,
+            "old_head_sha": prepared_head.get("sha"),
+            "current_head_sha": live_identity.get("head_sha"),
         }
 
     def compare_and_write(
@@ -2361,8 +2809,29 @@ def execute_adoption_phase(
     try:
         observation = transport.read(repository, issue, pr)
     except (RuntimeError, ValueError, KeyError, TypeError) as error:
+        recovery_method = getattr(transport, "recover_stale_label", None)
+        if callable(recovery_method):
+            try:
+                recovery = recovery_method(
+                    policy,
+                    repository,
+                    issue,
+                    pr,
+                    authorization,
+                )
+            except (RuntimeError, ValueError, KeyError, TypeError) as recovery_error:
+                recovery = {
+                    "status": "unknown",
+                    "reason": f"recovery-entry-failed:{recovery_error}",
+                }
+            if isinstance(recovery, dict) and recovery.get("status") == "restored":
+                result = blocked("fresh-authorization-required")
+                result["recovery"] = recovery
+                return result
         result = blocked("live-refetch-failed")
         result["detail"] = str(error)
+        if "recovery" in locals() and isinstance(recovery, dict):
+            result["recovery"] = recovery
         return result
     live = observation.get("state") if isinstance(observation, dict) else None
     cas = observation.get("cas") if isinstance(observation, dict) else None

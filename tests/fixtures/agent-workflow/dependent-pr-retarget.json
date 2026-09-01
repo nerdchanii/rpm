@@ -1,5 +1,11 @@
 {
   "repository": "nerdchanii/rpm",
+  "repository_settings": {
+    "source": "github-repository-metadata-v1",
+    "repository": "nerdchanii/rpm",
+    "read_complete": true,
+    "delete_branch_on_merge": false
+  },
   "selected_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "selected_pr_evidence": {
     "repository": "nerdchanii/rpm",

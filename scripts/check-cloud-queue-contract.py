@@ -586,6 +586,12 @@ def adoption_evidence(value: object) -> object:
     """
     normalized = copy.deepcopy(value)
     if isinstance(normalized, dict):
+        execution = normalized.get("execution")
+        if isinstance(execution, dict) and "evidence_digest" in execution:
+            # The approved marker carries the digest of this same evidence.
+            # Mask only that self-referential field while keeping the marker's
+            # complete target identity inside the canonical digest.
+            execution["evidence_digest"] = "<evidence-digest>"
         issue = normalized.get("issue")
         if isinstance(issue, dict):
             labels = issue.get("labels")
@@ -853,10 +859,22 @@ def validate_checks(
     names: list[str] = []
     workflow_ids: list[int] = []
     conclusions: dict[str, str] = {}
+    pending_statuses = {"queued", "in_progress", "pending", "requested", "waiting"}
     for record in records:
         name = record.get("name")
         if not isinstance(name, str) or not name:
             return "check-name-invalid"
+        status = record.get("status")
+        conclusion = record.get("conclusion")
+        # Contradictory check evidence is invalid even when the check is not
+        # policy-required.  Incomplete third-party records stay informational.
+        if isinstance(status, str) and (
+            status.casefold() in pending_statuses and conclusion is not None
+            or status.casefold() == "completed"
+            and isinstance(conclusion, str)
+            and conclusion.casefold() in pending_statuses
+        ):
+            return "check-status-conclusion-conflict"
         # Third-party runs remain visible in the complete inventory, while
         # provenance is required for policy-required checks only.
         if name not in required_names:
@@ -869,10 +887,22 @@ def validate_checks(
         if not isinstance(record.get("workflow_run_id"), int):
             return "check-provenance-missing"
         workflow_ids.append(int(record["workflow_run_id"]))
-        conclusion = record.get("conclusion")
+        if not isinstance(status, str) or status.casefold() not in pending_statuses | {
+            "completed"
+        }:
+            return "check-status-invalid"
+        normalized_status = status.casefold()
+        if normalized_status in pending_statuses:
+            if conclusion is not None:
+                return "check-status-conclusion-conflict"
+            conclusions[name] = "pending"
+            continue
         if not isinstance(conclusion, str):
             return "check-conclusion-invalid"
-        conclusions[name] = conclusion.casefold()
+        normalized_conclusion = conclusion.casefold()
+        if normalized_conclusion in pending_statuses:
+            return "check-status-conclusion-conflict"
+        conclusions[name] = normalized_conclusion
     if len(names) != len(set(names)) or len(workflow_ids) != len(set(workflow_ids)):
         return "duplicate-check-name"
     if any(conclusions.get(str(name)) != "success" for name in required):
@@ -1274,30 +1304,142 @@ def validate_ledger(
     if not isinstance(phases, list) or not isinstance(authors, list):
         return None, "ledger-contract-invalid"
     approved_authors = {str(author) for author in authors}
-    accepted_by_phase: dict[str, dict[str, object]] = {}
+    terminal_history = ledger_contract.get("terminal_history")
+    if terminal_history != {
+        "classification": "compensated-old-head",
+        "phases": ["prepared", "label-mutation"],
+        "require_head_change": True,
+    }:
+        return None, "ledger-contract-invalid"
+    required = (
+        "comment_id",
+        "author",
+        "marker",
+        "namespace",
+        "run_id",
+        "phase",
+        "repository",
+        "issue",
+        "pr",
+        "head_sha",
+        "evidence_digest",
+        "prepared_document",
+        "prepared_document_digest",
+    )
     comment_ids: set[int] = set()
     for comment in comments:
-        required = (
-            "comment_id",
-            "author",
-            "marker",
-            "namespace",
-            "run_id",
-            "phase",
-            "repository",
-            "issue",
-            "pr",
-            "head_sha",
-            "evidence_digest",
-            "prepared_document",
-            "prepared_document_digest",
-        )
         if any(field not in comment for field in required):
             return None, "ledger-record-incomplete"
         comment_id = comment.get("comment_id")
         if not isinstance(comment_id, int) or comment_id in comment_ids:
             return None, "ledger-comment-id-invalid"
         comment_ids.add(comment_id)
+
+    # A successful stale-label compensation intentionally leaves the old
+    # prepared and label-mutation comments as immutable audit history.  Once
+    # that old head is no longer current, validate the history against its own
+    # embedded prepared document, then let only the fresh run drive progress.
+    # Any extra phase, mixed identity, or incomplete document remains blocking.
+    current_run_id = operation.get("run_id")
+    active_comments = [
+        comment for comment in comments if comment.get("run_id") == current_run_id
+    ]
+    historical_by_run: dict[str, list[dict[str, object]]] = {}
+    for comment in comments:
+        run_id = comment.get("run_id")
+        if run_id == current_run_id:
+            continue
+        if not isinstance(run_id, str) or not run_id.strip():
+            return None, "ledger-history-run-invalid"
+        historical_by_run.setdefault(run_id, []).append(comment)
+
+    live = fixture.get("live")
+    if historical_by_run and not active_comments and (
+        not isinstance(live, dict)
+        or live.get("lifecycle_state") != contract.get("from_state")
+    ):
+        return None, "ledger-history-live-state-mismatch"
+    historical_phases = set(terminal_history["phases"])
+    for run_comments in historical_by_run.values():
+        accepted_history_by_phase: dict[str, dict[str, object]] = {}
+        history_identity: tuple[object, ...] | None = None
+        for comment in run_comments:
+            phase = comment.get("phase")
+            if (
+                phase not in phases
+                or comment.get("author") not in approved_authors
+                or comment.get("marker") != ledger_contract.get("marker")
+                or comment.get("namespace") != ledger_contract.get("namespace")
+                or comment.get("repository") != fixture.get("repository")
+                or comment.get("issue") != authorization.get("issue")
+                or comment.get("pr") != authorization.get("pr")
+                or comment.get("head_sha") == head_sha
+            ):
+                return None, "ledger-history-record-mismatch"
+            document = comment.get("prepared_document")
+            if not isinstance(document, dict):
+                return None, "ledger-history-document-invalid"
+            if document.get("schema") != "rpm-existing-pr-adoption-prepared-v1":
+                return None, "ledger-history-document-invalid"
+            if comment.get("prepared_document_digest") != canonical_digest(document):
+                return None, "ledger-history-document-digest-mismatch"
+            document_authorization = document.get("authorization")
+            document_evidence = document.get("evidence")
+            if not isinstance(document_authorization, dict) or not isinstance(
+                document_evidence, dict
+            ):
+                return None, "ledger-history-document-invalid"
+            document_head = document_authorization.get("head")
+            document_digest = adoption_evidence_digest(document_evidence)
+            if (
+                not isinstance(document_head, dict)
+                or document_authorization.get("repository")
+                != comment.get("repository")
+                or document_authorization.get("issue") != comment.get("issue")
+                or document_authorization.get("pr") != comment.get("pr")
+                or document_head.get("sha") != comment.get("head_sha")
+                or document_authorization.get("evidence_digest") != document_digest
+                or comment.get("evidence_digest") != document_digest
+            ):
+                return None, "ledger-history-document-mismatch"
+            identity = (
+                comment.get("run_id"),
+                comment.get("repository"),
+                comment.get("issue"),
+                comment.get("pr"),
+                comment.get("head_sha"),
+                comment.get("evidence_digest"),
+                canonical_digest(
+                    {
+                        "schema": document.get("schema"),
+                        "authorization": immutable_adoption_authorization(
+                            document_authorization
+                        ),
+                        "evidence": adoption_evidence(document_evidence),
+                    }
+                ),
+            )
+            if history_identity is None:
+                history_identity = identity
+            elif history_identity != identity:
+                return None, "ledger-history-identity-ambiguous"
+            phase_name = str(phase)
+            prior = accepted_history_by_phase.get(phase_name)
+            if prior is not None:
+                if canonical_digest(
+                    comparable_ledger_comment(prior)
+                ) != canonical_digest(comparable_ledger_comment(comment)):
+                    return None, "ledger-history-phase-ambiguous"
+                if int(comment["comment_id"]) < int(prior["comment_id"]):
+                    accepted_history_by_phase[phase_name] = comment
+            else:
+                accepted_history_by_phase[phase_name] = comment
+        if set(accepted_history_by_phase) != historical_phases:
+            return None, "ledger-history-not-terminal"
+
+    comments = active_comments
+    accepted_by_phase: dict[str, dict[str, object]] = {}
+    for comment in comments:
         phase = comment.get("phase")
         if phase not in phases:
             return None, "ledger-phase-invalid"
@@ -1440,6 +1582,19 @@ def adopt_existing_pr(
     assert isinstance(authorization, dict)
     assert isinstance(evidence, dict)
     assert isinstance(live, dict)
+    if contract.get("approval_identity_fields") != [
+        "repository",
+        "issue",
+        "pr",
+        "base_repository",
+        "base_ref",
+        "base_sha",
+        "head_repository",
+        "head_ref",
+        "head_sha",
+        "evidence_digest",
+    ]:
+        return blocked("approval-identity-contract-invalid")
     if (
         fixture.get("repository") != policy.get("repository")
         or operation.get("name") != contract.get("operation")
@@ -1496,6 +1651,15 @@ def adopt_existing_pr(
         execution.get("repository") != fixture.get("repository")
         or execution.get("issue") != issue.get("number")
         or execution.get("pr") != pr.get("number")
+        or not isinstance(pr.get("base"), dict)
+        or not isinstance(pr.get("head"), dict)
+        or execution.get("base_repository") != pr.get("base", {}).get("repository")
+        or execution.get("base_ref") != pr.get("base", {}).get("ref")
+        or execution.get("base_sha") != pr.get("base", {}).get("sha")
+        or execution.get("head_repository") != pr.get("head", {}).get("repository")
+        or execution.get("head_ref") != pr.get("head", {}).get("ref")
+        or execution.get("head_sha") != pr.get("head", {}).get("sha")
+        or execution.get("evidence_digest") != digest
         or execution.get("policy_version") != policy.get("version")
         or execution.get("operation_version") != contract.get("operation_version")
     ):

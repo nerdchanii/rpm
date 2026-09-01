@@ -2460,6 +2460,7 @@ check "backlog_policy_schema" jq -e '
     to_state:"review-pending",
     batch_limit:1,
     required_checks:["metadata","verify"],
+    approval_identity_fields:["repository","issue","pr","base_repository","base_ref","base_sha","head_repository","head_ref","head_sha","evidence_digest"],
     approved_plus_one_actors:["chatgpt-codex-connector"],
     canonical_array_order:{
       "authorization.closing_issues":["repository","number"],
@@ -2492,6 +2493,11 @@ check "backlog_policy_schema" jq -e '
       namespace:"rpm-agent-adoption",
       marker:"<!-- rpm-agent-adoption:v1 -->",
       approved_authors:["nerdchanii"],
+      terminal_history:{
+        classification:"compensated-old-head",
+        phases:["prepared","label-mutation"],
+        require_head_change:true
+      },
       phases:["prepared","label-mutation","committed","reconciled"]
     }
   }
@@ -2534,7 +2540,7 @@ check "backlog_policy_schema" jq -e '
     required_mergeable:true,
     forbid_unresolved_p0_p1:true,
     method:"squash",
-    delete_branch:true
+    delete_branch:false
   }
 ' .agents/workflows/backlog-policy.json
 
@@ -2741,7 +2747,13 @@ check "merge_gate_pass" sh -c '
     and .data.issue == 12
     and .data.pr == 44
     and .data.method == \"squash\"
-    and .data.delete_branch == true
+    and .data.delete_branch == false
+    and .data.merge_request == {
+      repository_full_name:\"nerdchanii/rpm\",
+      pr_number:44,
+      merge_method:\"squash\",
+      expected_head_sha:\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"
+    }
   " >/dev/null
 '
 check "merge_gate_checks_pending_no_work" sh -c '

@@ -34,7 +34,11 @@ verdict.
    required check named in `merge_gate.required_checks` with its status,
    conclusion, selected head SHA, source, and workflow run id. Reject incomplete
    reads and duplicate check names. Collect mergeability and the current-head
-   P0/P1 finding disposition independently of the review-thread UI flag.
+   P0/P1 finding disposition independently of the review-thread UI flag. Read
+   the base repository's live `delete_branch_on_merge` setting through the
+   connected GitHub plugin and require an explicit boolean. If the connector
+   cannot expose it, return run-level blocked with
+   `repository-setting-unavailable` and make no mutation.
 4. Inventory every open PR in the repository with complete pagination. Record
    each PR number, repository, base ref/SHA, and head ref/SHA. If an open PR is
    based on the selected PR head repository and ref, return `retarget-required`
@@ -44,13 +48,26 @@ verdict.
    decision with
    `python3 scripts/check-merge-gate.py --issues-file <normalized-file> --operation select-merge`.
    The script verdict is authoritative; do not merge on your own judgment.
-6. On `merge`: refetch the selected head and dependent inventory, normalize
+6. On `merge`: refetch the selected head, repository branch-deletion setting,
+   and dependent inventory, normalize
    that final evidence, and run `check-merge-gate.py` again for the exact
    selected head immediately before mutation. Proceed only when the second
-   verdict is `merge` and its head matches the checked snapshot. Then
-   squash-merge the PR through the GitHub plugin using the policy method,
-   delete the branch when the gate configures it, and verify the linked issue
-   closed. Lifecycle labels on the closed issue are inert; leave them.
+   verdict is `merge` and its head matches the checked snapshot. Use the
+   verdict's `merge_request` object unchanged as the GitHub plugin input,
+   including its mandatory `expected_head_sha`. The top-level tool-policy hook
+   binds the dedicated normalized evidence path, regular-file identity, and
+   SHA-256 to this transcript, also binds the policy/checker/hook SHA-256
+   values, reads the verified bytes once and passes those bytes directly to
+   the checker immediately before the merge call, exact-compares the
+   four request fields, and consumes the grant once. If the connected merge tool cannot send
+   that compare-and-swap field, return blocked with
+   `merge-cas-unsupported`. Then squash-merge using the policy method and
+   verify the linked issue closed. Preserve the head branch: scheduled branch
+   deletion is disabled. The final gate requires both policy
+   `delete_branch: false` and live repository
+   `delete_branch_on_merge: false`, because the merge request cannot override
+   repository-side automatic deletion. Lifecycle
+   labels on the closed issue are inert; leave them.
 7. On `no-work` (`checks-pending`, `mergeability-unknown`,
    `no-awaiting-merge-candidate`, `merge-gate-disabled`): report and make no
    mutation. `no-work` is a healthy idempotent result.
@@ -67,6 +84,15 @@ verdict.
 - At most one merge per run.
 - Never bypass, override, or re-run required checks; never force a merge over
   a failed or pending gate.
+- Never omit or change the checker-provided `expected_head_sha` on the merge
+  request.
+- Never delete a local or remote branch. The committed policy must keep
+  `delete_branch` false, and both gate reads must prove live repository
+  `delete_branch_on_merge` false; any other value makes the gate block.
+- Never use another evidence path after the first final-gate path is recorded;
+  multiple paths make the transcript grant ambiguous and blocked. Never change
+  or replace the evidence file or trusted merge files after the grant; any
+  byte, inode, metadata, or digest drift blocks the call.
 - Never edit PR title, body, code, or review threads.
 - Never post or request `@codex review`.
 - Never reopen, retitle, or rewrite issues; the only issue mutations are the
@@ -80,3 +106,12 @@ verdict.
 
 Use `/tmp/rpm-merge-gate-issue<n>.json` for the normalized evidence file. Do
 not commit it.
+
+For a direct `exec_command` gate call, provide the exact repository workdir
+with `cmd`; execution overrides such as a custom shell or login mode are
+blocked.
+
+When the host exposes GitHub only through `functions.exec`, use one direct
+literal call to the connected GitHub merge tool with strict JSON and emit only
+the serialized result. Computed tool names and additional statements are
+blocked because they cannot be tied mechanically to the checker verdict.
