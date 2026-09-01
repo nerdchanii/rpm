@@ -16,7 +16,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^(Agent|spawn_agent|apply_patch|Edit|Write|Bash|shell|exec|exec_command|functions\\.exec|functions\\.exec_command|mcp__.*)$",
+        "matcher": "^(Agent|.*collaboration(?:__|\\.).*|(?:.*(?:__|\\.))?(?:spawn_agent|followup_task|send_message|interrupt_agent|list_agents|wait_agent)|apply_patch|Edit|Write|Bash|shell|exec|exec_command|functions\\.exec|functions\\.exec_command|mcp__.*)$",
         "hooks": [
           {
             "type": "command",

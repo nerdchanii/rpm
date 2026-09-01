@@ -286,9 +286,12 @@ LEAF_SANDBOX = {
     "rpm_adversarial_reviewer": "read-only",
     "rpm_followup_issue_creator": "read-only",
 }
+ROUTING_LEAF_ROLES = set(LEAF_SANDBOX) | {
+    role for role, _route_marker in EXTERNAL_ROLE_ENTRYPOINTS.values()
+}
 EXPECTED_SANDBOX = {
-    **{manager: "read-only" for manager in MANAGER_REPORTS},
-    **LEAF_SANDBOX,
+    role: str(metadata["sandbox_mode"])
+    for role, metadata in ROLE_TAXONOMY.items()
 }
 BACKLOG_ROLES = {
     "rpm_workflow_manager",
@@ -465,11 +468,17 @@ def check_role_contracts(
                 f"{relative}: expected sandbox_mode={sandbox!r}, got {data.get('sandbox_mode')!r}",
             )
         instructions = str(data.get("developer_instructions", ""))
-        if "Return exactly one JSONL event:" not in instructions or '{"type":' not in instructions:
+        if (
+            name != "pr-review-resolver"
+            and (
+                "Return exactly one JSONL event:" not in instructions
+                or '{"type":' not in instructions
+            )
+        ):
             fail(errors, f"{relative}: missing exact JSONL output contract")
         if name in BACKLOG_ROLES and ".agents/workflows/backlog-policy.json" not in instructions:
             fail(errors, f"{relative}: backlog role does not read the policy")
-        if name in LEAF_SANDBOX and "spawn/contact other agents" not in instructions:
+        if name in ROUTING_LEAF_ROLES and "spawn/contact other agents" not in instructions:
             fail(errors, f"{relative}: leaf is missing the no-delegation boundary")
         if name in {"rpm_test_runner", "rpm_verifier"}:
             environment = data.get("shell_environment_policy")
@@ -478,8 +487,6 @@ def check_role_contracts(
             }:
                 fail(errors, f"{relative}: command-only role must redirect Cargo artifacts")
 
-    role_pattern = re.compile(r"\brpm_[a-z0-9_]+\b")
-    known_roles = set(EXPECTED_SANDBOX)
     for manager, reports in MANAGER_REPORTS.items():
         if manager not in agents:
             continue
@@ -491,8 +498,7 @@ def check_role_contracts(
                     errors,
                     f"{path.relative_to(ROOT)}: direct report {report!r} is unreachable",
                 )
-        exposed = set(role_pattern.findall(text)) & known_roles
-        unexpected = exposed - reports - {manager}
+        unexpected = set(role_route_leaks(text, reports | {manager}))
         if unexpected:
             fail(
                 errors,
@@ -501,12 +507,12 @@ def check_role_contracts(
         if f"Do not spawn another {manager}" not in text:
             fail(errors, f"{path.relative_to(ROOT)}: missing self-recursion prohibition")
 
-    for leaf in LEAF_SANDBOX:
+    for leaf in ROUTING_LEAF_ROLES:
         if leaf not in agents:
             continue
         path, data = agents[leaf]
         text = str(data.get("developer_instructions", ""))
-        leaked = (set(role_pattern.findall(text)) & known_roles) - {leaf}
+        leaked = set(role_route_leaks(text, {leaf}))
         if leaked:
             fail(
                 errors,
@@ -665,6 +671,7 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
 
     capability_names = {
         "MANAGERS",
+        "MANAGER_CONTACT_ROLES",
         "MCP_READ_ROLES",
         "LOCAL_WRITE_ROLES",
         "GITHUB_MUTATION_ROLES",
@@ -672,10 +679,30 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
     }
     relative = str(path.relative_to(ROOT))
     reported: set[str] = set()
-    dynamic_names = {"getattr", "setattr", "globals", "locals", "vars", "exec", "eval"}
-    dynamic_namespace_attributes = {"__dict__"}
+    dynamic_names = {
+        "getattr",
+        "setattr",
+        "globals",
+        "locals",
+        "vars",
+        "exec",
+        "eval",
+        "__import__",
+    }
+    dynamic_namespace_attributes = {
+        "__dict__",
+        "__globals__",
+        "_getframe",
+        "currentframe",
+        "f_globals",
+        "f_locals",
+    }
     dynamic_reflection_names = {
         "attrgetter",
+        "methodcaller",
+        "locate",
+        "resolve_name",
+        "import_module",
         "getattr_static",
         "__getattribute__",
         "__setattr__",
@@ -688,6 +715,30 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
     }
     dynamic_attributes = {
         *forbidden_dynamic_names,
+    }
+    introspection_dunder_attributes = {
+        "__base__",
+        "__bases__",
+        "__builtins__",
+        "__class__",
+        "__closure__",
+        "__code__",
+        "__func__",
+        "__loader__",
+        "__mro__",
+        "__self__",
+        "__spec__",
+        "__subclasses__",
+    }
+    allowed_import_roots = {
+        "__future__",
+        "hashlib",
+        "json",
+        "pathlib",
+        "re",
+        "shlex",
+        "sys",
+        "tempfile",
     }
 
     def reject(reason: str) -> None:
@@ -793,6 +844,8 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
                 )
             elif node.attr in dynamic_attributes:
                 reject("dynamic attribute access is forbidden in the capability hook")
+            elif node.attr in introspection_dunder_attributes:
+                reject("introspection dunder access is forbidden in the capability hook")
         elif isinstance(node, ast.Subscript):
             if capability_root(node.value) is not None:
                 reject("capability sets cannot be accessed through subscripts")
@@ -905,6 +958,15 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
                 reject("capability names cannot be used as match pattern bindings")
             elif node.rest in forbidden_dynamic_names:
                 reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                import_root = alias.name.split(".", 1)[0]
+                if import_root not in allowed_import_roots:
+                    reject("only audited standard-library imports are allowed")
+        elif isinstance(node, ast.ImportFrom):
+            import_root = (node.module or "").split(".", 1)[0]
+            if import_root not in allowed_import_roots:
+                reject("only audited standard-library imports are allowed")
         elif isinstance(node, ast.alias):
             import_root = node.name.split(".", 1)[0]
             imported_name = node.name.rsplit(".", 1)[-1]
@@ -939,6 +1001,11 @@ def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
 
     expected_sets = {
         "MANAGERS": set(MANAGER_REPORTS),
+        "MANAGER_CONTACT_ROLES": {
+            f"{manager}:{report}"
+            for manager, reports in MANAGER_REPORTS.items()
+            for report in reports
+        },
         "MCP_READ_ROLES": {
             role
             for role, metadata in ROLE_TAXONOMY.items()
@@ -983,6 +1050,28 @@ def role_route_leaks(
     text: str, allowed: set[str] | frozenset[str] = frozenset()
 ) -> list[str]:
     return sorted(role for role in ROLE_TAXONOMY if role not in allowed and role in text)
+
+
+def hook_matcher_missing_roles(
+    entries: object, roles: set[str] | frozenset[str]
+) -> tuple[list[str], list[str]]:
+    matchers: list[re.Pattern[str]] = []
+    invalid: list[str] = []
+    if isinstance(entries, list):
+        for entry in entries:
+            matcher = entry.get("matcher") if isinstance(entry, dict) else None
+            if not isinstance(matcher, str):
+                continue
+            try:
+                matchers.append(re.compile(matcher))
+            except re.error as error:
+                invalid.append(f"{matcher!r}: {error}")
+    missing = sorted(
+        role
+        for role in roles
+        if not any(matcher.search(role) is not None for matcher in matchers)
+    )
+    return missing, invalid
 
 
 def check_external_role_entrypoints(
@@ -2508,12 +2597,39 @@ def check_deterministic_assets(errors: list[str]) -> None:
     except (OSError, json.JSONDecodeError) as error:
         fail(errors, f"{hooks_path.relative_to(ROOT)}: invalid hook config: {error}")
         return
-    pre_tool = hooks.get("hooks", {}).get("PreToolUse", [])
+    hook_groups = hooks.get("hooks", {})
+    pre_tool = hook_groups.get("PreToolUse", [])
     serialized = json.dumps(pre_tool)
-    for required in ("Agent", "apply_patch", "exec_command", "mcp__"):
+    for required in (
+        "Agent",
+        "spawn_agent",
+        "followup_task",
+        "send_message",
+        "interrupt_agent",
+        "list_agents",
+        "wait_agent",
+        "apply_patch",
+        "exec_command",
+        "mcp__",
+    ):
         if required not in serialized:
             fail(errors, f"{hooks_path.relative_to(ROOT)}: PreToolUse misses {required!r}")
-    stops = json.dumps(hooks.get("hooks", {}).get("SubagentStop", []))
+    for hook_name in ("SubagentStart", "SubagentStop"):
+        missing, invalid = hook_matcher_missing_roles(
+            hook_groups.get(hook_name, []), set(ROLE_TAXONOMY)
+        )
+        for matcher_error in invalid:
+            fail(
+                errors,
+                f"{hooks_path.relative_to(ROOT)}: {hook_name} has invalid matcher {matcher_error}",
+            )
+        if missing:
+            fail(
+                errors,
+                f"{hooks_path.relative_to(ROOT)}: {hook_name} misses taxonomy roles: "
+                f"{', '.join(missing)}",
+            )
+    stops = json.dumps(hook_groups.get("SubagentStop", []))
     if "rpm_issue_manager" not in stops or "issue_manager_stop_gate.py" not in stops:
         fail(errors, f"{hooks_path.relative_to(ROOT)}: issue completion gate is missing")
 
@@ -2556,7 +2672,85 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
 
     cases = (
         ("leaf-spawn", "rpm_issue_researcher", "spawn_agent", {}, 2),
-        ("manager-spawn", "rpm_backlog_manager", "Agent", {}, 0),
+        ("leaf-followup", "rpm_issue_researcher", "followup_task", {}, 2),
+        ("leaf-send-message", "rpm_issue_researcher", "send_message", {}, 2),
+        ("leaf-interrupt", "rpm_issue_researcher", "interrupt_agent", {}, 2),
+        ("leaf-list-agents", "rpm_issue_researcher", "list_agents", {}, 2),
+        ("leaf-wait-agent", "rpm_issue_researcher", "wait_agent", {}, 2),
+        (
+            "leaf-namespaced-followup",
+            "rpm_issue_researcher",
+            "collaboration.followup_task",
+            {},
+            2,
+        ),
+        (
+            "leaf-future-collaboration-tool",
+            "rpm_issue_researcher",
+            "functions.collaboration.future_contact",
+            {},
+            2,
+        ),
+        (
+            "manager-spawn",
+            "rpm_backlog_manager",
+            "Agent",
+            {"subagent_type": "rpm_backlog_scout"},
+            0,
+        ),
+        (
+            "manager-spawn-non-report",
+            "rpm_backlog_manager",
+            "Agent",
+            {"subagent_type": "rpm_implementer"},
+            2,
+        ),
+        (
+            "manager-spawn-agent-exact-task",
+            "rpm_backlog_manager",
+            "spawn_agent",
+            {
+                "agent_type": "rpm_backlog_scout",
+                "task_name": "rpm_backlog_scout",
+            },
+            0,
+        ),
+        (
+            "manager-spawn-agent-aliased-task",
+            "rpm_backlog_manager",
+            "spawn_agent",
+            {"agent_type": "rpm_backlog_scout", "task_name": "scout_one"},
+            2,
+        ),
+        (
+            "manager-followup-unregistered",
+            "rpm_backlog_manager",
+            "followup_task",
+            {"target": "unregistered"},
+            2,
+        ),
+        (
+            "manager-send-message-denied",
+            "rpm_backlog_manager",
+            "send_message",
+            {"target": "/root/rpm_backlog_scout"},
+            2,
+        ),
+        (
+            "manager-followup-direct-report",
+            "rpm_backlog_manager",
+            "followup_task",
+            {"target": "rpm_backlog_scout"},
+            0,
+        ),
+        (
+            "manager-future-contact-denied",
+            "rpm_backlog_manager",
+            "functions.collaboration.future_contact",
+            {"target": "rpm_backlog_scout"},
+            2,
+        ),
+        ("manager-list-agents", "rpm_backlog_manager", "list_agents", {}, 0),
         (
             "spec-patch",
             "rpm_spec_updater",
@@ -2590,8 +2784,67 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "creator-create",
             "rpm_idea_issue_creator",
             "mcp__github__create_issue",
-            {"title": "idea", "body": "body"},
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": "body",
+            },
             0,
+        ),
+        (
+            "creator-external-repository-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {"owner": "other", "repo": "repo", "title": "idea", "body": "body"},
+            2,
+        ),
+        (
+            "creator-assignee-field-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": "body",
+                "assignees": ["attacker"],
+            },
+            2,
+        ),
+        (
+            "followup-creator-external-repository-denied",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue",
+            {"owner": "other", "repo": "repo", "title": "followup", "body": "body"},
+            2,
+        ),
+        (
+            "followup-creator-milestone-field-denied",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "followup",
+                "body": "body",
+                "milestone": 1,
+            },
+            2,
+        ),
+        (
+            "creator-project-seven-authorized",
+            "rpm_idea_issue_creator",
+            "mcp__github__add_project_item",
+            {"owner": "nerdchanii", "project_number": 7, "content_id": "ISSUE_1"},
+            0,
+        ),
+        (
+            "creator-project-wrong-number-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__add_project_item",
+            {"owner": "nerdchanii", "project_number": 999, "content_id": "ISSUE_1"},
+            2,
         ),
         (
             "refiner-project",
@@ -2604,7 +2857,12 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "claimer-labels",
             "rpm_ready_ticket_claimer",
             "mcp__github__update_issue",
-            {"labels": ["agent:claimed"]},
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "labels": ["agent:claimed"],
+            },
             0,
         ),
         (
@@ -2727,6 +2985,563 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             0,
         ),
         (
+            "gh-api-absolute-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "/usr/bin/gh api repos/example/example -X DELETE"},
+            2,
+        ),
+        (
+            "gh-api-command-substitution-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "result=$(gh api repos/example/example -X DELETE)"},
+            2,
+        ),
+        (
+            "gh-api-absolute-command-substitution-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "result=$(/usr/bin/gh api repos/example/example -X DELETE)"},
+            2,
+        ),
+        (
+            "gh-api-absolute-get-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "/usr/bin/gh api repos/example/example -X GET"},
+            0,
+        ),
+        (
+            "gh-api-variable-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'GH=/usr/bin/gh; "$GH" api repos/example/example -X DELETE'},
+            2,
+        ),
+        (
+            "gh-api-variable-get-fail-closed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'GH=/usr/bin/gh; "$GH" api repos/example/example -X GET'},
+            2,
+        ),
+        (
+            "gh-api-parameter-expansion-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'GH=/usr/bin/gh; "${GH:-/usr/bin/gh}" api '
+                "repos/example/example -X DELETE"
+            },
+            2,
+        ),
+        (
+            "gh-api-nested-positional-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "sh -c '\"$1\" api repos/example/example -X DELETE' "
+                "sh /usr/bin/gh"
+            },
+            2,
+        ),
+        (
+            "gh-exported-wrapper-nested-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "CMD=/usr/bin/gh; export CMD; "
+                "sh -c '\"$CMD\" pr merge 220 --squash'"
+            },
+            2,
+        ),
+        (
+            "gh-exported-wrapper-nested-variable-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "CMD=/usr/bin/gh; ACTION=merge; export CMD ACTION; "
+                "sh -c '\"$CMD\" pr \"$ACTION\" 220 --squash'"
+            },
+            2,
+        ),
+        (
+            "gh-quoted-wrapper-nested-variable-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'CMD=/usr/bin/g"h"; ACTION=merge; export CMD ACTION; '
+                "sh -c '\"$CMD\" pr \"$ACTION\" 220 --squash'"
+            },
+            2,
+        ),
+        (
+            "gh-direct-variable-group-and-action-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'CMD=/usr/bin/gh; GROUP=pr; ACTION=merge; '
+                '"$CMD" "$GROUP" "$ACTION" 220 --squash'
+            },
+            2,
+        ),
+        (
+            "gh-direct-variable-group-and-action-issue-edit",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'CMD=/usr/bin/gh; GROUP=issue; ACTION=edit; '
+                '"$CMD" "$GROUP" "$ACTION" 1 --add-label security'
+            },
+            2,
+        ),
+        (
+            "gh-direct-variable-group-decoy-issue-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'GROUP=pr; ACTION=merge; gh "$GROUP" "$ACTION" '
+                "220 issue"
+            },
+            2,
+        ),
+        (
+            "gh-global-flag-before-variable-group-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'GROUP=pr; ACTION=merge; gh --repo example/example '
+                '"$GROUP" "$ACTION" 220'
+            },
+            2,
+        ),
+        (
+            "gh-nested-command-wrapper-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sh -c 'command gh pr merge 220 --squash'"},
+            2,
+        ),
+        (
+            "gh-double-nested-command-wrapper-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sh -c 'sh -c \"command gh pr merge 220 --squash\"'"},
+            2,
+        ),
+        (
+            "gh-nested-pathname-glob-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "ACTION=merge; export ACTION; "
+                "sh -c '/opt/homebrew/bin/g[h] pr \"$ACTION\" 220 --squash'"
+            },
+            2,
+        ),
+        (
+            "gh-unknown-repo-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh repo delete example/example --yes"},
+            2,
+        ),
+        (
+            "gh-unknown-release-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh release delete v1.0 --yes"},
+            2,
+        ),
+        (
+            "gh-unknown-workflow-run",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh workflow run deploy.yml"},
+            2,
+        ),
+        (
+            "gh-audited-repo-view-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh repo view example/example"},
+            0,
+        ),
+        (
+            "gh-audited-release-view-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh release view v1.0"},
+            0,
+        ),
+        (
+            "gh-audited-workflow-view-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh workflow view deploy.yml"},
+            0,
+        ),
+        (
+            "gh-global-repo-flag-issue-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh --repo example/example issue view 1"},
+            0,
+        ),
+        (
+            "gh-global-repo-flag-api-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh --repo example/example api repos/example/example -X GET"},
+            0,
+        ),
+        (
+            "gh-global-short-repo-flag-pr-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh -Rexample/example pr view 220"},
+            0,
+        ),
+        (
+            "gh-newline-second-command-mutation",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "gh issue view 1\n"
+                "gh issue edit 1 --add-label security"
+            },
+            2,
+        ),
+        (
+            "gh-command-substitution-mutation",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'gh issue view 1 --jq "$(gh issue edit 1 '
+                '--add-label security)"'
+            },
+            2,
+        ),
+        (
+            "gh-process-substitution-mutation",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "diff <(gh issue view 1) <(gh issue edit 1 --title x)"},
+            2,
+        ),
+        (
+            "gh-exec-wrapper-variable-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'CMD=/opt/homebrew/bin/gh; ACTION=merge; '
+                'exec "$CMD" pr "$ACTION" 220 --squash'
+            },
+            2,
+        ),
+        (
+            "gh-unsupported-wrapper-variable-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'CMD=/opt/homebrew/bin/gh; ACTION=merge; '
+                'custom-wrapper "$CMD" pr "$ACTION" 220 --squash'
+            },
+            2,
+        ),
+        (
+            "gh-quoted-bash-login-shell-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "CMD=gh; \"bash\" -lc '\"$CMD\" pr merge 220'"
+            },
+            2,
+        ),
+        (
+            "gh-direct-pathname-glob-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "/opt/homebrew/bin/g[h] pr merge 220 --squash"},
+            2,
+        ),
+        (
+            "nested-mcp-mutation-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {"code": "await tools.mcp__github__update_issue({issue_number: 1})"},
+            2,
+        ),
+        (
+            "nested-mcp-read-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {"code": "await tools.mcp__github__get_issue({issue_number: 1})"},
+            0,
+        ),
+        (
+            "nested-mcp-dynamic-lookup-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {
+                "code": "await tools[ALL_TOOLS.find(x => "
+                'x.name.endsWith("update_issue")).name]({issue_number: 1})'
+            },
+            2,
+        ),
+        (
+            "nested-mcp-reflect-lookup-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {
+                "code": "const name = ['mcp', 'github', 'update_issue'].join('__'); "
+                "await Reflect.get(tools, name)({issue_number: 1})"
+            },
+            2,
+        ),
+        (
+            "nested-mcp-constructed-tools-eval-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {
+                "code": "const t = eval('to' + 'ols'); const name = "
+                "['mcp', 'github', 'update_issue'].join('__'); "
+                "await Reflect.get(t, name)({issue_number: 1})"
+            },
+            2,
+        ),
+        (
+            "nested-mcp-unicode-identifier-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {
+                "code": "const n=['mcp','github','update_issue'].join('__'); "
+                "await to\\u006fls[n]({issue_number: 1})"
+            },
+            2,
+        ),
+        (
+            "git-push-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "git push origin HEAD:refs/heads/policy-bypass"},
+            2,
+        ),
+        (
+            "git-push-resolver-unsafe-denied",
+            "pr-review-resolver",
+            "exec_command",
+            {"cmd": "git push --force origin HEAD:refs/heads/policy-bypass"},
+            2,
+        ),
+        (
+            "git-push-resolver-cas-denied",
+            "pr-review-resolver",
+            "exec_command",
+            {
+                "cmd": "git push origin HEAD:refs/heads/fix/review "
+                "--force-with-lease=refs/heads/fix/review:"
+                "0123456789abcdef0123456789abcdef01234567"
+            },
+            2,
+        ),
+        (
+            "github-curl-patch-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "curl -X PATCH https://api.github.com/repos/example/example/issues/1"
+            },
+            2,
+        ),
+        (
+            "github-httpie-patch-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "http PATCH https://api.github.com/repos/example/example/issues/1"
+            },
+            2,
+        ),
+        (
+            "github-curl-dynamic-method-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "METHOD=PATCH; curl -X \"$METHOD\" "
+                "https://api.github.com/repos/example/example/issues/1"
+            },
+            2,
+        ),
+        (
+            "github-curl-json-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "curl --json payload "
+                "https://api.github.com/repos/example/example/issues/1"
+            },
+            2,
+        ),
+        (
+            "github-curl-quoted-host-patch-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'curl -X PATCH https://api.github.co""m/'
+                "repos/example/example/issues/1"
+            },
+            2,
+        ),
+        (
+            "gh-copied-glob-alias-issue-edit-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "cp /opt/homebrew/bin/g[h] /tmp/x; "
+                "/tmp/x issue edit 1 --add-label security"
+            },
+            2,
+        ),
+        (
+            "git-copied-glob-alias-push-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "cp /usr/bin/g[i]t /tmp/x; "
+                "/tmp/x push origin HEAD:refs/heads/x"
+            },
+            2,
+        ),
+        (
+            "git-config-alias-push-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "git -c alias.ship=push ship origin "
+                "HEAD:refs/heads/policy-bypass"
+            },
+            2,
+        ),
+        (
+            "git-quoted-config-alias-push-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "git -c alias.ship=p'ush' ship origin "
+                "HEAD:refs/heads/policy-bypass"
+            },
+            2,
+        ),
+        (
+            "git-dynamic-action-push-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'ACTION=push; git "$ACTION" origin '
+                "HEAD:refs/heads/policy-bypass"
+            },
+            2,
+        ),
+        (
+            "git-copied-alias-url-push-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "cp /usr/bin/g[i]t /tmp/x; /tmp/x push "
+                "https://github.com/nerdchanii/rpm HEAD:refs/heads/x"
+            },
+            2,
+        ),
+        (
+            "github-urllib-patch-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'import urllib.request; "
+                "urllib.request.Request(\"https://api.github.com/repos/"
+                "nerdchanii/rpm/issues/193\", data=b\"{}\", method=\"PATCH\")'"
+            },
+            2,
+        ),
+        (
+            "github-http-client-patch-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'import http.client; "
+                "http.client.HTTPSConnection(\"api.github.com\").request("
+                "\"PATCH\", \"/repos/nerdchanii/rpm/issues/193\")'"
+            },
+            2,
+        ),
+        (
+            "gh-exported-wrapper-nested-issue-edit",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "CMD=/usr/bin/gh; export CMD; "
+                "sh -c '\"$CMD\" issue edit 1 --add-label security'"
+            },
+            2,
+        ),
+        (
+            "gh-exported-wrapper-nested-api-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "CMD=/usr/bin/gh; export CMD; "
+                "sh -c '\"$CMD\" api repos/example/example -X DELETE'"
+            },
+            2,
+        ),
+        (
+            "gh-variable-issue-edit",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'GH=/usr/bin/gh; "$GH" issue edit 1 --add-label security'},
+            2,
+        ),
+        (
+            "gh-parameter-issue-comment",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'GH=/usr/bin/gh; "${GH:-/usr/bin/gh}" '
+                "issue comment 1 --body x"
+            },
+            2,
+        ),
+        (
+            "unrelated-curl-variable-api-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'curl "$URL/api"'},
+            0,
+        ),
+        (
+            "unrelated-nested-curl-api-get-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sh -c 'curl https://api.example.test/items -X GET'"},
+            0,
+        ),
+        (
+            "unrelated-curl-literal-api-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'echo "$value"; curl https://api.example.com/data'},
+            0,
+        ),
+        (
+            "unrelated-echo-variable-api-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'echo "$value" api'},
+            0,
+        ),
+        (
             "mcp-provider-neutral-read",
             "rpm_issue_researcher",
             "mcp__provider__get_issue",
@@ -2760,6 +3575,167 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "mcp__provider__get_and_update_issue",
             {},
             2,
+        ),
+        (
+            "mcp-get-issue-delete-without-conjunction",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue_delete",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-issue-then-delete",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue_then_delete",
+            {},
+            2,
+        ),
+        (
+            "mcp-read-project-to-update",
+            "rpm_issue_researcher",
+            "mcp__provider__read_project_to_update",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-issue-patch",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue_patch",
+            {},
+            2,
+        ),
+        (
+            "mcp-read-then-post",
+            "rpm_issue_researcher",
+            "mcp__provider__read_then_post",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-issue-put",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue_put",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-patch-issue",
+            "rpm_issue_researcher",
+            "mcp__provider__get_patch_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-read-post-issue",
+            "rpm_issue_researcher",
+            "mcp__provider__read_post_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-fetch-put-issue",
+            "rpm_issue_researcher",
+            "mcp__provider__fetch_put_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-update-and-get-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__update_and_get_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-publish-and-get-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__publish_and_get_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-and-publish-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_and_publish_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-commit-and-get-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__commit_and_get_changes",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-and-commit-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_and_commit_changes",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-and-push-unknown-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_and_push_files",
+            {},
+            2,
+        ),
+        (
+            "mcp-search-and-replace-unknown-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__search_and_replace",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-or-upsert-unknown-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_or_upsert_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-comment-resource-read",
+            "rpm_issue_researcher",
+            "mcp__github__get_comment",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-label-resource-read",
+            "rpm_issue_researcher",
+            "mcp__github__get_label",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-archive-resource-read",
+            "rpm_issue_researcher",
+            "mcp__provider__get_archive",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-comment-and-list-multi-read",
+            "rpm_issue_researcher",
+            "mcp__github__get_comment_and_list_replies",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-label-or-read-multi-read",
+            "rpm_issue_researcher",
+            "mcp__github__get_label_or_read_issue",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-archive-and-list-multi-read",
+            "rpm_issue_researcher",
+            "mcp__provider__get_archive_and_list_files",
+            {},
+            0,
         ),
         (
             "mcp-get-publish-log-read",
@@ -2804,11 +3780,11 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             0,
         ),
         (
-            "mcp-provider-neutral-key-override",
+            "mcp-resource-key-does-not-override-action",
             "rpm_issue_researcher",
-            "mcp__provider__get_issue",
-            {"publish": True},
-            2,
+            "mcp__provider__get_commit",
+            {"commit": "abc123", "publish": False},
+            0,
         ),
         (
             "mcp-codex-apps-github-get-commit-read",
@@ -2821,15 +3797,241 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "mcp-plural-labels-refiner-authorized",
             "rpm_issue_refiner",
             "mcp__github__add_labels_to_issue",
-            {"labels": ["agent:claimed"]},
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "labels": ["agent:claimed"],
+            },
             0,
         ),
         (
             "mcp-plural-labels-claimer-authorized",
             "rpm_ready_ticket_claimer",
             "mcp__github__add_labels_to_issue",
-            {"labels": ["agent:claimed"]},
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "labels": ["agent:claimed"],
+            },
             0,
+        ),
+        (
+            "mcp-external-target-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {
+                "owner": "other",
+                "repo": "repo",
+                "issue_number": 1,
+                "labels": ["agent:claimed"],
+            },
+            2,
+        ),
+        (
+            "mcp-conflicting-target-refiner-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "other",
+                "repo": "repo",
+                "repository": "nerdchanii/rpm",
+                "issue_number": 1,
+                "labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "mcp-extra-type-field-refiner-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "body": "managed body",
+                "type": "Bug",
+            },
+            2,
+        ),
+        (
+            "mcp-extra-type-field-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "labels": ["agent:claimed"],
+                "type": "Bug",
+            },
+            2,
+        ),
+        (
+            "mcp-reverse-transition-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:ready"],
+                "remove_labels": ["agent:claimed"],
+            },
+            2,
+        ),
+        (
+            "mcp-ready-replacement-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "labels": ["agent:ready"],
+            },
+            2,
+        ),
+        (
+            "mcp-create-issue-comment-idea-creator-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue_comment",
+            {"issue_number": 1, "body": "comment"},
+            2,
+        ),
+        (
+            "mcp-create-issue-comment-followup-creator-denied",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue_comment",
+            {"issue_number": 1, "body": "comment"},
+            2,
+        ),
+        (
+            "mcp-non-lifecycle-label-refiner-denied",
+            "rpm_issue_refiner",
+            "mcp__github__add_labels_to_issue",
+            {"labels": ["security"]},
+            2,
+        ),
+        (
+            "mcp-non-lifecycle-label-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__add_labels_to_issue",
+            {"labels": ["security"]},
+            2,
+        ),
+        (
+            "mcp-label-with-title-refiner-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {"labels": ["agent:ready"], "title": "changed"},
+            2,
+        ),
+        (
+            "mcp-label-with-assignee-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {"labels": ["agent:claimed"], "assignees": ["attacker"]},
+            2,
+        ),
+        (
+            "mcp-update-issue-non-lifecycle-label-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {"labels": ["security"]},
+            2,
+        ),
+        (
+            "mcp-unrelated-lifecycle-label-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__add_labels_to_issue",
+            {"labels": ["agent:blocked"]},
+            2,
+        ),
+        (
+            "shell-lifecycle-label-refiner-structured-tool-required",
+            "rpm_issue_refiner",
+            "exec_command",
+            {"cmd": "gh issue edit 1 --add-label agent:research"},
+            2,
+        ),
+        (
+            "shell-non-lifecycle-label-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {"cmd": "gh issue edit 1 --add-label security"},
+            2,
+        ),
+        (
+            "shell-variable-label-flag-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {
+                "cmd": 'FLAG=--add-label; GH=/usr/bin/gh; '
+                '"$GH" issue edit 1 "$FLAG" security'
+            },
+            2,
+        ),
+        (
+            "shell-variable-label-flag-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "exec_command",
+            {
+                "cmd": 'FLAG=--add-label; GH=/usr/bin/gh; '
+                '"$GH" issue edit 1 "$FLAG" security'
+            },
+            2,
+        ),
+        (
+            "shell-label-with-title-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {
+                "cmd": "gh issue edit 1 --add-label agent:ready --title changed"
+            },
+            2,
+        ),
+        (
+            "shell-add-assignee-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "exec_command",
+            {"cmd": "gh issue edit 1 --add-assignee attacker"},
+            2,
+        ),
+        (
+            "shell-remove-milestone-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {"cmd": "gh issue edit 1 --remove-milestone"},
+            2,
+        ),
+        (
+            "shell-short-title-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {"cmd": "gh issue edit 1 -t changed"},
+            2,
+        ),
+        (
+            "shell-external-issue-url-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {
+                "cmd": "gh issue edit https://github.com/other/repo/issues/1 "
+                "--add-label agent:research"
+            },
+            2,
+        ),
+        (
+            "shell-external-repo-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "exec_command",
+            {
+                "cmd": "gh -Rother/repo issue edit 1 "
+                "--add-label agent:claimed --remove-label agent:ready"
+            },
+            2,
         ),
     )
     for verb in ("set", "assign", "archive", "publish", "transfer", "approve", "pin"):
@@ -2920,6 +4122,7 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
         actual = pre_tool(role, tool, tool_input)
         if actual != expected:
             fail(errors, f"tool policy probe {name} expected exit {expected}, got {actual}")
+
     resolve_reason = run(
         {
             "hook_event_name": "PreToolUse",

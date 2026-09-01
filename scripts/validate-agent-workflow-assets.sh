@@ -1929,6 +1929,69 @@ if checker.role_route_leaks("route pr-review-resolver", {"rpm_workflow_manager"}
 if checker.role_route_leaks("route pr-review-resolver", {"pr-review-resolver"}):
     raise SystemExit("explicitly allowed external role was reported as leaked")
 
+manager_path, manager_data = agents["rpm_backlog_manager"]
+manager_with_external_route = dict(manager_data)
+manager_with_external_route["developer_instructions"] = (
+    str(manager_data["developer_instructions"])
+    + "\nDirectly route to pr-review-resolver.\n"
+)
+agents_with_external_route = dict(agents)
+agents_with_external_route["rpm_backlog_manager"] = (
+    manager_path,
+    manager_with_external_route,
+)
+route_errors = []
+checker.check_role_contracts(agents_with_external_route, route_errors)
+if not any(
+    "manager exposes non-report roles: pr-review-resolver" in error
+    for error in route_errors
+):
+    raise SystemExit(
+        "manager direct route to pr-review-resolver was accepted: "
+        f"{route_errors!r}"
+    )
+
+resolver_path, resolver_data = agents["pr-review-resolver"]
+resolver_with_internal_route = dict(resolver_data)
+resolver_with_internal_route["developer_instructions"] = (
+    str(resolver_data["developer_instructions"])
+    + "\nDirectly route to rpm_implementer.\n"
+)
+agents_with_resolver_route = dict(agents)
+agents_with_resolver_route["pr-review-resolver"] = (
+    resolver_path,
+    resolver_with_internal_route,
+)
+resolver_route_errors = []
+checker.check_role_contracts(agents_with_resolver_route, resolver_route_errors)
+if not any(
+    "leaf exposes other role names: rpm_implementer" in error
+    for error in resolver_route_errors
+):
+    raise SystemExit(
+        "pr-review-resolver direct route to internal writer was accepted: "
+        f"{resolver_route_errors!r}"
+    )
+
+missing_roles, invalid_matchers = checker.hook_matcher_missing_roles(
+    [{"matcher": "^(rpm_|pr-review-resolver$)"}],
+    {"rpm_existing", "pr-review-resolver", "custom-role"},
+)
+if invalid_matchers or missing_roles != ["custom-role"]:
+    raise SystemExit(
+        "future taxonomy role was not rejected by hook coverage: "
+        f"missing={missing_roles!r}, invalid={invalid_matchers!r}"
+    )
+missing_roles, invalid_matchers = checker.hook_matcher_missing_roles(
+    [{"matcher": "["}],
+    {"rpm_existing"},
+)
+if missing_roles != ["rpm_existing"] or not invalid_matchers:
+    raise SystemExit(
+        "invalid hook matcher was accepted: "
+        f"missing={missing_roles!r}, invalid={invalid_matchers!r}"
+    )
+
 taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
 taxonomy["rpm_backlog_manager"].update(
     write_scope="github", mcp_scope="read", coordination="single-writer"
@@ -2045,6 +2108,15 @@ for mutation, expected in (
         "dynamic attribute access is forbidden",
     ),
     (
+        "object.__subclasses__()",
+        "introspection dunder access is forbidden",
+    ),
+    (
+        "name = 'GITHUB_' + 'MUTATION_ROLES'\n"
+        "sys._getframe().f_globals[name].add('rpm_backlog_scout')",
+        "dynamic attribute access is forbidden",
+    ),
+    (
         "dict.__setitem__(sys.modules[__name__].__dict__, 'LOCAL_WRITE_ROLES', {'rpm_verifier'})",
         "dynamic attribute access is forbidden",
     ),
@@ -2067,6 +2139,18 @@ for mutation, expected in (
     (
         "operator.attrgetter('unrelated')(namespace)",
         "dynamic attribute access is forbidden",
+    ),
+    (
+        "import operator\n"
+        "cap = operator.methodcaller('__getattribute__', 'GITHUB_MUTATION_ROLES')"
+        "(sys.modules[__name__])\n"
+        "cap.add('rpm_backlog_scout')",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "import pydoc\n"
+        "pydoc.locate(__name__ + '.GITHUB_MUTATION_ROLES').add('rpm_backlog_scout')",
+        "only audited standard-library imports are allowed",
     ),
     (
         "attrgetter('unrelated')",
@@ -2236,8 +2320,8 @@ with tempfile.TemporaryDirectory() as root:
         checker.check_tool_policy_mutation_capabilities(errors)
     finally:
         checker.ROOT = original_root
-if errors:
-    raise SystemExit(f"harmless unrelated import was rejected: {errors!r}")
+if not any("only audited standard-library imports are allowed" in error for error in errors):
+    raise SystemExit(f"unaudited unrelated import was accepted: {errors!r}")
 
 with tempfile.TemporaryDirectory() as root:
     temporary_root = pathlib.Path(root)
