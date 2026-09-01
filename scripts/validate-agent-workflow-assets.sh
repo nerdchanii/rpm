@@ -2992,6 +2992,7 @@ check "backlog_policy_schema" jq -e '
 ' .agents/workflows/backlog-policy.json
 
 check "agent_organization" python3 scripts/check-agent-organization.py
+check "issue_206_pr_metadata" bash scripts/test-issue-206-pr-policy.sh
 check "agent_hooks_json" jq -e . .codex/hooks.json
 for hook in .codex/hooks/agent_tool_policy.py .codex/hooks/issue_manager_stop_gate.py; do
   name="$(basename "${hook}" .py)"
@@ -3004,12 +3005,15 @@ for script in \
   scripts/check-agent-backlog-access.sh \
   scripts/collect-pr-review-context.sh \
   scripts/create-review-followup-issue.sh \
+  scripts/test-codex-cloud-setup.sh \
   scripts/ticket-gen
 do
   [ -f "${script}" ] || continue
   name="$(basename "${script}")"
   check "script_${name}_syntax" bash -n "${script}"
 done
+
+check "codex_cloud_setup_contract" bash scripts/test-codex-cloud-setup.sh
 
 check "script_check_agent_issue_readiness_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-agent-issue-readiness.py").read_text())'
