@@ -12,6 +12,8 @@ This file is a navigation and judgment guide, not the enforcement layer. Determi
 - If scope must be narrowed, say what is included, what is excluded, and why.
 - Do not treat a representative file, planning issue, milestone anchor, or draft issue as the whole target set unless the user explicitly asks for only that item.
 - If a guardrail can be checked mechanically, prefer adding or using a check over adding more prompt text.
+- Codex is the current primary and default repository operating path. Codex Cloud execution and repository-configured Codex Automatic review are current mechanisms; provider-specific details belong in adapters, environments, or role instructions.
+- Shared lifecycle, state, validation, and mutation contracts apply provider-neutrally. They describe required outcomes and evidence while preserving the existing provider-specific execution records.
 
 ## Source of Truth
 
@@ -21,6 +23,8 @@ This file is a navigation and judgment guide, not the enforcement layer. Determi
 - Open issue lifecycle labels are the Cloud scheduled execution queue.
 - Draft issues can explain implementation intent, ordering, dependencies, and acceptance context, but they do not override SPECs or ADRs.
 - If code, SPEC, ADR, and issue text disagree, classify the mismatch before editing behavior.
+- A GitHub issue is the durable handoff for fresh workers. Its current body preserves the goal, scope, non-goals, acceptance criteria, dependencies, validation plan, and necessary context.
+- Issue #207 remains the open implementation that will persist and validate the executable-issue contract and its schema/mutations; current manual guidance does not claim automatic template enforcement. Issue #208 owns discovered-work disposition.
 
 ## GitHub Project and Roadmap Work
 
@@ -41,14 +45,22 @@ execution eligibility condition. Respect the policy batch limits and allowed
 state transitions.
 
 Repository agents consume review feedback after it appears on a pull request.
-Codex review creation is configured outside this repository workflow; agents
-must not post an `@codex review` request.
+Issue #199 owns repository-external Codex Automatic review creation. Lifecycle
+ticket execution does not create or request an Automatic review or post `@codex review`;
+its arrival is asynchronous evidence, not a synchronous
+completion dependency or blocking condition. Review reconciliation returns
+`no-work` without mutation when feedback is absent and rechecks on a later
+scheduled run. Explicit review-only workflows retain their documented
+non-blocking COMMENT review-posting scope. Issue #195 owns the planned
+deterministic blocking CI aggregate contract; current `merge_gate.required_checks`
+consumes policy `metadata` and `verify` conclusions as individual evidence.
 
-Merging is owned exclusively by the scheduled merge gatekeeper defined in
-`.agents/skills/merge-gatekeeper/`. It merges at most one awaiting-merge pull
-request per run and only when the deterministic policy `merge_gate` passes:
-required checks concluded, the PR is mergeable, and no unresolved P0/P1
-finding remains. Subagents never merge; the tool policy hook enforces this.
+The scheduled `merge-gatekeeper` is the actual merge owner, with issue #202
+preserving and organizing that lifecycle ownership. It is defined in
+`.agents/skills/merge-gatekeeper/`, merges at most one awaiting-merge pull
+request per run, and only when the deterministic policy `merge_gate` passes:
+required checks concluded, the PR is mergeable, and no unresolved P0/P1 finding
+remains. Subagents never merge; the tool policy hook enforces this.
 
 ## Change Discipline
 

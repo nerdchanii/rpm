@@ -5,6 +5,37 @@ ticket. Runtime routing authority lives in `.codex/agents/`. Mechanical Project,
 label, batch, transition, and automation policy lives in
 `.agents/workflows/backlog-policy.json`.
 
+Codex is the current primary and default repository operating path. Codex Cloud
+scheduled execution and repository-configured Codex Automatic review are current
+mechanisms. The lifecycle, state, validation, and mutation contracts below are
+provider-neutral; provider-specific details remain in adapters, environments,
+and role instructions. This document records the existing execution model and
+does not add an executor-routing architecture.
+
+## Durable Handoff and Discovered Work
+
+A GitHub issue is the durable handoff for a fresh worker. Its current body must
+preserve the goal, scope, non-goals, acceptance criteria, dependencies,
+validation plan, and necessary context. Issue #207 remains the open
+implementation that will persist and validate the executable-issue contract and
+its schema/mutations. Current manual guidance does not claim automatic template
+enforcement.
+
+Work discovered during execution or review receives exactly one disposition:
+an in-scope fix, a narrowly justified blocker or hotfix, or a durable linked
+follow-up issue. Actionable findings cannot remain hidden output or expand an
+unrelated PR. Follow-up creation requires policy authorization,
+`may_create_followup_issues=true`, a duplicate check, and a bounded writer;
+without approval, link an existing issue or post the draft disposition and its
+evidence to the source issue or PR as a durable comment. A session-local draft
+is only preparation, not a terminal disposition. If the workflow cannot persist
+either record, it must stop as blocked and report the missing permission. Issue
+#208 owns the implementation of this disposition contract.
+
+Structured model proposals provide classification or planning evidence.
+Authorized workflows apply bounded deterministic writes separately, using the
+contract and current GitHub state as their mutation boundary.
+
 ## Harness Boundary and Execution Record
 
 The local orchestration plan owns decomposition, dependency ordering, and
@@ -157,23 +188,30 @@ must record its lease and idempotency key while preserving ordinary labels.
 
 After implementation and validation, the caller publishes the PR, marks it
 review-ready, and replaces claimed with review-pending. Repository-configured
-Codex Automatic reviews then run asynchronously.
+Codex Automatic reviews then run asynchronously under issue #199's
+repository-external review-creation mechanism.
 
 `$take-ticket explicit <issue>` executes a user-selected issue without running
 the scheduled candidate claim flow.
 
-Scheduled runs do not post, request, or wait for `@codex review`. Repository
-code-review settings run independently after a pull request is published.
+Ticket execution does not create or request an Automatic review or post `@codex review`;
+its arrival is asynchronous evidence, not a synchronous
+completion dependency or blocking condition. Repository code-review settings
+run independently after a pull request is published. Review reconciliation
+returns `no-work` without mutation when feedback is absent and rechecks on a
+later scheduled run. Explicit review-only workflows retain their documented
+non-blocking COMMENT review-posting scope.
 
 ## Review-Reconciliation Contract
 
 `$pr-review-resolution` scheduled mode selects at most one open PR linked to an
 open review-pending issue. It returns `no-work` when no candidate exists or the
-Codex review has not arrived. Accepted findings receive minimal changes,
+Codex review has not arrived, without mutating state; a later scheduled run
+rechecks the candidate. Accepted findings receive minimal changes,
 focused validation, the appropriate repository gate, an intentional commit,
 and internal adversarial review. Actionable P0/P1 findings keep the issue
 review-pending. Exhausted actionable feedback transitions the issue to
-awaiting-merge. This workflow never merges and never requests `@codex review`.
+awaiting-merge. This workflow never merges and does not request `@codex review`.
 
 ## Merge-Gate Contract
 
@@ -186,9 +224,13 @@ through the GitHub plugin and lets GitHub close the linked issue; lifecycle
 labels on closed issues are inert. Pending checks or unknown mergeability
 return `no-work`. Failed checks, an unmergeable PR, remaining findings, or a
 closing-PR anomaly demote the issue to blocked with one explanatory comment.
-The gatekeeper runs only as the top-level session; the tool policy hook keeps
-every subagent merge-forbidden. The workflow automation flag
-`automation.merge_pull_requests` stays `false`: subagent workflows never merge.
+Issue #195 owns the planned deterministic blocking CI aggregate contract. Until
+that implementation exists, current `merge_gate.required_checks` consumes the
+policy's `metadata` and `verify` conclusions as individual evidence. The scheduled
+`merge-gatekeeper` is the actual merge owner, with issue #202 preserving and
+organizing that lifecycle ownership. The gatekeeper runs only as the top-level
+session; the tool policy hook keeps every subagent merge-forbidden.
+The workflow automation flag `automation.merge_pull_requests` stays `false`: subagent workflows never merge.
 
 ## Suggested Automation Split
 
