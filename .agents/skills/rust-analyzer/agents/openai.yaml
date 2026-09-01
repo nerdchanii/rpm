@@ -1,0 +1,6 @@
+interface:
+  display_name: "RPM Rust Analyzer"
+  short_description: "Run deterministic Rust semantic diagnostics for RPM."
+  default_prompt: "Use $rust-analyzer to run the RPM Rust analyzer probe and deterministic diagnostic fallback."
+policy:
+  allow_implicit_invocation: true
