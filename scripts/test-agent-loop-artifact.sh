@@ -17,6 +17,24 @@ pass() {
   printf 'agent_loop_artifact_test.PASS=%s\n' "$1"
 }
 
+search_fixed() {
+  local needle="$1" path="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg -q --fixed-strings -- "${needle}" "${path}"
+  else
+    grep -Fq -- "${needle}" "${path}"
+  fi
+}
+
+search_regex() {
+  local pattern="$1" path="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg -q --pcre2 -- "${pattern}" "${path}"
+  else
+    grep -Eq -- "${pattern}" "${path}"
+  fi
+}
+
 require_file() {
   [ -f "$1" ] || fail "missing file: $1"
 }
@@ -24,19 +42,19 @@ require_file() {
 require_text() {
   local path="$1" needle="$2" description
   description="${3:-${needle}}"
-  rg -q --fixed-strings -- "${needle}" "${path}" || fail "${description} (${path})"
+  search_fixed "${needle}" "${path}" || fail "${description} (${path})"
 }
 
 require_regex() {
   local path="$1" pattern="$2" description
   description="${3:-${pattern}}"
-  rg -q --pcre2 -- "${pattern}" "${path}" || fail "${description} (${path})"
+  search_regex "${pattern}" "${path}" || fail "${description} (${path})"
 }
 
 require_no_regex() {
   local path="$1" pattern="$2" description
   description="${3:-${pattern}}"
-  if rg -q --pcre2 -- "${pattern}" "${path}"; then
+  if search_regex "${pattern}" "${path}"; then
     fail "${description} (${path})"
   fi
 }
@@ -45,7 +63,7 @@ require_any_text() {
   local path="$1" description="$2" needle
   shift 2
   for needle in "$@"; do
-    if rg -q --fixed-strings -- "${needle}" "${path}"; then
+    if search_fixed "${needle}" "${path}"; then
       return 0
     fi
   done
@@ -56,9 +74,14 @@ require_any_text() {
 # supports a later safe filename change without selecting an unrelated workflow.
 workflow="${ARTIFACT_WORKFLOW:-}"
 if [ -z "${workflow}" ]; then
-  workflow="$(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 \
-    | xargs -0 rg -l -m 1 'openai/codex-action@.*86365089eb2b84e0a8fb0717b304f8bdcb13b20e|actions/upload-artifact@.*ea165f8d65b6e75b540449e92b4886f43607fa02' \
-    | head -n 1 || true)"
+  workflow="$(
+    while IFS= read -r -d '' candidate; do
+      if search_regex 'openai/codex-action@.*86365089eb2b84e0a8fb0717b304f8bdcb13b20e|actions/upload-artifact@.*ea165f8d65b6e75b540449e92b4886f43607fa02' "${candidate}"; then
+        printf '%s\n' "${candidate}"
+        break
+      fi
+    done < <(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) -print0)
+  )"
 fi
 require_file "${workflow}"
 
@@ -183,7 +206,7 @@ RUBY
 require_text "${workflow}" "openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e"
 require_text "${workflow}" "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
 require_text "${workflow}" "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-if rg -q --pcre2 'uses:[[:space:]]+[^[:space:]#]+@(v[0-9]+|main|master)([[:space:]#]|$)' "${workflow}"; then
+if search_regex 'uses:[[:space:]]+[^[:space:]#]+@(v[0-9]+|main|master)([[:space:]#]|$)' "${workflow}"; then
   fail "artifact workflow contains a floating Action reference"
 fi
 require_text "${workflow}" "model: gpt-5.6-sol"
@@ -221,7 +244,7 @@ for forbidden in \
   'scripts/agent-loop-publish.sh' 'scripts/agent-loop-merge.sh'; do
   require_no_regex "${workflow}" "${forbidden}" "artifact workflow contains a mutation command: ${forbidden}"
 done
-require_no_regex "${workflow}" 'gh[[:space:]]+api[^\n]*(--method|-X)[[:space:]]+(POST|PUT|PATCH|DELETE)' \
+require_no_regex "${workflow}" 'gh[[:space:]]+api.*(--method|-X)[[:space:]]+(POST|PUT|PATCH|DELETE)' \
   "artifact workflow contains a mutating GitHub API call"
 require_no_regex "${workflow}" '(^|[[:space:]])[^#]*:[[:space:]]*(write|write-all)([[:space:]#]|$)' \
   "artifact workflow grants a write permission"
@@ -548,8 +571,8 @@ mkdir -p "${stage_repo}/src" "${stage_repo}/target"
 printf 'new regular file\n' >"${stage_repo}/src/new-file.txt"
 printf 'ignored build output\n' >"${stage_repo}/target/build.bin"
 stage_output="$(cd "${stage_repo}" && bash "${stage_helper}")"
-printf '%s\n' "${stage_output}" | rg -q 'new_files=1|files=1' || fail "regular new file was not staged"
-if git -C "${stage_repo}" diff --name-only | rg -q '(^|/)target(/|$)'; then
+printf '%s\n' "${stage_output}" | search_regex 'new_files=1|files=1' - || fail "regular new file was not staged"
+if git -C "${stage_repo}" diff --name-only | search_regex '(^|/)target(/|$)' -; then
   fail "ignored build output entered the artifact patch"
 fi
 pass "regular new file and ignored output boundary"
@@ -564,7 +587,7 @@ symlink_output="$(cd "${stage_repo}" && bash "${stage_helper}" 2>&1)"
 symlink_status=$?
 set -e
 [ "${symlink_status}" -ne 0 ] || fail "symlinked new file was accepted"
-printf '%s\n' "${symlink_output}" | rg -q -i -e 'symlink|ancestor' || fail "symlink rejection reason is missing"
+printf '%s\n' "${symlink_output}" | search_regex 'symlink|ancestor' - || fail "symlink rejection reason is missing"
 rm -f -- "${stage_repo}/src/escape.txt"
 mkdir -p "${stage_repo}/scripts"
 printf '#!/usr/bin/env bash\n' >"${stage_repo}/scripts/safe-direct-merge.sh"
@@ -573,7 +596,7 @@ protected_output="$(cd "${stage_repo}" && bash "${stage_helper}" 2>&1)"
 protected_status=$?
 set -e
 [ "${protected_status}" -ne 0 ] || fail "protected new file was accepted"
-printf '%s\n' "${protected_output}" | rg -q 'protected-path' || fail "protected path rejection reason is missing"
+printf '%s\n' "${protected_output}" | search_regex 'protected-path' - || fail "protected path rejection reason is missing"
 rm -f -- "${stage_repo}/scripts/safe-direct-merge.sh"
 printf 'untrusted override\n' >"${stage_repo}/AGENTS.override.md"
 set +e
@@ -581,7 +604,7 @@ override_output="$(cd "${stage_repo}" && bash "${stage_helper}" 2>&1)"
 override_status=$?
 set -e
 [ "${override_status}" -ne 0 ] || fail "AGENTS.override.md was accepted"
-printf '%s\n' "${override_output}" | rg -q 'protected-path:AGENTS.override.md' \
+printf '%s\n' "${override_output}" | search_regex 'protected-path:AGENTS.override.md' - \
   || fail "AGENTS.override.md rejection reason is missing"
 rm -f -- "${stage_repo}/AGENTS.override.md"
 dd if=/dev/zero of="${stage_repo}/src/oversized.bin" bs=1024 count=1025 2>/dev/null
@@ -590,7 +613,7 @@ size_output="$(cd "${stage_repo}" && bash "${stage_helper}" 2>&1)"
 size_status=$?
 set -e
 [ "${size_status}" -ne 0 ] || fail "oversized new file was accepted"
-printf '%s\n' "${size_output}" | rg -q -i -e 'too-large|size-limit' || fail "size rejection reason is missing"
+printf '%s\n' "${size_output}" | search_regex 'too-large|size-limit' - || fail "size rejection reason is missing"
 pass "symlink, protected path, and oversized file rejection"
 
 # A staged rename can otherwise hide the protected source path because Git's
@@ -609,7 +632,7 @@ rename_output="$(cd "${rename_repo}" && bash "${stage_helper}" 2>&1)"
 rename_status=$?
 set -e
 [ "${rename_status}" -ne 0 ] || fail "staged protected-path rename was accepted"
-printf '%s\n' "${rename_output}" | rg -q 'protected-path:scripts/protected.sh' \
+printf '%s\n' "${rename_output}" | search_regex 'protected-path:scripts/protected.sh' - \
   || fail "protected rename source rejection reason is missing"
 
 # Staging a new file must not bypass the one-file size limit.
@@ -628,7 +651,7 @@ staged_add_output="$(cd "${staged_add_repo}" && bash "${stage_helper}" 2>&1)"
 staged_add_status=$?
 set -e
 [ "${staged_add_status}" -ne 0 ] || fail "staged oversized new file was accepted"
-printf '%s\n' "${staged_add_output}" | rg -q 'file-too-large:src/staged-oversized.bin' \
+printf '%s\n' "${staged_add_output}" | search_regex 'file-too-large:src/staged-oversized.bin' - \
   || fail "staged oversized file rejection reason is missing"
 pass "staged rename source and staged new-file limits"
 
