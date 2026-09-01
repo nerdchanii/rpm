@@ -26,7 +26,10 @@ an in-scope fix, a narrowly justified blocker or hotfix, or a durable linked
 follow-up issue. Actionable findings cannot remain hidden output or expand an
 unrelated PR. Follow-up creation requires policy authorization,
 `may_create_followup_issues=true`, a duplicate check, and a bounded writer;
-without approval, retain a draft disposition or link an existing issue. Issue
+without approval, link an existing issue or post the draft disposition and its
+evidence to the source issue or PR as a durable comment. A session-local draft
+is only preparation, not a terminal disposition. If the workflow cannot persist
+either record, it must stop as blocked and report the missing permission. Issue
 #208 owns the discovered-work disposition implementation.
 
 Structured model proposals and bounded deterministic writes have separate
