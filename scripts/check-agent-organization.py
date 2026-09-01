@@ -85,6 +85,7 @@ FORBIDDEN_REFERENCES = (
     "watch-codex-review.sh",
 )
 EXPECTED_SKILL_INVOCATION_POLICY = {
+    "adopt-existing-pr": False,
     "fixture-governance": True,
     "merge-gatekeeper": False,
     "open-pr-review-batch": False,

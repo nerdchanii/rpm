@@ -4774,9 +4774,11 @@ class AdoptionContractTest(unittest.TestCase):
 
     def test_adoption_assets_contain_no_direct_review_or_merge_path(self) -> None:
         skill = ROOT / ".agents/skills/adopt-existing-pr/SKILL.md"
+        metadata = ROOT / ".agents/skills/adopt-existing-pr/agents/openai.yaml"
         role = ROOT / ".codex/agents/rpm_existing_pr_adopter.toml"
         manager = ROOT / ".codex/agents/rpm_workflow_manager.toml"
         self.assertTrue(skill.is_file(), skill)
+        self.assertTrue(metadata.is_file(), metadata)
         self.assertTrue(role.is_file(), role)
         self.assertTrue(manager.is_file(), manager)
         self.assertTrue(ADOPTION_WRITER.is_file(), ADOPTION_WRITER)
@@ -4784,6 +4786,9 @@ class AdoptionContractTest(unittest.TestCase):
         manager_text = manager.read_text()
         self.assertIn("rpm_workflow_manager", skill_text)
         self.assertIn("workflow=adopt-existing-pr", skill_text)
+        metadata_text = metadata.read_text()
+        self.assertIn("$adopt-existing-pr", metadata_text)
+        self.assertIn("allow_implicit_invocation: false", metadata_text)
         self.assertIn("rpm_existing_pr_adopter", manager_text)
         self.assertIn("complete current-head evidence", manager_text)
         self.assertIn("after dispatch", manager_text)
