@@ -2670,6 +2670,12 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             }
         ).returncode
 
+    followup_body = Path("/tmp") / f"rpm-review-followup-policy-{os.getpid()}.md"
+    try:
+        followup_body.write_text("# deterministic policy fixture\n")
+    except OSError as error:
+        fail(errors, f"tool policy follow-up fixture could not be created: {error}")
+
     cases = (
         ("leaf-spawn", "rpm_issue_researcher", "spawn_agent", {}, 2),
         ("leaf-followup", "rpm_issue_researcher", "followup_task", {}, 2),
@@ -2781,6 +2787,23 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             2,
         ),
         (
+            "implementer-nested-mcp-read-denied",
+            "rpm_implementer",
+            "functions.exec",
+            {"code": "await tools.mcp__github__get_issue({issue_number: 1})"},
+            2,
+        ),
+        (
+            "spec-updater-nested-patch-denied",
+            "rpm_spec_updater",
+            "functions.exec",
+            {
+                "code": "await tools.apply_patch('*** Begin Patch\\n"
+                "*** Update File: src/lib.rs\\n*** End Patch')"
+            },
+            2,
+        ),
+        (
             "creator-create",
             "rpm_idea_issue_creator",
             "mcp__github__create_issue",
@@ -2789,8 +2812,73 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
                 "repo": "rpm",
                 "title": "idea",
                 "body": "body",
+                "labels": ["agent:research"],
             },
             0,
+        ),
+        (
+            "creator-missing-research-label-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": "body",
+            },
+            2,
+        ),
+        (
+            "creator-alternate-state-label-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": "body",
+                "labels": ["agent:claimed"],
+            },
+            2,
+        ),
+        (
+            "creator-malformed-labels-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": "body",
+                "labels": ["agent:research", 7],
+            },
+            2,
+        ),
+        (
+            "creator-non-string-title-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": {"value": "idea"},
+                "body": "body",
+                "labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "creator-non-string-body-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": ["body"],
+                "labels": ["agent:research"],
+            },
+            2,
         ),
         (
             "creator-external-repository-denied",
@@ -2808,6 +2896,7 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
                 "repo": "rpm",
                 "title": "idea",
                 "body": "body",
+                "labels": ["agent:research"],
                 "assignees": ["attacker"],
             },
             2,
@@ -2820,6 +2909,19 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             2,
         ),
         (
+            "followup-creator-research-label-authorized",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "followup",
+                "body": "body",
+                "labels": ["agent:research"],
+            },
+            0,
+        ),
+        (
             "followup-creator-milestone-field-denied",
             "rpm_followup_issue_creator",
             "mcp__github__create_issue",
@@ -2828,7 +2930,34 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
                 "repo": "rpm",
                 "title": "followup",
                 "body": "body",
+                "labels": ["agent:research"],
                 "milestone": 1,
+            },
+            2,
+        ),
+        (
+            "followup-creator-non-string-title-denied",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": ["followup"],
+                "body": "body",
+                "labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "followup-creator-non-string-body-denied",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "followup",
+                "body": {"value": "body"},
+                "labels": ["agent:research"],
             },
             2,
         ),
@@ -2861,7 +2990,8 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
                 "owner": "nerdchanii",
                 "repo": "rpm",
                 "issue_number": 1,
-                "labels": ["agent:claimed"],
+                "add_labels": ["agent:claimed"],
+                "remove_labels": ["agent:ready"],
             },
             0,
         ),
@@ -3278,7 +3408,373 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "rpm_issue_researcher",
             "functions.exec",
             {"code": "await tools.mcp__github__get_issue({issue_number: 1})"},
+            2,
+        ),
+        (
+            "safe-direct-script-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash scripts/safe-direct-merge.sh 220"},
+            2,
+        ),
+        (
+            "safe-direct-script-repeated-slash-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash scripts//safe-direct-merge.sh 220"},
+            2,
+        ),
+        (
+            "safe-direct-script-dot-segment-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash scripts/./safe-direct-merge.sh 220"},
+            2,
+        ),
+        (
+            "protected-script-bash-option-c-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -o noglob -c 'scripts/safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "protected-script-bash-option-capital-o-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -O extglob -c 'scripts/safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "protected-script-variable-assignment-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "p=scripts/safe-direct-merge.sh; \"$p\" 220"
+            },
+            2,
+        ),
+        (
+            "protected-script-busybox-shell-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "busybox sh -c 'scripts/safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "protected-script-process-substitution-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "diff <(cat scripts/safe-direct-merge.sh) "
+                "<(cat scripts/test-fixture-tools.sh)"
+            },
+            2,
+        ),
+        (
+            "protected-script-basename-reference-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "echo safe-direct-merge.sh"},
+            2,
+        ),
+        (
+            "protected-script-awk-source-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "awk -f scripts/safe-direct-merge.sh"},
+            2,
+        ),
+        (
+            "protected-script-awk-system-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "awk 'BEGIN {system(\"cat scripts/safe-direct-merge.sh\")}'"
+            },
+            2,
+        ),
+        (
+            "protected-script-awk-getline-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "awk 'BEGIN {getline line < \"scripts/safe-direct-merge.sh\"}'"},
+            2,
+        ),
+        (
+            "protected-script-sed-source-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sed -f scripts/safe-direct-merge.sh"},
+            2,
+        ),
+        (
+            "protected-script-sed-in-place-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sed -i scripts/safe-direct-merge.sh"},
+            2,
+        ),
+        (
+            "protected-script-sed-exec-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sed -e 'e cat scripts/safe-direct-merge.sh'"},
+            2,
+        ),
+        (
+            "protected-script-git-grep-pager-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "git grep --open-files-in-pager -O scripts/safe-direct-merge.sh"
+            },
+            2,
+        ),
+        (
+            "protected-script-rg-pre-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "rg --pre scripts/safe-direct-merge.sh scripts/safe-direct-merge.sh"},
+            2,
+        ),
+        (
+            "protected-script-rg-pre-glob-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "rg --pre-glob '*.md' scripts/safe-direct-merge.sh"
+            },
+            2,
+        ),
+        (
+            "safe-direct-script-nested-login-shell-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -lc 'scripts/safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "safe-direct-script-nested-dot-segment-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -lc 'scripts/./safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "safe-direct-script-parent-segment-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash scripts/../scripts/safe-direct-merge.sh 220"},
+            2,
+        ),
+        (
+            "safe-direct-script-double-nested-shell-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sh -c 'bash scripts/safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "safe-direct-script-read-allowed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "rg -n mergeable scripts/safe-direct-merge.sh"},
             0,
+        ),
+        (
+            "safe-direct-script-repeated-slash-read-allowed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "cat scripts//safe-direct-merge.sh"},
+            0,
+        ),
+        (
+            "safe-direct-script-dot-segment-read-allowed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "cat scripts/./safe-direct-merge.sh"},
+            0,
+        ),
+        (
+            "safe-direct-script-parent-segment-read-allowed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "cat scripts/../scripts/safe-direct-merge.sh"},
+            0,
+        ),
+        (
+            "safe-direct-script-nested-inline-read-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -lc 'cat scripts/safe-direct-merge.sh'"},
+            2,
+        ),
+        (
+            "safe-direct-script-bash-command-substitution-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -c \"$(cat scripts/safe-direct-merge.sh)\""},
+            2,
+        ),
+        (
+            "followup-create-script-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "scripts/create-review-followup-issue.sh --create "
+                "--title x --body-file /tmp/body"
+            },
+            2,
+        ),
+        (
+            "safe-direct-script-command-substitution-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -c '$(cat scripts/safe-direct-merge.sh)'"},
+            2,
+        ),
+        (
+            "fixture-tools-script-name-read-allowed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash scripts/test-fixture-tools.sh"},
+            0,
+        ),
+        (
+            "ruby-e-script-exec-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "ruby -e 'exec \"scripts/safe-direct-merge.sh\"'"},
+            2,
+        ),
+        (
+            "ruby-e-script-dot-exec-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "ruby -e 'exec \"scripts/./safe-direct-merge.sh\"'"},
+            2,
+        ),
+        (
+            "python-c-script-exec-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'exec(open(\"scripts/safe-direct-merge.sh\")"
+                ".read())'"
+            },
+            2,
+        ),
+        (
+            "node-e-script-require-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "node -e 'require(\"./scripts/safe-direct-merge.sh\")'"},
+            2,
+        ),
+        (
+            "python-os-execv-script-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'import os; os.execv("
+                "\"scripts/safe-direct-merge.sh\", [\"safe-direct-merge.sh\"])'"
+            },
+            2,
+        ),
+        (
+            "python-os-posix-spawn-script-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'import os; os.posix_spawn("
+                "\"scripts/safe-direct-merge.sh\", [\"safe-direct-merge.sh\"])'"
+            },
+            2,
+        ),
+        (
+            "python-c-script-inline-read-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'print(open(\"scripts/safe-direct-merge.sh\")"
+                ".read())'"
+            },
+            2,
+        ),
+        (
+            "followup-preview-script-authorized",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "scripts/create-review-followup-issue.sh --title x "
+                f"--body-file {followup_body} --label agent:research "
+                "--format jsonl"
+            },
+            0,
+        ),
+        (
+            "followup-preview-dot-segment-script-authorized",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "bash scripts/./create-review-followup-issue.sh --title x "
+                f"--body-file {followup_body} --label agent:research "
+                "--format jsonl"
+            },
+            0,
+        ),
+        (
+            "followup-create-script-authorized",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "bash scripts/create-review-followup-issue.sh --title x "
+                f"--body-file {followup_body} --label agent:research "
+                "--format jsonl --create"
+            },
+            0,
+        ),
+        (
+            "followup-script-wrong-label-denied",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "scripts/create-review-followup-issue.sh --title x "
+                f"--body-file {followup_body} --label agent:ready"
+            },
+            2,
+        ),
+        (
+            "followup-script-unsafe-body-denied",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "scripts/create-review-followup-issue.sh --title x "
+                "--body-file /tmp/body --label agent:research"
+            },
+            2,
+        ),
+        (
+            "followup-script-shell-wrapper-denied",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "bash -lc 'scripts/create-review-followup-issue.sh "
+                f"--title x --body-file {followup_body} "
+                "--label agent:research'"
+            },
+            2,
+        ),
+        (
+            "followup-parent-segment-script-denied",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "scripts/../scripts/create-review-followup-issue.sh "
+                f"--title x --body-file {followup_body} --label agent:research"
+            },
+            2,
         ),
         (
             "nested-mcp-dynamic-lookup-through-functions-exec",
@@ -3794,7 +4290,7 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             0,
         ),
         (
-            "mcp-plural-labels-refiner-authorized",
+            "mcp-plural-labels-refiner-denied",
             "rpm_issue_refiner",
             "mcp__github__add_labels_to_issue",
             {
@@ -3803,10 +4299,10 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
                 "issue_number": 1,
                 "labels": ["agent:claimed"],
             },
-            0,
+            2,
         ),
         (
-            "mcp-plural-labels-claimer-authorized",
+            "mcp-plural-labels-claimer-denied",
             "rpm_ready_ticket_claimer",
             "mcp__github__add_labels_to_issue",
             {
@@ -3815,7 +4311,7 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
                 "issue_number": 1,
                 "labels": ["agent:claimed"],
             },
-            0,
+            2,
         ),
         (
             "mcp-external-target-claimer-denied",
@@ -3912,6 +4408,110 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "rpm_issue_refiner",
             "mcp__github__add_labels_to_issue",
             {"labels": ["security"]},
+            2,
+        ),
+        (
+            "mcp-refiner-claimed-transition-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:claimed"],
+                "remove_labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "mcp-refiner-conflicting-transition-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:ready", "agent:blocked"],
+                "remove_labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "mcp-refiner-ready-transition-authorized",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:ready"],
+                "remove_labels": ["agent:research"],
+            },
+            0,
+        ),
+        (
+            "mcp-refiner-blocked-transition-authorized",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:blocked"],
+                "remove_labels": ["agent:research"],
+            },
+            0,
+        ),
+        (
+            "mcp-refiner-blocked-to-research-authorized",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:research"],
+                "remove_labels": ["agent:blocked"],
+            },
+            0,
+        ),
+        (
+            "mcp-refiner-blocked-to-ready-authorized",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:ready"],
+                "remove_labels": ["agent:blocked"],
+            },
+            0,
+        ),
+        (
+            "mcp-refiner-blocked-to-claimed-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:claimed"],
+                "remove_labels": ["agent:blocked"],
+            },
+            2,
+        ),
+        (
+            "mcp-refiner-conflicting-recovery-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:research", "agent:ready"],
+                "remove_labels": ["agent:blocked"],
+            },
             2,
         ),
         (
@@ -4122,6 +4722,10 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
         actual = pre_tool(role, tool, tool_input)
         if actual != expected:
             fail(errors, f"tool policy probe {name} expected exit {expected}, got {actual}")
+    try:
+        followup_body.unlink(missing_ok=True)
+    except OSError as error:
+        fail(errors, f"tool policy follow-up fixture could not be removed: {error}")
 
     resolve_reason = run(
         {

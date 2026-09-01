@@ -183,6 +183,39 @@ CREATOR_ISSUE_KEYS = {
     "title",
 }
 PROJECT_ADD_KEYS = {"content_id", "content_type", "owner", "project_number"}
+MUTATING_REPOSITORY_SCRIPTS = {
+    "scripts/agent-loop-claim.sh",
+    "scripts/agent-loop-merge.sh",
+    "scripts/agent-loop-publish.sh",
+    "scripts/codex-cloud-setup.sh",
+    "scripts/create-review-followup-issue.sh",
+    "scripts/safe-direct-merge.sh",
+    "scripts/write-existing-pr-adoption.py",
+}
+PROTECTED_SCRIPT_BASENAMES = {
+    path.rsplit("/", 1)[-1] for path in MUTATING_REPOSITORY_SCRIPTS
+}
+READ_ONLY_SCRIPT_INSPECTORS = {
+    "cat",
+    "head",
+    "rg",
+    "tail",
+    "wc",
+}
+READ_ONLY_INSPECTOR_UNSAFE_FLAGS = {
+    "rg": {"--pre", "--pre-glob"},
+}
+INLINE_SOURCE_INTERPRETERS = {
+    "bash",
+    "dash",
+    "node",
+    "nodejs",
+    "python",
+    "python3",
+    "ruby",
+    "sh",
+    "zsh",
+}
 LABEL_INPUT_KEYS = {
     "label",
     "labels",
@@ -208,6 +241,11 @@ STATE_LABELS = {
 CLAIMER_STATE_LABELS = {"agent:ready", "agent:claimed"}
 EXPECTED_REPOSITORY_OWNER = "nerdchanii"
 EXPECTED_REPOSITORY_NAME = "rpm"
+FOLLOWUP_HELPER = "scripts/create-review-followup-issue.sh"
+FOLLOWUP_BODY_PATH = re.compile(
+    r"^/tmp/rpm-review-followup-[A-Za-z0-9][A-Za-z0-9._-]*\.md$"
+)
+FOLLOWUP_BODY_MAX_BYTES = 512 * 1024
 SHELL_TOOL_PARTS = {
     "bash",
     "shell",
@@ -790,20 +828,283 @@ def has_command_substitution(text: str) -> bool:
 
 
 def nested_mcp_mutation(text: str) -> bool:
-    static_access_removed = re.sub(r"\btools\.[A-Za-z_][A-Za-z0-9_]*", "", text)
-    if (
-        "ALL_TOOLS" in text
-        or re.search(r"\btools\b", static_access_removed)
+    # A functions.exec source can call any nested tool after this outer hook
+    # returns. The outer hook cannot prove the nested arguments or a computed
+    # tool name, and some hosts do not emit a second PreToolUse event. RPM
+    # roles must therefore call assigned tools directly instead of tunnelling
+    # them through the general orchestrator.
+    return (
+        re.search(r"\btools\b", text) is not None
+        or "ALL_TOOLS" in text
         or re.search(
             r"\\(?:u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2})|"
             r"\b(?:eval|Function|Reflect\.get)\s*\(|"
             r"\b(?:constructor|globalThis)\b",
             text,
         )
+        is not None
+    )
+
+
+def shell_substitution_texts(text: str) -> list[str]:
+    """Return simple shell command-substitution bodies for recursive checks."""
+    substitutions: list[str] = []
+    for match in re.finditer(r"\$\(([^()]*)\)", text, re.DOTALL):
+        substitutions.append(match.group(1))
+    substitutions.extend(
+        match.group(1)
+        for match in re.finditer(r"`([^`\n]*)`", text, re.DOTALL)
+    )
+    return substitutions
+
+
+def normalized_script_value(value: str) -> str:
+    value = shell_token_value(value).strip("'\"")
+    value = re.sub(r"/{2,}", "/", value)
+    return "/".join(
+        part for part in value.split("/") if part not in {"", "."}
+    )
+
+
+def has_ambiguous_script_path(value: str) -> bool:
+    value = shell_token_value(value).strip("'\"")
+    return "scripts/" in re.sub(r"/{2,}", "/", value) and any(
+        part == ".." for part in value.split("/")
+    )
+
+
+def matches_mutating_repository_script(value: str) -> bool:
+    if has_ambiguous_script_path(value):
+        return False
+    normalized = normalized_script_value(value)
+    parts = normalized.split("/")
+    if not parts or not all(
+        re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts
+    ):
+        return False
+    return any(
+        parts[-len(target.split("/")) :] == target.split("/")
+        for target in MUTATING_REPOSITORY_SCRIPTS
+    )
+
+
+def references_protected_script(text: str) -> bool:
+    lowered = text.casefold()
+    return any(
+        re.search(
+            rf"(?<![a-z0-9_.-]){re.escape(basename.casefold())}(?![a-z0-9_.-])",
+            lowered,
+        )
+        is not None
+        for basename in PROTECTED_SCRIPT_BASENAMES
+    )
+
+
+def has_inline_interpreter_source(words: list[str]) -> bool:
+    for index, token in enumerate(words):
+        executable = shell_executable_name(token)
+        if executable == "busybox":
+            if index + 1 >= len(words) or shell_executable_name(words[index + 1]) not in INLINE_SOURCE_INTERPRETERS:
+                continue
+            index += 1
+            executable = shell_executable_name(words[index])
+        if executable not in INLINE_SOURCE_INTERPRETERS:
+            continue
+        for option in words[index + 1 :]:
+            option = shell_token_value(option)
+            if option in {"-c", "-e", "--command", "--eval"}:
+                return True
+            if re.fullmatch(r"-[A-Za-z]*[ce][A-Za-z]*", option):
+                return True
+            if option.startswith(("-c=", "-e=", "--command=", "--eval=")):
+                return True
+    return False
+
+
+def shell_controls_or_dynamic_source(text: str, words: list[str]) -> bool:
+    if "\n" in text or any(token in SHELL_CONTROL_TOKENS for token in words):
+        return True
+    if any(character in text for character in ("$", "`", "<", ">")):
+        return True
+    if any(
+        re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token)
+        for token in words
     ):
         return True
-    names = set(re.findall(r"\b(mcp__[A-Za-z0-9_]+)", text))
-    return any(mcp_mutation_kind(name, {}) is not None for name in names)
+    return has_inline_interpreter_source(words)
+
+
+def inspector_uses_unsafe_flag(command: str, words: list[str]) -> bool:
+    unsafe_flags = READ_ONLY_INSPECTOR_UNSAFE_FLAGS.get(command, set())
+    for token in words[1:]:
+        token = shell_token_value(token)
+        flag = token.split("=", 1)[0]
+        if flag in unsafe_flags:
+            return True
+        if any(
+            len(unsafe) == 2
+            and unsafe.startswith("-")
+            and token.startswith(unsafe)
+            and len(token) > len(unsafe)
+            for unsafe in unsafe_flags
+        ):
+            return True
+    return False
+
+
+def clearly_read_only_script_inspection(text: str) -> bool:
+    words = shell_words(text)
+    if words is None or not words or shell_controls_or_dynamic_source(text, words):
+        return False
+    command = shell_executable_name(words[0])
+    if command in READ_ONLY_SCRIPT_INSPECTORS:
+        if inspector_uses_unsafe_flag(command, words):
+            return False
+        return True
+    return False
+
+
+def shell_body_is_script_output(text: str) -> bool:
+    """Detect ``sh -c "$(cat script)"`` style script execution."""
+    body = text.strip()
+    return bool(
+        body
+        and (
+            body.startswith("$(")
+            or body.startswith("`")
+        )
+        and any(matches_mutating_repository_script(part) for part in [body, *shell_substitution_texts(body)])
+    )
+
+
+def executable_source_text(
+    words: list[str], index: int
+) -> tuple[str, int] | None:
+    executable = shell_executable_name(words[index])
+    options = {
+        "python": {"-c", "--command"},
+        "python3": {"-c", "--command"},
+        "ruby": {"-e", "--eval"},
+        "node": {"-e", "--eval"},
+        "nodejs": {"-e", "--eval"},
+    }.get(executable)
+    if options is None:
+        return None
+    option_index = index + 1
+    while option_index < len(words):
+        option = shell_token_value(words[option_index])
+        if option in options:
+            if option_index + 1 >= len(words):
+                return ("", option_index + 1)
+            return (words[option_index + 1], option_index + 1)
+        for prefix in options:
+            if option.startswith(prefix) and len(option) > len(prefix):
+                return (option[len(prefix) :], option_index)
+            if option.startswith(f"{prefix}="):
+                return (option.split("=", 1)[1], option_index)
+        if option in SHELL_CONTROL_TOKENS:
+            return None
+        if not option.startswith("-"):
+            return None
+        option_index += 1
+    return None
+
+
+def source_references_mutating_script(text: str) -> bool:
+    return any(
+        path.rsplit("/", 1)[-1] in text
+        for path in MUTATING_REPOSITORY_SCRIPTS
+    )
+
+
+def executable_source_invokes_mutating_script(text: str, depth: int) -> bool:
+    if not source_references_mutating_script(text):
+        return False
+    if invokes_mutating_repository_script(text, depth + 1):
+        return True
+    return re.search(
+        r"\b(?:exec|load|require(?:_relative)?|run(?:py)?(?:\.run_path)?|"
+        r"subprocess|system|spawn(?:_sync)?|eval|write(?:file|sync)?|"
+        r"(?:remove|unlink))\b",
+        text,
+    ) is not None
+
+
+def invokes_mutating_repository_script(text: str, depth: int = 0) -> bool:
+    if references_protected_script(text):
+        return not clearly_read_only_script_inspection(text)
+    if depth > 5:
+        return any(matches_mutating_repository_script(part) for part in text.split())
+    if "\n" in text:
+        return any(invokes_mutating_repository_script(line, depth) for line in text.splitlines())
+    for nested in shell_substitution_texts(text):
+        if invokes_mutating_repository_script(nested, depth + 1):
+            return True
+    words = shell_words(text)
+    if words is None:
+        return any(
+            re.sub(r"/{2,}", "/", path) in re.sub(r"/{2,}", "/", text)
+            for path in MUTATING_REPOSITORY_SCRIPTS
+        )
+    interpreters = {
+        "bash",
+        "dash",
+        "node",
+        "nodejs",
+        "python",
+        "python3",
+        "ruby",
+        "sh",
+        "zsh",
+    }
+    script_executors = interpreters | {".", "eval", "exec", "source"}
+    nested_body_indices: set[int] = set()
+    for index, token in enumerate(words):
+        executable = shell_executable_name(token)
+        source = executable_source_text(words, index) if executable in interpreters else None
+        if source is not None:
+            source_text, source_index = source
+            nested_body_indices.add(source_index)
+            if executable_source_invokes_mutating_script(source_text, depth):
+                return True
+        if executable in interpreters:
+            nested = nested_shell_text(words, index)
+            if nested is not None:
+                option_index = index + 1
+                while option_index < len(words) and words[option_index].startswith("-"):
+                    option = words[option_index]
+                    if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", option):
+                        nested_body_indices.add(option_index + 1)
+                        break
+                    option_index += 1
+                if shell_body_is_script_output(nested) or invokes_mutating_repository_script(
+                    nested, depth + 1
+                ):
+                    return True
+        if index in nested_body_indices:
+            continue
+        value = shell_token_value(token)
+        ambiguous_script = has_ambiguous_script_path(value)
+        matches = matches_mutating_repository_script(value)
+        normalized = normalized_script_value(value)
+        dynamic_script = "scripts/" in normalized and has_shell_executable_expansion(normalized)
+        if not matches and not dynamic_script and not ambiguous_script:
+            continue
+        if is_shell_command_position(words, index):
+            return True
+        segment_start = index
+        while segment_start > 0 and words[segment_start - 1] not in SHELL_CONTROL_TOKENS:
+            segment_start -= 1
+        if any(
+            (
+                candidate == "."
+                or shell_executable_name(candidate) in script_executors
+            )
+            and is_shell_command_position(words, segment_start + offset)
+            for offset, candidate in enumerate(words[segment_start:index])
+        ):
+            return True
+    return False
 
 
 def has_github_http_mutation(text: str) -> bool:
@@ -919,12 +1220,23 @@ def has_unsupported_dynamic_gh_execution(text: str) -> bool:
     return invocations is None or not invocations
 
 
-def shell_mutation_kind(text: str) -> str | None:
+def is_functions_exec_tool(tool: str) -> bool:
+    normalized = normalized_tool(tool)
+    return normalized in {"functions.exec", "functions__exec"} or normalized.endswith(
+        (".functions.exec", "__functions.exec")
+    )
+
+
+def shell_mutation_kind(text: str, inspect_nested_tools: bool = False) -> str | None:
+    if references_protected_script(text) and not clearly_read_only_script_inspection(text):
+        return "repository_mutation_script"
+    if invokes_mutating_repository_script(text):
+        return "repository_mutation_script"
     if "\n" in text and source_has_gh_evidence(text):
         return "raw_api_unknown"
     if has_command_substitution(text) and source_has_gh_evidence(text):
         return "raw_api_unknown"
-    if nested_mcp_mutation(text):
+    if inspect_nested_tools and nested_mcp_mutation(text):
         return "nested_mcp_mutation"
     if has_github_http_mutation(text):
         return "raw_api_unknown"
@@ -1291,18 +1603,164 @@ def label_values_for_keys(tool_input: dict[object, object], keys: set[str]) -> s
     return values
 
 
+def exact_label_values_for_keys(
+    tool_input: dict[object, object], keys: set[str]
+) -> set[str] | None:
+    selected = [child for key, child in tool_input.items() if str(key).casefold() in keys]
+    if not selected:
+        return set()
+    if len(selected) != 1:
+        return None
+    value = selected[0]
+    if isinstance(value, str):
+        return {value} if value else None
+    if not isinstance(value, list) or not value or not all(
+        isinstance(item, str) and bool(item) for item in value
+    ):
+        return None
+    if len(value) != len(set(value)):
+        return None
+    return set(value)
+
+
 def claimer_transition_allowed(tool_input: object) -> bool:
     if not isinstance(tool_input, dict):
         return False
-    replacement = label_values_for_keys(tool_input, {"label", "labels"})
-    added = label_values_for_keys(tool_input, {"add_label", "add_labels"})
-    removed = label_values_for_keys(tool_input, {"remove_label", "remove_labels"})
-    if replacement:
-        return replacement & STATE_LABELS == {"agent:claimed"} and not added and not removed
+    replacement = exact_label_values_for_keys(tool_input, {"label", "labels"})
+    added = exact_label_values_for_keys(tool_input, {"add_label", "add_labels"})
+    removed = exact_label_values_for_keys(tool_input, {"remove_label", "remove_labels"})
+    if replacement is None or added is None or removed is None or replacement:
+        return False
     return (
         added == {"agent:claimed"}
         and removed == {"agent:ready"}
     )
+
+
+def creator_labels_allowed(tool_input: object) -> bool:
+    if not isinstance(tool_input, dict):
+        return False
+    replacement = exact_label_values_for_keys(tool_input, {"label", "labels"})
+    added = exact_label_values_for_keys(tool_input, {"add_label", "add_labels"})
+    removed = exact_label_values_for_keys(tool_input, {"remove_label", "remove_labels"})
+    if replacement is None or added is None or removed is None:
+        return False
+    return replacement == {"agent:research"} and not added and not removed
+
+
+def creator_issue_content_allowed(tool_input: object) -> bool:
+    if not isinstance(tool_input, dict):
+        return False
+    return (
+        isinstance(tool_input.get("title"), str)
+        and isinstance(tool_input.get("body"), str)
+    )
+
+
+def refiner_transition_allowed(tool_input: object) -> bool:
+    if not isinstance(tool_input, dict):
+        return False
+    replacement = exact_label_values_for_keys(tool_input, {"label", "labels"})
+    added = exact_label_values_for_keys(tool_input, {"add_label", "add_labels"})
+    removed = exact_label_values_for_keys(tool_input, {"remove_label", "remove_labels"})
+    if replacement is None or added is None or removed is None or replacement:
+        return False
+    if not added and not removed:
+        return True
+    transition = (frozenset(removed), frozenset(added))
+    return transition in {
+        (frozenset({"agent:research"}), frozenset({"agent:ready"})),
+        (frozenset({"agent:research"}), frozenset({"agent:blocked"})),
+        (frozenset({"agent:blocked"}), frozenset({"agent:research"})),
+        (frozenset({"agent:blocked"}), frozenset({"agent:ready"})),
+    }
+
+
+def followup_body_file_allowed(value: str) -> bool:
+    if not FOLLOWUP_BODY_PATH.fullmatch(value):
+        return False
+    path = Path(value)
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return (
+        metadata.st_mode & 0o170000 == 0o100000
+        and metadata.st_nlink == 1
+        and metadata.st_size <= FOLLOWUP_BODY_MAX_BYTES
+    )
+
+
+def followup_script_command_allowed(shell_text: str) -> bool:
+    words = shell_words(shell_text)
+    if not words or any(token in SHELL_CONTROL_TOKENS for token in words):
+        return False
+    if any(
+        is_dynamic_shell_token(token)
+        or any(marker in token for marker in ("*", "?", "[", "{"))
+        for token in words
+    ):
+        return False
+
+    index = 0
+    if shell_executable_name(words[0]) in {"bash", "sh"}:
+        index = 1
+    if index >= len(words):
+        return False
+    helper_value = shell_token_value(words[index])
+    if (
+        has_ambiguous_script_path(helper_value)
+        or normalized_script_value(helper_value) != FOLLOWUP_HELPER
+    ):
+        return False
+    index += 1
+
+    title_seen = False
+    body_seen = False
+    label_seen = False
+    create_seen = False
+    format_seen = False
+    while index < len(words):
+        token = shell_token_value(words[index])
+        if token == "--title":
+            if title_seen or index + 1 >= len(words) or not words[index + 1]:
+                return False
+            title_seen = True
+            index += 2
+            continue
+        if token == "--body-file":
+            if body_seen or index + 1 >= len(words):
+                return False
+            body_file = shell_token_value(words[index + 1])
+            if not followup_body_file_allowed(body_file):
+                return False
+            body_seen = True
+            index += 2
+            continue
+        if token == "--label":
+            if label_seen or index + 1 >= len(words):
+                return False
+            if shell_token_value(words[index + 1]) != "agent:research":
+                return False
+            label_seen = True
+            index += 2
+            continue
+        if token == "--create":
+            if create_seen:
+                return False
+            create_seen = True
+            index += 1
+            continue
+        if token == "--format":
+            if format_seen or index + 1 >= len(words):
+                return False
+            if shell_token_value(words[index + 1]) != "jsonl":
+                return False
+            format_seen = True
+            index += 2
+            continue
+        return False
+    return title_seen and body_seen and label_seen
 
 
 def allowed_github_mutation(
@@ -1316,13 +1774,19 @@ def allowed_github_mutation(
             and isinstance(tool_input, dict)
             and set(tool_input) <= CREATOR_ISSUE_KEYS
             and structured_repository_allowed(tool_input)
+            and creator_issue_content_allowed(tool_input)
+            and creator_labels_allowed(tool_input)
         )
     if role == "rpm_followup_issue_creator":
+        if kind == "repository_mutation_script":
+            return followup_script_command_allowed(shell_text)
         return (
             kind == "issue_create"
             and isinstance(tool_input, dict)
             and set(tool_input) <= CREATOR_ISSUE_KEYS
             and structured_repository_allowed(tool_input)
+            and creator_issue_content_allowed(tool_input)
+            and creator_labels_allowed(tool_input)
         )
     if role == "rpm_issue_refiner":
         if kind not in {"issue_edit", "label"}:
@@ -1354,8 +1818,12 @@ def allowed_github_mutation(
             if not flags or not flags <= REFINER_ISSUE_EDIT_FLAGS:
                 return False
         labels = requested_label_values(tool_input, shell_text)
+        if shell_text:
+            return False
+        if not refiner_transition_allowed(tool_input):
+            return False
         if kind == "label":
-            return bool(labels) and labels <= STATE_LABELS
+            return bool(labels)
         if labels and not labels <= STATE_LABELS:
             return False
         return True
@@ -1480,7 +1948,10 @@ def check_tool(event: dict[str, object]) -> int:
 
     if is_shell_tool(tool):
         command_text = shell_source(tool_input)
-        mutation = shell_mutation_kind(command_text)
+        mutation = shell_mutation_kind(
+            command_text,
+            inspect_nested_tools=is_functions_exec_tool(tool),
+        )
         if mutation is None:
             return 0
         if mutation == "git_push":

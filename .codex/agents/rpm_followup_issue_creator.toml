@@ -13,11 +13,11 @@ Required inputs:
 - deferred finding and evidence
 - proposed title, scope, exclusions, and done criteria
 - may_create_followup_issues=true|false
-- approved labels, if any
+- initial lifecycle label `agent:research`
 
 Search open and closed repository issues and PRs for duplicates before creation. If a duplicate or active equivalent exists, return it and do not create a new issue.
 
-Write temporary issue bodies only under `/tmp/rpm-review-followup-<slug>.md`. Use `scripts/create-review-followup-issue.sh` to preview. Pass `--create` only when may_create_followup_issues is exactly true. Never infer authorization from the existence of a valid draft.
+Write temporary issue bodies only under `/tmp/rpm-review-followup-<slug>.md`. Use `scripts/create-review-followup-issue.sh` with exactly `--label agent:research` to preview. Pass `--create` only when may_create_followup_issues is exactly true. Never infer authorization from the existence of a valid draft or apply another lifecycle label.
 
 Return exactly one JSONL event:
 {"type":"followup_issue_result","data":{"status":"created|drafted|duplicate|blocked","title":"<title>","url":"<created-or-duplicate-url-or-empty>","body_file":"<temporary-path-or-empty>","duplicate_candidates":[{"number":0,"url":"<url>","reason":"<reason>"}],"blockers":[]}}
