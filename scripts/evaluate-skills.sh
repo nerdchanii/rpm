@@ -2,22 +2,20 @@
 set -euo pipefail
 
 # evaluate-skills.sh — score RPM skills under .agents/skills/ for structure,
-# content completeness, reference/script validity, Claude Code compatibility,
-# and Claude Code discoverability (the .claude/skills symlink bridge).
+# content completeness and reference/script validity.
 #
 # This complements scripts/validate-agent-workflow-assets.sh (which checks the
-# Codex/Cloud workflow contract). evaluate-skills.sh is about skill *quality*
-# and *Claude usability*, not the queue/gate lifecycle.
+# Codex/Cloud workflow contract). evaluate-skills.sh is about skill quality,
+# not the queue/gate lifecycle.
 #
 # Override the checkout root to evaluate another checkout, e.g.:
 #   RPM_REPO_ROOT=/path/rpm bash scripts/evaluate-skills.sh
 
 SKILLS_DIR="${SKILLS_DIR:-.agents/skills}"
-CLAUDE_LINKS_DIR="${CLAUDE_LINKS_DIR:-.claude/skills}"
 
 usage() {
   cat <<'USAGE'
-usage: evaluate-skills.sh [--sync-links] [<skill-name> ...]
+usage: evaluate-skills.sh [<skill-name> ...]
 
 Score each skill in .agents/skills/ (or a named subset) on:
   - structure:        SKILL.md, frontmatter name+description
@@ -25,12 +23,8 @@ Score each skill in .agents/skills/ (or a named subset) on:
   - references:       links to references/* resolve
   - scripts:          scripts/* mentioned in SKILL.md exist
   - metadata:         agents/openai.yaml present with default_prompt
-  - claude bridge:    .claude/skills/<name> symlink exists (Claude discovery)
-  - claude frontmatter: name+description present (Codex/Claude shared keys)
 
 Options:
-  --sync-links    reconcile .claude/skills/ symlinks with .agents/skills/ first
-                  (add links for new skills, prune dead links), then evaluate
   --json          emit one compact JSON object per skill on stdout
   -h, --help      show this help
 
@@ -39,13 +33,11 @@ USAGE
 }
 
 want_json=false
-sync_first=false
 targets=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    --sync-links) sync_first=true; shift ;;
     --json) want_json=true; shift ;;
     --*) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
     *) targets+=("$1"); shift ;;
@@ -63,36 +55,11 @@ resolve_dir() {
   esac
 }
 SKILLS_DIR="$(resolve_dir "$SKILLS_DIR")"
-CLAUDE_LINKS_DIR="$(resolve_dir "$CLAUDE_LINKS_DIR")"
 
 if [ ! -d "$SKILLS_DIR" ]; then
   printf 'evaluate.error=missing-skills-dir:%s\n' "$SKILLS_DIR" >&2
   exit 2
 fi
-
-sync_links() {
-  mkdir -p "$CLAUDE_LINKS_DIR"
-  local s name
-  while IFS= read -r s; do
-    [ -d "$s" ] || continue
-    name="$(basename "$s")"
-    # Relative target so the links survive across clones/CI (a machine-absolute
-    # target like /Users/.../ would dangle everywhere else).
-    ln -sfn "../../.agents/skills/$name" "$CLAUDE_LINKS_DIR/$name"
-  done < <(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type d)
-  local l target
-  for l in "$CLAUDE_LINKS_DIR"/*; do
-    [ -L "$l" ] || continue
-    if [ ! -e "$l" ]; then
-      rm -f "$l"
-    else
-      target="$(basename "$l")"
-      [ -d "$SKILLS_DIR/$target" ] || rm -f "$l"
-    fi
-  done
-}
-
-[ "$sync_first" = "true" ] && sync_links
 
 all_skills=()
 while IFS= read -r d; do
@@ -218,20 +185,6 @@ evaluate_one() {
     if [ "$n" -le 120 ]; then soft 5 "SKILL.md concise (${n} lines)"; else nit 5 "SKILL.md long (${n} > 120 lines)"; fi
   else
     nit 5 "cannot measure length (no SKILL.md)"
-  fi
-
-  bump 10
-  if [ -L "${CLAUDE_LINKS_DIR}/${name}" ] && [ -e "${CLAUDE_LINKS_DIR}/${name}" ]; then
-    ok 10 ".claude/skills/${name} bridge symlink"
-  else
-    bad 10 ".claude/skills/${name} symlink missing (run with --sync-links)"
-  fi
-
-  bump 10
-  if [ -n "$name_val" ] && [ -n "$desc_val" ]; then
-    soft 10 "Claude frontmatter OK (name+description)"
-  else
-    nit 10 "Claude frontmatter incomplete"
   fi
 
   local pct=0
