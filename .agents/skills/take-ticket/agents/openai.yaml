@@ -2,3 +2,5 @@ interface:
   display_name: "Take Ticket"
   short_description: "Execute one explicit or scheduled RPM ticket."
   default_prompt: "Use $take-ticket in explicit mode for the supplied issue, or scheduled mode to claim and execute at most one ready RPM issue."
+policy:
+  allow_implicit_invocation: false
