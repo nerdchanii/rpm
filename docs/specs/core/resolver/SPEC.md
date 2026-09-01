@@ -3,7 +3,7 @@ spec_id: resolver_boundary
 title: Resolver Strategy Boundary
 status: draft
 owner: core/resolver
-last_reviewed: 2026-08-11
+last_reviewed: 2026-08-24
 authors:
   - nerdchanii
 deciders:
@@ -20,13 +20,15 @@ related_issues:
   - 133
   - 135
   - 136
+  - 145
+  - 221
 ---
 
 # Spec: Resolver Strategy Boundary
 
 Status: Draft
 Owner: core/resolver
-Last reviewed: 2026-08-11
+Last reviewed: 2026-08-24
 
 ## Purpose
 
@@ -38,27 +40,52 @@ implementation can stay simple without becoming the long-term installer shape.
 ## Contract
 
 The resolver consumes dependency requests and package metadata through explicit
-abstractions. A dependency request includes the package name, the requested
-range or version text, and a request kind. Request kinds distinguish direct
-production dependencies, direct development dependencies, and transitive
-dependencies discovered from package metadata. Only direct request kinds may
-drive manifest dependency updates; transitive requests are graph inputs and must
-not be treated as root manifest entries. Package metadata access supplies
-available versions, dist metadata, and dependency declarations without
-downloading or extracting tarballs as part of traversal.
+abstractions. A dependency request includes the package name, its canonical
+requested range or version text, and a request kind. Request kinds distinguish
+direct production dependencies, direct development dependencies, and transitive
+dependencies discovered from package metadata. Workspace root/member requests
+also carry a `raw_selector` provenance field containing the exact string value
+from the immutable dependency snapshot; this field is distinct from the
+canonical requested text used for classification and selection. Only direct
+request kinds may drive manifest dependency updates; transitive requests are
+graph inputs and must not be treated as root manifest entries. Package metadata
+access supplies available versions, dist metadata, and dependency declarations
+without downloading or extracting tarballs as part of traversal.
 
-The resolver produces a resolved dependency graph. Each resolved package record
-preserves both the requested range and the selected version. The graph is the
-input to later installer phases that download tarballs, verify integrity,
-extract packages, link `node_modules`, and write lockfile or manifest state.
+The resolver produces a resolved dependency graph. Each dependency edge
+preserves its canonical requested range or version text, its `raw_selector`
+provenance where the edge came from a dependency map, and its request kind. Each
+resolved package record continues to preserve its canonical requested range and
+selected version; the per-edge fields retain every incoming request when node
+deduplication leaves one package record. Direct edges also preserve their root
+or member origin, and transitive edges preserve their resolved parent. The graph
+is the input to later installer phases that download tarballs, verify
+integrity, extract packages, link `node_modules`, and write lockfile or manifest
+state.
 
-The resolved graph contains at most one record per `<name>@<version>`. A
-package reached through several parents is merged into a single node, so a
-shared transitive package/version is represented once even when it is reached
-through different requested ranges. This node-uniqueness invariant is the basis
+The external-package portion of the resolved graph contains at most one record
+per `<name>@<version>`. An external package reached through several parents is
+merged into a single node, so a shared transitive package/version is represented
+once even when it is reached through different requested ranges. Under the
+planned workspace boundary, root and member resolution roots use origin
+identities in a separate key domain: the project root uses the root identity and
+each member uses its validated portable NFC UTF-8 `member_path_key`. A local
+member and an external package must never merge, including when their package
+names and version text are equal. This node-uniqueness invariant is the basis
 for the deduplication proofs in
 `docs/specs/core/install/performance/SPEC.md`, and it is the reason later
 installer phases may download and cache a selected version at most once.
+
+Each resolution operation pins one immutable registry-document generation (or
+equivalent immutable cache generation) per external package name. Every parent
+that reaches any external version of that name reuses the package-name
+snapshot for version metadata, dependency declarations, and `dist` metadata.
+The resolved nodes retain the generation that owns those fields. If a later
+lookup for the same package name supplies a different generation, the resolver
+fails deterministically before adding or merging that node; arrival order never
+selects a metadata owner. A lookup may reuse an equivalent generation,
+including when several parents select one version or when the name resolves to
+multiple versions.
 
 Version and range satisfaction rules are owned by
 `docs/specs/core/semver/SPEC.md`. Resolver strategies call the version
@@ -99,6 +126,159 @@ accepted-form set and its error reporting; until then, parsing must not invent
 ad hoc rejection rules that diverge across CLI, manifest, and registry
 boundaries.
 
+### Workspace boundary (planned)
+
+This subsection defines the resolver contract for the first workspace-aware
+strategy. The current resolver has no member-table input or workspace-local
+edge type, so these rules become active with that implementation and its
+planned fixtures.
+
+Workspace discovery is owned by
+`docs/specs/core/manifest/SPEC.md`. The resolver consumes one validated discovery
+result containing the immutable parsed root-manifest snapshot and an ordered
+table of NFC-normalized UTF-8 `member_path_key` values with immutable parsed
+member snapshots. Each snapshot includes the package name, declared version text
+when present, and the parsed dependency maps used for request seeding. Each
+dependency-map entry in a snapshot carries both `raw_selector`, the exact
+UTF-8 string value from the manifest with no trimming or canonicalization, and
+`requested`, the canonical text produced by the existing `DependencyRequest`
+normalization boundary. The manifest discovery boundary supplies this exact
+value as part of the immutable snapshot; the resolver owns the paired field and
+its propagation into graph edges. The resolver must never reconstruct
+`raw_selector` from canonical `requested`.
+This additional workspace handoff field does not change the current root-only
+runtime or lockfile v1 behavior.
+Native paths, directory handles, and file identities remain
+manifest/filesystem-layer validation data and are not resolver graph inputs.
+The resolver does not re-expand globs, follow a second root, reopen a root or
+member manifest by path, or infer members from registry metadata. The table must
+already satisfy
+canonical-root confinement, structurally accepted non-empty and unique package
+names, valid manifest snapshots, deduplicated portable keys, and stable unsigned
+UTF-8 byte ordering.
+
+The resolver keeps three identities distinct:
+
+- the **root package**, whose manifest declares the workspace and whose direct
+  dependency requests come from the immutable root snapshot and remain root
+  requests;
+- a **workspace member**, identified in the graph by its validated portable
+  `member_path_key` and package name, carrying its immutable validated manifest
+  snapshot and declared version text, and retaining that portable key as the
+  member origin on its dependency requests;
+- an **external package**, whose metadata is obtained through the external
+  package boundary because no discovered member satisfies the edge.
+
+The workspace-aware graph starts with an ordered set of resolution-root
+records: the project root first, followed by every member in the discovery
+table's stable order. Every discovered member is a resolution root even when
+the project root has no dependency edge to it. A root record retains its root or
+portable-member-key origin, package name, declared version text when present,
+and direct dependency edges from the already validated snapshot; workspace
+lockfile serialization of those records remains owned by #146. Native canonical
+paths and native file/directory identities are used only by the descriptor-based
+filesystem owner and must not be copied into graph node identity, request origin,
+ordering, or equality. Neither the root nor a member manifest path is a resolver
+input after discovery, so a rename or replacement between discovery and graph
+seeding cannot change the requests in the operation.
+
+The resolver seeds requests from both `dependencies` and `devDependencies` in
+the project-root manifest and every member manifest. Seed order is root first,
+then members in discovery order; within each manifest, production requests
+precede development requests and package names are ordered by unsigned UTF-8
+byte order without locale collation or case folding. When the same package name
+appears in both maps of one manifest, the `dependencies` entry has precedence:
+RPM emits exactly one `DirectProduction` request using its canonical `requested`
+text and retains the winning entry's `raw_selector`; it does not emit the
+overlapping development entry. This precedence is applied before
+workspace-local versus external classification, so two maps cannot send one
+package name to conflicting local and external targets.
+Production and development seeds retain `DirectProduction` and
+`DirectDevelopment` request kinds respectively and carry a separate origin of
+root or the member's portable `member_path_key`. Requests read from selected
+external metadata remain `Transitive`, identify their resolved parent, and
+retain the exact metadata selector as `raw_selector` before canonicalization.
+Every edge preserves its request kind, canonical `requested` text,
+`raw_selector`, selection-branch/classification provenance, and origin or
+resolved parent independently of node deduplication. The resolver owns this
+version-neutral provenance handoff: it records whether the edge followed a
+confirmed non-tag local branch, a matching dist-tag external branch, a
+`latest-root-version-fallback` external branch, or an absent-member or
+missing/invalid/incompatible-member-version external branch,
+without prescribing a lockfile field or format. Lockfile serialization, field
+naming, format version, and compatibility remain owned by #146 and
+`docs/specs/core/lockfile/SPEC.md`; that owner must receive this provenance
+unchanged and must not substitute canonical `latest` for an empty raw selector
+when it defines the workspace format. When several root/member/transitive
+requests select
+one external `<name>@<version>` node, merging the node must not merge or
+discard those per-edge fields. A dependency reachable only from a member
+therefore cannot be omitted or mistaken for a root-manifest entry.
+
+A dependency-map declaration first becomes a `DependencyRequest` through the
+resolver's existing parsing and request-normalization boundary. Empty range
+text is normalized to `latest` before workspace classification, matching
+`DependencyRequest::new` and the registry contract for bare requests. The
+workspace branch therefore examines the canonical request text: an empty-range
+declaration such as `"foo": ""` is the `latest` selector, not an any-version
+semver range, and remains external because registry dist-tags have no local
+member mapping. Registry-owned dist-tag identity has precedence over local
+range matching. A dependency edge is classified against the discovered member
+table only after the registry boundary determines whether the canonical
+request matches a published dist-tag and returns or pins the immutable metadata
+snapshot used for that determination. A name absent from the table is an
+external edge. A name present in the table is workspace-local only when the
+request is confirmed to be a non-tag, the member has a valid declared semantic
+version, and that version satisfies the canonical range under
+`docs/specs/core/semver/SPEC.md`. A semver-shaped request such as `*` or `1`
+does not prove that it is not a tag because registry tag names have no lexical
+restriction. A matching tag remains external; if tag identity cannot be
+determined, the resolver follows the registry-boundary result or failure and
+must not silently choose a local edge. A missing, invalid, or
+range-incompatible member version leaves that edge external, allowing external
+metadata to select a compatible package version. Invalid or unsupported request
+syntax still fails under its owning input contract; it is not converted into a
+workspace-local edge.
+
+A canonical `latest` request resolved by the registry's root `version` fallback
+is an external `latest-root-version-fallback` branch, including a legacy
+document with no `dist-tags.latest`, even when a same-name member exists with a
+valid declared version. This branch remains distinct from a matching `latest`
+dist-tag branch in selection provenance.
+
+Resolution-root creation and edge classification are separate operations. RPM
+creates every root/member resolution-root record and seeds that record's
+snapshot dependencies exactly once during the ordered initial root-set pass.
+For each later edge, registry-owned tag classification runs first when tag
+identity is not already available; the result includes or pins the immutable
+metadata snapshot used for that classification. Only a confirmed non-tag
+proceeds to the member-name and range-compatibility branch. A compatible local
+edge attaches to the already-created member node identified by
+`member_path_key`; after the non-tag result it does not read external package
+metadata, select an external version, create another member root, enqueue the
+member snapshot again, or replay that member's dependency maps. Multiple
+incoming local edges share that existing member node. The absent-member,
+missing/invalid/incompatible-member-version, matching-dist-tag, and
+latest-root-version-fallback branches must pass the same pinned snapshot to
+external metadata access and version selection; they must not reread mutable
+registry/cache state between tag classification and selection.
+
+Name collisions among members or between the root package and a member are
+invalid discovery input and must fail before graph traversal. A missing or
+malformed member supplied by the manifest boundary is likewise an input error,
+not an external-package fallback. Package-name acceptance follows the same
+current structural non-empty rule described under "Package name parsing";
+workspace discovery and resolution must not add an independent syntax gate.
+
+This issue defines identity and input boundaries only. Workspace lockfile
+records and compatibility are owned by #146, local and external filesystem
+links are owned by #147, and workspace command targeting is owned by #148.
+Those follow-up contracts must consume the same member table and must not
+redefine member order, root confinement, or local-versus-external identity.
+
+Resolver graph construction does not schedule lifecycle scripts. Workspace
+lifecycle activation remains disabled and is owned by #222.
+
 Traversal policy is behind a replaceable `ResolutionStrategy` boundary, or an
 equivalent internal abstraction, owned by the `src/core/resolver` root module.
 Concrete strategies may live in private child modules, but callers depend on
@@ -107,13 +287,36 @@ must not rely on recursive calls for correctness.
 
 The first strategy is an iterative FIFO worklist:
 
-1. Seed the worklist with direct dependency requests.
+1. Seed the worklist with the deterministic root and member direct-request
+   sequence defined by the workspace boundary; a root-only project supplies
+   only the project-root sequence.
 2. Pop the oldest pending request.
-3. Read package metadata through the metadata abstraction.
-4. Select a version through the version selection abstraction.
-5. Add or merge the resolved package into the graph.
-6. Enqueue that package's dependency requests as transitive requests.
-7. Continue until the worklist is empty or resolution fails.
+3. Before local range matching, use the registry boundary's dist-tag identity
+   classification for the canonical request, reusing an already available
+   result and its pinned snapshot when present. This preceding tag-identity
+   operation reads and pins the immutable registry or cache document needed to
+   distinguish a published tag and supply external selection; it does not
+   select a version. Its immutable snapshot must retain the fields needed for
+   any external branch. A matching tag enters the
+   external branch with that snapshot. For a confirmed non-tag, apply the
+   workspace-local classification branch defined above. When a compatible
+   member satisfies the request, attach the edge to that existing member
+   resolution-root node and continue with the next pending request. This
+   confirmed-local branch performs no further registry/cache metadata read,
+   external version selection, member-root creation, or member dependency
+   reseeding.
+4. For an external branch only, read package metadata from the pinned snapshot
+   through the metadata abstraction; if the snapshot is unavailable, stale, or
+   lacks the required fields, fail closed instead of rereading live state.
+5. Select an external version through the version selection abstraction using
+   that same pinned snapshot.
+6. Before adding or merging the resolved external package, compare its pinned
+   package-name generation with the operation's pinned generation. Reuse or
+   add the node only for that same generation; a differing generation fails the
+   operation deterministically instead of assigning dependencies or `dist`
+   metadata by first arrival.
+7. Enqueue that external package's dependency requests as transitive requests.
+8. Continue until the worklist is empty or resolution fails.
 
 Future strategies may replace FIFO traversal with priority-based, heuristic,
 peer-aware, or backtracking behavior without changing fetch, extract, link, or
@@ -282,7 +485,9 @@ RPM's user-facing or API-facing contract.
 
 Resolver tests should use offline registry metadata fixtures. Each fixture
 should represent one graph scenario and include expected resolved package
-records with requested range and selected version. Integration fixtures may add
+records with selected versions and expected edges with canonical requested
+text, raw selectors where present, request kinds, and selection-branch/
+classification provenance. Integration fixtures may add
 expected lockfile snapshots or filesystem trees for later installer phases, but
 resolver fixtures should not mutate the repository root, `.rpm`, `rpm.lock`, or
 `node_modules`.
@@ -290,6 +495,75 @@ resolver fixtures should not mutate the repository root, `.rpm`, `rpm.lock`, or
 The semver baseline fixtures are defined by
 `docs/specs/core/semver/SPEC.md` and must be used before installer flow relies
 on semver range behavior.
+
+### Workspace boundary fixtures
+
+Planned offline resolver coverage includes a root package with two ordered
+workspace members, a satisfying workspace-local dependency edge, a same-name
+member whose incompatible version falls back to an external compatible
+version, and a member-only external edge when the project root has no dependency
+on either the member or its dependency. That member-only fixture records the
+member origin and proves production and development seeds retain their distinct
+direct request kinds. A shared-external-node fixture has two members request
+different ranges that select the same `<name>@<version>`, with one production
+edge and one development edge. It proves both edges retain their own requested
+range, distinct direct request kind, and member origin after node deduplication.
+A shared-transitive-node fixture routes different requested ranges through two
+resolved external parents to the same selected
+`<name>@<version>` and proves both `Transitive` edges retain their own requested
+range and resolved parent. A paired registry-generation fixture has two
+parents resolve the same package name to two versions through one pinned
+generation, proving both nodes use that generation for dependencies and `dist`
+metadata. A variant returns a different generation for the second version and
+fails deterministically before adding that second node. Coverage also keeps a
+local member node distinct
+from an external node with equal name and version text, preserves the same
+deterministic member ordering for external edges, rejects duplicate member
+names and root/member name collisions, and rejects a discovery result that
+escapes the canonical root. An inter-phase replacement case proves request
+seeding consumes the immutable root/member snapshots without reopening either
+path. Equivalent
+POSIX and Windows native path fixtures prove graph identity, request origin, and
+ordering use the same NFC `/`-separated `member_path_key` and never a native
+canonical path or separator. Overlapping `dependencies` and `devDependencies`
+cases use ranges that would otherwise select different local/external targets
+and prove the production declaration wins with exactly one `DirectProduction`
+request. An empty-range request such as `"foo": ""` is normalized to `latest`
+before classification and remains external, while an explicit satisfying
+semver range for the same member is classified local. A paired root/member
+fixture uses direct selectors `"foo": ""` and `"foo": "latest"`; both
+classify as external through canonical `latest` while retaining distinct raw
+selectors (`""` and `"latest"`) alongside their source origins. A local-branch
+fixture uses a tag-aware registry boundary that proves the selector is not a
+dist-tag and returns the immutable metadata snapshot used for that result,
+plus a package-metadata provider that records every
+request and fails if queried for a compatible member; multiple root/member
+edges target the same compatible member and prove that its resolution root and
+snapshot dependency seeds are created exactly once. Paired incompatible and
+dist-tag cases prove only those external branches reach metadata lookup. A
+semver-shaped-dist-tag fixture supplies custom registry metadata with tags such
+as `"*"` and `"1"` while compatible same-name member versions exist; requests
+matching those tags remain external and select the tag targets instead of local
+members, while a confirmed non-tag range may still classify local. Each branch
+records its selection-branch/classification provenance together with canonical
+requested text and raw selector; this handoff remains version-neutral for the
+lockfile owner. A paired registry-context fixture reaches the same external
+`<name>@<version>` target with the same raw and canonical selector text once
+through a matching dist-tag and once through a confirmed non-tag semver
+external fallback; the expected edges retain distinct selection provenance,
+proving it is not inferred from the target or selector text alone. A
+registry-context mutation fixture changes the live packument between tag
+classification and external selection and proves the pinned snapshot keeps
+the selected version and metadata consistent. A tag-identity lookup failure
+fixture proves classification fails closed before
+local range matching and never falls back to a workspace-local edge.
+A legacy-latest fixture pairs a same-name member with a valid declared version
+and a legacy registry root `version`, no `versions` map, and no
+`dist-tags.latest`, proving external root-version fallback selection and
+`latest-root-version-fallback` provenance distinct from a matching `latest`
+dist-tag edge.
+Resolver workspace fixtures stop at graph construction. Lifecycle activation
+and its fixtures remain deferred to #222.
 
 ### Optional-dependency non-enqueue guard fixture
 
