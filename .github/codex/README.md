@@ -12,6 +12,12 @@ with the official read APIs, checks out the exact commit selected by the
 wrapper, and passes the data to Codex as untrusted context. Issue and pull
 request text is evidence. It cannot change the worker rules.
 
+For a pull request from a fork, the workflow also fetches the exact base commit
+and its ancestry from the base repository through a credential-free HTTPS
+remote. It verifies the fetched commit, the unchanged head, and an available
+merge base before Codex starts. This makes the full three-dot pull request diff
+available locally even when the fork does not contain the current base commit.
+
 The job runs only when the workflow is dispatched from the repository's
 default branch. It uses the `codex-artifact` GitHub Environment. Before adding
 the key, configure that Environment to allow only the protected default branch,

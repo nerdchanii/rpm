@@ -174,6 +174,36 @@ end
   end
 end
 
+base_fetch = steps.find do |step|
+  step.is_a?(Hash) && step["name"] == "Fetch exact review base commit"
+end
+raise "review base fetch step is missing" unless base_fetch
+base_fetch_if = base_fetch["if"].to_s
+unless base_fetch_if.include?("steps.metadata.outputs.lane") && base_fetch_if.include?("review")
+  raise "review base fetch must run only for the review lane"
+end
+base_fetch_run = base_fetch["run"].to_s
+unless base_fetch_run.include?("git fetch") &&
+       base_fetch_run.include?("--no-write-fetch-head") &&
+       base_fetch_run.include?("git merge-base") &&
+       base_fetch_run.include?("GIT_NO_REPLACE_OBJECTS=1")
+  raise "review base fetch does not verify the exact base ancestry"
+end
+if base_fetch_run.include?("--depth")
+  raise "review base fetch must not truncate base ancestry"
+end
+base_fetch_index = steps.index(base_fetch)
+checkout_guard_index = steps.index do |step|
+  step.is_a?(Hash) && step["id"] == "checkout_guard"
+end
+review_context_index = steps.index do |step|
+  step.is_a?(Hash) && step["id"] == "review_context"
+end
+unless base_fetch_index && checkout_guard_index && review_context_index &&
+       base_fetch_index < checkout_guard_index && checkout_guard_index < review_context_index
+  raise "review base ancestry must be fetched before the checkout guard and prompt"
+end
+
 # A missing key must skip the action. Either the action itself has a secret
 # guard, or it is guarded by an auth job output named ready.
 codex_if = codex["if"].to_s
@@ -240,7 +270,8 @@ require_regex "${workflow}" '\^\[1-9\]\[0-9\]' \
 # allowed; known write commands and write-oriented API methods are not.
 for forbidden in \
   'gh pr merge' 'gh pr comment' 'gh issue comment' 'gh issue edit' \
-  'gh pr edit' 'gh label' 'git push' 'git commit' 'git merge' 'git tag' \
+  'gh pr edit' 'gh label' 'git push' 'git commit' \
+  'git[[:space:]]+merge([[:space:]]|$)' 'git tag' \
   'scripts/agent-loop-publish.sh' 'scripts/agent-loop-merge.sh'; do
   require_no_regex "${workflow}" "${forbidden}" "artifact workflow contains a mutation command: ${forbidden}"
 done
@@ -313,6 +344,86 @@ for run_block in "${run_blocks_dir}"/*.sh; do
   bash -n "${run_block}" || fail "workflow run block has invalid Bash syntax: ${run_block}"
 done
 pass "workflow run-block Bash syntax"
+
+# Execute the exact base-fetch block against separate local base and fork
+# repositories. The fork is created before the base advances, so it cannot
+# contain the exact base commit until this workflow step fetches it.
+base_fetch_step_script="${tmp_dir}/fetch-review-base.sh"
+if ! ruby -ryaml - "${workflow}" >"${base_fetch_step_script}" <<'RUBY'
+path = ARGV.fetch(0)
+document = YAML.safe_load(File.read(path), aliases: true)
+steps = document.fetch("jobs").values.flat_map do |job|
+  job.is_a?(Hash) && job["steps"].is_a?(Array) ? job["steps"] : []
+end
+step = steps.find do |candidate|
+  candidate.is_a?(Hash) && candidate["name"] == "Fetch exact review base commit"
+end
+raise "Fetch exact review base commit step is missing" unless step
+run = step["run"]
+raise "Fetch exact review base commit step has no run block" unless run.is_a?(String) && !run.empty?
+print run
+RUBY
+then
+  fail "review base-fetch step could not be extracted"
+fi
+chmod 0555 "${base_fetch_step_script}"
+
+base_source="${tmp_dir}/base-source"
+base_remote="${tmp_dir}/base-remote.git"
+fork_work="${tmp_dir}/fork-work"
+fork_remote="${tmp_dir}/fork-remote.git"
+fork_checkout="${tmp_dir}/fork-checkout"
+git init -q "${base_source}"
+git -C "${base_source}" config user.name fixture
+git -C "${base_source}" config user.email fixture@example.invalid
+printf 'common\n' >"${base_source}/README.md"
+git -C "${base_source}" add README.md
+git -C "${base_source}" commit -q -m common
+common_sha="$(git -C "${base_source}" rev-parse HEAD)"
+git init -q --bare "${base_remote}"
+git -C "${base_source}" remote add base "${base_remote}"
+git -C "${base_source}" push -q base HEAD:refs/heads/main
+git -C "${base_remote}" symbolic-ref HEAD refs/heads/main
+
+git clone -q "${base_remote}" "${fork_work}"
+git -C "${fork_work}" config user.name fixture
+git -C "${fork_work}" config user.email fixture@example.invalid
+git -C "${fork_work}" checkout -q -b feature "${common_sha}"
+printf 'fork change\n' >"${fork_work}/feature.txt"
+git -C "${fork_work}" add feature.txt
+git -C "${fork_work}" commit -q -m feature
+head_sha="$(git -C "${fork_work}" rev-parse HEAD)"
+git init -q --bare "${fork_remote}"
+git -C "${fork_work}" remote add fork "${fork_remote}"
+git -C "${fork_work}" push -q fork HEAD:refs/heads/feature
+
+printf 'base advanced\n' >>"${base_source}/README.md"
+git -C "${base_source}" add README.md
+git -C "${base_source}" commit -q -m base-advanced
+base_sha="$(git -C "${base_source}" rev-parse HEAD)"
+git -C "${base_source}" push -q base HEAD:refs/heads/main
+
+git clone -q --branch feature "${fork_remote}" "${fork_checkout}"
+if git -C "${fork_checkout}" cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+  fail "fork fixture unexpectedly contains the advanced base commit"
+fi
+if ! (
+  cd "${fork_checkout}"
+  BASE_REPOSITORY_URL="${base_remote}" BASE_SHA="${base_sha}" HEAD_SHA="${head_sha}" \
+    bash "${base_fetch_step_script}"
+); then
+  fail "review base-fetch step failed for a fork without the exact base commit"
+fi
+[ "$(git -C "${fork_checkout}" rev-parse 'refs/rpm-artifact/base^{commit}')" = "${base_sha}" ] \
+  || fail "review base-fetch ref does not match the exact base commit"
+[ "$(git -C "${fork_checkout}" rev-parse HEAD)" = "${head_sha}" ] \
+  || fail "review base-fetch step changed the fork head"
+[ "$(git -C "${fork_checkout}" merge-base "${base_sha}" "${head_sha}")" = "${common_sha}" ] \
+  || fail "review base-fetch step did not make the full merge ancestry available"
+git -C "${fork_checkout}" diff --quiet || fail "review base-fetch step changed tracked files"
+git -C "${fork_checkout}" diff --quiet "${base_sha}...${head_sha}" -- feature.txt \
+  && fail "three-dot fork diff did not include the feature change"
+pass "fork review base ancestry and complete three-dot diff"
 
 # Execute the trusted-copy step itself. Static checks can miss a mode that is
 # applied before a copy, so extract the exact run block with Psych and execute

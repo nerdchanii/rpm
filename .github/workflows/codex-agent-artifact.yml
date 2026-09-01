@@ -233,6 +233,36 @@ jobs:
           persist-credentials: false
           clean: true
 
+      # A fork clone does not necessarily contain the current base commit.
+      # Fetch its full ancestry from the base repository so the worker can
+      # inspect the same three-dot diff that GitHub presents for the PR.
+      - name: Fetch exact review base commit
+        if: ${{ steps.metadata.outputs.lane == 'review' }}
+        shell: bash
+        env:
+          BASE_REPOSITORY_URL: https://github.com/${{ github.repository }}.git
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          base_ref="refs/rpm-artifact/base"
+          if ! git fetch --no-tags --no-write-fetch-head \
+            "$BASE_REPOSITORY_URL" "+$BASE_SHA:$base_ref"; then
+            echo "::error::exact pull-request base commit could not be fetched"
+            exit 1
+          fi
+          fetched_base="$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse "$base_ref^{commit}")"
+          actual_head="$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse 'HEAD^{commit}')"
+          if [ "$fetched_base" != "$BASE_SHA" ] || [ "$actual_head" != "$HEAD_SHA" ]; then
+            echo "::error::pull-request commit identity changed while fetching the base"
+            exit 1
+          fi
+          merge_base="$(GIT_NO_REPLACE_OBJECTS=1 git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          if ! printf '%s' "$merge_base" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::pull-request merge base is unavailable"
+            exit 1
+          fi
+
       - name: Verify exact checkout and clean starting state
         id: checkout_guard
         shell: bash
