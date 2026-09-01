@@ -259,13 +259,14 @@ through the GitHub plugin and lets GitHub close the linked issue; lifecycle
 labels on closed issues are inert. Pending checks or unknown mergeability
 return `no-work`. Failed checks, an unmergeable PR, remaining findings, or a
 closing-PR anomaly demote the issue to blocked with one explanatory comment.
-Complete repository/head-bound dependent-PR inventory is required before the
-gate decision. A child PR based on the selected head returns
+Complete head-repository/ref-bound dependent-PR inventory is required before
+the gate decision. A child PR based on the selected head returns
 `retarget-required` before merge or branch deletion.
 Issue #195 owns the planned deterministic blocking CI aggregate contract. Until
 that implementation exists, current `merge_gate.required_checks` consumes the
-policy's `metadata` and `verify` conclusions as individual evidence. The scheduled
-`merge-gatekeeper` is the actual merge owner, with issue #202 preserving and
+policy's `metadata` and `verify` statuses and conclusions as individual
+evidence. The scheduled `merge-gatekeeper` is the actual merge owner, with
+issue #202 preserving and
 organizing that lifecycle ownership. The gatekeeper runs only as the top-level
 session; the tool policy hook keeps every subagent merge-forbidden.
 The merge automation setting stays disabled. Subagent workflows never merge.

@@ -167,10 +167,11 @@ def selected_pr_evidence(
 ) -> str | None:
     """Bind the selected PR refs to the independent selection snapshot.
 
-    Dependent-PR comparison uses the selected PR head ref.  A mutable PR
-    object must therefore be checked against the closing-PR inventory before
-    that comparison; otherwise a forged head ref or ready-state value can
-    make a real dependent PR or a draft PR disappear from the gate.
+    Dependent-PR comparison uses the selected PR head repository and ref.  A
+    mutable PR object must therefore be checked against the closing-PR
+    inventory before that comparison; otherwise a forged head identity or
+    ready-state value can make a real dependent PR or a draft PR disappear
+    from the gate.
     """
     repository = fixture.get("repository")
     number = pr.get("number")
@@ -184,6 +185,8 @@ def selected_pr_evidence(
         or not isinstance(pr.get("base_ref"), str)
         or not isinstance(pr.get("head_ref"), str)
         or not isinstance(pr.get("base_sha"), str)
+        or not isinstance(pr.get("head_repository"), str)
+        or not pr.get("head_repository", "").strip()
         or not isinstance(pr.get("head_sha"), str)
         or not re.fullmatch(r"[0-9a-f]{40}", str(pr.get("base_sha")))
         or not re.fullmatch(r"[0-9a-f]{40}", str(pr.get("head_sha")))
@@ -213,6 +216,7 @@ def selected_pr_evidence(
         "repository",
         "base_ref",
         "base_sha",
+        "head_repository",
         "head_ref",
         "head_sha",
         "is_draft",
@@ -457,7 +461,14 @@ def evaluate_gate(
                 "pr": pr_number,
             }
         conclusion = item.get("conclusion")
-        if not isinstance(conclusion, str):
+        status = item.get("status")
+        if (
+            conclusion is None
+            and isinstance(status, str)
+            and status.casefold() in pending_conclusions
+        ):
+            conclusion = status
+        elif not isinstance(conclusion, str):
             return {
                 "status": "blocked",
                 "reason": "check-conclusion-invalid",
@@ -554,6 +565,7 @@ def validate_dependent_prs(
     if inventory.get("count") != len(records):
         return {"status": "blocked", "reason": "dependent-pr-count-mismatch"}
     repository = fixture.get("repository")
+    head_repository = pr.get("head_repository")
     head_ref = pr.get("head_ref")
     dependents = []
     seen_numbers: set[int] = set()
@@ -575,6 +587,8 @@ def validate_dependent_prs(
             or number <= 0
             or number in seen_numbers
             or record.get("repository") != repository
+            or not isinstance(head_repository, str)
+            or not head_repository.strip()
             or not isinstance(record.get("state"), str)
             or not record.get("state", "").strip()
             or str(record.get("state", "")).casefold() != "open"
@@ -591,7 +605,7 @@ def validate_dependent_prs(
         seen_numbers.add(number)
         if (
             str(record.get("state", "")).casefold() == "open"
-            and record.get("repository") == repository
+            and record.get("repository") == head_repository
             and record.get("base_ref") == head_ref
         ):
             dependents.append(int(record.get("number", 0)))

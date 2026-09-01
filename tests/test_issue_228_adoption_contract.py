@@ -4109,6 +4109,15 @@ class AdoptionContractTest(unittest.TestCase):
         self.assertEqual(data.get("reason"), "retarget-required", data)
         self.assertEqual(data.get("dependent_prs"), [216], data)
 
+        fork_head = copy.deepcopy(fixture)
+        fork_head["selected_pr_evidence"]["head_repository"] = "contributor/rpm"
+        fork_head["issues"][0]["closing_prs"][0][
+            "head_repository"
+        ] = "contributor/rpm"
+        result, event = self.run_merge(fork_head)
+        self.assertEqual(result.returncode, 0, event)
+        self.assertEqual(event["data"].get("status"), "merge", event)
+
         divergent = copy.deepcopy(fixture)
         divergent["issues"][0]["closing_prs"][0]["dependent_prs"]["records"][0][
             "base_sha"
@@ -4416,6 +4425,29 @@ class AdoptionContractTest(unittest.TestCase):
                 self.assertEqual(data.get("reason"), "checks-failed", data)
                 self.assertEqual(data.get("checks"), ["verify"], data)
 
+    def test_merge_gate_treats_running_null_conclusion_as_pending(self) -> None:
+        baseline = json.loads(DEPENDENT_FIXTURE.read_text())
+        pr = baseline["issues"][0]["closing_prs"][0]
+        pr["dependent_prs"]["records"] = []
+        pr["dependent_prs"]["count"] = 0
+        verify = pr["checks"]["records"][1]
+        verify["status"] = "in_progress"
+        verify["conclusion"] = None
+
+        result, event = self.run_merge(baseline)
+        self.assertEqual(result.returncode, 0, event)
+        self.assertEqual(event["data"].get("status"), "no-work", event)
+        self.assertEqual(event["data"].get("reason"), "checks-pending", event)
+        self.assertEqual(event["data"].get("checks"), ["verify"], event)
+
+        invalid = copy.deepcopy(baseline)
+        invalid["issues"][0]["closing_prs"][0]["checks"]["records"][1][
+            "status"
+        ] = "completed"
+        result, event = self.run_merge(invalid)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(data.get("reason"), "check-conclusion-invalid", data)
+
     def test_merge_gate_requires_a_positive_follow_up_issue(self) -> None:
         fixture = json.loads(DEPENDENT_FIXTURE.read_text())
         pr = fixture["issues"][0]["closing_prs"][0]
@@ -4611,6 +4643,7 @@ class AdoptionContractTest(unittest.TestCase):
             "number": pr["number"],
             "base_ref": pr["base_ref"],
             "base_sha": pr["base_sha"],
+            "head_repository": pr["head_repository"],
             "head_ref": pr["head_ref"],
             "head_sha": pr["head_sha"],
             "is_draft": pr["is_draft"],
@@ -4628,12 +4661,21 @@ class AdoptionContractTest(unittest.TestCase):
             data.get("reason"), "selected-pr-evidence-mismatch", data
         )
 
+        missing_head_repository = copy.deepcopy(baseline)
+        missing_head_repository["issues"][0]["closing_prs"][0].pop(
+            "head_repository"
+        )
+        result, event = self.run_merge(missing_head_repository)
+        data = self.assert_blocked(result, event)
+        self.assertEqual(data.get("reason"), "selected-pr-identity-invalid", data)
+
         variants: list[tuple[str, dict[str, object]]] = []
         for field, value in (
             ("repository", "other/rpm"),
             ("number", 211),
             ("base_ref", "develop"),
             ("base_sha", "d" * 40),
+            ("head_repository", "other/rpm"),
             ("head_ref", "feat/other"),
             ("head_sha", "d" * 40),
         ):
@@ -4644,6 +4686,7 @@ class AdoptionContractTest(unittest.TestCase):
         for field, value in (
             ("base_ref", "develop"),
             ("base_sha", "d" * 40),
+            ("head_repository", "other/rpm"),
             ("head_ref", "feat/other"),
         ):
             fixture = copy.deepcopy(baseline)

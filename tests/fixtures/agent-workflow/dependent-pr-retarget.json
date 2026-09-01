@@ -6,6 +6,7 @@
     "number": 210,
     "base_ref": "main",
     "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "head_repository": "nerdchanii/rpm",
     "head_ref": "feat/issue-145-workspaces",
     "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "is_draft": false
@@ -52,6 +53,7 @@
           "repository": "nerdchanii/rpm",
           "base_ref": "main",
           "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "head_repository": "nerdchanii/rpm",
           "head_ref": "feat/issue-145-workspaces",
           "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "is_draft": false,
@@ -68,6 +70,7 @@
             "records": [
               {
                 "name": "metadata",
+                "status": "completed",
                 "conclusion": "success",
                 "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 "source": "github-actions",
@@ -75,6 +78,7 @@
               },
               {
                 "name": "verify",
+                "status": "completed",
                 "conclusion": "success",
                 "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 "source": "github-actions",

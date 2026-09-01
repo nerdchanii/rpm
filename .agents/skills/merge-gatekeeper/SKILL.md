@@ -29,16 +29,17 @@ verdict.
    `agent:awaiting-merge` label, ordered by issue number ascending. Do not
    require the `gh` CLI. Select at most the gate batch limit.
 3. Refetch the selected issue and its closing PRs. Bind one `selected_head_sha`
-   to the exact repository, base ref/SHA, head ref/SHA, and ready-for-review
-   state (`is_draft: false`). Collect every
-   required check named in `merge_gate.required_checks` with its conclusion,
-   selected head SHA, source, and workflow run id. Reject incomplete reads and
-   duplicate check names. Collect mergeability and the current-head P0/P1
-   finding disposition independently of the review-thread UI flag.
+   to the exact base repository, base ref/SHA, head repository, head ref/SHA,
+   and ready-for-review state (`is_draft: false`). Collect every
+   required check named in `merge_gate.required_checks` with its status,
+   conclusion, selected head SHA, source, and workflow run id. Reject incomplete
+   reads and duplicate check names. Collect mergeability and the current-head
+   P0/P1 finding disposition independently of the review-thread UI flag.
 4. Inventory every open PR in the repository with complete pagination. Record
    each PR number, repository, base ref/SHA, and head ref/SHA. If an open PR is
-   based on the selected PR head, return `retarget-required` without merge or
-   branch deletion. Missing, partial, or stale dependent inventory is blocked.
+   based on the selected PR head repository and ref, return `retarget-required`
+   without merge or branch deletion. Missing, partial, or stale dependent
+   inventory is blocked.
 5. Normalize that evidence into the connector fixture shape and confirm the
    decision with
    `python3 scripts/check-merge-gate.py --issues-file <normalized-file> --operation select-merge`.
