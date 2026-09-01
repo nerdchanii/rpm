@@ -2489,12 +2489,17 @@ check "backlog_policy_schema" jq -e '
     dependent_pr_inventory:{
       source:"repository-open-pr-base-inventory-v1"
     },
+    stale_label_recovery:{
+      mode:"fail-closed",
+      delete_label:false,
+      reason:"recovery-label-ownership-unprovable"
+    },
     ledger:{
       namespace:"rpm-agent-adoption",
       marker:"<!-- rpm-agent-adoption:v1 -->",
       approved_authors:["nerdchanii"],
       terminal_history:{
-        classification:"compensated-old-head",
+        classification:"manually-reconciled-old-head",
         phases:["prepared","label-mutation"],
         require_head_change:true
       },

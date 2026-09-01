@@ -1306,7 +1306,7 @@ def validate_ledger(
     approved_authors = {str(author) for author in authors}
     terminal_history = ledger_contract.get("terminal_history")
     if terminal_history != {
-        "classification": "compensated-old-head",
+        "classification": "manually-reconciled-old-head",
         "phases": ["prepared", "label-mutation"],
         "require_head_change": True,
     }:

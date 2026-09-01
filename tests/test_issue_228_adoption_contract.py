@@ -263,6 +263,8 @@ class FakeGithubApiRunner:
     def __init__(self, fixture: dict[str, object]) -> None:
         self.fixture = copy.deepcopy(fixture)
         self.head_sha = str(self.fixture["evidence"]["pr"]["head"]["sha"])
+        self.draft_value: object = False
+        self.omit_draft = False
         self.labels = set(self.fixture["evidence"]["issue"]["labels"])
         self.comments: list[dict[str, object]] = []
         self.writes: list[tuple[str, object]] = []
@@ -352,7 +354,6 @@ class FakeGithubApiRunner:
             response = {
                 "number": 210,
                 "state": "open",
-                "draft": False,
                 "updated_at": self.pr_updated_at,
                 "base": {
                     "ref": "main",
@@ -365,6 +366,8 @@ class FakeGithubApiRunner:
                     "repo": {"full_name": head_repository},
                 },
             }
+            if not self.omit_draft:
+                response["draft"] = self.draft_value
         elif route == "repos/nerdchanii/rpm/issues/145/comments":
             response = copy.deepcopy(self.comments)
         elif route == f"repos/nerdchanii/rpm/commits/{self.head_sha}":
@@ -463,6 +466,7 @@ class InterruptedLabelThenHeadChangeApiRunner(FakeGithubApiRunner):
     def __init__(self, fixture: dict[str, object]) -> None:
         super().__init__(fixture)
         self.current_head_sha = HEAD_SHA
+        self.current_head_ref = "feat/issue-145-workspaces"
         self.fail_issue_reads = 0
         self.delete_count = 0
 
@@ -500,7 +504,7 @@ class InterruptedLabelThenHeadChangeApiRunner(FakeGithubApiRunner):
                         "repo": {"full_name": "nerdchanii/rpm"},
                     },
                     "head": {
-                        "ref": "feat/issue-145-workspaces",
+                        "ref": self.current_head_ref,
                         "sha": self.current_head_sha,
                         "repo": {"full_name": "nerdchanii/rpm"},
                     },
@@ -717,7 +721,7 @@ class AdoptionContractTest(unittest.TestCase):
                 "marker": LEDGER_MARKER,
                 "approved_authors": [LEDGER_AUTHOR],
                 "terminal_history": {
-                    "classification": "compensated-old-head",
+                    "classification": "manually-reconciled-old-head",
                     "phases": ["prepared", "label-mutation"],
                     "require_head_change": True,
                 },
@@ -727,6 +731,14 @@ class AdoptionContractTest(unittest.TestCase):
                     "committed",
                     "reconciled",
                 ],
+            },
+        )
+        self.assertEqual(
+            contract.get("stale_label_recovery"),
+            {
+                "mode": "fail-closed",
+                "delete_label": False,
+                "reason": "recovery-label-ownership-unprovable",
             },
         )
         self.assertNotIn(
@@ -2413,6 +2425,40 @@ class AdoptionContractTest(unittest.TestCase):
             partial.read("nerdchanii/rpm", 145, 210)
         self.assertEqual(partial_api.writes, [])
 
+    def test_live_pr_draft_state_requires_an_explicit_boolean(self) -> None:
+        namespace = runpy.run_path(str(ADOPTION_WRITER))
+        writer = namespace.get("execute_adoption_phase")
+        github_transport = namespace.get("GithubAdoptionTransport")
+        self.assertTrue(callable(writer), namespace.keys())
+        self.assertTrue(callable(github_transport), namespace.keys())
+
+        variants = (
+            ("missing", None, True),
+            ("null", None, False),
+            ("zero", 0, False),
+            ("one", 1, False),
+            ("string", "false", False),
+            ("list", [], False),
+            ("object", {}, False),
+        )
+        for name, draft_value, omit_draft in variants:
+            with self.subTest(name=name):
+                prepared = self.load_adoption()
+                api = FakeGithubApiRunner(prepared)
+                api.draft_value = draft_value
+                api.omit_draft = omit_draft
+                transport = github_transport(
+                    snapshot=prepared,
+                    runner=api,
+                    approved_marker_actors=frozenset({"nerdchanii"}),
+                    collectors=self.live_collectors(prepared),
+                )
+                result = writer(self.load_policy(), prepared, transport)
+                self.assertEqual(result.get("status"), "blocked", result)
+                self.assertEqual(result.get("reason"), "live-refetch-failed", result)
+                self.assertIn("draft state is invalid", str(result.get("detail")))
+                self.assertEqual(api.writes, [])
+
     def test_execution_authorization_ignores_issue_body_and_requires_approved_comment(
         self,
     ) -> None:
@@ -3092,7 +3138,7 @@ class AdoptionContractTest(unittest.TestCase):
                     retry_phases, ["prepared", "label-mutation"]
                 )
 
-    def test_stale_authorization_compensates_an_interrupted_label_write(
+    def test_stale_authorization_never_auto_deletes_a_shared_label(
         self,
     ) -> None:
         namespace = runpy.run_path(str(ADOPTION_WRITER))
@@ -3125,14 +3171,18 @@ class AdoptionContractTest(unittest.TestCase):
         recovered = writer(self.load_policy(), prepared, transport)
         self.assertEqual(recovered.get("status"), "blocked", recovered)
         self.assertEqual(
-            recovered.get("reason"), "fresh-authorization-required", recovered
+            recovered.get("reason"), "live-refetch-failed", recovered
         )
         self.assertEqual(
-            recovered.get("recovery", {}).get("status"), "restored", recovered
+            recovered.get("recovery", {}).get("status"), "not-safe", recovered
         )
-        self.assertNotIn("agent:review-pending", api.labels)
-        self.assertEqual(api.labels, {"documentation"})
-        self.assertEqual(api.delete_count, 1)
+        self.assertEqual(
+            recovered.get("recovery", {}).get("reason"),
+            "recovery-label-ownership-unprovable",
+            recovered,
+        )
+        self.assertIn("agent:review-pending", api.labels)
+        self.assertEqual(api.delete_count, 0)
         phases = [
             json.loads(str(comment["body"]).split("\n", 1)[1])["phase"]
             for comment in api.comments
@@ -3144,11 +3194,12 @@ class AdoptionContractTest(unittest.TestCase):
         replay = writer(self.load_policy(), prepared, transport)
         self.assertEqual(replay.get("status"), "blocked", replay)
         self.assertEqual(api.writes, writes_before_replay)
-        self.assertEqual(api.delete_count, 1)
+        self.assertEqual(api.delete_count, 0)
 
-        # The compensated run remains immutable audit history. A new exact
-        # authorization for the new head must be able to complete with its own
-        # run ID while the old prepared/label-mutation comments remain present.
+        # An independently authorized principal may reconcile the shared label
+        # outside this stale run. The old comments remain immutable history,
+        # and a new exact authorization can then proceed with its own run ID.
+        api.labels.discard("agent:review-pending")
         fresh_head = "c" * 40
         fresh = json.loads(
             json.dumps(self.load_adoption()).replace(HEAD_SHA, fresh_head)
@@ -3214,81 +3265,7 @@ class AdoptionContractTest(unittest.TestCase):
             ["prepared", "label-mutation", "committed", "reconciled"],
         )
 
-    def test_stale_label_recovery_requires_the_exact_active_adoption_winner(
-        self,
-    ) -> None:
-        namespace = runpy.run_path(str(ADOPTION_WRITER))
-        writer = namespace.get("execute_adoption_phase")
-        github_transport = namespace.get("GithubAdoptionTransport")
-        self.assertTrue(callable(writer), namespace.keys())
-        self.assertTrue(callable(github_transport), namespace.keys())
-
-        variants = (
-            ("same-run-claim", {"kind": "claim"}, False),
-            ("wrong-owner", {"owner": "other-owner"}, False),
-            ("wrong-repository", {"repository": "other/rpm"}, False),
-            ("wrong-issue", {"issue": 999}, False),
-            ("wrong-pr", {"pr": 999}, False),
-            ("wrong-head", {"head_sha": "d" * 40}, False),
-            ("earlier-server-winner", {}, True),
-        )
-        for name, updates, add_earlier_winner in variants:
-            with self.subTest(name=name):
-                prepared = self.load_adoption()
-                self.install_current_adoption_lease(prepared)
-                writer_inventory = copy.deepcopy(prepared["evidence"]["writers"])
-                collectors = self.live_collectors(prepared)
-                collectors["writers"] = (
-                    lambda repository, issue, pr: copy.deepcopy(writer_inventory)
-                )
-                api = InterruptedLabelThenHeadChangeApiRunner(prepared)
-                transport = github_transport(
-                    snapshot=prepared,
-                    runner=api,
-                    approved_marker_actors=frozenset({"nerdchanii"}),
-                    collectors=collectors,
-                )
-                for expected_phase in ("prepared", "label-mutation"):
-                    result = writer(self.load_policy(), prepared, transport)
-                    self.assertEqual(result.get("status"), "applied", result)
-                    self.assertEqual(result.get("phase"), expected_phase, result)
-                interrupted = writer(self.load_policy(), prepared, transport)
-                self.assertEqual(interrupted.get("status"), "blocked", interrupted)
-
-                records = copy.deepcopy(writer_inventory["records"])
-                records[0].update(updates)
-                records[0]["lease_expires_at"] = "2999-01-01T00:00:00Z"
-                if records[0].get("kind") != "adoption":
-                    records[0].pop("source_comment_id", None)
-                if add_earlier_winner:
-                    contender = copy.deepcopy(records[0])
-                    contender.update(
-                        {
-                            "run_id": "other-run",
-                            "owner": "other-owner",
-                            "source_comment_id": 70001,
-                        }
-                    )
-                    records.append(contender)
-                writer_inventory["records"] = records
-                writer_inventory["count"] = len(records)
-                api.current_head_sha = "c" * 40
-
-                recovery = transport.recover_stale_label(
-                    self.load_policy(),
-                    "nerdchanii/rpm",
-                    145,
-                    210,
-                    prepared["authorization"],
-                )
-                self.assertEqual(recovery.get("status"), "not-safe", recovery)
-                self.assertEqual(
-                    recovery.get("reason"), "recovery-writer-active", recovery
-                )
-                self.assertEqual(api.delete_count, 0)
-                self.assertIn("agent:review-pending", api.labels)
-
-    def test_stale_label_recovery_rechecks_writer_inventory_before_delete(
+    def test_stale_recovery_blocks_same_head_identity_drift(
         self,
     ) -> None:
         namespace = runpy.run_path(str(ADOPTION_WRITER))
@@ -3299,37 +3276,12 @@ class AdoptionContractTest(unittest.TestCase):
 
         prepared = self.load_adoption()
         self.install_current_adoption_lease(prepared)
-        writer_inventory = copy.deepcopy(prepared["evidence"]["writers"])
-        drifted_inventory = copy.deepcopy(writer_inventory)
-        expired_claim = copy.deepcopy(writer_inventory["records"][0])
-        expired_claim.update(
-            {
-                "kind": "claim",
-                "run_id": "expired-other-run",
-                "owner": "other-owner",
-                "lease_expires_at": "2026-08-25T12:00:00Z",
-            }
-        )
-        expired_claim.pop("source_comment_id", None)
-        drifted_inventory["records"].append(expired_claim)
-        drifted_inventory["count"] = len(drifted_inventory["records"])
-        collection_state = {"recovery_reads": 0, "enabled": False}
-
-        def collect_writers(repository: str, issue: int, pr: int) -> object:
-            if collection_state["enabled"]:
-                collection_state["recovery_reads"] += 1
-                if collection_state["recovery_reads"] >= 2:
-                    return copy.deepcopy(drifted_inventory)
-            return copy.deepcopy(writer_inventory)
-
-        collectors = self.live_collectors(prepared)
-        collectors["writers"] = collect_writers
         api = InterruptedLabelThenHeadChangeApiRunner(prepared)
         transport = github_transport(
             snapshot=prepared,
             runner=api,
             approved_marker_actors=frozenset({"nerdchanii"}),
-            collectors=collectors,
+            collectors=self.live_collectors(prepared),
         )
         for expected_phase in ("prepared", "label-mutation"):
             result = writer(self.load_policy(), prepared, transport)
@@ -3338,8 +3290,7 @@ class AdoptionContractTest(unittest.TestCase):
         interrupted = writer(self.load_policy(), prepared, transport)
         self.assertEqual(interrupted.get("status"), "blocked", interrupted)
 
-        api.current_head_sha = "c" * 40
-        collection_state["enabled"] = True
+        api.current_head_ref = "renamed-head-with-same-sha"
         recovery = transport.recover_stale_label(
             self.load_policy(),
             "nerdchanii/rpm",
@@ -3348,8 +3299,9 @@ class AdoptionContractTest(unittest.TestCase):
             prepared["authorization"],
         )
         self.assertEqual(recovery.get("status"), "not-safe", recovery)
-        self.assertEqual(recovery.get("reason"), "recovery-writer-drift", recovery)
-        self.assertEqual(collection_state["recovery_reads"], 2)
+        self.assertEqual(
+            recovery.get("reason"), "recovery-head-sha-unchanged", recovery
+        )
         self.assertEqual(api.delete_count, 0)
         self.assertIn("agent:review-pending", api.labels)
 
@@ -3414,7 +3366,9 @@ class AdoptionContractTest(unittest.TestCase):
         )
         self.assertEqual(recovery.get("status"), "not-safe", recovery)
         self.assertEqual(
-            recovery.get("reason"), "recovery-ledger-owner-conflict", recovery
+            recovery.get("reason"),
+            "recovery-label-ownership-unprovable",
+            recovery,
         )
         self.assertEqual(api.delete_count, 0)
         self.assertIn("agent:review-pending", api.labels)

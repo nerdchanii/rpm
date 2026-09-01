@@ -244,6 +244,13 @@ add-only and preserves ordinary labels. Project membership synchronization is
 an inventory operation; Project read failure cannot change or block the
 lifecycle verdict.
 
+Stale-head recovery never deletes `agent:review-pending`. GitHub does not
+provide an atomic owner identity for a shared issue label, so an old run cannot
+prove the current label is still its own. Ref-only drift with an unchanged head
+SHA and every changed-head stale label both stop fail-closed. An independently
+authorized principal must reconcile the label before a fresh run can treat the
+old exact prepared and label-mutation records as manual-reconciliation history.
+
 ## Review-Reconciliation Contract
 
 `$pr-review-resolution` scheduled mode selects at most one open PR linked to an

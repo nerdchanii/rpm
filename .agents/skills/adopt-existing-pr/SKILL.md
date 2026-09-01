@@ -77,10 +77,12 @@ complete repository-global writer inventory, applies the server-assigned
 comment-ID winner rule, and proceeds only for the winning run. It re-fetches
 and CAS-checks the full authorization tuple immediately before each write.
 Re-fetch after each phase and resume only an exact matching ledger run.
-When stale-head recovery removes this run's interrupted review-pending label,
-retain its exact prepared and label-mutation comments as compensated old-head
-history. A fresh authorization uses a new run ID and only that run's ledger
-phases may advance the current head.
+Stale-head recovery never removes a review-pending label because GitHub does
+not expose an atomic owner identity for that shared label. It fails closed with
+`recovery-label-ownership-unprovable` and requires an independently authorized
+manual reconciliation. Retain the exact prepared and label-mutation comments
+as old-head history. A fresh authorization uses a new run ID and only that
+run's ledger phases may advance the current head.
 
 Project membership synchronization is a separate inventory operation. Project
 read failure does not change the adoption decision. This operation does not
