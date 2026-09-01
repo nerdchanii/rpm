@@ -2,16 +2,23 @@
 
 ## Steps
 
-1. For a scheduled run, use the GitHub plugin to find open issues in `agent:review-pending`, ordered by issue number, and select at most one linked open PR.
+1. For a scheduled run, use the GitHub capability to find open issues in `agent:review-pending`, ordered by issue number, and select at most one linked open PR.
 2. Return `status:"no-work"` without mutation when there is no candidate or the latest Codex Automatic review has not arrived.
-3. Collect the latest Codex review and every unresolved review comment through the GitHub plugin. The local/manual fallback is `bash scripts/collect-pr-review-context.sh <pr-number> --format jsonl`.
-4. Spawn `pr-review-resolver` using the prompt in `templates.md`.
-5. Review resolver output and current diff.
-6. If resolver applied `accept-now` fixes, verify validation actually ran or rerun it in the main session.
-7. If resolver drafted follow-up issues, decide whether to create them. Use `--create` only when `may_create_followup_issues=true`.
-8. Commit and push accepted fixes to the same PR branch, then run internal adversarial review. Do not assume Automatic review reruns.
-9. Keep `agent:review-pending` while actionable P0/P1 findings remain. Otherwise replace it with `agent:awaiting-merge` and remove stale `agent:claimed`, preserving ordinary labels.
-10. Never merge, request `@codex review`, or make a new Automatic review a completion dependency.
+3. Collect the latest Codex review and every unresolved review comment through the GitHub capability. The local/manual fallback is `bash scripts/collect-pr-review-context.sh <pr-number> --format jsonl`.
+4. Establish a dedicated clean worktree at the selected PR's exact live head
+   SHA. Verify an empty `git status --porcelain` and matching `git rev-parse
+   HEAD` before spawning `pr-review-resolver`; never patch an ambient checkout.
+5. Spawn `pr-review-resolver` using the prompt in `templates.md`.
+6. Review resolver output and current diff.
+7. If resolver applied `accept-now` fixes, verify validation actually ran or rerun it in the main session.
+8. Require each deferred result to include the complete draft in
+   `follow_up_issues[].body_markdown` with a null URL and path. The resolver
+   performs no file or shell operation. The main session may create a temporary
+   body file for preview and may use `--create` only when
+   `may_create_followup_issues=true`.
+9. Commit and push accepted fixes to the same PR branch, then run internal adversarial review. Do not assume Automatic review reruns.
+10. Keep `agent:review-pending` while actionable P0/P1 findings remain. Otherwise replace it with `agent:awaiting-merge` and remove stale `agent:claimed`, preserving ordinary labels.
+11. Never merge, request `@codex review`, or make a new Automatic review a completion dependency.
 
 ## Decision Taxonomy
 

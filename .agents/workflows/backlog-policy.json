@@ -66,6 +66,48 @@
         "event_id"
       ],
       "algorithm": "sha256-nul-joined"
+    },
+    "persistence": {
+      "medium": "issue-comment",
+      "marker": {
+        "prefix": "<!-- rpm-agent-claim: ",
+        "suffix": " -->"
+      },
+      "order": [
+        "prepare",
+        "persist-marker",
+        "refetch-normalize-ledger",
+        "claim",
+        "transition"
+      ],
+      "record_fields": [
+        "repository",
+        "issue",
+        "run_id",
+        "event_id",
+        "executor",
+        "plan_revision",
+        "scope_hash",
+        "idempotency_key",
+        "lease",
+        "started_at",
+        "expires_at"
+      ],
+      "recovery_states": [
+        "ready",
+        "claimed"
+      ],
+      "authorization": {
+        "source": "parent-handoff",
+        "token_marker": "rpm_claim_authorization=",
+        "encoding": "base64url-canonical-json",
+        "snapshot_digest": "sha256-canonical-json",
+        "phases": [
+          "persist",
+          "claim"
+        ],
+        "one_phase_per_claimer": true
+      }
     }
   },
   "allowed_transitions": {

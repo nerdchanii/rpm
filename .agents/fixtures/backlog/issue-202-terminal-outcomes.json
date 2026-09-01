@@ -1,0 +1,172 @@
+[
+  {
+    "mode": "scheduled",
+    "input": {
+      "queue": "eligible-issue",
+      "issue": 3,
+      "claim_result": {
+        "type": "ready_ticket_claim_result",
+        "data": {
+          "status": "claimed",
+          "issue": 3,
+          "before_state": "ready",
+          "after_state": "claimed",
+        "claim_contract": {
+          "status": "claim",
+          "snapshot_sha256": "sha256:47992ebd49fc7b8510fdddb764c73fa0afb939ee40a0e03a49ec76a19485a4f8",
+          "authorization_token": "eyJjb250cm9sbGVyX3NoYTI1NiI6InNoYTI1NjoxMGFlMzMxZGFlZjNkYjAzYzU3ODE0ZTcwZTEzYTZmZGRiYWUxZjdjMjQ4YWFlOWM4NzRmNTE2YzY2MzA5MTg3IiwiaWRlbXBvdGVuY3lfa2V5Ijoic2hhMjU2OjBlYmI0NTFkYWY4OTA2MmE5ZjczMTRlZWM5MGNiMzlmNjJkNWFhZTczYmNkZjQ3ZjdkZDg5ZTJlNzBmNzRjYjEiLCJpc3N1ZSI6MywiaXNzdWVfY29tbWVudF9tYXJrZXIiOiI8IS0tIHJwbS1hZ2VudC1jbGFpbToge1wiZXZlbnRfaWRcIjpcImRlbGl2ZXJ5LTNcIixcImV4ZWN1dG9yXCI6XCJjbG91ZFwiLFwiZXhwaXJlc19hdFwiOlwiMjAyNi0wOC0yMVQxMzowMDowMFpcIixcImlkZW1wb3RlbmN5X2tleVwiOlwic2hhMjU2OjBlYmI0NTFkYWY4OTA2MmE5ZjczMTRlZWM5MGNiMzlmNjJkNWFhZTczYmNkZjQ3ZjdkZDg5ZTJlNzBmNzRjYjFcIixcImlzc3VlXCI6MyxcImxlYXNlXCI6e1wiZXhwaXJlc19hdFwiOlwiMjAyNi0wOC0yMVQxMzowMDowMFpcIixcIm93bmVyXCI6XCJjbG91ZDpleGVjdXRvclwiLFwicnVuX2lkXCI6XCJydW4tM1wiLFwic3RhcnRlZF9hdFwiOlwiMjAyNi0wOC0yMVQxMjowMDowMFpcIn0sXCJwbGFuX3JldmlzaW9uXCI6XCJwbGFuLTNcIixcInJlcG9zaXRvcnlcIjpcIm5lcmRjaGFuaWkvcnBtXCIsXCJydW5faWRcIjpcInJ1bi0zXCIsXCJzY29wZV9oYXNoXCI6XCJzaGEyNTY6YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYVwiLFwic3RhcnRlZF9hdFwiOlwiMjAyNi0wOC0yMVQxMjowMDowMFpcIn0gLS0-IiwibGFiZWxzIjpbImFnZW50OmNsYWltZWQiLCJwcmlvcml0eTpoaWdoIl0sInBoYXNlIjoiY2xhaW0iLCJyZXBvc2l0b3J5IjoibmVyZGNoYW5paS9ycG0iLCJzbmFwc2hvdF9zaGEyNTYiOiJzaGEyNTY6NDc5OTJlYmQ0OWZjN2I4NTEwZmRkZGI3NjRjNzNmYTBhZmI5MzllZTQwYTBlMDNhNDllYzc2YTE5NDg1YTRmOCIsInRyYW5zaXRpb25fcmVxdWlyZWQiOnRydWUsInZlcnNpb24iOjF9",
+          "issue": 3,
+            "before": "ready",
+            "after": "claimed",
+            "transition_required": true,
+            "run_id": "run-3",
+            "event_id": "delivery-3",
+            "idempotency_key": "sha256:0ebb451daf89062a9f7314eec90cb39f62d5aae73bcdf47f7dd89e2e70f74cb1",
+            "claim_record": {
+              "repository": "nerdchanii/rpm",
+              "issue": 3,
+              "run_id": "run-3",
+              "event_id": "delivery-3",
+              "executor": "cloud",
+              "plan_revision": "plan-3",
+              "scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "idempotency_key": "sha256:0ebb451daf89062a9f7314eec90cb39f62d5aae73bcdf47f7dd89e2e70f74cb1",
+              "lease": {
+                "run_id": "run-3",
+                "owner": "cloud:executor",
+                "started_at": "2026-08-21T12:00:00Z",
+                "expires_at": "2026-08-21T13:00:00Z"
+              },
+              "started_at": "2026-08-21T12:00:00Z",
+              "expires_at": "2026-08-21T13:00:00Z"
+            },
+            "issue_comment_marker": "<!-- rpm-agent-claim: {\"event_id\":\"delivery-3\",\"executor\":\"cloud\",\"expires_at\":\"2026-08-21T13:00:00Z\",\"idempotency_key\":\"sha256:0ebb451daf89062a9f7314eec90cb39f62d5aae73bcdf47f7dd89e2e70f74cb1\",\"issue\":3,\"lease\":{\"expires_at\":\"2026-08-21T13:00:00Z\",\"owner\":\"cloud:executor\",\"run_id\":\"run-3\",\"started_at\":\"2026-08-21T12:00:00Z\"},\"plan_revision\":\"plan-3\",\"repository\":\"nerdchanii/rpm\",\"run_id\":\"run-3\",\"scope_hash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"started_at\":\"2026-08-21T12:00:00Z\"} -->",
+            "recovery": {
+              "state": "ready",
+              "resumed": false,
+              "evidence": [
+                "durable-claim-record",
+                "exact-persistence-marker",
+                "refetched-runs-ledger"
+              ]
+            },
+            "lease": {
+              "run_id": "run-3",
+              "owner": "cloud:executor",
+              "started_at": "2026-08-21T12:00:00Z",
+              "expires_at": "2026-08-21T13:00:00Z"
+            },
+            "preserved_labels": ["priority:high"],
+            "labels": ["agent:claimed", "priority:high"]
+          },
+          "preserved_labels": ["priority:high"],
+          "verified": true,
+          "race_evidence": [],
+          "blockers": []
+        }
+      }
+    },
+    "owner": "rpm_workflow_manager",
+    "expected_status": "complete"
+  },
+  {
+    "mode": "scheduled",
+    "input": {"queue": "empty"},
+    "owner": "rpm_workflow_manager",
+    "expected_status": "no-work"
+  },
+  {
+    "mode": "explicit",
+    "input": {
+      "issue": 202,
+      "claim_state": "ready",
+      "controller_status": "claim",
+      "claim_result_issue": 202,
+      "claim_result": {
+        "type": "ready_ticket_claim_result",
+        "data": {
+          "status": "claimed",
+          "issue": 202,
+          "before_state": "ready",
+          "after_state": "claimed",
+          "claim_contract": {
+            "status": "claim",
+            "snapshot_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "authorization_token": "ZXhwaWNpdC0yMDI",
+            "issue": 202,
+            "before": "ready",
+            "after": "claimed",
+            "transition_required": true,
+            "claim_record": {
+              "repository": "nerdchanii/rpm",
+              "issue": 202,
+              "run_id": "run-explicit-202",
+              "event_id": "explicit-202",
+              "executor": "cloud",
+              "plan_revision": "plan-explicit-202",
+              "scope_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "idempotency_key": "sha256:2390f8835b1b70be749baf9ebe7a2cc3ac3c7afbe7c41db9c9ced6f2ef19f47a",
+              "lease": {
+                "run_id": "run-explicit-202",
+                "owner": "cloud:executor",
+                "started_at": "2026-08-21T12:00:00Z",
+                "expires_at": "2026-08-21T13:00:00Z"
+              },
+              "started_at": "2026-08-21T12:00:00Z",
+              "expires_at": "2026-08-21T13:00:00Z"
+            },
+            "issue_comment_marker": "<!-- rpm-agent-claim: {\"event_id\":\"explicit-202\",\"executor\":\"cloud\",\"expires_at\":\"2026-08-21T13:00:00Z\",\"idempotency_key\":\"sha256:2390f8835b1b70be749baf9ebe7a2cc3ac3c7afbe7c41db9c9ced6f2ef19f47a\",\"issue\":202,\"lease\":{\"expires_at\":\"2026-08-21T13:00:00Z\",\"owner\":\"cloud:executor\",\"run_id\":\"run-explicit-202\",\"started_at\":\"2026-08-21T12:00:00Z\"},\"plan_revision\":\"plan-explicit-202\",\"repository\":\"nerdchanii/rpm\",\"run_id\":\"run-explicit-202\",\"scope_hash\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"started_at\":\"2026-08-21T12:00:00Z\"} -->",
+            "recovery": {
+              "state": "ready",
+              "resumed": false,
+              "evidence": ["durable-claim-record", "exact-persistence-marker", "refetched-runs-ledger"]
+            },
+            "lease": {
+              "run_id": "run-explicit-202",
+              "owner": "cloud:executor",
+              "started_at": "2026-08-21T12:00:00Z",
+              "expires_at": "2026-08-21T13:00:00Z"
+            },
+            "preserved_labels": ["priority:high"],
+            "labels": ["agent:claimed", "priority:high"]
+          },
+          "preserved_labels": ["priority:high"],
+          "verified": true,
+          "race_evidence": [],
+          "blockers": []
+        }
+      },
+      "controller_authorization": {
+        "phase": "claim",
+        "issue": 202,
+        "snapshot_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "authorization_token": "ZXhwaWNpdC0yMDI"
+      },
+      "durable_record": {
+        "run_id": "run-explicit-202",
+        "event_id": "explicit-202",
+        "idempotency_key": "sha256:2390f8835b1b70be749baf9ebe7a2cc3ac3c7afbe7c41db9c9ced6f2ef19f47a",
+        "started_at": "2026-08-21T12:00:00Z",
+        "expires_at": "2026-08-21T13:00:00Z"
+      },
+      "marker": "<!-- rpm-agent-claim: {\"event_id\":\"explicit-202\",\"executor\":\"cloud\",\"expires_at\":\"2026-08-21T13:00:00Z\",\"idempotency_key\":\"sha256:2390f8835b1b70be749baf9ebe7a2cc3ac3c7afbe7c41db9c9ced6f2ef19f47a\",\"issue\":202,\"lease\":{\"expires_at\":\"2026-08-21T13:00:00Z\",\"owner\":\"cloud:executor\",\"run_id\":\"run-explicit-202\",\"started_at\":\"2026-08-21T12:00:00Z\"},\"plan_revision\":\"plan-explicit-202\",\"repository\":\"nerdchanii/rpm\",\"run_id\":\"run-explicit-202\",\"scope_hash\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"started_at\":\"2026-08-21T12:00:00Z\"} -->",
+      "transition_required": true,
+      "timestamped_lease": {
+        "run_id": "run-explicit-202",
+        "owner": "cloud:executor",
+        "started_at": "2026-08-21T12:00:00Z",
+        "expires_at": "2026-08-21T13:00:00Z"
+      },
+      "idempotency_key": "sha256:2390f8835b1b70be749baf9ebe7a2cc3ac3c7afbe7c41db9c9ced6f2ef19f47a",
+      "lease": "valid"
+    },
+    "owner": "take-ticket",
+    "expected_status": "complete"
+  },
+  {
+    "mode": "explicit",
+    "input": {"issue": 202, "claim_state": "mismatched"},
+    "owner": "rpm_workflow_manager",
+    "expected_status": "blocked"
+  }
+]

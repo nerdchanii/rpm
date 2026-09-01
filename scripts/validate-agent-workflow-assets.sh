@@ -660,6 +660,24 @@ check "backlog_policy_schema" jq -e '
       ledger_field:"runs",
       key_fields:["repository","issue","plan_revision","scope_hash","event_id"],
       algorithm:"sha256-nul-joined"
+    },
+    persistence:{
+      medium:"issue-comment",
+      marker:{
+        prefix:"<!-- rpm-agent-claim: ",
+        suffix:" -->"
+      },
+      order:["prepare","persist-marker","refetch-normalize-ledger","claim","transition"],
+      record_fields:["repository","issue","run_id","event_id","executor","plan_revision","scope_hash","idempotency_key","lease","started_at","expires_at"],
+      recovery_states:["ready","claimed"],
+      authorization:{
+        source:"parent-handoff",
+        token_marker:"rpm_claim_authorization=",
+        encoding:"base64url-canonical-json",
+        snapshot_digest:"sha256-canonical-json",
+        phases:["persist","claim"],
+        one_phase_per_claimer:true
+      }
     }
   }
   and .batch_limits == {research:1,execution:1}
@@ -745,6 +763,24 @@ check "cloud_label_only_selection" sh -c '
     and .data.issues == [3]
   " >/dev/null
 '
+check "cloud_claim_prepare_persist" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-prepare.json \
+    --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"persist\"
+    and .data.issue == 3
+    and .data.before == \"ready\"
+    and .data.after == \"claimed\"
+    and .data.transition_required == false
+    and .data.claim_record.repository == \"nerdchanii/rpm\"
+    and .data.claim_record.lease.run_id == \"run-3\"
+    and (.data.issue_comment_marker | startswith(\"<!-- rpm-agent-claim: \"))
+  " >/dev/null
+'
 check "cloud_claim_contract" sh -c '
   output="$(python3 scripts/check-cloud-queue-contract.py \
     --issues-file .agents/fixtures/backlog/cloud-claim-ready.json \
@@ -754,15 +790,25 @@ check "cloud_claim_contract" sh -c '
     --lease-owner cloud:executor)"
   printf "%s\n" "$output" | jq -e "
     .data.status == \"claim\"
-    and .data.issue == 3
+    and .data.transition_required == true
     and .data.before == \"ready\"
-    and .data.after == \"claimed\"
+    and .data.claim_record.idempotency_key == \"sha256:0ebb451daf89062a9f7314eec90cb39f62d5aae73bcdf47f7dd89e2e70f74cb1\"
     and .data.lease.run_id == \"run-3\"
     and .data.lease.owner == \"cloud:executor\"
     and .data.lease.expires_at == \"2026-08-21T13:00:00Z\"
     and .data.preserved_labels == [\"priority:high\"]
     and .data.labels == [\"agent:claimed\",\"priority:high\"]
   " >/dev/null
+'
+check "cloud_claim_restart_recovery" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-restart.json \
+    --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  printf "%s\n" "$output" | jq -e \
+    '.data.status == "claim" and .data.before == "claimed" and .data.transition_required == false and .data.recovery.resumed == true' >/dev/null
 '
 check "cloud_claim_stale_revision_blocked" sh -c '
   set +e
@@ -777,14 +823,40 @@ check "cloud_claim_stale_revision_blocked" sh -c '
   [ "$code" -eq 1 ]
   printf "%s\n" "$output" | jq -e ".data.status == \"blocked\" and .data.reason == \"plan-revision-mismatch\"" >/dev/null
 '
-check "cloud_claim_duplicate_event_no_work" sh -c '
+check "cloud_claim_duplicate_event_recovered" sh -c '
   output="$(python3 scripts/check-cloud-queue-contract.py \
     --issues-file .agents/fixtures/backlog/cloud-claim-duplicate.json \
     --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
     --executor cloud --plan-revision plan-3 \
     --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --lease-owner cloud:executor)"
-  printf "%s\n" "$output" | jq -e ".data.status == \"no-work\" and .data.reason == \"duplicate-event\"" >/dev/null
+  printf "%s\n" "$output" | jq -e ".data.status == \"claim\" and .data.transition_required == true" >/dev/null
+'
+check "cloud_claim_malformed_record_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-malformed.json \
+    --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e ".data.status == \"blocked\" and (.data.reason | startswith(\"malformed-claim-record\"))" >/dev/null
+'
+check "cloud_claim_conflict_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-claim-conflict.json \
+    --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+    --executor cloud --plan-revision plan-3 \
+    --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --lease-owner cloud:executor)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e ".data.status == \"blocked\" and .data.reason == \"idempotency-conflict\"" >/dev/null
 '
 check "cloud_claim_expired_lease_blocked" sh -c '
   set +e
@@ -941,6 +1013,7 @@ check "workflow_forbids_merge_and_codex_request" sh -c '
     | rg -v \
       "(Never|never|금지|Do not|does not|do not|without|request_codex_review|configured code review|does not post|no @codex review|or request @codex review|request, or wait for)"
 '
+check "issue_202_workflow_contract" bash scripts/test-issue-202-workflow-contract.sh
 
 if [ "${format}" = "jsonl" ]; then
   jq -nc --arg status "${status}" '{type:"agent_assets_result",data:{status:$status}}'

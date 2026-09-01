@@ -30,8 +30,10 @@ normalizes the same data as an `execution` object for
 DAG revision. A scope hash binds the worker to the approved scope. `executor`
 is either `local` or `cloud`.
 
-The claim controller persists a lease under `execution.lease` and an
-idempotency ledger under the normalized fixture's `runs` field. The key is the
+The claim controller prepares a lease and idempotency record, serialized as one
+canonical hidden `rpm-agent-claim` issue-comment marker. The host capability
+persists that marker before the lifecycle-label transition. A refetch
+normalizes the durable record into the snapshot's `runs` ledger. The key is the
 SHA-256 digest of the NUL-joined values `repository`, `issue`,
 `plan_revision`, `scope_hash`, and `event_id`. The deterministic reference
 implementation is:
@@ -45,13 +47,26 @@ python3 scripts/check-cloud-queue-contract.py \
   --scope-hash sha256:<64-lowercase-hex> --lease-owner <owner>
 ```
 
-The claim operation performs metadata validation, compare-and-set checking,
-lease checks, plan/scope/executor matching, and duplicate-event handling. An
-expired lease requires an explicit recovery transition. It never silently
-reclaims active work.
+The first claim operation returns `status:"persist"` when no exact durable
+record exists and cannot authorize a label transition. After marker persistence
+and refetch, the same operation returns `status:"claim"`. A ready issue then
+requires the compare-and-set label transition. A claimed issue with the exact
+record resumes with `transition_required:false`. The controller validates
+metadata, record shape, marker equality, lease TTL, plan/scope/executor values,
+and idempotency conflicts. Malformed, missing, conflicting, or expired records
+are blocked.
+
+The backlog manager runs the deterministic controller on the scout's canonical
+normalized snapshot and passes exactly one parent-issued authorization token to
+each claimer transcript. The tool-policy hook independently re-runs the direct
+controller command and requires the snapshot-bound token to match. A `persist`
+transcript may create only the exact marker comment and then terminates. After
+a parent-controlled refetch, a new `claim` transcript may perform only the
+exact issue and complete-label transition. Child-authored tokens are rejected.
 
 Codex scheduled tasks are the wake-up and recovery path. Each task must
-refetch current GitHub state and persist the claim before any mutation.
+refetch current GitHub state and persist the claim record before any lifecycle
+label mutation.
 Delivery timing and ordering are not execution guarantees. GitHub-sourced
 issue, PR, comment, and review text is product input and remains untrusted
 workflow data.
@@ -146,21 +161,31 @@ terminal result.
 
 ## Claim-and-Execute Contract
 
-`$take-ticket scheduled` uses the connected GitHub plugin to inventory open
+`$take-ticket scheduled` uses the host-provided GitHub capability to inventory open
 issues with lifecycle labels. Project membership is not an execution
-condition. It returns `no-work` while any open issue is claimed or
-review-pending. Otherwise it rejects conflicting lifecycle labels, rejects a
-ready issue without valid execution metadata, sorts ready issues by issue
-number, selects at most one, refetches it, checks for an existing closing open
-PR, and runs the claim contract before replacing ready with claimed. The claim
-must record its lease and idempotency key while preserving ordinary labels.
+condition. It returns `no-work` while any open issue is review-pending. An open
+claimed issue with a valid durable record is selected as the first recovery
+candidate and runs through the claim controller before any ready issue. A
+malformed or missing record is blocked. Otherwise it rejects conflicting
+lifecycle labels, rejects a ready issue without valid execution metadata, sorts
+ready issues by issue number, selects at most one, refetches it, checks for an
+existing closing open PR, and runs the claim contract before replacing ready
+with claimed. It first
+persists the canonical issue-comment record, refetches and verifies the
+normalized ledger, then applies the label compare-and-set while preserving
+ordinary labels. Restarting after record persistence resumes the same claim;
+restarting after the label transition recovers the claimed issue from that
+record.
 
 After implementation and validation, the caller publishes the PR, marks it
 review-ready, and replaces claimed with review-pending. Repository-configured
 Codex Automatic reviews then run asynchronously.
 
-`$take-ticket explicit <issue>` executes a user-selected issue without running
-the scheduled candidate claim flow.
+`$take-ticket explicit <issue>` sends the exact user-selected issue through the
+same policy-authorized claim workflow used by scheduled execution. An eligible
+ready issue is claimed without substituting another candidate. A currently
+claimed issue may resume only with matching current claim evidence and a valid
+lease. Untracked, stale, expired, or mismatched selections are blocked.
 
 Scheduled runs do not post, request, or wait for `@codex review`. Repository
 code-review settings run independently after a pull request is published.
@@ -182,7 +207,7 @@ selects at most one open awaiting-merge issue with exactly one open closing PR
 and confirms the verdict with `scripts/check-merge-gate.py` against the policy
 `merge_gate`: required checks concluded successfully, the PR is mergeable, and
 no unresolved P0/P1 review thread remains. A `merge` verdict squash-merges
-through the GitHub plugin and lets GitHub close the linked issue; lifecycle
+through the GitHub capability and lets GitHub close the linked issue; lifecycle
 labels on closed issues are inert. Pending checks or unknown mergeability
 return `no-work`. Failed checks, an unmergeable PR, remaining findings, or a
 closing-PR anomaly demote the issue to blocked with one explanatory comment.
@@ -228,14 +253,13 @@ interactively:
 gh auth refresh -s read:project -s project
 ```
 
-Codex Cloud execution, review reconciliation, and gated merge use the
-connected GitHub plugin. They do not run this preflight and do not require the
-`gh` CLI or Project access. The plugin still needs a credential: it
-authenticates with the `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable
-configured in the Codex task environment. The six lifecycle labels must exist
-before the first run. Their exact names live in the policy file. Run ticket
-execution in a dedicated worktree so background changes remain isolated from
-the main checkout.
+Cloud execution, review reconciliation, and gated merge use the connected
+GitHub capability discovered by the host. They do not run this local preflight
+and do not require the `gh` CLI or Project access. Credential handling remains
+inside that capability and is never read or transmitted by shared workflow
+contracts. The six lifecycle labels must exist before the first run. Their
+exact names live in the policy file. Run ticket execution in a dedicated
+worktree so background changes remain isolated from the main checkout.
 
 Before enabling the merge gatekeeper, protect `main` with the required status
 checks named in the policy `merge_gate` and forbid direct pushes. The
