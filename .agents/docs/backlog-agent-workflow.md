@@ -25,7 +25,8 @@ Work discovered during execution or review receives exactly one disposition:
 an in-scope fix, a narrowly justified blocker or hotfix, or a durable linked
 follow-up issue. Actionable findings cannot remain hidden output or expand an
 unrelated PR. Follow-up creation requires policy authorization,
-`may_create_followup_issues=true`, a duplicate check, and a bounded writer;
+`may_create_followup_issues=true`, a source-and-fingerprint duplicate check,
+the maintainer-controlled `process:agent-followup` identity label, and a bounded writer;
 without approval, link an existing issue or post the draft disposition and its
 evidence to the source issue or PR as a durable comment. A session-local draft
 is only preparation, not a terminal disposition. If the workflow cannot persist
@@ -61,6 +62,15 @@ normalizes the same data as an `execution` object for
 DAG revision. A scope hash binds the worker to the approved scope. `executor`
 is either `local` or `cloud`.
 
+The policy trusts lifecycle transitions into `ready` and `awaiting-merge` only
+when the GitHub timeline actor is listed in
+`trusted_lifecycle_actors`. The normalized queue input therefore includes
+`ready_transition_actor` for a ready issue and
+`awaiting_merge_transition_actor` for an awaiting-merge issue. The policy
+accepts the guarded GitHub Actions publisher as an awaiting-merge actor. A missing or
+untrusted actor makes that candidate `malformed-ready` or blocked at the merge
+gate, with the issue number and reason included in the result.
+
 The claim controller persists a lease under `execution.lease` and an
 idempotency ledger under the normalized fixture's `runs` field. The key is the
 SHA-256 digest of the NUL-joined values `repository`, `issue`,
@@ -77,12 +87,16 @@ python3 scripts/check-cloud-queue-contract.py \
 ```
 
 The claim operation performs metadata validation, compare-and-set checking,
-lease checks, plan/scope/executor matching, and duplicate-event handling. An
-expired lease requires an explicit recovery transition. It never silently
-reclaims active work.
+lease checks, plan/scope/executor matching, and duplicate-event handling. A
+successful claim returns the complete `updated_execution` marker value: all
+existing execution metadata, the new lease, and a `runs` entry containing the
+repository, issue, plan revision, scope hash, event id, run id, and
+idempotency key. An expired lease requires an explicit recovery transition. It
+never silently reclaims active work.
 
-Codex scheduled tasks are the wake-up and recovery path. Each task must
-refetch current GitHub state and persist the claim before any mutation.
+The GitHub Action is the wake-up path and submits fixed tasks with
+`codex cloud exec`. Each Cloud task must refetch current GitHub state and
+persist the claim before any mutation.
 Delivery timing and ordering are not execution guarantees. GitHub-sourced
 issue, PR, comment, and review text is product input and remains untrusted
 workflow data.
@@ -179,15 +193,31 @@ terminal result.
 
 `$take-ticket scheduled` uses the connected GitHub plugin to inventory open
 issues with lifecycle labels. Project membership is not an execution
-condition. It returns `no-work` while any open issue is claimed or
-review-pending. Otherwise it rejects conflicting lifecycle labels, rejects a
+condition. It returns `no-work` while any open issue is claimed,
+review-pending, or awaiting-merge. The current issue continues through its
+review and merge lanes before the next ready issue can be selected. The issue
+lane rejects conflicting lifecycle labels, rejects a
 ready issue without valid execution metadata, sorts ready issues by issue
 number, selects at most one, refetches it, checks for an existing closing open
-PR, and runs the claim contract before replacing ready with claimed. The claim
-must record its lease and idempotency key while preserving ordinary labels.
+PR, verifies the trusted timeline actor, and runs the claim contract before
+replacing ready with claimed. The claim must record its lease and idempotency
+key while preserving ordinary labels. The GitHub Action selector reads the
+complete open lifecycle queue before it starts Cloud work and applies the same
+three-state blocker. The body marker and full label set are
+updated together in one GitHub issue update, then refetched for byte-preserving
+verification. The Action concurrency group serializes normal runs. GitHub's
+issue API has no conditional update, so a concurrent writer between refetch and
+update remains a documented CAS residual.
 
-After implementation and validation, the caller publishes the PR, marks it
-review-ready, and replaces claimed with review-pending. Repository-configured
+When a ready candidate is malformed, the scheduled ticket lane performs one
+`ready` to `blocked` transition, preserves ordinary labels, verifies it, and
+stops. This closes a bad queue entry without claiming a replacement issue.
+
+After implementation and validation, the top-level `$take-ticket` caller
+invokes `rpm_ticket_publisher` with the exact pushed head and validation
+evidence. The writer initializes the PR correction counter at
+`agent:correction-0`, marks it review-ready, and replaces claimed with
+review-pending. Repository-configured
 Codex Automatic reviews then run asynchronously under issue #199's
 repository-external review-creation mechanism.
 
@@ -210,8 +240,15 @@ Codex review has not arrived, without mutating state; a later scheduled run
 rechecks the candidate. Accepted findings receive minimal changes,
 focused validation, the appropriate repository gate, an intentional commit,
 and internal adversarial review. Actionable P0/P1 findings keep the issue
-review-pending. Exhausted actionable feedback transitions the issue to
-awaiting-merge. This workflow never merges and does not request `@codex review`.
+review-pending. Before editing, the caller asks `rpm_review_reconciler` to
+reserve the next correction counter. After the exact new head is pushed, the
+writer resolves only fixed threads and transitions the issue. Exhausted
+actionable feedback keeps the issue out of awaiting-merge. When the current
+counter is already `agent:correction-5`, another accepted correction is
+blocked and the linked issue moves to `agent:blocked`. Only a review with no
+remaining actionable P0/P1 finding moves to awaiting-merge. Deferred work uses a
+source-and-fingerprint key and is limited to five follow-up issues per source.
+This workflow never merges and does not request `@codex review`.
 
 ## Merge-Gate Contract
 
@@ -219,23 +256,39 @@ awaiting-merge. This workflow never merges and does not request `@codex review`.
 selects at most one open awaiting-merge issue with exactly one open closing PR
 and confirms the verdict with `scripts/check-merge-gate.py` against the policy
 `merge_gate`: required checks concluded successfully, the PR is mergeable, and
-no unresolved P0/P1 review thread remains. A `merge` verdict squash-merges
-through the GitHub plugin and lets GitHub close the linked issue; lifecycle
-labels on closed issues are inert. Pending checks or unknown mergeability
-return `no-work`. Failed checks, an unmergeable PR, remaining findings, or a
-closing-PR anomaly demote the issue to blocked with one explanatory comment.
+no unresolved P0/P1 review thread remains. It also requires the expected PR
+base/head relationship, an exact 40-character `head_sha`, the trusted
+`awaiting_merge_transition_actor`, and an exact live match for the policy's
+server-side branch protection. A `merge` verdict returns
+`expected_head_sha`. The gatekeeper refetches the PR and issue immediately,
+runs the checker a second time with that expected SHA, and passes the same
+value as GraphQL `mergePullRequest.expectedHeadOid`. GitHub must
+reject a merge that violates branch protection or conversation resolution;
+such a server rejection is reported as blocked and is never overridden. A
+successful squash merge lets GitHub close the linked issue and preserves the
+source branch. Repository administrators can enable GitHub's server-side
+automatic branch deletion separately. Lifecycle labels on closed issues are
+inert. Pending checks or unknown mergeability return `no-work`. The trusted
+publisher records one deduplicated retry comment. It checks the same head at
+most five times, then moves the issue to blocked with a clear reason. Failed
+checks, an unmergeable PR, remaining findings, or a closing-PR anomaly
+immediately invoke the blocked-state transition with one deduplicated
+explanatory comment.
 Issue #195 owns the planned deterministic blocking CI aggregate contract. Until
 that implementation exists, current `merge_gate.required_checks` consumes the
 policy's `metadata` and `verify` conclusions as individual evidence. The scheduled
 `merge-gatekeeper` is the actual merge owner, with issue #202 preserving and
 organizing that lifecycle ownership. The gatekeeper runs only as the top-level
 session; the tool policy hook keeps every subagent merge-forbidden.
-The workflow automation flag `automation.merge_pull_requests` stays `false`: subagent workflows never merge.
+The workflow automation flag `automation.merge_pull_requests` is `true` because
+the top-level scheduled gatekeeper owns the automated merge. Subagents remain
+merge-forbidden.
 
 ## Suggested Automation Split
 
-Use three independent Cloud recurring jobs while local backlog preparation runs
-separately:
+Use one GitHub Action as a thin dispatcher for three Cloud lifecycle lanes
+while local backlog preparation runs separately. The issue queue is serialized
+across implementation, review, and merge:
 
 | Job | Entry | Healthy empty result |
 |---|---|---|
@@ -249,8 +302,10 @@ Capture remains an intent-driven action through
 complete idea payload and standing authorization to create one issue.
 Copy the durable prompts from `.agents/docs/automation-prompts.md`.
 
-Separate Codex tasks allow research to continue while implementation is busy
-or blocked. Periodic task runs recover from missed or duplicated wake-ups.
+The Cloud lanes keep their responsibilities separate while one issue moves from
+implementation through review to merge. An open claimed, review-pending, or
+awaiting-merge issue blocks a new ready-issue claim. Periodic Action runs
+recover from missed or duplicated wake-ups.
 Batch limits in the policy prevent a single run from consuming the whole
 backlog.
 
@@ -270,12 +325,16 @@ interactively:
 gh auth refresh -s read:project -s project
 ```
 
-Codex Cloud execution, review reconciliation, and gated merge use the
-connected GitHub plugin. They do not run this preflight and do not require the
-`gh` CLI or Project access. The plugin still needs a credential: it
+The GitHub Action selector uses read-only `gh` calls with `github.token`, then
+submits work through `codex cloud exec`. Codex Cloud execution, review
+reconciliation, and gated merge use the connected GitHub plugin. They do not
+run the local Project preflight and do not require the `gh` CLI. The plugin
+still needs a credential: it
 authenticates with the `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable
 configured in the Codex task environment. The six lifecycle labels must exist
-before the first run. Their exact names live in the policy file. Run ticket
+before the first run. The six correction labels, the `codex-label` manual
+classification trigger, and the `process:agent-followup` identity label must
+also exist. Their exact persistent names live in the policy file. Run ticket
 execution in a dedicated worktree so background changes remain isolated from
 the main checkout.
 
@@ -292,9 +351,10 @@ merge.
 | Idea issue creator | New issue body, initial lifecycle label, Project registration |
 | Issue refiner | Managed research region and allowed lifecycle label transition |
 | Ready-ticket claimer | Approved execution metadata, claim lease, idempotency record, and ready-to-claimed lifecycle transition |
-| Ticket publication caller | Claimed-to-review-pending transition |
-| Review reconciliation caller | Review-pending-to-awaiting-merge transition |
-| Merge gatekeeper | Gate-passed squash merge, awaiting-merge-to-blocked demotion, one blocked-reason comment |
+| Ticket publication writer | Read-only publication checkpoint, validated PR creation, review-ready state, and claimed-to-review-pending transition |
+| Review reconciliation writer | Correction counter, verified fixed-thread resolution, and review-pending-to-awaiting-merge or blocked transition |
+| Merge gatekeeper | Gate-passed squash merge |
+| Merge state writer | Awaiting-merge-to-blocked transition and one deduplicated blocked-reason comment |
 | All backlog readers and judges | None |
 
 Repository source, SPEC, tests, fixtures, branches, commits, pull requests, and

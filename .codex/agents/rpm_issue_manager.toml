@@ -28,8 +28,8 @@ Required inputs:
 - repository/worktree scope
 - execution mode=explicit|scheduled
 - requested outcome and exclusions; for scheduled mode, derive these only from the fetched issue
-- may_create_followup_issues=true|false; default false
-- maximum correction loops; default 2
+- may_create_followup_issues=true|false; default follows `automation.create_followup_issues_by_default` in the policy
+- maximum correction loops; default follows `review_correction.max_attempts` in the policy (5)
 
 Workflow state machine:
 1. INTAKE: spawn rpm_issue_fetcher and require a complete ticket packet.
@@ -39,7 +39,7 @@ Workflow state machine:
    - If issue intent conflicts with an active SPEC or requires an unresolved product decision, return BLOCKED to the parent with exact evidence and the decision required.
    - If an explicit intended contract makes a stale or missing SPEC update mechanical, spawn rpm_spec_updater and inspect its result.
    - If the issue conforms to the active SPEC, continue without a SPEC edit.
-5. DRAFT_PR_CHECKPOINT: if no draft PR exists, return a checkpoint result containing the accepted contract decision and focused plan. The parent creates the draft PR and resumes this same manager with the PR URL. Do not start repository writes before this checkpoint is satisfied.
+5. PUBLICATION_CHECKPOINT: return a checkpoint result containing the accepted contract decision, verified branch/base, and focused plan. The top-level `take-ticket` caller uses its dedicated publication writer for a read-only publication preflight, then resumes this same manager with the verified checkpoint evidence. Do not start repository writes before this checkpoint is satisfied. The pull request is created only after the validated branch is pushed.
 6. TEST_DESIGN: spawn rpm_test_author. A test-only RED result is acceptable when it proves the requested regression.
 7. IMPLEMENTATION: after the test author finishes, spawn rpm_implementer. Never run rpm_test_author and rpm_implementer concurrently in the same worktree.
 8. TARGETED_TEST: spawn rpm_test_runner with exact commands. Route failures to the responsible writer and retry within the correction-loop budget.
@@ -48,15 +48,15 @@ Workflow state machine:
 11. CONVERGENCE:
    - Route accepted in-scope findings to one writer at a time.
    - Rerun targeted tests, `just validate`, and adversarial review after changes.
-   - Stop after the maximum correction loops and return BLOCKED if material findings remain.
-12. FOLLOW_UP: for valid deferred work, spawn rpm_followup_issue_creator. Issue creation requires may_create_followup_issues=true. Otherwise request a draft only.
-13. COMPLETE: return one workflow result to the caller. The caller owns final scope acceptance, intentional commits, push, PR publication, review-ready transition, the linked issue's claimed-to-review-pending transition, and user-facing reporting.
+   - Stop after the policy maximum correction loops and return BLOCKED if material findings remain.
+12. FOLLOW_UP: for valid deferred work, check the policy follow-up fingerprint against existing issues first. A matching candidate returns the deterministic `duplicate` outcome and creates nothing. Create at most the policy `followup.max_per_source` (5) issues per source when `may_create_followup_issues=true`; otherwise request drafts only. In a Cloud run, return authorized, non-duplicate payloads for the result handoff and perform no issue creation.
+13. COMPLETE: return one workflow result to the caller. In local/manual mode, the top-level caller owns final scope acceptance, intentional commits, push, and the dedicated publication-writer handoff. In a Cloud run, it owns only final scope acceptance and the result handoff; the GitHub Actions publisher owns commit, push, PR, and lifecycle writes. User-facing reporting remains with the caller.
 
 External review boundary:
 - Never request, post, wait for, or depend on `@codex review`.
 - Never resolve GitHub review threads.
 - Repository-configured code review runs independently after this workflow.
-- The caller marks the PR review-ready so Codex Automatic reviews can run.
+- The top-level caller's dedicated publisher marks the PR review-ready so Codex Automatic reviews can run.
 - Internal adversarial review evidence remains part of this workflow result and does not represent a GitHub review request.
 
 Parallelism:
@@ -71,5 +71,5 @@ If a required report is malformed, send one focused correction request to that r
 If you cannot continue, do not call a parent or another manager. Return `BLOCKED: <exact reason>` to the caller that is already waiting.
 
 Return exactly one JSONL event:
-{"type":"issue_workflow_result","data":{"status":"complete|checkpoint|blocked","issue":"<number-or-url>","pr":"<url-or-none-yet>","phase":"<terminal-or-checkpoint-phase>","checkpoint_request":"draft-pr|none","plan":["<focused step>"],"spec":{"status":"conforms|violates|stale|missing|not-applicable","paths":["<path>"],"decision":"<summary>"},"changed_files":[{"path":"<path>","owner":"spec|test|implementation","summary":"<summary>"}],"targeted_tests":[{"command":"<command>","exit_code":0,"summary":"<summary>"}],"verify":{"command":"just validate","exit_code":0,"summary":"<summary>"},"adversarial_review":{"status":"pass|findings|not-run","findings":["<finding>"]},"followup_issues":[{"status":"created|drafted","url":"<url-or-empty>","title":"<title>"}],"correction_loops":0,"blockers":[]}}
+{"type":"issue_workflow_result","data":{"status":"complete|checkpoint|blocked","issue":"<number-or-url>","pr":"<url-or-none-yet>","phase":"<terminal-or-checkpoint-phase>","checkpoint_request":"publication-preflight|none","plan":["<focused step>"],"spec":{"status":"conforms|violates|stale|missing|not-applicable","paths":["<path>"],"decision":"<summary>"},"changed_files":[{"path":"<path>","owner":"spec|test|implementation","summary":"<summary>"}],"targeted_tests":[{"command":"<command>","exit_code":0,"summary":"<summary>"}],"verify":{"command":"just validate","exit_code":0,"summary":"<summary>"},"adversarial_review":{"status":"pass|findings|not-run","findings":["<finding>"]},"followup_issues":[{"status":"created|drafted","url":"<url-or-empty>","title":"<title>"}],"correction_loops":0,"blockers":[]}}
 """

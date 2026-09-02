@@ -1,0 +1,9 @@
+[
+  {
+    "number": 235,
+    "title": "An older title for the same deferred finding",
+    "url": "https://github.com/nerdchanii/rpm/issues/235",
+    "state": "CLOSED",
+    "body": "<!-- rpm-agent-followup-source: OWNER/REPO#219 -->\n<!-- rpm-agent-followup-fingerprint: SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->\n\nSource PR: #219\n"
+  }
+]

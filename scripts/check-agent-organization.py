@@ -6,8 +6,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unicodedata
 from pathlib import Path, PurePosixPath
@@ -43,6 +45,11 @@ MANAGER_REPORTS = {
         "rpm_followup_issue_creator",
     },
 }
+ENTRY_WRITER_ROLES = {
+    "take-ticket": {"rpm_ticket_publisher", "rpm_cloud_result_writer"},
+    "pr-review-resolution": {"rpm_review_reconciler", "rpm_cloud_result_writer"},
+    "merge-gatekeeper": {"rpm_merge_state_writer"},
+}
 LEAF_SANDBOX = {
     "rpm_backlog_scout": "read-only",
     "rpm_idea_issue_creator": "read-only",
@@ -60,6 +67,10 @@ LEAF_SANDBOX = {
     "rpm_verifier": "read-only",
     "rpm_adversarial_reviewer": "read-only",
     "rpm_followup_issue_creator": "read-only",
+    "rpm_cloud_result_writer": "workspace-write",
+    "rpm_ticket_publisher": "read-only",
+    "rpm_review_reconciler": "read-only",
+    "rpm_merge_state_writer": "read-only",
 }
 EXPECTED_SANDBOX = {
     **{manager: "read-only" for manager in MANAGER_REPORTS},
@@ -100,7 +111,7 @@ EXPECTED_TRANSITIONS = {
     "ready": ["claimed", "blocked"],
     "claimed": ["ready", "review-pending", "blocked"],
     "review-pending": ["review-pending", "awaiting-merge", "blocked"],
-    "awaiting-merge": ["blocked"],
+    "awaiting-merge": ["review-pending", "blocked"],
     "blocked": ["research", "ready"],
 }
 EXPECTED_LABELS = {
@@ -114,7 +125,8 @@ EXPECTED_LABELS = {
 EXPECTED_EXECUTION_CONTRACT = {
     "approved_metadata": ["approval_id", "plan_revision", "scope_hash", "executor"],
     "executor_values": ["local", "cloud"],
-    "active_states": ["claimed", "review-pending"],
+    "active_states": ["claimed", "review-pending", "awaiting-merge"],
+    "blocking_states": ["claimed", "review-pending", "awaiting-merge"],
     "lease": {
         "field": "lease",
         "required_fields": ["run_id", "owner", "expires_at"],
@@ -170,8 +182,8 @@ def check_policy(errors: list[str]) -> None:
     if not isinstance(policy, dict):
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: policy must be an object")
         return
-    if policy.get("version") != 3:
-        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: version must be 3")
+    if policy.get("version") != 4:
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: version must be 4")
     if policy.get("repository") != "nerdchanii/rpm":
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: repository must be nerdchanii/rpm")
     queue = policy.get("execution_queue")
@@ -179,7 +191,8 @@ def check_policy(errors: list[str]) -> None:
         "source": "issue-labels",
         "open_issues_only": True,
         "order": "issue-number-ascending",
-        "active_states": ["claimed", "review-pending"],
+        "active_states": ["claimed", "review-pending", "awaiting-merge"],
+        "blocking_states": ["claimed", "review-pending", "awaiting-merge"],
     }:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid execution queue contract")
     project = policy.get("project")
@@ -199,28 +212,58 @@ def check_policy(errors: list[str]) -> None:
     if policy.get("allowed_transitions") != EXPECTED_TRANSITIONS:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: transition allowlist changed")
     automation = policy.get("automation")
-    if not isinstance(automation, dict) or any(
-        automation.get(key) is not False
-        for key in (
-            "create_followup_issues_by_default",
-            "merge_pull_requests",
-            "request_codex_review",
-        )
-    ):
+    if automation != {
+        "create_followup_issues_by_default": True,
+        "merge_pull_requests": True,
+        "request_codex_review": False,
+    }:
         fail(
             errors,
-            f"{POLICY_PATH.relative_to(ROOT)}: automatic follow-ups, subagent merge, and Codex review must stay disabled",
+            f"{POLICY_PATH.relative_to(ROOT)}: invalid automation contract",
         )
+    if policy.get("review_correction") != {
+        "max_attempts": 5,
+        "counter_labels": {
+            "0": "agent:correction-0",
+            "1": "agent:correction-1",
+            "2": "agent:correction-2",
+            "3": "agent:correction-3",
+            "4": "agent:correction-4",
+            "5": "agent:correction-5",
+        },
+        "exhausted_result": "blocked",
+    }:
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid review correction contract")
+    if policy.get("followup") != {
+        "identity_label": "process:agent-followup",
+        "dedupe_key_fields": ["source", "fingerprint"],
+        "duplicate_result": "duplicate",
+        "max_per_source": 5,
+    }:
+        fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid follow-up contract")
     if policy.get("merge_gate") != {
         "enabled": True,
         "source_state": "awaiting-merge",
         "order": "issue-number-ascending",
         "batch_limit": 1,
         "required_checks": ["metadata", "verify"],
+        "max_no_work_attempts": 5,
         "required_mergeable": True,
         "forbid_unresolved_p0_p1": True,
+        "server_protection": {
+            "branch": "main",
+            "enforce_admins": True,
+            "required_conversation_resolution": True,
+            "required_status_checks": [
+                {"context": "metadata", "app_id": 15368},
+                {"context": "verify", "app_id": 15368},
+            ],
+            "strict_status_checks": True,
+            "allow_force_pushes": False,
+            "allow_deletions": False,
+        },
         "method": "squash",
-        "delete_branch": True,
+        "delete_branch": False,
     }:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid merge-gate contract")
 
@@ -304,6 +347,44 @@ def check_role_contracts(
                     errors,
                     f".codex/agents/rpm_backlog_manager.toml: missing batch contract {required!r}",
                 )
+        if "execution_queue.blocking_states" not in text:
+            fail(
+                errors,
+                ".codex/agents/rpm_backlog_manager.toml: claim-ready must read "
+                "execution_queue.blocking_states from the backlog policy",
+            )
+        if "every configured blocking state" not in text:
+            fail(
+                errors,
+                ".codex/agents/rpm_backlog_manager.toml: claim-ready must enforce "
+                "every configured blocking state",
+            )
+        if "return `no-work` without mutation" not in text:
+            fail(
+                errors,
+                ".codex/agents/rpm_backlog_manager.toml: blocking states must return "
+                "no-work without mutation",
+            )
+        try:
+            policy = json.loads(POLICY_PATH.read_text())
+        except (OSError, json.JSONDecodeError):
+            policy = {}
+        queue = policy.get("execution_queue") if isinstance(policy, dict) else None
+        blocking_states = queue.get("blocking_states") if isinstance(queue, dict) else None
+        if isinstance(blocking_states, list):
+            for state in blocking_states:
+                if isinstance(state, str) and state and state not in text:
+                    fail(
+                        errors,
+                        ".codex/agents/rpm_backlog_manager.toml: claim-ready omits "
+                        f"configured blocking state {state!r}",
+                    )
+        if re.search(r"\b(?:does not|doesn't|do not)\s+block\b", text, re.IGNORECASE):
+            fail(
+                errors,
+                ".codex/agents/rpm_backlog_manager.toml: claim-ready contains a "
+                "blocking-state exemption",
+            )
 
 
 def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
@@ -1636,10 +1717,17 @@ def check_entries_and_assets(errors: list[str]) -> None:
             continue
         if "rpm_workflow_manager" not in text:
             fail(errors, f"{path.relative_to(ROOT)}: entry does not route to workflow manager")
+        allowed_entry_roles = (
+            {"rpm_ticket_publisher", "rpm_cloud_result_writer"}
+            if skill_name == "take-ticket"
+            else set()
+        )
         leaked = sorted(
             role
             for role in EXPECTED_SANDBOX
-            if role != "rpm_workflow_manager" and role in text
+            if role != "rpm_workflow_manager"
+            and role not in allowed_entry_roles
+            and role in text
         )
         if leaked:
             fail(
@@ -1672,12 +1760,28 @@ def check_entries_and_assets(errors: list[str]) -> None:
         ):
             if required not in text:
                 fail(errors, f"{gatekeeper.relative_to(ROOT)}: missing merge-gate contract {required!r}")
-        leaked = sorted(role for role in EXPECTED_SANDBOX if role in text)
+        leaked = sorted(
+            role for role in EXPECTED_SANDBOX
+            if role != "rpm_merge_state_writer" and role in text
+        )
         if leaked:
             fail(
                 errors,
                 f"{gatekeeper.relative_to(ROOT)}: gatekeeper must not delegate to roles: {', '.join(leaked)}",
             )
+
+    for skill_name, writer_roles in ENTRY_WRITER_ROLES.items():
+        skill_path = ROOT / ".agents" / "skills" / skill_name / "SKILL.md"
+        try:
+            text = skill_path.read_text()
+        except OSError:
+            continue
+        for role in sorted(writer_roles):
+            if role not in text:
+                fail(
+                    errors,
+                    f"{skill_path.relative_to(ROOT)}: missing entry writer {role!r}",
+                )
 
     for relative in FORBIDDEN_ASSETS:
         path = ROOT / relative
@@ -1711,6 +1815,8 @@ def check_deterministic_assets(errors: list[str]) -> None:
         "scripts/check-agent-backlog-access.sh",
         "scripts/check-cloud-queue-contract.py",
         "scripts/check-merge-gate.py",
+        "scripts/validate-cloud-diff.sh",
+        "scripts/publish-cloud-diff.sh",
         "scripts/check-agent-issue-readiness.py",
         ".codex/hooks/agent_tool_policy.py",
         ".codex/hooks/issue_manager_stop_gate.py",
@@ -1728,36 +1834,312 @@ def check_deterministic_assets(errors: list[str]) -> None:
         return
     pre_tool = hooks.get("hooks", {}).get("PreToolUse", [])
     serialized = json.dumps(pre_tool)
-    for required in ("Agent", "apply_patch", "exec_command", "mcp__"):
-        if required not in serialized:
-            fail(errors, f"{hooks_path.relative_to(ROOT)}: PreToolUse misses {required!r}")
+    if not any(
+        isinstance(entry, dict) and entry.get("matcher") == ".*"
+        for entry in pre_tool
+    ):
+        fail(
+            errors,
+            f"{hooks_path.relative_to(ROOT)}: PreToolUse must use a catch-all matcher",
+        )
+    if not any(
+        isinstance(entry, dict) and entry.get("matcher") == ".*"
+        for entry in pre_tool
+    ):
+        for required in ("Agent", "apply_patch", "exec_command", "mcp__"):
+            if required not in serialized:
+                fail(errors, f"{hooks_path.relative_to(ROOT)}: PreToolUse misses {required!r}")
+    for hook_name in ("SubagentStart", "SubagentStop"):
+        entries = hooks.get("hooks", {}).get(hook_name, [])
+        if not any(
+            isinstance(entry, dict) and entry.get("matcher") == ".*"
+            for entry in entries
+        ):
+            fail(
+                errors,
+                f"{hooks_path.relative_to(ROOT)}: {hook_name} must use a catch-all matcher "
+                "to register and clean up Cloud root transcripts",
+            )
     stops = json.dumps(hooks.get("hooks", {}).get("SubagentStop", []))
     if "rpm_issue_manager" not in stops or "issue_manager_stop_gate.py" not in stops:
         fail(errors, f"{hooks_path.relative_to(ROOT)}: issue completion gate is missing")
 
 
-def check_tool_policy_runtime(errors: list[str]) -> None:
-    script = ROOT / ".codex" / "hooks" / "agent_tool_policy.py"
-    transcript = f"/tmp/rpm-agent-policy-probe-{os.getpid()}"
-
-    def run(payload: dict[str, object]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, str(script)],
-            cwd=ROOT,
-            input=json.dumps(payload),
-            text=True,
+def check_cloud_marker_runtime(errors: list[str], script: Path) -> None:
+    """Exercise the clone-local Cloud marker without touching this checkout."""
+    with tempfile.TemporaryDirectory(prefix="rpm-cloud-marker-probe-") as directory:
+        probe_root = Path(directory)
+        probe_hook = probe_root / ".codex" / "hooks" / "agent_tool_policy.py"
+        probe_hook.parent.mkdir(parents=True)
+        try:
+            shutil.copy2(script, probe_hook)
+            initialized = subprocess.run(
+                ["/usr/bin/git", "init", "--quiet"],
+                cwd=probe_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            fail(errors, f"Cloud marker probe could not initialize its temp repo: {error}")
+            return
+        if initialized.returncode != 0:
+            fail(
+                errors,
+                "Cloud marker probe could not initialize its temp repo: "
+                f"{initialized.stderr.strip()}",
+            )
+            return
+        marker_lookup = subprocess.run(
+            ["/usr/bin/git", "-C", str(probe_root), "rev-parse", "--git-path", "rpm-cloud-lane"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            text=True,
             check=False,
         )
+        if marker_lookup.returncode != 0 or not marker_lookup.stdout.strip():
+            fail(errors, "Cloud marker probe could not resolve the git marker path")
+            return
+        marker_path = Path(marker_lookup.stdout.strip())
+        if not marker_path.is_absolute():
+            marker_path = probe_root / marker_path
+        marker_path.write_text("issue\n", encoding="ascii")
+        marker_path.chmod(0o600)
+        transcript = str(probe_root / "transcript.jsonl")
+        environment = os.environ.copy()
+        environment["RPM_CLOUD_LANE"] = "issue"
 
-    def pre_tool(role: str, tool: str, tool_input: object) -> int:
+        def run(payload: dict[str, object], env: dict[str, str] | None = None) -> int:
+            result = subprocess.run(
+                [sys.executable, str(probe_hook)],
+                cwd=probe_root,
+                input=json.dumps(payload),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment if env is None else env,
+                check=False,
+            )
+            return result.returncode
+
+        registered = run(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_type": "rpm_issue_manager",
+                "agent_transcript_path": transcript,
+            }
+        )
+        if registered != 0:
+            fail(errors, f"Cloud marker probe registration expected 0, got {registered}")
+            return
+        if run(
+            {
+                "hook_event_name": "PreToolUse",
+                "transcript_path": transcript,
+                "cwd": str(probe_root),
+                "tool_name": "Bash",
+                "tool_input": {"cmd": "git status --short"},
+            }
+        ) != 0:
+            fail(errors, "Cloud marker probe matching env and marker should be allowed")
+
+        mismatch_environment = environment.copy()
+        mismatch_environment["RPM_CLOUD_LANE"] = "review"
+        mismatch = run(
+            {
+                "hook_event_name": "PreToolUse",
+                "transcript_path": transcript,
+                "cwd": str(probe_root),
+                "tool_name": "Bash",
+                "tool_input": {"cmd": "git status --short"},
+            },
+            env=mismatch_environment,
+        )
+        if mismatch != 2:
+            fail(errors, f"Cloud marker probe mismatch expected 2, got {mismatch}")
+
+        marker_path.unlink()
+        deleted = run(
+            {
+                "hook_event_name": "PreToolUse",
+                "transcript_path": transcript,
+                "cwd": str(probe_root),
+                "tool_name": "Bash",
+                "tool_input": {"cmd": "git status --short"},
+            }
+        )
+        if deleted != 2:
+            fail(errors, f"Cloud marker probe missing-marker attestation expected 2, got {deleted}")
+        run(
+            {
+                "hook_event_name": "SubagentStop",
+                "agent_transcript_path": transcript,
+            }
+        )
+
+        marker_path.write_text("issue\n", encoding="ascii")
+        marker_path.chmod(0o600)
+        missing_environment = environment.copy()
+        missing_environment.pop("RPM_CLOUD_LANE")
+        missing_transcript = f"{transcript}-missing-env"
+        missing = run(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_type": "rpm_issue_manager",
+                "agent_transcript_path": missing_transcript,
+            },
+            env=missing_environment,
+        )
+        if missing != 2:
+            fail(errors, f"Cloud marker probe missing env expected 2, got {missing}")
+        run(
+            {
+                "hook_event_name": "SubagentStop",
+                "agent_transcript_path": missing_transcript,
+            }
+        )
+
+        marker_path.write_text("invalid\n", encoding="ascii")
+        marker_path.chmod(0o600)
+        invalid_transcript = f"{transcript}-invalid"
+        invalid = run(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_type": "rpm_issue_manager",
+                "agent_transcript_path": invalid_transcript,
+            }
+        )
+        if invalid != 2:
+            fail(errors, f"Cloud marker probe invalid marker expected 2, got {invalid}")
+        run(
+            {
+                "hook_event_name": "SubagentStop",
+                "agent_transcript_path": invalid_transcript,
+            }
+        )
+
+        marker_path.write_text("issue\n", encoding="ascii")
+        marker_path.chmod(0o644)
+        weak_marker_transcript = f"{transcript}-weak-mode"
+        weak_mode = run(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_type": "rpm_issue_manager",
+                "agent_transcript_path": weak_marker_transcript,
+            }
+        )
+        if weak_mode != 2:
+            fail(errors, f"Cloud marker probe weak mode expected 2, got {weak_mode}")
+        run(
+            {
+                "hook_event_name": "SubagentStop",
+                "agent_transcript_path": weak_marker_transcript,
+            }
+        )
+
+
+def check_tool_policy_runtime(errors: list[str]) -> None:
+    # Run the hook in an isolated temporary Git clone.  The Cloud marker is
+    # intentionally stored in that clone's git-dir so this validator never
+    # mutates the worktree's own checkout metadata.
+    probe_directory = tempfile.TemporaryDirectory(prefix="rpm-agent-policy-probe-")
+    probe_root = Path(probe_directory.name)
+    probe_script = probe_root / ".codex" / "hooks" / "agent_tool_policy.py"
+    probe_script.parent.mkdir(parents=True)
+    try:
+        shutil.copy2(ROOT / ".codex" / "hooks" / "agent_tool_policy.py", probe_script)
+        initialized = subprocess.run(
+            ["/usr/bin/git", "init", "--quiet"],
+            cwd=probe_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        fail(errors, f"agent tool policy probe could not initialize its temp repo: {error}")
+        return
+    if initialized.returncode != 0:
+        fail(
+            errors,
+            "agent tool policy probe could not initialize its temp repo: "
+            f"{initialized.stderr.strip()}",
+        )
+        return
+    script = probe_script
+    transcript = f"/tmp/rpm-agent-policy-probe-{os.getpid()}"
+    marker_lookup = subprocess.run(
+        [
+            "/usr/bin/git",
+            "-C",
+            str(probe_root),
+            "rev-parse",
+            "--git-path",
+            "rpm-cloud-lane",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if marker_lookup.returncode != 0 or not marker_lookup.stdout.strip():
+        fail(errors, "agent tool policy probe could not resolve the Cloud marker path")
+        return
+    marker_path = Path(marker_lookup.stdout.strip())
+    if not marker_path.is_absolute():
+        marker_path = probe_root / marker_path
+    if marker_path.name != "rpm-cloud-lane":
+        fail(errors, "agent tool policy probe resolved an unexpected Cloud marker path")
+        return
+
+    def run(
+        payload: dict[str, object], lane: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        marker_existed = marker_path.exists()
+        if marker_path.is_symlink() or (marker_existed and not marker_path.is_file()):
+            fail(errors, "agent tool policy probe found an unsafe Cloud marker target")
+            return subprocess.CompletedProcess([], 2, "", "unsafe Cloud marker target")
+        marker_bytes = marker_path.read_bytes() if marker_existed else b""
+        marker_mode = marker_path.stat().st_mode & 0o777 if marker_existed else 0
+        environment = os.environ.copy()
+        if lane is None:
+            environment.pop("RPM_CLOUD_LANE", None)
+        else:
+            environment["RPM_CLOUD_LANE"] = lane
+        try:
+            if marker_existed:
+                marker_path.unlink()
+            if lane is not None:
+                marker_path.write_bytes(f"{lane}\n".encode("ascii"))
+                marker_path.chmod(0o600)
+            return subprocess.run(
+                [sys.executable, str(script)],
+                cwd=probe_root,
+                input=json.dumps(payload),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment,
+                check=False,
+            )
+        finally:
+            if marker_path.exists() or marker_path.is_symlink():
+                marker_path.unlink()
+            if marker_existed:
+                marker_path.write_bytes(marker_bytes)
+                marker_path.chmod(marker_mode)
+
+    def pre_tool(
+        role: str, tool: str, tool_input: object, lane: str | None = None
+    ) -> int:
         registered = run(
             {
                 "hook_event_name": "SubagentStart",
                 "agent_type": role,
                 "agent_transcript_path": transcript,
-            }
+            },
+            lane=lane,
         )
         if registered.returncode != 0:
             fail(errors, f"agent tool policy could not register {role}: {registered.stderr}")
@@ -1765,15 +2147,64 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             {
                 "hook_event_name": "PreToolUse",
                 "transcript_path": transcript,
-                "cwd": str(ROOT),
+                "cwd": str(probe_root),
                 "tool_name": tool,
                 "tool_input": tool_input,
-            }
+            },
+            lane=lane,
         ).returncode
+
+    def top_level_tool(
+        lane: str | None, tool: str, tool_input: object
+    ) -> int:
+        return run(
+            {
+                "hook_event_name": "PreToolUse",
+                "cwd": str(probe_root),
+                "tool_name": tool,
+                "tool_input": tool_input,
+            },
+            lane,
+        ).returncode
+
+    def register_transcript(
+        transcript_name: str, role: str | None, lane: str | None
+    ) -> int:
+        payload: dict[str, object] = {
+            "hook_event_name": "SubagentStart",
+            "agent_transcript_path": transcript_name,
+        }
+        if role is not None:
+            payload["agent_type"] = role
+        return run(payload, lane=lane).returncode
+
+    def transcript_tool(
+        transcript_name: str,
+        lane: str | None,
+        tool: str,
+        tool_input: object,
+        role: str | None = None,
+    ) -> int:
+        payload: dict[str, object] = {
+            "hook_event_name": "PreToolUse",
+            "transcript_path": transcript_name,
+            "cwd": str(probe_root),
+            "tool_name": tool,
+            "tool_input": tool_input,
+        }
+        if role is not None:
+            payload["agent_type"] = role
+        return run(payload, lane=lane).returncode
 
     cases = (
         ("leaf-spawn", "rpm_issue_researcher", "spawn_agent", {}, 2),
-        ("manager-spawn", "rpm_backlog_manager", "Agent", {}, 0),
+        (
+            "manager-spawn",
+            "rpm_backlog_manager",
+            "Agent",
+            {"agent_type": "rpm_issue_refiner"},
+            0,
+        ),
         (
             "spec-patch",
             "rpm_spec_updater",
@@ -1788,7 +2219,20 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "*** Begin Patch\n*** Update File: src/main.rs\n*** End Patch\n",
             2,
         ),
-        ("scout-read", "rpm_backlog_scout", "mcp__github__get_issue", {}, 0),
+        (
+            "scout-read",
+            "rpm_backlog_scout",
+            "mcp__github__get_issue",
+            {"repository_full_name": "nerdchanii/rpm", "issue_number": 1},
+            0,
+        ),
+        (
+            "scout-cross-repository-read",
+            "rpm_backlog_scout",
+            "mcp__github__get_issue",
+            {"repository_full_name": "other/project", "issue_number": 1},
+            2,
+        ),
         (
             "researcher-mutate",
             "rpm_issue_researcher",
@@ -1825,6 +2269,17 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             2,
         ),
         (
+            "claimer-execution-marker",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {
+                "issue_number": 1,
+                "body": '<!-- rpm-agent-execution: {"approval_id":"a","plan_revision":"p","scope_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","executor":"cloud"} -->',
+                "labels": ["agent:claimed"],
+            },
+            0,
+        ),
+        (
             "codex-review",
             "rpm_idea_issue_creator",
             "exec_command",
@@ -1852,11 +2307,1392 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             {"cmd": "gh pr merge 1 --squash"},
             2,
         ),
+        (
+            "implementer-workflow-protected",
+            "rpm_implementer",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: .github/workflows/agent-loop-triggers.yml\n*** End Patch\n",
+            2,
+        ),
+        (
+            "implementer-gate-protected",
+            "rpm_implementer",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: scripts/safe-direct-merge.sh\n*** End Patch\n",
+            2,
+        ),
+        (
+            "implementer-source-allowed",
+            "rpm_implementer",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: src/main.rs\n*** End Patch\n",
+            0,
+        ),
+        (
+            "implementer-runtime-script-allowed",
+            "rpm_implementer",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: scripts/runtime-helper.sh\n*** End Patch\n",
+            0,
+        ),
+        (
+            "review-resolver-workflow-protected",
+            "pr-review-resolver",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: .github/workflows/agent-loop-triggers.yml\n*** End Patch\n",
+            2,
+        ),
+        (
+            "review-resolver-gate-protected",
+            "pr-review-resolver",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: scripts/check-merge-gate.py\n*** End Patch\n",
+            2,
+        ),
+        (
+            "implementer-cloud-publisher-protected",
+            "rpm_implementer",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: scripts/publish-cloud-diff.sh\n*** End Patch\n",
+            2,
+        ),
+        (
+            "review-resolver-cloud-validator-protected",
+            "pr-review-resolver",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: scripts/validate-cloud-diff.sh\n*** End Patch\n",
+            2,
+        ),
+        (
+            "review-resolver-source-allowed",
+            "pr-review-resolver",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: src/main.rs\n*** End Patch\n",
+            0,
+        ),
+        (
+            "review-resolver-test-allowed",
+            "pr-review-resolver",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: tests/unit.rs\n*** End Patch\n",
+            0,
+        ),
+        (
+            "review-resolver-python-checker-allowed",
+            "pr-review-resolver",
+            "exec_command",
+            {
+                "cmd": "python3 scripts/check-cloud-queue-contract.py --issues-file /tmp/state.json"
+            },
+            0,
+        ),
+        (
+            "ticket-publisher-draft-create",
+            "rpm_ticket_publisher",
+            "mcp__plugin_github_github__github_create_pull_request",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "head": "feat/cloud-writer",
+                "base": "main",
+                "title": "feat: publish",
+                "body": "Closes #42",
+                "draft": True,
+            },
+            0,
+        ),
+        (
+            "ticket-publisher-cross-repository",
+            "rpm_ticket_publisher",
+            "mcp__plugin_github_github__github_create_pull_request",
+            {
+                "repository_full_name": "other/project",
+                "head": "feat/cloud-writer",
+                "base": "main",
+                "title": "feat: publish",
+                "body": "Closes #42",
+                "draft": True,
+            },
+            2,
+        ),
+        (
+            "ticket-publisher-protected-base",
+            "rpm_ticket_publisher",
+            "mcp__plugin_github_github__github_create_pull_request",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "head": "feat/cloud-writer",
+                "base": "release",
+                "title": "feat: publish",
+                "body": "Closes #42",
+                "draft": True,
+            },
+            2,
+        ),
+        (
+            "ticket-publisher-pr-body",
+            "rpm_ticket_publisher",
+            "mcp__plugin_github_github__github_update_pull_request",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "pr_number": 42,
+                "body": "Contract and validation evidence",
+            },
+            0,
+        ),
+        (
+            "ticket-publisher-ready",
+            "rpm_ticket_publisher",
+            "mcp__plugin_github_github__github_mark_pull_request_ready_for_review",
+            {"repository_full_name": "nerdchanii/rpm", "pr_number": 42},
+            0,
+        ),
+        (
+            "ticket-publisher-correction-zero",
+            "rpm_ticket_publisher",
+            "mcp__plugin_github_github__github_add_issue_labels",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["kind:enhancement", "agent:correction-0"],
+            },
+            0,
+        ),
+        (
+            "ticket-publisher-correction-zero-replacement",
+            "rpm_ticket_publisher",
+            "mcp__plugin_github_github__github_update_issue",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["kind:enhancement", "agent:correction-0"],
+            },
+            0,
+        ),
+        (
+            "ticket-publisher-correction-mixed",
+            "rpm_ticket_publisher",
+            "mcp__plugin_github_github__github_add_issue_labels",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["agent:correction-0", "agent:correction-1"],
+            },
+            2,
+        ),
+        (
+            "ticket-publisher-review-pending",
+            "rpm_ticket_publisher",
+            "mcp__plugin_github_github__github_update_issue",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["kind:enhancement", "agent:review-pending"],
+            },
+            0,
+        ),
+        (
+            "ticket-publisher-review-pending-mixed",
+            "rpm_ticket_publisher",
+            "mcp__plugin_github_github__github_update_issue",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["agent:claimed", "agent:review-pending"],
+            },
+            2,
+        ),
+        (
+            "review-reconciler-resolve",
+            "rpm_review_reconciler",
+            "mcp__plugin_github_github__github_resolve_review_thread",
+            {"thread_id": "PRRT_kwDO-test"},
+            0,
+        ),
+        (
+            "review-reconciler-unresolve",
+            "rpm_review_reconciler",
+            "mcp__plugin_github_github__github_unresolve_review_thread",
+            {"thread_id": "PRRT_kwDO-test"},
+            2,
+        ),
+        (
+            "review-reconciler-dismiss",
+            "rpm_review_reconciler",
+            "mcp__plugin_github_github__github_dismiss_pull_request_review",
+            {"review_id": "PRR_kwDO-test", "message": "fixed"},
+            2,
+        ),
+        (
+            "review-reconciler-auto-merge",
+            "rpm_review_reconciler",
+            "mcp__plugin_github_github__github_enable_auto_merge",
+            {"repository_full_name": "nerdchanii/rpm", "pr_number": 42},
+            2,
+        ),
+        (
+            "review-reconciler-mark-ready",
+            "rpm_review_reconciler",
+            "mcp__plugin_github_github__github_mark_pull_request_ready_for_review",
+            {"repository_full_name": "nerdchanii/rpm", "pr_number": 42},
+            2,
+        ),
+        (
+            "review-reconciler-counter",
+            "rpm_review_reconciler",
+            "mcp__plugin_github_github__github_add_issue_labels",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["kind:enhancement", "agent:correction-2"],
+            },
+            0,
+        ),
+        (
+            "review-reconciler-counter-replacement",
+            "rpm_review_reconciler",
+            "mcp__plugin_github_github__github_update_issue",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["kind:enhancement", "agent:correction-2"],
+            },
+            0,
+        ),
+        (
+            "review-reconciler-counter-mixed",
+            "rpm_review_reconciler",
+            "mcp__plugin_github_github__github_add_issue_labels",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["agent:correction-2", "agent:awaiting-merge"],
+            },
+            2,
+        ),
+        (
+            "review-reconciler-awaiting-merge",
+            "rpm_review_reconciler",
+            "mcp__plugin_github_github__github_update_issue",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["kind:enhancement", "agent:awaiting-merge"],
+            },
+            0,
+        ),
+        (
+            "review-reconciler-block-comment",
+            "rpm_review_reconciler",
+            "mcp__plugin_github_github__github_add_comment_to_issue",
+            {
+                "repo_full_name": "nerdchanii/rpm",
+                "pr_number": 42,
+                "comment": "<!-- rpm-agent-correction-block: source=pr:42; reason=limit; counter=agent:correction-5 -->",
+            },
+            0,
+        ),
+        (
+            "merge-state-blocked",
+            "rpm_merge_state_writer",
+            "mcp__plugin_github_github__github_update_issue",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["kind:enhancement", "agent:blocked"],
+            },
+            0,
+        ),
+        (
+            "merge-state-mixed",
+            "rpm_merge_state_writer",
+            "mcp__plugin_github_github__github_update_issue",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["agent:blocked", "agent:correction-1"],
+            },
+            2,
+        ),
+        (
+            "merge-state-comment",
+            "rpm_merge_state_writer",
+            "mcp__plugin_github_github__github_add_comment_to_issue",
+            {
+                "repo_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "comment": "<!-- rpm-agent-merge-block: reason=checks-failed -->",
+            },
+            0,
+        ),
+        (
+            "publisher-shell-push",
+            "rpm_ticket_publisher",
+            "exec_command",
+            {"cmd": "git push origin HEAD"},
+            2,
+        ),
+        (
+            "review-reconciler-shell-commit",
+            "rpm_review_reconciler",
+            "exec_command",
+            {"cmd": "git commit -m fixed"},
+            2,
+        ),
+        (
+            "implementer-shell-push",
+            "rpm_implementer",
+            "exec_command",
+            {"cmd": "git push origin HEAD"},
+            2,
+        ),
+        (
+            "review-resolver-shell-reset",
+            "pr-review-resolver",
+            "exec_command",
+            {"cmd": "git reset --hard HEAD~1"},
+            2,
+        ),
+        (
+            "implementer-shell-checkout",
+            "rpm_implementer",
+            "exec_command",
+            {"cmd": "git checkout -- .github/workflows/agent-loop-triggers.yml"},
+            2,
+        ),
+        (
+            "review-resolver-shell-branch-delete",
+            "pr-review-resolver",
+            "exec_command",
+            {"cmd": "git branch -D feat/other"},
+            2,
+        ),
+        (
+            "implementer-git-directory-protected",
+            "rpm_implementer",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: .git/config\n*** End Patch\n",
+            2,
+        ),
+        (
+            "implementer-githooks-protected",
+            "rpm_implementer",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: .githooks/pre-commit\n*** End Patch\n",
+            2,
+        ),
+        (
+            "review-resolver-git-directory-protected",
+            "pr-review-resolver",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: .git/hooks/pre-commit\n*** End Patch\n",
+            2,
+        ),
+        (
+            "review-resolver-githooks-protected",
+            "pr-review-resolver",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: .githooks/post-checkout\n*** End Patch\n",
+            2,
+        ),
     )
     for name, role, tool, tool_input, expected in cases:
         actual = pre_tool(role, tool, tool_input)
         if actual != expected:
             fail(errors, f"tool policy probe {name} expected exit {expected}, got {actual}")
+
+    cloud_writer_cases = (
+        (
+            "cloud-ticket-publisher-create-denied",
+            "rpm_ticket_publisher",
+            "issue",
+            "mcp__plugin_github_github__github_create_pull_request",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "head": "feat/cloud-writer",
+                "base": "main",
+                "title": "feat: publish",
+                "body": "Closes #42",
+                "draft": True,
+            },
+        ),
+        (
+            "cloud-review-reconciler-label-denied",
+            "rpm_review_reconciler",
+            "review",
+            "mcp__plugin_github_github__github_add_issue_labels",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "issue_number": 42,
+                "labels": ["agent:correction-2"],
+            },
+        ),
+        (
+            "cloud-followup-create-denied",
+            "rpm_followup_issue_creator",
+            "review",
+            "mcp__plugin_github_github__github_create_issue",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "title": "Deferred work",
+                "body": "Deferred body",
+                "labels": ["process:agent-followup"],
+            },
+        ),
+        (
+            "cloud-issue-idea-role-denied",
+            "rpm_idea_issue_creator",
+            "issue",
+            "mcp__plugin_github_github__github_get_issue",
+            {"repository_full_name": "nerdchanii/rpm", "issue_number": 42},
+        ),
+        (
+            "cloud-review-research-role-denied",
+            "rpm_issue_researcher",
+            "review",
+            "mcp__plugin_github_github__github_get_issue",
+            {"repository_full_name": "nerdchanii/rpm", "issue_number": 42},
+        ),
+    )
+    for name, role, lane, tool, tool_input in cloud_writer_cases:
+        actual = pre_tool(role, tool, tool_input, lane=lane)
+        if actual != 2:
+            fail(errors, f"tool policy probe {name} expected exit 2, got {actual}")
+
+    cloud_role_cases = (
+        (
+            "cloud-claim-exception-allowed",
+            "rpm_ready_ticket_claimer",
+            "issue",
+            "mcp__plugin_github_github__github_update_issue",
+            {"labels": ["agent:claimed"]},
+            0,
+        ),
+        (
+            "cloud-issue-manager-read-allowed",
+            "rpm_issue_manager",
+            "issue",
+            "Bash",
+            {"cmd": "git status --short"},
+            0,
+        ),
+        (
+            "cloud-issue-functions-exec-github-bypass-denied",
+            "rpm_issue_manager",
+            "issue",
+            "functions.exec",
+            {
+                "code": "tools.mcp__plugin_github_github__github_update_issue({issue_number: 42, labels: ['agent:blocked']})"
+            },
+            2,
+        ),
+        (
+            "cloud-review-functions-exec-command-denied",
+            "pr-review-resolver",
+            "review",
+            "functions.exec_command",
+            {"cmd": "git status --short"},
+            2,
+        ),
+        (
+            "cloud-review-resolver-patch-allowed",
+            "pr-review-resolver",
+            "review",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: src/main.rs\n*** End Patch\n",
+            0,
+        ),
+        (
+            "cloud-review-resolver-gh-options-denied",
+            "pr-review-resolver",
+            "review",
+            "Bash",
+            {"cmd": "gh --repo nerdchanii/rpm pr --repo nerdchanii/rpm view 42"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-c-options-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git -c core.editor=true update-index --add src/main.rs"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-C-options-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git -C /tmp/rpm push origin HEAD"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-config-option-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git --git-dir=/tmp/rpm reset --hard HEAD~1"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-branch-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git -C /tmp/rpm branch -D feat/other"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-checkout-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git -C /tmp/rpm checkout -- src/main.rs"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-switch-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git -c core.editor=true switch -c feat/other"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-merge-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git -C /tmp/rpm merge other"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-rebase-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git --git-dir=/tmp/rpm rebase main"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-tag-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git -C /tmp/rpm tag release-test"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-remote-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git -C /tmp/rpm remote set-url origin https://example.invalid/rpm.git"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-git-read-options-allowed",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "git -C /tmp/rpm --no-pager log -1"},
+            0,
+        ),
+        (
+            "cloud-issue-manager-python-checker-allowed",
+            "rpm_issue_manager",
+            "issue",
+            "Bash",
+            {
+                "cmd": "python3 scripts/check-cloud-queue-contract.py --issues-json '{}' --operation inspect"
+            },
+            0,
+        ),
+        (
+            "cloud-issue-implementer-python-file-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "python3 -c 'open(\"src/main.rs\", \"w\").write(\"x\")'"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-node-file-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "node -e \"require('fs').writeFileSync('src/main.rs', 'x')\""},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-versioned-python-file-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "python3.11 -c 'open(\"src/main.rs\", \"w\").write(\"x\")'"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-versioned-node-github-merge-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "node20 -e \"require('child_process').exec('gh pr merge 1')\""},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-versioned-ruby-file-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "ruby3.2 -e \"File.write('src/main.rs', 'x')\""},
+            2,
+        ),
+        (
+            "cloud-issue-test-runner-npm-wrapper-denied",
+            "rpm_test_runner",
+            "issue",
+            "Bash",
+            {"cmd": "npm10 run test"},
+            2,
+        ),
+        (
+            "cloud-issue-test-runner-make-wrapper-denied",
+            "rpm_test_runner",
+            "issue",
+            "Bash",
+            {"cmd": "make4.4 test"},
+            2,
+        ),
+        (
+            "cloud-issue-test-runner-cargo-wrapper-denied",
+            "rpm_test_runner",
+            "issue",
+            "Bash",
+            {"cmd": "cargo1.80 test"},
+            2,
+        ),
+        (
+            "cloud-issue-test-runner-cargo-dynamic-merge-denied",
+            "rpm_test_runner",
+            "issue",
+            "Bash",
+            {"cmd": "cargo run --bin helper -- gh pr merge 1"},
+            2,
+        ),
+        (
+            "cloud-issue-test-runner-fixed-validation-allowed",
+            "rpm_test_runner",
+            "issue",
+            "Bash",
+            {"cmd": "just validate"},
+            0,
+        ),
+        (
+            "cloud-issue-implementer-unknown-executable-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "repository-helper --write .github/workflows/agent-loop-triggers.yml"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-ruby-file-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "ruby -e \"File.write('src/main.rs', 'x')\""},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-perl-file-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "perl -e 'print x > src/main.rs'"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-php-file-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "php -r \"file_put_contents('src/main.rs', 'x');\""},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-deno-file-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "deno eval \"Deno.writeTextFileSync('src/main.rs', 'x')\""},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-bun-file-write-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "bun -e \"Bun.write('src/main.rs', 'x')\""},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-shell-wrapper-git-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "bash -c 'git push origin HEAD'"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-env-wrapper-github-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "env sh -c 'gh issue create --title bypass --body bypass'"},
+            2,
+        ),
+        (
+            "cloud-issue-implementer-timeout-wrapper-denied",
+            "rpm_implementer",
+            "issue",
+            "Bash",
+            {"cmd": "timeout 5 python3 tools/change_repository.py"},
+            2,
+        ),
+        (
+            "cloud-review-resolver-read-wrapper-allowed",
+            "pr-review-resolver",
+            "review",
+            "Bash",
+            {"cmd": "bash scripts/collect-pr-review-context.sh 42 --format jsonl"},
+            0,
+        ),
+    )
+    for name, role, lane, tool, tool_input, expected in cloud_role_cases:
+        actual = pre_tool(role, tool, tool_input, lane=lane)
+        if actual != expected:
+            fail(errors, f"tool policy probe {name} expected exit {expected}, got {actual}")
+
+    manager_route_cases = (
+        (
+            "workflow-manager-issue-manager-allowed",
+            "rpm_workflow_manager",
+            None,
+            {"agent_type": "rpm_issue_manager"},
+            0,
+        ),
+        (
+            "workflow-manager-merge-writer-denied",
+            "rpm_workflow_manager",
+            None,
+            {"agent_type": "rpm_merge_state_writer"},
+            2,
+        ),
+        (
+            "cloud-claim-manager-claimer-allowed",
+            "rpm_backlog_manager",
+            "issue",
+            {"agent_type": "rpm_ready_ticket_claimer"},
+            0,
+        ),
+        (
+            "cloud-claim-manager-refiner-denied",
+            "rpm_backlog_manager",
+            "issue",
+            {"agent_type": "rpm_issue_refiner"},
+            2,
+        ),
+        (
+            "cloud-issue-manager-merge-writer-denied",
+            "rpm_issue_manager",
+            "issue",
+            {"agent_type": "rpm_merge_state_writer"},
+            2,
+        ),
+    )
+    for name, role, lane, tool_input, expected in manager_route_cases:
+        actual = pre_tool(role, "Agent", tool_input, lane=lane)
+        if actual != expected:
+            fail(errors, f"tool policy probe {name} expected exit {expected}, got {actual}")
+
+    cloud_cases = (
+        (
+            "cloud-issue-mcp-merge",
+            "issue",
+            "mcp__plugin_github_github__merge_pull_request",
+            {"pull_request_number": 1},
+            2,
+        ),
+        (
+            "cloud-review-mcp-merge",
+            "review",
+            "mcp__plugin_github_github__merge_pull_request",
+            {"pull_request_number": 1},
+            2,
+        ),
+        (
+            "cloud-issue-actual-plugin-merge",
+            "issue",
+            "mcp__plugin_github_github__github_merge_pull_request",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "pr_number": 1,
+                "merge_method": "squash",
+                "expected_head_sha": "0123456789abcdef0123456789abcdef01234567",
+            },
+            2,
+        ),
+        (
+            "cloud-review-actual-plugin-merge",
+            "review",
+            "mcp__plugin_github_github__github_merge_pull_request",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "pr_number": 1,
+                "merge_method": "squash",
+                "expected_head_sha": "0123456789abcdef0123456789abcdef01234567",
+            },
+            2,
+        ),
+        (
+            "cloud-review-root-resolve-denied",
+            "review",
+            "mcp__plugin_github_github__github_resolve_review_thread",
+            {"thread_id": "PRRT_test"},
+            2,
+        ),
+        (
+            "cloud-review-root-auto-merge-denied",
+            "review",
+            "mcp__plugin_github_github__github_enable_auto_merge",
+            {"repository_full_name": "nerdchanii/rpm", "pr_number": 1},
+            2,
+        ),
+        (
+            "cloud-issue-root-dismiss-denied",
+            "issue",
+            "mcp__plugin_github_github__github_dismiss_pull_request_review",
+            {"review_id": "PRR_test", "message": "ignore"},
+            2,
+        ),
+        (
+            "cloud-issue-gh-merge",
+            "issue",
+            "exec_command",
+            {"cmd": "gh pr merge 1 --squash"},
+            2,
+        ),
+        (
+            "cloud-review-safe-direct",
+            "review",
+            "Bash",
+            {"command": "bash scripts/safe-direct-merge.sh 1"},
+            2,
+        ),
+        (
+            "cloud-issue-raw-api-merge",
+            "issue",
+            "exec_command",
+            {"cmd": "gh api --method POST repos/nerdchanii/rpm/pulls/1/merge"},
+            2,
+        ),
+        (
+            "cloud-merge-plugin-valid-head-denied",
+            "merge",
+            "mcp__plugin_github_github__github_merge_pull_request",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "pr_number": 1,
+                "merge_method": "squash",
+                "expected_head_sha": "0123456789abcdef0123456789abcdef01234567",
+            },
+            2,
+        ),
+        (
+            "cloud-merge-plugin-missing-head-precondition",
+            "merge",
+            "mcp__plugin_github_github__github_merge_pull_request",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "pr_number": 1,
+                "merge_method": "squash",
+            },
+            2,
+        ),
+        (
+            "cloud-merge-plugin-delete-branch-forbidden",
+            "merge",
+            "mcp__plugin_github_github__github_merge_pull_request",
+            {
+                "repository_full_name": "nerdchanii/rpm",
+                "pr_number": 1,
+                "merge_method": "squash",
+                "expected_head_sha": "0123456789abcdef0123456789abcdef01234567",
+                "delete_branch": True,
+            },
+            2,
+        ),
+        (
+            "cloud-merge-plugin-nonmerge-mutation",
+            "merge",
+            "mcp__plugin_github_github__update_issue",
+            {"issue_number": 1, "labels": ["agent:blocked"]},
+            2,
+        ),
+        (
+            "cloud-merge-gh-merge",
+            "merge",
+            "exec_command",
+            {"cmd": "gh pr merge 1 --squash"},
+            2,
+        ),
+        (
+            "cloud-merge-safe-direct",
+            "merge",
+            "Bash",
+            {"command": "bash scripts/safe-direct-merge.sh 1"},
+            2,
+        ),
+        (
+            "cloud-merge-top-patch",
+            "merge",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: src/main.rs\n*** End Patch\n",
+            2,
+        ),
+        (
+            "cloud-invalid-lane-patch",
+            "invalid",
+            "apply_patch",
+            "*** Begin Patch\n*** Update File: src/main.rs\n*** End Patch\n",
+            2,
+        ),
+        (
+            "cloud-empty-lane-denied",
+            "",
+            "git_status_tool",
+            {},
+            2,
+        ),
+        (
+            "cloud-mixed-case-lane-denied",
+            "ISSUE",
+            "git_status_tool",
+            {},
+            2,
+        ),
+        (
+            "cloud-issue-agent-allowed",
+            "issue",
+            "Agent",
+            {"agent_type": "rpm_workflow_manager"},
+            0,
+        ),
+        (
+            "cloud-issue-agent-unassigned",
+            "issue",
+            "Agent",
+            {"agent_type": "rpm_merge_state_writer"},
+            2,
+        ),
+        (
+            "cloud-review-agent-allowed",
+            "review",
+            "Agent",
+            {"agent_type": "rpm_review_reconciler"},
+            0,
+        ),
+        (
+            "cloud-merge-agent-allowed",
+            "merge",
+            "Agent",
+            {"agent_type": "rpm_cloud_result_writer"},
+            0,
+        ),
+        (
+            "cloud-merge-state-writer-denied",
+            "merge",
+            "Agent",
+            {"agent_type": "rpm_merge_state_writer"},
+            2,
+        ),
+        (
+            "cloud-unknown-mcp-denied",
+            "issue",
+            "mcp__plugin_github_github__github_mutate_unknown",
+            {},
+            2,
+        ),
+        (
+            "cloud-unknown-tool-denied",
+            "issue",
+            "brand_new_tool",
+            {},
+            2,
+        ),
+        (
+            "cloud-mixed-case-tool-denied",
+            "issue",
+            "Functions.Exec",
+            {"cmd": "git status"},
+            2,
+        ),
+        (
+            "cloud-mixed-case-mcp-denied",
+            "review",
+            "MCP__plugin_github_github__github_get_issue",
+            {"repository_full_name": "nerdchanii/rpm", "issue_number": 42},
+            2,
+        ),
+        (
+            "cloud-unknown-mcp-namespace-denied",
+            "issue",
+            "mcp__unknown__github_get_issue",
+            {"repository_full_name": "nerdchanii/rpm", "issue_number": 42},
+            2,
+        ),
+        (
+            "cloud-unknown-mcp-agent-denied",
+            "issue",
+            "mcp__unknown__agent",
+            {"agent_type": "rpm_workflow_manager"},
+            2,
+        ),
+        (
+            "cloud-mcp-shell-disguise-denied",
+            "issue",
+            "mcp__plugin_github_github__exec",
+            {"cmd": "git status"},
+            2,
+        ),
+        (
+            "cloud-functions-exec-nested-read-allowed",
+            "review",
+            "functions.exec",
+            {"request": {"cmd": "git -C /tmp/rpm status --short"}},
+            0,
+        ),
+        (
+            "cloud-functions-exec-nested-mutation-denied",
+            "review",
+            "functions.exec",
+            {"request": {"cmd": "git -C /tmp/rpm push origin HEAD"}},
+            2,
+        ),
+        (
+            "cloud-functions-exec-nested-gh-options-denied",
+            "issue",
+            "functions.exec",
+            {"request": {"cmd": "command gh --repo nerdchanii/rpm issue view 42"}},
+            2,
+        ),
+        (
+            "cloud-root-git-push-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "git push https://github.com/nerdchanii/rpm.git HEAD:refs/heads/feat/issue-42"},
+            2,
+        ),
+        (
+            "cloud-root-git-commit-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "git commit -m 'fix(agent): publish validated issue'"},
+            2,
+        ),
+        (
+            "cloud-root-git-stage-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "git add -- src/lib.rs docs/specs/install/SPEC.md"},
+            2,
+        ),
+        (
+            "cloud-root-git-stage-protected-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "git add -- .github/workflows/agent-loop-triggers.yml"},
+            2,
+        ),
+        (
+            "cloud-root-git-stage-all-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "git add -- ."},
+            2,
+        ),
+        (
+            "cloud-root-git-status-safe",
+            "review",
+            "exec_command",
+            {"cmd": "git status --short"},
+            0,
+        ),
+        (
+            "cloud-root-inline-checker-safe",
+            "merge",
+            "exec_command",
+            {
+                "cmd": "python3 -B scripts/check-merge-gate.py --issues-json "
+                "'{\"issues\":[]}' --operation select-merge"
+            },
+            0,
+        ),
+        (
+            "cloud-root-checker-policy-override-denied",
+            "merge",
+            "exec_command",
+            {
+                "cmd": "python3 scripts/check-merge-gate.py --policy /tmp/relaxed.json "
+                "--issues-json '{\"issues\":[]}' --operation select-merge"
+            },
+            2,
+        ),
+        (
+            "cloud-root-checker-file-input-denied",
+            "merge",
+            "exec_command",
+            {
+                "cmd": "python3 scripts/check-merge-gate.py --issues-file /tmp/state.json "
+                "--operation select-merge"
+            },
+            2,
+        ),
+        (
+            "cloud-root-unreviewed-python-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "python3 tools/change_repository.py"},
+            2,
+        ),
+        (
+            "cloud-root-git-branch-delete-denied",
+            "review",
+            "exec_command",
+            {"cmd": "git branch -D feat/other"},
+            2,
+        ),
+        (
+            "cloud-root-git-commit-composed-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "git commit -m 'fix(agent): publish validated issue' && git push https://github.com/nerdchanii/rpm.git HEAD:refs/heads/feat/issue-42"},
+            2,
+        ),
+        (
+            "cloud-root-git-push-non-origin-denied",
+            "review",
+            "exec_command",
+            {"cmd": "git push upstream HEAD"},
+            2,
+        ),
+        (
+            "cloud-root-git-push-main-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "git push https://github.com/nerdchanii/rpm.git HEAD:refs/heads/main"},
+            2,
+        ),
+        (
+            "cloud-root-git-push-ambiguous-head-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "git push origin HEAD"},
+            2,
+        ),
+        (
+            "cloud-root-git-reset-denied",
+            "review",
+            "exec_command",
+            {"cmd": "git reset --hard HEAD~1"},
+            2,
+        ),
+        (
+            "cloud-root-git-apply-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "git apply /tmp/change.patch"},
+            2,
+        ),
+        (
+            "cloud-root-redirect-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "printf x > .github/workflows/bad.yml"},
+            2,
+        ),
+        (
+            "cloud-root-curl-denied",
+            "review",
+            "exec_command",
+            {"cmd": "curl -X POST https://api.github.com"},
+            2,
+        ),
+        (
+            "cloud-root-python-file-write-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "python3 -c 'open(\"src/main.rs\", \"w\").write(\"x\")'"},
+            2,
+        ),
+        (
+            "cloud-root-node-github-write-denied",
+            "review",
+            "exec_command",
+            {"cmd": "node -e \"require('child_process').exec('gh issue create')\""},
+            2,
+        ),
+        (
+            "cloud-root-ruby-git-write-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "ruby -e \"system('git push origin HEAD')\""},
+            2,
+        ),
+        (
+            "cloud-root-perl-file-write-denied",
+            "merge",
+            "exec_command",
+            {"cmd": "perl -e 'print x > .github/workflows/bad.yml'"},
+            2,
+        ),
+        (
+            "cloud-root-php-file-write-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "php -r \"file_put_contents('src/main.rs', 'x');\""},
+            2,
+        ),
+        (
+            "cloud-root-deno-file-write-denied",
+            "review",
+            "exec_command",
+            {"cmd": "deno eval \"Deno.writeTextFileSync('src/main.rs', 'x')\""},
+            2,
+        ),
+        (
+            "cloud-root-bun-file-write-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "bun -e \"Bun.write('src/main.rs', 'x')\""},
+            2,
+        ),
+        (
+            "cloud-root-python-marker-delete-denied",
+            "issue",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'import pathlib; pathlib.Path(\".git/rpm-cloud-lane\").unlink()'"
+            },
+            2,
+        ),
+        (
+            "cloud-root-unlink-marker-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "unlink .git/rpm-cloud-lane"},
+            2,
+        ),
+        (
+            "cloud-root-shell-wrapper-git-denied",
+            "merge",
+            "exec_command",
+            {"cmd": "bash -c 'git push origin HEAD'"},
+            2,
+        ),
+        (
+            "cloud-root-env-wrapper-github-denied",
+            "issue",
+            "exec_command",
+            {"cmd": "env sh -c 'gh issue create --title bypass --body bypass'"},
+            2,
+        ),
+    )
+    for name, lane, tool, tool_input, expected in cloud_cases:
+        actual = top_level_tool(lane, tool, tool_input)
+        if actual != expected:
+            fail(errors, f"tool policy probe {name} expected exit {expected}, got {actual}")
+
+    cloud_context_transcript = f"{transcript}-cloud-context"
+    if register_transcript(cloud_context_transcript, "rpm_issue_manager", "issue") != 0:
+        fail(errors, "tool policy probe cloud-context-registration expected exit 0")
+    missing_registered_lane = transcript_tool(
+        cloud_context_transcript,
+        None,
+        "Bash",
+        {"cmd": "git status --short"},
+    )
+    if missing_registered_lane != 2:
+        fail(
+            errors,
+            "tool policy probe cloud-context-missing-lane expected exit 2, "
+            f"got {missing_registered_lane}",
+        )
+    changed_registered_lane = transcript_tool(
+        cloud_context_transcript,
+        "review",
+        "Bash",
+        {"cmd": "git status --short"},
+    )
+    if changed_registered_lane != 2:
+        fail(
+            errors,
+            "tool policy probe cloud-context-changed-lane expected exit 2, "
+            f"got {changed_registered_lane}",
+        )
+    run(
+        {
+            "hook_event_name": "SubagentStop",
+            "agent_transcript_path": cloud_context_transcript,
+        }
+    )
+
+    cloud_root_transcript = f"{transcript}-cloud-root"
+    if register_transcript(cloud_root_transcript, None, "issue") != 0:
+        fail(errors, "tool policy probe cloud-root-registration expected exit 0")
+    missing_root_lane = transcript_tool(
+        cloud_root_transcript,
+        None,
+        "brand_new_tool",
+        {},
+    )
+    if missing_root_lane != 2:
+        fail(
+            errors,
+            "tool policy probe cloud-root-missing-lane expected exit 2, "
+            f"got {missing_root_lane}",
+        )
+    run(
+        {
+            "hook_event_name": "SubagentStop",
+            "agent_transcript_path": cloud_root_transcript,
+        }
+    )
+    # No Cloud marker means this is an established local session.  Preserve
+    # local extensibility for a newly introduced tool; Cloud tasks become
+    # fail-closed as soon as RPM_CLOUD_LANE is present.
+    local_unmarked = top_level_tool(None, "brand_new_local_tool", {})
+    if local_unmarked != 0:
+        fail(errors, f"tool policy probe local-unmarked-tool expected exit 0, got {local_unmarked}")
+    local_mixed_case = top_level_tool(None, "Functions.Exec", {"cmd": "git status"})
+    if local_mixed_case != 0:
+        fail(errors, f"tool policy probe local-mixed-case-tool expected exit 0, got {local_mixed_case}")
+    unverified_cloud_role = run(
+        {
+            "hook_event_name": "PreToolUse",
+            "agent_type": "rpm_issue_refiner",
+            "cwd": str(probe_root),
+            "tool_name": "functions.exec",
+            "tool_input": {"cmd": "git status"},
+        },
+        lane="issue",
+    )
+    if unverified_cloud_role.returncode != 2:
+        fail(
+            errors,
+            "tool policy probe cloud-unverified-role expected exit 2, "
+            f"got {unverified_cloud_role.returncode}",
+        )
     run(
         {
             "hook_event_name": "SubagentStop",
@@ -1877,6 +3713,7 @@ def main() -> int:
     check_skill_inventory(errors)
     check_entries_and_assets(errors)
     check_deterministic_assets(errors)
+    check_cloud_marker_runtime(errors, ROOT / ".codex" / "hooks" / "agent_tool_policy.py")
     check_tool_policy_runtime(errors)
     if errors:
         for error in errors:

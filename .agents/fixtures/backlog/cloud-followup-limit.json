@@ -1,0 +1,9 @@
+{
+  "followups": [
+    {"source": "pr:44", "fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "labels": ["process:agent-followup"], "number": 91},
+    {"source": "pr:44", "fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "labels": ["process:agent-followup"], "number": 92},
+    {"source": "pr:44", "fingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "labels": ["process:agent-followup"], "number": 93},
+    {"source": "pr:44", "fingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "labels": ["process:agent-followup"], "number": 94},
+    {"source": "pr:44", "fingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "labels": ["process:agent-followup"], "number": 95}
+  ]
+}

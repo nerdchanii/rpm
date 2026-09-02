@@ -1896,6 +1896,11 @@ if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
   exit 0
 fi
 
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ]; then
+  printf '[]\n'
+  exit 0
+fi
+
 if [ "${1:-}" = "api" ] && [ "${2:-}" = "graphql" ]; then
   count_file="${RPM_COLLECT_FIXTURE}/.count"
   count=0
@@ -2418,13 +2423,14 @@ if [ -d .codex/agents ]; then
 fi
 
 check "backlog_policy_schema" jq -e '
-  .version == 3
+  .version == 4
   and .repository == "nerdchanii/rpm"
   and .execution_queue == {
     source:"issue-labels",
     open_issues_only:true,
     order:"issue-number-ascending",
-    active_states:["claimed","review-pending"]
+    active_states:["claimed","review-pending","awaiting-merge"],
+    blocking_states:["claimed","review-pending","awaiting-merge"]
   }
   and .project.number == 7
   and .project.role == "local-roadmap"
@@ -2440,7 +2446,8 @@ check "backlog_policy_schema" jq -e '
   and .execution_contract == {
     approved_metadata:["approval_id","plan_revision","scope_hash","executor"],
     executor_values:["local","cloud"],
-    active_states:["claimed","review-pending"],
+    active_states:["claimed","review-pending","awaiting-merge"],
+    blocking_states:["claimed","review-pending","awaiting-merge"],
     lease:{
       field:"lease",
       required_fields:["run_id","owner","expires_at"],
@@ -2459,12 +2466,34 @@ check "backlog_policy_schema" jq -e '
     ready:["claimed","blocked"],
     claimed:["ready","review-pending","blocked"],
     "review-pending":["review-pending","awaiting-merge","blocked"],
-    "awaiting-merge":["blocked"],
+    "awaiting-merge":["review-pending","blocked"],
     blocked:["research","ready"]
   }
+  and .trusted_lifecycle_actors == {
+    ready:["nerdchanii"],
+    "awaiting-merge":["nerdchanii","chatgpt-codex-connector[bot]","github-actions[bot]"]
+  }
+  and .review_correction == {
+    max_attempts:5,
+    counter_labels:{
+      "0":"agent:correction-0",
+      "1":"agent:correction-1",
+      "2":"agent:correction-2",
+      "3":"agent:correction-3",
+      "4":"agent:correction-4",
+      "5":"agent:correction-5"
+    },
+    exhausted_result:"blocked"
+  }
+  and .followup == {
+    identity_label:"process:agent-followup",
+    dedupe_key_fields:["source","fingerprint"],
+    duplicate_result:"duplicate",
+    max_per_source:5
+  }
   and .automation == {
-    create_followup_issues_by_default:false,
-    merge_pull_requests:false,
+    create_followup_issues_by_default:true,
+    merge_pull_requests:true,
     request_codex_review:false
   }
   and .merge_gate == {
@@ -2473,10 +2502,23 @@ check "backlog_policy_schema" jq -e '
     order:"issue-number-ascending",
     batch_limit:1,
     required_checks:["metadata","verify"],
+    max_no_work_attempts:5,
     required_mergeable:true,
     forbid_unresolved_p0_p1:true,
+    server_protection:{
+      branch:"main",
+      enforce_admins:true,
+      required_conversation_resolution:true,
+      required_status_checks:[
+        {context:"metadata",app_id:15368},
+        {context:"verify",app_id:15368}
+      ],
+      strict_status_checks:true,
+      allow_force_pushes:false,
+      allow_deletions:false
+    },
     method:"squash",
-    delete_branch:true
+    delete_branch:false
   }
 ' .agents/workflows/backlog-policy.json
 
@@ -2493,7 +2535,22 @@ for script in \
   scripts/backlog-gen \
   scripts/check-agent-backlog-access.sh \
   scripts/collect-pr-review-context.sh \
+  scripts/quarantine-review-correction-limit.sh \
   scripts/create-review-followup-issue.sh \
+  scripts/validate-cloud-diff.sh \
+  scripts/publish-cloud-diff.sh \
+  scripts/collect-merge-gate-evidence.sh \
+  scripts/publish-cloud-merge.sh \
+  scripts/test-validate-cloud-diff.sh \
+  scripts/test-collect-pr-review-context.sh \
+  scripts/test-publish-cloud-diff.sh \
+  scripts/test-collect-merge-gate-evidence.sh \
+  scripts/test-publish-cloud-merge.sh \
+  scripts/test-quarantine-review-correction-limit.sh \
+  scripts/test-safe-direct-merge.sh \
+  scripts/test-semver-workflow-security.sh \
+  scripts/setup-codex-cloud-lane.sh \
+  scripts/test-setup-codex-cloud-lane.sh \
   scripts/test-codex-cloud-setup.sh \
   scripts/ticket-gen
 do
@@ -2503,6 +2560,7 @@ do
 done
 
 check "codex_cloud_setup_contract" bash scripts/test-codex-cloud-setup.sh
+check "codex_cloud_lane_setup_contract" bash scripts/test-setup-codex-cloud-lane.sh
 
 check "script_check_agent_issue_readiness_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-agent-issue-readiness.py").read_text())'
@@ -2514,6 +2572,30 @@ check "script_check_merge_gate_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-merge-gate.py").read_text())'
 check "script_validate_agent_workflow_assets_syntax" \
   bash -n scripts/validate-agent-workflow-assets.sh
+check "cloud_automation_policy_regression" \
+  bash scripts/test-cloud-automation-policy.sh
+check "cloud_dispatch_regression" \
+  bash scripts/test-codex-cloud-dispatch.sh
+check "semver_workflow_security_regression" \
+  bash scripts/test-semver-workflow-security.sh
+check "issue_labeler_regression" \
+  bash scripts/test-issue-labeler.sh
+check "review_followup_issue_regression" \
+  bash scripts/test-create-review-followup-issue.sh
+check "cloud_diff_boundary_regression" \
+  bash scripts/test-validate-cloud-diff.sh
+check "cloud_diff_publisher_regression" \
+  bash scripts/test-publish-cloud-diff.sh
+check "collect_pr_review_context_regression" \
+  bash scripts/test-collect-pr-review-context.sh
+check "safe_direct_merge_regression" \
+  bash scripts/test-safe-direct-merge.sh
+check "review_correction_quarantine_regression" \
+  bash scripts/test-quarantine-review-correction-limit.sh
+check "merge_gate_evidence_regression" \
+  bash scripts/test-collect-merge-gate-evidence.sh
+check "trusted_merge_publisher_regression" \
+  bash scripts/test-publish-cloud-merge.sh
 
 check "summary_suppresses_skips" check_summary_suppresses_skips
 check "skill_policy_structure_negative" check_skill_policy_structure_negative
@@ -2555,6 +2637,12 @@ check "cloud_claim_contract" sh -c '
     and .data.lease.run_id == \"run-3\"
     and .data.lease.owner == \"cloud:executor\"
     and .data.lease.expires_at == \"2026-08-21T13:00:00Z\"
+    and .data.updated_execution.approval_id == \"approval-3\"
+    and .data.updated_execution.executor == \"cloud\"
+    and .data.updated_execution.runs[0].repository == \"nerdchanii/rpm\"
+    and .data.updated_execution.runs[0].issue == 3
+    and .data.updated_execution.runs[0].event_id == \"delivery-3\"
+    and .data.updated_execution.runs[0].idempotency_key == .data.idempotency_key
     and .data.preserved_labels == [\"priority:high\"]
     and .data.labels == [\"agent:claimed\",\"priority:high\"]
   " >/dev/null
@@ -2606,6 +2694,31 @@ check "cloud_claim_executor_mismatch_blocked" sh -c '
   set -e
   [ "$code" -eq 1 ]
   printf "%s\n" "$output" | jq -e ".data.status == \"blocked\" and .data.reason == \"executor-mismatch\"" >/dev/null
+'
+check "cloud_malformed_ready_has_reason_and_number" sh -c '
+  set +e
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-ready-malformed.json \
+    --operation select-execution)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"malformed-ready\"
+    and .data.invalid[0].number == 13
+    and .data.invalid[0].reason == \"missing-ready-transition-actor\"
+  " >/dev/null
+'
+check "cloud_malformed_ready_demotion_contract" sh -c '
+  output="$(python3 scripts/check-cloud-queue-contract.py \
+    --issues-file .agents/fixtures/backlog/cloud-ready-malformed.json \
+    --operation transition --issue 13 --from-state ready --to-state blocked)"
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"transition\"
+    and .data.issue == 13
+    and .data.labels == [\"agent:blocked\",\"kind:bug\"]
+  " >/dev/null
 '
 check "cloud_multiple_lifecycle_blocked" sh -c '
   set +e
@@ -2685,7 +2798,144 @@ check "merge_gate_pass" sh -c '
     and .data.issue == 12
     and .data.pr == 44
     and .data.method == \"squash\"
-    and .data.delete_branch == true
+    and .data.delete_branch == false
+    and .data.expected_head_sha == \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"
+  " >/dev/null
+'
+check "merge_gate_server_protection_missing_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-server-protection-missing.json \
+    --operation select-merge)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"server-protection-missing\"
+    and .data.issue == 12
+    and .data.pr == 44
+  " >/dev/null
+'
+check "merge_gate_server_protection_invalid_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-server-protection-invalid.json \
+    --operation select-merge)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"server-protection-invalid\"
+  " >/dev/null
+'
+check "merge_gate_server_protection_mismatch_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-server-protection-mismatch.json \
+    --operation select-merge)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"server-protection-mismatch\"
+  " >/dev/null
+'
+check "merge_gate_required_check_identity_fail_closed" sh -c '
+  for fixture in \
+    merge-server-protection-contexts-only.json \
+    merge-server-protection-app-id-missing.json \
+    merge-server-protection-app-id-null.json \
+    merge-server-protection-app-id-negative.json \
+    merge-server-protection-duplicate-context.json
+  do
+    set +e
+    output="$(python3 scripts/check-merge-gate.py \
+      --issues-file ".agents/fixtures/backlog/${fixture}" \
+      --operation select-merge)"
+    code=$?
+    set -e
+    [ "$code" -eq 1 ]
+    printf "%s\n" "$output" | jq -e \
+      ".data.status == \"blocked\" and .data.reason == \"server-protection-invalid\"" \
+      >/dev/null
+  done
+  set +e
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-server-protection-app-id-mismatch.json \
+    --operation select-merge)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e \
+    ".data.status == \"blocked\" and .data.reason == \"server-protection-mismatch\"" \
+    >/dev/null
+'
+check "merge_gate_ref_metadata_missing_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-ref-metadata-missing.json \
+    --operation select-merge)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"pr-ref-metadata-missing\"
+  " >/dev/null
+'
+check "merge_gate_ref_metadata_empty_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-ref-metadata-empty.json \
+    --operation select-merge)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"pr-ref-metadata-missing\"
+  " >/dev/null
+'
+check "merge_gate_ref_metadata_invalid_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-ref-metadata-invalid.json \
+    --operation select-merge)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"pr-ref-metadata-invalid\"
+  " >/dev/null
+'
+check "merge_gate_unexpected_base_branch_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-unexpected-base-branch.json \
+    --operation select-merge)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"unexpected-base-branch\"
+  " >/dev/null
+'
+check "merge_gate_protected_head_branch_blocked" sh -c '
+  set +e
+  output="$(python3 scripts/check-merge-gate.py \
+    --issues-file .agents/fixtures/backlog/merge-protected-head-branch.json \
+    --operation select-merge)"
+  code=$?
+  set -e
+  [ "$code" -eq 1 ]
+  printf "%s\n" "$output" | jq -e "
+    .data.status == \"blocked\"
+    and .data.reason == \"protected-head-branch\"
   " >/dev/null
 '
 check "merge_gate_checks_pending_no_work" sh -c '
@@ -2729,9 +2979,13 @@ check "local_prepare_keeps_project_registration" sh -c '
     .codex/agents/rpm_idea_issue_creator.toml
   rg -q "local Project preflight" .agents/skills/prepare-backlog/SKILL.md
 '
-check "workflow_forbids_merge_and_codex_request" sh -c '
-  ! rg -n -i \
-    "(gh pr merge|merge_pull_request|@codex review)" \
+check "workflow_merge_owner_and_codex_request_boundary" sh -c '
+  jq -e ".automation.merge_pull_requests == true and .automation.request_codex_review == false" \
+    .agents/workflows/backlog-policy.json >/dev/null
+  rg -q "single authorized merge path" .agents/docs/backlog-agent-workflow.md
+  rg -q "Never merge the pull request" .agents/skills/take-ticket/SKILL.md
+  rg -q "Never merge or post.*@codex review" .agents/skills/pr-review-resolution/SKILL.md
+  ! rg -n -i "@codex review" \
     .agents/skills .codex/agents .agents/docs \
     | rg -v \
       "(Never|never|금지|Do not|does not|do not|without|request_codex_review|configured code review|does not post|no @codex review|or request @codex review|request, or wait for)"

@@ -1,0 +1,17 @@
+{
+  "pull_requests": [
+    {"number": 40, "state": "OPEN", "labels": ["agent:correction-0", "kind:feature"], "phase": "published"},
+    {"number": 41, "state": "OPEN", "labels": ["agent:correction-0", "kind:feature"], "phase": "correction-0"},
+    {"number": 42, "state": "OPEN", "labels": ["agent:correction-1", "kind:feature"], "phase": "correction-1"},
+    {"number": 43, "state": "OPEN", "labels": ["agent:correction-2", "kind:feature"], "phase": "correction-2"},
+    {"number": 44, "state": "OPEN", "labels": ["agent:correction-3", "kind:feature"], "phase": "correction-3"},
+    {"number": 45, "state": "OPEN", "labels": ["agent:correction-4", "kind:feature"], "phase": "correction-4"},
+    {"number": 46, "state": "OPEN", "labels": ["agent:correction-5", "kind:feature"], "phase": "correction-5"},
+    {"number": 47, "state": "OPEN", "labels": ["kind:feature"], "phase": "missing-counter"},
+    {"number": 48, "state": "OPEN", "labels": ["agent:correction-99", "kind:feature"], "phase": "unknown-counter"},
+    {"number": 49, "state": "OPEN", "labels": ["agent:correction-0", 7], "phase": "non-string-label"},
+    {"number": 50, "labels": ["agent:correction-0"], "phase": "missing-state"},
+    {"number": 51, "state": "OPEN", "labels": ["agent:correction-0", "agent:correction-0"], "phase": "duplicate-label"},
+    {"number": 52, "state": "OPEN", "labels": ["agent:correction-0", "agent:correction-1"], "phase": "multiple-counters"}
+  ]
+}

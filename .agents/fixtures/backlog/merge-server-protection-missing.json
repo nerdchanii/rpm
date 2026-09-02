@@ -1,0 +1,22 @@
+{
+  "issues": [
+    {
+      "number": 12,
+      "state": "OPEN",
+      "labels": ["agent:awaiting-merge", "kind:feature"],
+      "awaiting_merge_transition_actor": "nerdchanii",
+      "closing_prs": [
+        {
+          "number": 44,
+          "state": "OPEN",
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_ref": "main",
+          "head_ref": "agent/issue-12",
+          "mergeable": true,
+          "checks": {"metadata": "success", "verify": "success"},
+          "unresolved_p0_p1": false
+        }
+      ]
+    }
+  ]
+}

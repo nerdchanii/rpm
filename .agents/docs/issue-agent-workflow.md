@@ -23,8 +23,10 @@ explicit user or scheduled run
         └── follow-up issue creator
 ```
 
-The main session owns user decisions, final scope acceptance, Draft PR creation,
-commits, pushes, PR state, and the final report. The workflow manager is the
+The main session owns user decisions, final scope acceptance, commits, pushes,
+and the final report. At the two external publication boundaries, the top-level
+entry skill calls its dedicated MCP-only writer: `rpm_ticket_publisher` for the
+read-only publication checkpoint and final PR publication. The workflow manager is the
 single entry router. One per-issue manager owns the process for one issue. Leaf
 agents receive only their inputs, scope, and output contract.
 
@@ -57,9 +59,9 @@ flowchart TD
     D --> E{"Contract decision clear?"}
     E -- "No" --> X["Return BLOCKED with decision required"]
     E -- "Yes, SPEC edit needed" --> F["Update SPEC"]
-    E -- "Yes, SPEC already aligned" --> G["Draft PR checkpoint"]
+    E -- "Yes, SPEC already aligned" --> G["Publication preflight checkpoint"]
     F --> G
-    G --> H["Main creates Draft PR and resumes workflow"]
+    G --> H["Publication writer verifies readiness; main resumes workflow"]
     H --> I["Write regression test or fixture"]
     I --> J["Implement production change"]
     J --> K["Run targeted tests"]
@@ -73,8 +75,10 @@ flowchart TD
     P --> Q{"Material in-scope finding?"}
     Q -- "Yes" --> M
     Q -- "Deferred work" --> R["Draft or create authorized follow-up issue"]
-    Q -- "No" --> S["Return complete result to main"]
+    Q -- "No" --> S["Return validated result to main"]
     R --> S
+    S --> T["Main commits and pushes explicit safe branch ref"]
+    T --> U["Publication writer creates and finalizes review-ready PR"]
 ```
 
 ## Concurrency Rules
@@ -86,13 +90,15 @@ flowchart TD
 - Concurrent issues require separate worktrees.
 - One issue, one active claim lease, and one worker worktree are the default
   execution unit.
-- The default correction-loop budget is two.
+- The review correction budget is five. The PR keeps one counter label from
+  `agent:correction-0` through `agent:correction-5`; a sixth correction is
+  blocked.
 
 ## Authority Boundaries
 
 | Role | Repository writes | Command execution | External mutation |
 |---|---:|---:|---:|
-| Main session | Final integration | As needed | Commits, pushes, PR state |
+| Main session | Final integration | As needed | Decisions, commits, pushes, final acceptance |
 | Workflow manager | No | No validation | No |
 | Per-issue manager | No | No validation | No |
 | Issue/SPEC reviewers | No | Read-only discovery | No |
@@ -103,6 +109,9 @@ flowchart TD
 | Verifier | Read-only workspace | `just validate` | No |
 | Adversarial reviewer | No | Read-only inspection | No |
 | Follow-up issue creator | Read-only workspace and temporary body | Duplicate check and issue helper | Explicit authorization required |
+| Ticket publication writer | No | Connected GitHub plugin reads | Read-only publication checkpoint, validated PR creation, review-ready state, and linked issue transition |
+| Review reconciliation writer | No | Connected GitHub plugin reads | Correction counter, verified fixed-thread resolution, and review-pending state transition |
+| Merge state writer | No | Connected GitHub plugin reads | Awaiting-merge to blocked transition and deduplicated reason comment |
 
 Codex custom agents use `sandbox_mode = "read-only"` for judgment roles.
 Command-only roles redirect Cargo build artifacts to
@@ -121,20 +130,23 @@ repository patch tools. Writer patches are constrained by role:
 
 MCP calls are limited by the project tool-policy hook to each role's assigned
 read or mutation boundary. Backlog GitHub writers, issue intake, and authorized
-follow-up handling have separate allowlists. Unmapped main-session tool calls
-remain unaffected.
+follow-up handling have separate allowlists. The three publication writers are
+MCP-only and have no shell, patch, commit, push, or merge access. Unmapped
+main-session tool calls remain unaffected.
 
 ## Terminal Results
 
 The per-issue manager returns one JSONL `issue_workflow_result` with one of
 these states. The workflow manager relays it to the caller:
 
-- `checkpoint`: the main session must create the Draft PR and resume the same workflow run.
+- `checkpoint`: the main session must invoke `rpm_ticket_publisher` for a read-only publication preflight, then resume the same workflow run.
 - `complete`: contract, tests, implementation, validation, and review converged.
 - `blocked`: an explicit decision, permission, tool, or unresolved finding prevents safe progress.
 
-Follow-up issue creation defaults to disabled. A valid finding produces a draft
-until `may_create_followup_issues=true` is supplied.
+Follow-up issue creation follows the committed policy. The automated workflow
+currently supplies `may_create_followup_issues=true`, deduplicates by source and
+fingerprint among issues carrying `process:agent-followup`, and creates at most
+five follow-up issues per source.
 
 ## Review Boundary
 
@@ -143,7 +155,8 @@ diff, tests, and validation evidence. The ticket workflow marks the validated
 PR review-ready and moves the linked issue to review-pending. It does not post,
 request, or wait for `@codex review`. Repository-configured Codex Automatic
 review runs independently. The scheduled reconciliation workflow applies
-accepted findings and moves an exhausted review to awaiting-merge.
+accepted findings, moves a converged review to awaiting-merge, and moves a
+sixth correction request to blocked.
 
 ## Completion Enforcement
 

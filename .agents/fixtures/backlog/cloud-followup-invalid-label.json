@@ -1,0 +1,11 @@
+{
+  "followups": [
+    {
+      "source": "pr:44",
+      "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "labels": ["process:agent-followup", 7],
+      "number": 91,
+      "state": "OPEN"
+    }
+  ]
+}

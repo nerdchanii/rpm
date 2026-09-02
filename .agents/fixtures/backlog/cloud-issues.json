@@ -5,6 +5,7 @@
       "url": "https://github.com/nerdchanii/rpm/issues/9",
       "state": "OPEN",
       "labels": ["agent:ready", "kind:feature"],
+      "ready_transition_actor": "nerdchanii",
       "closing_prs": [],
       "execution": {
         "approval_id": "approval-9",
@@ -18,6 +19,7 @@
       "url": "https://github.com/nerdchanii/rpm/issues/3",
       "state": "OPEN",
       "labels": ["agent:ready", "priority:high"],
+      "ready_transition_actor": "nerdchanii",
       "closing_prs": [],
       "execution": {
         "approval_id": "approval-3",
@@ -31,6 +33,7 @@
       "url": "https://github.com/nerdchanii/rpm/issues/2",
       "state": "CLOSED",
       "labels": ["agent:ready"],
+      "ready_transition_actor": "nerdchanii",
       "closing_prs": []
     }
   ]

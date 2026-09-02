@@ -24,6 +24,15 @@ cache; task prompts do not need to repeat those installation steps.
    toolchain or setup settings. Confirm whether setup reran and which caches
    were cleared in the Cloud UI logs; those effects are platform behavior.
 
+The GitHub Action supplies a separate Cloud environment for each lane. Set
+`RPM_CLOUD_LANE` in that environment to exactly `issue`, `review`, or `merge`.
+The `review` environment skips repository dependency fetching and compiler
+warm-up. Review tasks run on a pull request head, so this keeps Cargo from
+compiling a PR-controlled `build.rs` or procedural macro during environment
+setup. The `issue` lane keeps the normal locked fetch and offline compiler
+warm-up. An unset value retains the setup behavior used by the manually
+configured environment.
+
 The Cloud setup is intentionally independent from the shared desktop
 `scripts/worktree-setup.sh` entrypoint. The default trusted PATH starts with
 the platform-managed Cargo bin and the fixed system directories:
@@ -94,10 +103,12 @@ The setup performs these steps in order:
 4. Install `just` with `cargo install just --locked` when it is missing, then
    verify `rustfmt`, `cargo-clippy`, and `just` are discoverable.
 5. Verify that `jq`, `node`, and `python3` are available.
-6. Fetch the lockfile-resolved dependencies with the resolved stable Cargo
-   binary using `cargo fetch --quiet --locked`.
-7. Warm the compiler cache with that same binary and its exact sibling Rustc
-   using `cargo check --quiet --offline --locked --all-targets`.
+6. Unless `RPM_CLOUD_LANE=review`, fetch the lockfile-resolved dependencies
+   with the resolved stable Cargo binary using `cargo fetch --quiet --locked`.
+7. Unless `RPM_CLOUD_LANE=review`, warm the compiler cache with that same
+   binary and its exact sibling Rustc using
+   `cargo check --quiet --offline --locked --all-targets`. The review lane
+   skips both repository-dependent steps.
 
 Tool installation and locked dependency fetch are the setup operations that
 may require network access. Cargo setup commands use the already installed
@@ -114,7 +125,9 @@ only the vetted transport allowlist. The warm-up check is explicitly offline
 and uses the dependencies fetched in the preceding step. `--offline` constrains
 Cargo's network behavior; build scripts and procedural macros remain executable
 code, so their socket and file access is governed by the platform sandbox,
-network, and secret policies.
+network, and secret policies. The review lane does not invoke repository
+Cargo commands during setup, which prevents those PR-controlled programs from
+running before the review hooks and policy are active.
 Setup never runs the full test suite or `just validate`.
 
 Every executable discovered on the trusted PATH must be an executable regular

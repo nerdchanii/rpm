@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "repository": "nerdchanii/rpm",
   "execution_queue": {
     "source": "issue-labels",
@@ -7,7 +7,13 @@
     "order": "issue-number-ascending",
     "active_states": [
       "claimed",
-      "review-pending"
+      "review-pending",
+      "awaiting-merge"
+    ],
+    "blocking_states": [
+      "claimed",
+      "review-pending",
+      "awaiting-merge"
     ]
   },
   "project": {
@@ -45,7 +51,13 @@
     ],
     "active_states": [
       "claimed",
-      "review-pending"
+      "review-pending",
+      "awaiting-merge"
+    ],
+    "blocking_states": [
+      "claimed",
+      "review-pending",
+      "awaiting-merge"
     ],
     "lease": {
       "field": "lease",
@@ -92,6 +104,7 @@
       "blocked"
     ],
     "awaiting-merge": [
+      "review-pending",
       "blocked"
     ],
     "blocked": [
@@ -99,10 +112,41 @@
       "ready"
     ]
   },
+  "trusted_lifecycle_actors": {
+    "ready": [
+      "nerdchanii"
+    ],
+    "awaiting-merge": [
+      "nerdchanii",
+      "chatgpt-codex-connector[bot]",
+      "github-actions[bot]"
+    ]
+  },
   "automation": {
-    "create_followup_issues_by_default": false,
-    "merge_pull_requests": false,
+    "create_followup_issues_by_default": true,
+    "merge_pull_requests": true,
     "request_codex_review": false
+  },
+  "review_correction": {
+    "max_attempts": 5,
+    "counter_labels": {
+      "0": "agent:correction-0",
+      "1": "agent:correction-1",
+      "2": "agent:correction-2",
+      "3": "agent:correction-3",
+      "4": "agent:correction-4",
+      "5": "agent:correction-5"
+    },
+    "exhausted_result": "blocked"
+  },
+  "followup": {
+    "identity_label": "process:agent-followup",
+    "dedupe_key_fields": [
+      "source",
+      "fingerprint"
+    ],
+    "duplicate_result": "duplicate",
+    "max_per_source": 5
   },
   "merge_gate": {
     "enabled": true,
@@ -113,9 +157,28 @@
       "metadata",
       "verify"
     ],
+    "max_no_work_attempts": 5,
     "required_mergeable": true,
     "forbid_unresolved_p0_p1": true,
+    "server_protection": {
+      "branch": "main",
+      "enforce_admins": true,
+      "required_conversation_resolution": true,
+      "required_status_checks": [
+        {
+          "context": "metadata",
+          "app_id": 15368
+        },
+        {
+          "context": "verify",
+          "app_id": 15368
+        }
+      ],
+      "strict_status_checks": true,
+      "allow_force_pushes": false,
+      "allow_deletions": false
+    },
     "method": "squash",
-    "delete_branch": true
+    "delete_branch": false
   }
 }

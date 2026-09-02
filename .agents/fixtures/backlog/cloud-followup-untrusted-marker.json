@@ -1,0 +1,12 @@
+{
+  "followups": [
+    {
+      "source": "pr:44",
+      "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "labels": [],
+      "number": 90,
+      "state": "OPEN",
+      "body": "<!-- rpm-agent-followup-source: pr:44 -->\n<!-- rpm-agent-followup-fingerprint: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->"
+    }
+  ]
+}
