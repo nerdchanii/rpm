@@ -39,10 +39,105 @@ jobs:
           persist-credentials: false
 
       - name: Run semver benchmarks
-        run: node scripts/benchmark-semver.mjs
+        id: run-semver
+        run: |
+          set -euo pipefail
+          benchmark_log="${RUNNER_TEMP}/semver-benchmarks.log"
+          node scripts/benchmark-semver.mjs | tee "$benchmark_log"
+          history_dir="$(sed -n 's/^benchmark history written to //p' "$benchmark_log" | tail -n 1)"
+          case "$history_dir" in
+            benches/histories/????-??-??-[0-9][0-9][0-9]) ;;
+            *)
+              echo "Unexpected benchmark history path: $history_dir" >&2
+              exit 1
+              ;;
+          esac
+          printf 'history_dir=%s\n' "$history_dir" >> "$GITHUB_OUTPUT"
 
-      - name: Require committed benchmark output
-        run: git diff --exit-code -- benches/BENCHMARKS.md benches/histories
+      - name: Validate generated benchmark report
+        env:
+          HISTORY_DIR: ${{ steps.run-semver.outputs.history_dir }}
+        run: |
+          set -euo pipefail
+          test -s benches/BENCHMARKS.md
+          test -s "$HISTORY_DIR/benchmarks.json"
+          test -s "$HISTORY_DIR/benchmark.svg"
+          RPM_BENCHMARK_HISTORY_DIR="$HISTORY_DIR" node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+
+          const historyDir = process.env.RPM_BENCHMARK_HISTORY_DIR;
+          const reportPath = `${historyDir}/benchmarks.json`;
+          const report = JSON.parse(await readFile(reportPath, 'utf8'));
+          const implementations = new Set(
+            (report.runs || []).map((run) => run.implementation),
+          );
+
+          if (report.schemaVersion !== 1) throw new Error('unexpected report schema');
+          if (report.outputDir !== historyDir) throw new Error('report path mismatch');
+          if (!Number.isFinite(Date.parse(report.generatedAt))) {
+            throw new Error('invalid generatedAt');
+          }
+          if (!Number.isFinite(Date.parse(report.startedAt))) {
+            throw new Error('invalid startedAt');
+          }
+          if (implementations.size !== 2 || !implementations.has('rpm-rust') || !implementations.has('node-semver')) {
+            throw new Error('both semver implementations are required');
+          }
+          if (!Array.isArray(report.comparisons) || report.comparisons.length === 0) {
+            throw new Error('benchmark comparisons are empty');
+          }
+          for (const run of report.runs) {
+            if (!Array.isArray(run.samples) || run.samples.length === 0) {
+              throw new Error(`samples are empty for ${run.implementation}`);
+            }
+            for (const sample of run.samples) {
+              if (!Number.isFinite(sample.nsPerIter) || sample.nsPerIter < 0) {
+                throw new Error(`invalid sample for ${run.implementation}`);
+              }
+            }
+          }
+          for (const comparison of report.comparisons) {
+            if (!Number.isFinite(comparison.rpmRustMeanNsPerIter) ||
+                !Number.isFinite(comparison.nodeSemverMeanNsPerIter)) {
+              throw new Error(`invalid comparison for ${comparison.operation}`);
+            }
+          }
+
+          const markdown = await readFile('benches/BENCHMARKS.md', 'utf8');
+          for (const expected of [
+            `benchmark_data: ${historyDir}/benchmarks.json`,
+            `benchmark_chart: ${historyDir}/benchmark.svg`,
+            `history_directory: ${historyDir}`,
+          ]) {
+            if (!markdown.includes(expected)) throw new Error(`missing Markdown link: ${expected}`);
+          }
+
+          const svg = await readFile(`${historyDir}/benchmark.svg`, 'utf8');
+          if (!svg.includes('<svg ') || !svg.includes('</svg>')) {
+            throw new Error('invalid benchmark SVG');
+          }
+          NODE
+
+          while IFS= read -r status_line; do
+            changed_path="${status_line:3}"
+            case "$changed_path" in
+              benches/BENCHMARKS.md|"$HISTORY_DIR"/benchmarks.json|"$HISTORY_DIR"/benchmark.svg) ;;
+              *)
+                echo "Unexpected benchmark output change: $changed_path" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git status --porcelain=v1 --untracked-files=all)
+
+      - name: Upload generated benchmark report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: semver-benchmarks-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            benches/BENCHMARKS.md
+            ${{ steps.run-semver.outputs.history_dir }}
+          if-no-files-found: error
+          retention-days: 1
 
   verify-main-semver-benchmarks:
     if: >-
@@ -60,7 +155,102 @@ jobs:
           persist-credentials: false
 
       - name: Run semver benchmarks
-        run: node scripts/benchmark-semver.mjs
+        id: run-semver
+        run: |
+          set -euo pipefail
+          benchmark_log="${RUNNER_TEMP}/semver-benchmarks.log"
+          node scripts/benchmark-semver.mjs | tee "$benchmark_log"
+          history_dir="$(sed -n 's/^benchmark history written to //p' "$benchmark_log" | tail -n 1)"
+          case "$history_dir" in
+            benches/histories/????-??-??-[0-9][0-9][0-9]) ;;
+            *)
+              echo "Unexpected benchmark history path: $history_dir" >&2
+              exit 1
+              ;;
+          esac
+          printf 'history_dir=%s\n' "$history_dir" >> "$GITHUB_OUTPUT"
 
-      - name: Require committed benchmark output
-        run: git diff --exit-code -- benches/BENCHMARKS.md benches/histories
+      - name: Validate generated benchmark report
+        env:
+          HISTORY_DIR: ${{ steps.run-semver.outputs.history_dir }}
+        run: |
+          set -euo pipefail
+          test -s benches/BENCHMARKS.md
+          test -s "$HISTORY_DIR/benchmarks.json"
+          test -s "$HISTORY_DIR/benchmark.svg"
+          RPM_BENCHMARK_HISTORY_DIR="$HISTORY_DIR" node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+
+          const historyDir = process.env.RPM_BENCHMARK_HISTORY_DIR;
+          const reportPath = `${historyDir}/benchmarks.json`;
+          const report = JSON.parse(await readFile(reportPath, 'utf8'));
+          const implementations = new Set(
+            (report.runs || []).map((run) => run.implementation),
+          );
+
+          if (report.schemaVersion !== 1) throw new Error('unexpected report schema');
+          if (report.outputDir !== historyDir) throw new Error('report path mismatch');
+          if (!Number.isFinite(Date.parse(report.generatedAt))) {
+            throw new Error('invalid generatedAt');
+          }
+          if (!Number.isFinite(Date.parse(report.startedAt))) {
+            throw new Error('invalid startedAt');
+          }
+          if (implementations.size !== 2 || !implementations.has('rpm-rust') || !implementations.has('node-semver')) {
+            throw new Error('both semver implementations are required');
+          }
+          if (!Array.isArray(report.comparisons) || report.comparisons.length === 0) {
+            throw new Error('benchmark comparisons are empty');
+          }
+          for (const run of report.runs) {
+            if (!Array.isArray(run.samples) || run.samples.length === 0) {
+              throw new Error(`samples are empty for ${run.implementation}`);
+            }
+            for (const sample of run.samples) {
+              if (!Number.isFinite(sample.nsPerIter) || sample.nsPerIter < 0) {
+                throw new Error(`invalid sample for ${run.implementation}`);
+              }
+            }
+          }
+          for (const comparison of report.comparisons) {
+            if (!Number.isFinite(comparison.rpmRustMeanNsPerIter) ||
+                !Number.isFinite(comparison.nodeSemverMeanNsPerIter)) {
+              throw new Error(`invalid comparison for ${comparison.operation}`);
+            }
+          }
+
+          const markdown = await readFile('benches/BENCHMARKS.md', 'utf8');
+          for (const expected of [
+            `benchmark_data: ${historyDir}/benchmarks.json`,
+            `benchmark_chart: ${historyDir}/benchmark.svg`,
+            `history_directory: ${historyDir}`,
+          ]) {
+            if (!markdown.includes(expected)) throw new Error(`missing Markdown link: ${expected}`);
+          }
+
+          const svg = await readFile(`${historyDir}/benchmark.svg`, 'utf8');
+          if (!svg.includes('<svg ') || !svg.includes('</svg>')) {
+            throw new Error('invalid benchmark SVG');
+          }
+          NODE
+
+          while IFS= read -r status_line; do
+            changed_path="${status_line:3}"
+            case "$changed_path" in
+              benches/BENCHMARKS.md|"$HISTORY_DIR"/benchmarks.json|"$HISTORY_DIR"/benchmark.svg) ;;
+              *)
+                echo "Unexpected benchmark output change: $changed_path" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git status --porcelain=v1 --untracked-files=all)
+
+      - name: Upload generated benchmark report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: semver-benchmarks-${{ github.sha }}
+          path: |
+            benches/BENCHMARKS.md
+            ${{ steps.run-semver.outputs.history_dir }}
+          if-no-files-found: error
+          retention-days: 1

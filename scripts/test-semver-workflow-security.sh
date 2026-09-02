@@ -20,7 +20,9 @@ required = (
     "uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2",
     "ref: ${{ github.event.pull_request.head.sha }}",
     "persist-credentials: false",
-    "git diff --exit-code -- benches/BENCHMARKS.md benches/histories",
+    "Validate generated benchmark report",
+    "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2",
+    "retention-days: 1",
 )
 for needle in required:
     if needle not in text:
@@ -30,8 +32,10 @@ for forbidden in (
     "contents: write",
     "git push",
     "git commit",
+    "git diff --exit-code",
     "github.event.pull_request.head.ref",
     "uses: actions/checkout@v4",
+    "uses: actions/upload-artifact@v4",
 ):
     if forbidden in text:
         raise SystemExit(f"forbidden: {forbidden}")
