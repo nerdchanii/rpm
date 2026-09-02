@@ -78,17 +78,64 @@ if [ "${1:-}" = api ]; then
     *)
       if [[ "$query" == *closingIssuesReferences* ]]; then
         if [ "${GH_SIMPLE_CROSS_REFERENCE:-0}" = 1 ]; then
-          json '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+          json '{"data":{"repository":{"pullRequest":{"number":44,"repository":{"nameWithOwner":"nerdchanii/rpm"},"closingIssuesReferences":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+        elif [ "${GH_CLOSING_EXTRA:-0}" = 1 ]; then
+          json '{"data":{"repository":{"pullRequest":{"number":44,"repository":{"nameWithOwner":"nerdchanii/rpm"},"closingIssuesReferences":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":12,"repository":{"nameWithOwner":"nerdchanii/rpm"}},{"number":13,"repository":{"nameWithOwner":"nerdchanii/rpm"}}]}}}}}'
         elif [ -z "$closing_after" ]; then
-          json '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"pageInfo":{"hasNextPage":true,"endCursor":"closing-1"},"nodes":[{"number":12}]}}}}}'
+          json '{"data":{"repository":{"pullRequest":{"number":44,"repository":{"nameWithOwner":"nerdchanii/rpm"},"closingIssuesReferences":{"pageInfo":{"hasNextPage":true,"endCursor":"closing-1"},"nodes":[]}}}}}'
         else
-          json '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":13}]}}}}}'
+          json '{"data":{"repository":{"pullRequest":{"number":44,"repository":{"nameWithOwner":"nerdchanii/rpm"},"closingIssuesReferences":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":12,"repository":{"nameWithOwner":"nerdchanii/rpm"}}]}}}}}'
         fi
       elif [[ "$query" == *reviewThreads* ]]; then
+        review_nodes='[]'
+        case "${GH_REVIEW_MODE:-none}" in
+          old-head-p1)
+            review_nodes='[{"id":"review-old-head","state":"COMMENTED","body":"**P1:** old head finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"author":{"login":"reviewer"}} ,{"id":"review-current-approved","state":"APPROVED","body":"Looks good.","submittedAt":"2026-09-01T00:00:01Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          dismissed-p1)
+            review_nodes='[{"id":"review-dismissed","state":"DISMISSED","body":"**P1:** dismissed finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          pending-null)
+            review_nodes='[{"id":"review-pending","state":"PENDING","body":"**P1:** pending finding","submittedAt":null,"commit":null,"author":{"login":"reviewer"}}]'
+            ;;
+          current-bold-p1)
+            review_nodes='[{"id":"review-current-commented","state":"COMMENTED","body":"**P1:** current commented finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}},{"id":"review-current-changes-requested","state":"CHANGES_REQUESTED","body":"**P1:** current requested finding","submittedAt":"2026-09-01T00:00:01Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          current-bold-wrapped-p1)
+            review_nodes='[{"id":"review-current-bold-wrapped-p1","state":"COMMENTED","body":"**P1**: current critical finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          current-bold-wrapped-p0)
+            review_nodes='[{"id":"review-current-bold-wrapped-p0","state":"COMMENTED","body":"**P0**: current critical finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          current-bracket-p0)
+            review_nodes='[{"id":"review-current-bracket-p0","state":"COMMENTED","body":"[P0] current critical finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          current-bold-bracket-p1)
+            review_nodes='[{"id":"review-current-bold-bracket-p1","state":"COMMENTED","body":"**[P1]** current critical finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          current-em-dash-p1)
+            review_nodes='[{"id":"review-current-em-dash-p1","state":"COMMENTED","body":"P1— current critical finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          current-en-dash-p1)
+            review_nodes='[{"id":"review-current-en-dash-p1","state":"COMMENTED","body":"P1– current critical finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          current-hyphen-p1)
+            review_nodes='[{"id":"review-current-hyphen-p1","state":"COMMENTED","body":"P1- current critical finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          current-badge-p1)
+            review_nodes='[{"id":"review-current-badge-p1","state":"COMMENTED","body":"P1 Badge current critical finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          invalid-state)
+            review_nodes='[{"id":"review-invalid-state","state":"UNKNOWN","body":"review","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          invalid-commit)
+            review_nodes='[{"id":"review-invalid-commit","state":"COMMENTED","body":"review","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"not-a-sha"},"author":{"login":"reviewer"}}]'
+            ;;
+        esac
         if [ -n "$threads_after" ]; then
-          json '{"data":{"repository":{"pullRequest":{"number":44,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":"cursor-2"},"nodes":[{"id":"thread-2","isResolved":true,"isOutdated":false,"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}]},"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"mergeQueueEntry":null}}}}'
+          json "{\"data\":{\"repository\":{\"pullRequest\":{\"number\":44,\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewThreads\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":\"cursor-2\"},\"nodes\":[{\"id\":\"thread-2\",\"isResolved\":true,\"isOutdated\":false,\"comments\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},\"nodes\":[]}}]},\"reviews\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},\"nodes\":${review_nodes}},\"mergeQueueEntry\":null}}}}"
         else
-          json '{"data":{"repository":{"pullRequest":{"number":44,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[{"id":"thread-1","isResolved":true,"isOutdated":false,"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}]},"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"mergeQueueEntry":null}}}}'
+          json "{\"data\":{\"repository\":{\"pullRequest\":{\"number\":44,\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviewThreads\":{\"pageInfo\":{\"hasNextPage\":true,\"endCursor\":\"cursor-1\"},\"nodes\":[{\"id\":\"thread-1\",\"isResolved\":true,\"isOutdated\":false,\"comments\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},\"nodes\":[]}}]},\"reviews\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},\"nodes\":${review_nodes}},\"mergeQueueEntry\":null}}}}"
         fi
       else
         json '{"errors":[{"message":"unexpected endpoint"}]}'
@@ -136,6 +183,61 @@ if ! python3 "$checker" --policy "$policy" --issues-file "$evidence" --operation
 fi
 pass 'collector flattens all pages and emits checker-compatible evidence'
 
+run_review_case() {
+  local mode="$1" expected_top_level="$2" expected_status="$3" evidence result
+  evidence="$tmp_dir/review-${mode}.json"
+  export GH_REVIEW_MODE="$mode"
+  if ! "$collector" --repo nerdchanii/rpm --policy "$policy" --output "$evidence" >/dev/null; then
+    fail "collector rejected review case: ${mode}"
+  fi
+  jq -e --argjson expected "$expected_top_level" '
+    .issues[0].closing_prs[0].top_level_p0_p1 == $expected
+    and .issues[0].closing_prs[0].unresolved_p0_p1 == $expected
+  ' "$evidence" >/dev/null || fail "collector calculated top-level review gate incorrectly: ${mode}"
+
+  if [ "$expected_status" = merge ]; then
+    if ! result="$(python3 "$checker" --policy "$policy" --issues-file "$evidence" --operation select-merge \
+      --expected-head-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+      --expected-base-sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)"; then
+      fail "checker blocked a safe review case: ${mode}"
+    fi
+    jq -e '.data.status == "merge" and .data.reason == "gate-passed"' <<<"$result" >/dev/null \
+      || fail "checker emitted an unexpected result for review case: ${mode}"
+  else
+    if result="$(python3 "$checker" --policy "$policy" --issues-file "$evidence" --operation select-merge \
+      --expected-head-sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+      --expected-base-sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2>/dev/null)"; then
+      fail "checker merged a blocking review case: ${mode}"
+    fi
+    jq -e '.data.status == "blocked" and .data.reason == "review-findings-remain"' <<<"$result" >/dev/null \
+      || fail "checker emitted an unexpected blocking result for review case: ${mode}"
+  fi
+  unset GH_REVIEW_MODE
+  pass "collector filters top-level reviews safely: ${mode}"
+}
+
+run_review_case old-head-p1 false merge
+run_review_case dismissed-p1 false merge
+run_review_case pending-null false merge
+run_review_case current-bold-p1 true blocked
+run_review_case current-bold-wrapped-p1 true blocked
+run_review_case current-bold-wrapped-p0 true blocked
+run_review_case current-bracket-p0 true blocked
+run_review_case current-bold-bracket-p1 true blocked
+run_review_case current-em-dash-p1 true blocked
+run_review_case current-en-dash-p1 true blocked
+run_review_case current-hyphen-p1 true blocked
+run_review_case current-badge-p1 true blocked
+
+for invalid_review_mode in invalid-state invalid-commit; do
+  export GH_REVIEW_MODE="$invalid_review_mode"
+  if "$collector" --repo nerdchanii/rpm --policy "$policy" >/dev/null 2>"$tmp_dir/${invalid_review_mode}.err"; then
+    fail "collector accepted malformed top-level review: ${invalid_review_mode}"
+  fi
+  unset GH_REVIEW_MODE
+  pass "collector rejects malformed top-level review: ${invalid_review_mode}"
+done
+
 : >"$GH_LOG"
 export GH_NO_CANDIDATE=1
 if ! no_work="$($collector --repo nerdchanii/rpm --policy "$policy")"; then
@@ -156,6 +258,14 @@ jq -e '.selection.status == "blocked" and .selection.reason == "ambiguous-closin
   || fail 'collector treated a simple timeline mention as a closing PR'
 unset GH_SIMPLE_CROSS_REFERENCE
 pass 'collector excludes a PR that does not close the selected issue'
+
+: >"$GH_LOG"
+export GH_CLOSING_EXTRA=1
+if "$collector" --repo nerdchanii/rpm --policy "$policy" >/dev/null 2>&1; then
+  fail 'collector accepted an extra closing issue reference'
+fi
+unset GH_CLOSING_EXTRA
+pass 'collector rejects an extra closing issue reference'
 
 : >"$GH_LOG"
 export GH_LOWER_CANDIDATE=1

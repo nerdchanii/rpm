@@ -401,6 +401,8 @@ PROTECTED_AUTOMATION_SCRIPT_PREFIXES = (
     "test-publish-cloud-diff",
     "test-safe-direct-merge",
     "test-collect-pr-review-context",
+    "quarantine-review-correction-limit",
+    "test-quarantine-review-correction-limit",
 )
 
 

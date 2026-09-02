@@ -115,7 +115,10 @@ thread_state_file="${RPM_TEST_THREAD_STATE:?RPM_TEST_THREAD_STATE is required}"
 pr_view_count_file="${RPM_TEST_PR_VIEW_COUNT:?RPM_TEST_PR_VIEW_COUNT is required}"
 resolve_count_file="${RPM_TEST_RESOLVE_COUNT:?RPM_TEST_RESOLVE_COUNT is required}"
 printf '%s\n' "$*" >>"$log_file"
-case "$*" in *"--repo nerdchanii/rpm"*) ;; *) exit 90 ;; esac
+case "$*" in
+  *"--repo nerdchanii/rpm"*) ;;
+  *) [ "${GH_REPO:-}" = nerdchanii/rpm ] || exit 90 ;;
+esac
 if [ "${RPM_TEST_FAIL_GH:-}" = "issue-view" ] && [ "$1 $2" = "issue view" ]; then exit 41; fi
 if [ "${RPM_TEST_FAIL_GH:-}" = "pr-list" ] && [ "$1 $2" = "pr list" ]; then exit 42; fi
 
@@ -129,6 +132,11 @@ get_pr() {
   if [ "${RPM_TEST_LABEL_RACE:-false}" = "true" ] && [ "$view_count" -eq 4 ]; then
     next_state="${state_file}.label-race"
     jq '(.prs[] | select(.number == 7) | .labels) = ["agent:correction-3"]' "$state_file" >"$next_state"
+    mv -- "$next_state" "$state_file"
+  fi
+  if [ "${RPM_TEST_LABEL_RACE_AFTER_HISTORY:-false}" = "true" ] && [ "$view_count" -eq 8 ]; then
+    next_state="${state_file}.history-label-race"
+    jq '(.prs[] | select(.number == 7) | .labels) = ["agent:correction-0"]' "$state_file" >"$next_state"
     mv -- "$next_state" "$state_file"
   fi
   if [ "${RPM_TEST_AWAITING_HEAD_RACE:-false}" = "true" ] && [ "$view_count" -eq 3 ]; then
@@ -192,7 +200,7 @@ case "$1 $2" in
       esac
     done
     body="$(<"$body_file")"; next="${state_file}.next"
-    jq --argjson n "$n" --arg body "$body" '.issues |= map(if .number == $n then .comments = ((.comments // []) + [{body:$body}]) else . end)' "$state_file" >"$next"
+    jq --argjson n "$n" --arg body "$body" '.issues |= map(if .number == $n then .comments = ((.comments // []) + [{body:$body,author:{login:"github-actions[bot]"}}]) else . end)' "$state_file" >"$next"
     save "$next"
     ;;
   "issue list")
@@ -286,7 +294,43 @@ case "$1 $2" in
         *) shift ;;
       esac
     done
-    if [[ "$query" == *'closingIssuesReferences(first:100'* ]]; then
+    if [[ "$query" == *'comments(first:100'* && "$query" == *'issue(number:'* ]]; then
+      comment_mode="${RPM_TEST_COMMENT_MODE:-normal}"
+      if [ "$comment_mode" = response-invalid ]; then
+        printf '%s\n' '{"data":{}}'
+        exit 0
+      fi
+      if [ "$comment_mode" = graphql-errors ]; then
+        printf '%s\n' '{"errors":[{"message":"synthetic GraphQL failure"}],"data":null}'
+        exit 0
+      fi
+      if [ "$comment_mode" = cursor-stalled ]; then
+        jq -nc --argjson issue "${number:-42}" --arg cursor "${after:-comment-cursor-1}" \
+          '{data:{repository:{nameWithOwner:"nerdchanii/rpm",issue:{number:$issue,repository:{nameWithOwner:"nerdchanii/rpm"},comments:{pageInfo:{hasNextPage:true,endCursor:$cursor},nodes:[]}}}}}'
+        exit 0
+      fi
+      if [ "$comment_mode" = page-limit ]; then
+        jq -nc --argjson issue "${number:-42}" --arg cursor "comment-cursor-${after:-0}" \
+          '{data:{repository:{nameWithOwner:"nerdchanii/rpm",issue:{number:$issue,repository:{nameWithOwner:"nerdchanii/rpm"},comments:{pageInfo:{hasNextPage:true,endCursor:$cursor},nodes:[]}}}}}'
+        exit 0
+      fi
+      comments_json="$(get_issue "${number:-42}" | jq -c '[.comments[]? | {id:(.id // null),body,author}]')"
+      comments_json="$(jq -c 'to_entries | map(.value + {id:(.value.id // ("ISSUE_COMMENT_" + (.key | tostring)))})' <<<"$comments_json")"
+      if [ "$comment_mode" = duplicate-id ]; then
+        nodes="$(jq -c '.[0:1] + .[0:1]' <<<"$comments_json")"
+        has_next=false
+        cursor=''
+      elif [ -z "$after" ]; then
+        nodes="$(jq -c '.[0:100]' <<<"$comments_json")"
+        if [ "$(jq 'length' <<<"$comments_json")" -gt 100 ]; then has_next=true; cursor=comment-cursor-1; else has_next=false; cursor=''; fi
+      else
+        nodes="$(jq -c '.[100:]' <<<"$comments_json")"
+        has_next=false
+        cursor=''
+      fi
+      jq -nc --argjson issue "${number:-42}" --argjson nodes "$nodes" --arg cursor "$cursor" --argjson has_next "$has_next" \
+        '{data:{repository:{nameWithOwner:"nerdchanii/rpm",issue:{number:$issue,repository:{nameWithOwner:"nerdchanii/rpm"},comments:{pageInfo:{hasNextPage:$has_next,endCursor:(if $cursor == "" then null else $cursor end)},nodes:$nodes}}}}}'
+    elif [[ "$query" == *'closingIssuesReferences(first:100'* ]]; then
       closing_ref_mode="${RPM_TEST_CLOSING_REF_MODE:-valid}"
       closing_nodes='[{"number":42,"repository":{"nameWithOwner":"nerdchanii/rpm"}}]'
       closing_has_next=false
@@ -295,12 +339,13 @@ case "$1 $2" in
       case "$closing_ref_mode" in
         missing) closing_nodes='[]' ;;
         duplicate) closing_nodes='[{"number":42,"repository":{"nameWithOwner":"nerdchanii/rpm"}},{"number":42,"repository":{"nameWithOwner":"nerdchanii/rpm"}}]' ;;
+        extra) closing_nodes='[{"number":42,"repository":{"nameWithOwner":"nerdchanii/rpm"}},{"number":99,"repository":{"nameWithOwner":"nerdchanii/rpm"}}]' ;;
         malformed) closing_nodes='[{"number":"42","repository":{"nameWithOwner":"nerdchanii/rpm"}}]' ;;
         wrong-repo) closing_nodes='[{"number":42,"repository":{"nameWithOwner":"evil/rpm"}}]' ;;
         absent) closing_refs_absent=true ;;
         pagination)
           if [ -z "$after" ]; then
-            closing_nodes='[{"number":99,"repository":{"nameWithOwner":"nerdchanii/rpm"}}]'
+            closing_nodes='[]'
             closing_has_next=true
             closing_cursor="closing-cursor-1"
           else
@@ -420,7 +465,8 @@ new_repo() {
   "$real_git" -C "$path" config user.email test@example.com
   printf 'old\n' >"$path/src/app.txt"
   printf '# gate fixture\n' >"$path/scripts/safe-direct-merge.sh"
-  "$real_git" -C "$path" add src/app.txt scripts/safe-direct-merge.sh
+  printf '# correction quarantine fixture\n' >"$path/scripts/quarantine-review-correction-limit.sh"
+  "$real_git" -C "$path" add src/app.txt scripts/safe-direct-merge.sh scripts/quarantine-review-correction-limit.sh
   "$real_git" -C "$path" commit -qm init
   "$real_git" -C "$path" remote add origin https://github.com/nerdchanii/rpm.git
   printf '%s\n' "$path"
@@ -441,6 +487,13 @@ make_protected_patch() {
   "$real_git" -C "$path" restore -- src/app.txt scripts/safe-direct-merge.sh
 }
 
+make_quarantine_protected_patch() {
+  local path="$1" patch_file="$2"
+  printf '# altered quarantine writer\n' >"$path/scripts/quarantine-review-correction-limit.sh"
+  "$real_git" -C "$path" diff --binary >"$patch_file"
+  "$real_git" -C "$path" restore -- scripts/quarantine-review-correction-limit.sh
+}
+
 write_result() {
   local path="$1"
   shift
@@ -448,18 +501,74 @@ write_result() {
 }
 
 write_issue_state() {
-  local issue="$1" labels_json="$2" prs_json="${3:-[]}"
-  jq -n --argjson labels "$labels_json" --argjson prs "$prs_json" --argjson issue "$issue" \
-    '{issues:[{number:$issue,state:"OPEN",title:("Issue " + ($issue|tostring)),body:"",labels:$labels,comments:[]}],prs:$prs}' >"$gh_state_file"
+  local issue="$1" labels_json="$2" prs_json="${3:-[]}" claim_run_id="${4:-}"
+  local claim_expires_at="${5:-2099-01-01T00:00:00Z}"
+  local body="" marker event_id scope_hash plan_revision idempotency_key digest
+  if jq -ne --arg claimed agent:claimed '$labels | index($claimed) != null' --argjson labels "$labels_json" >/dev/null; then
+    [ -n "$claim_run_id" ] || fail "claimed fixture requires a run id"
+    event_id="github-actions:${claim_run_id}:issue"
+    plan_revision="test-plan"
+    scope_hash="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    if command -v sha256sum >/dev/null 2>&1; then
+      digest="$(printf '%s\0%s\0%s\0%s\0%s' nerdchanii/rpm "$issue" "$plan_revision" "$scope_hash" "$event_id" | sha256sum | awk '{print $1}')"
+    else
+      digest="$(printf '%s\0%s\0%s\0%s\0%s' nerdchanii/rpm "$issue" "$plan_revision" "$scope_hash" "$event_id" | shasum -a 256 | awk '{print $1}')"
+    fi
+    idempotency_key="sha256:${digest}"
+    marker="$(jq -nc --arg run_id "$claim_run_id" \
+      --arg expires_at "$claim_expires_at" --arg event_id "$event_id" \
+      --arg plan_revision "$plan_revision" --arg scope_hash "$scope_hash" \
+      --arg idempotency_key "$idempotency_key" --argjson issue "$issue" \
+      '{approval_id:"test-approval",plan_revision:$plan_revision,scope_hash:$scope_hash,executor:"cloud",lease:{run_id:$run_id,owner:"cloud:test",expires_at:$expires_at},runs:[{repository:"nerdchanii/rpm",issue:$issue,plan_revision:$plan_revision,scope_hash:$scope_hash,event_id:$event_id,idempotency_key:$idempotency_key,run_id:$run_id,status:"active"}]}' )"
+    body="<!-- rpm-agent-execution: ${marker} -->"
+  fi
+  jq -n --argjson labels "$labels_json" --argjson prs "$prs_json" --argjson issue "$issue" --arg body "$body" \
+    '{issues:[{number:$issue,state:"OPEN",title:("Issue " + ($issue|tostring)),body:$body,labels:$labels,comments:[]}],prs:$prs}' >"$gh_state_file"
+}
+
+mutate_issue_claim_marker() {
+  local mutation="$1"
+  case "$mutation" in
+    missing-approval|missing-plan|missing-scope|wrong-executor|wrong-repository|wrong-issue|wrong-scope|wrong-idempotency|duplicate-run|conflicting-run|missing-run|duplicate-json-key) ;;
+    *) fail "unknown issue claim mutation: ${mutation}" ;;
+  esac
+  if [ "$mutation" = duplicate-json-key ]; then
+    jq '.issues[0].body |= sub("\"executor\":\"cloud\""; "\"executor\":\"cloud\",\"executor\":\"local\"")' \
+      "$gh_state_file" >"${gh_state_file}.next"
+    mv -- "${gh_state_file}.next" "$gh_state_file"
+    return 0
+  fi
+  jq --arg mutation "$mutation" '
+    .issues[0].body as $body |
+    ($body | capture("^<!--\\s*rpm-agent-execution:\\s*(?<json>\\{.*\\})\\s*-->$").json | fromjson) as $execution |
+    ($execution |
+      if $mutation == "missing-approval" then del(.approval_id)
+      elif $mutation == "missing-plan" then del(.plan_revision)
+      elif $mutation == "missing-scope" then del(.scope_hash)
+      elif $mutation == "wrong-executor" then .executor = "local"
+      elif $mutation == "wrong-repository" then .runs[0].repository = "evil/rpm"
+      elif $mutation == "wrong-issue" then .runs[0].issue = 99
+      elif $mutation == "wrong-scope" then .runs[0].scope_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      elif $mutation == "wrong-idempotency" then .runs[0].idempotency_key = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      elif $mutation == "duplicate-run" then .runs += [.runs[0]]
+      elif $mutation == "conflicting-run" then .runs[0].event_id = "github-actions:other-run:issue"
+      elif $mutation == "missing-run" then del(.runs)
+      else .
+      end) as $updated |
+    .issues[0].body = ("<!-- rpm-agent-execution: " + ($updated | tojson) + " -->")
+  ' "$gh_state_file" >"${gh_state_file}.next"
+  mv -- "${gh_state_file}.next" "$gh_state_file"
 }
 
 write_review_state() {
   local base_sha="$1" head_sha="$2" branch="$3"
   local head_repository="${4:-nerdchanii/rpm}" pr_labels
   pr_labels="${5:-[\"agent:correction-0\"]}"
+  local correction_marker="<!-- rpm-agent-correction-history: pr=7; counter=agent:correction-0; head=${head_sha} -->"
   jq -n --arg base "$base_sha" --arg head "$head_sha" --arg branch "$branch" \
+    --arg correction_marker "$correction_marker" \
     --arg head_repository "$head_repository" --argjson labels "$pr_labels" \
-    '{issues:[{number:42,state:"OPEN",title:"Issue 42",body:"",labels:["agent:review-pending","kind:feature"],comments:[]}],prs:[{number:7,url:"https://github.com/nerdchanii/rpm/pull/7",title:"review",body:"Closes #42",state:"OPEN",isDraft:false,baseRefName:"main",baseRefOid:$base,headRefName:$branch,headRefOid:$head,headRepository:{nameWithOwner:$head_repository},headRepositoryOwner:{login:"nerdchanii"},labels:$labels}]}' >"$gh_state_file"
+    '{issues:[{number:42,state:"OPEN",title:"Issue 42",body:"",labels:["agent:review-pending","kind:feature"],comments:[{body:$correction_marker,author:{login:"github-actions[bot]"}}]}],prs:[{number:7,url:"https://github.com/nerdchanii/rpm/pull/7",title:"review",body:"Closes #42",state:"OPEN",isDraft:false,baseRefName:"main",baseRefOid:$base,headRefName:$branch,headRefOid:$head,headRepository:{nameWithOwner:$head_repository},headRepositoryOwner:{login:"nerdchanii"},labels:$labels}]}' >"$gh_state_file"
 }
 
 run_publisher() {
@@ -501,7 +610,7 @@ base_sha="$($real_git -C "$repo" rev-parse HEAD)"
 patch_file="${tmp_dir}/issue.patch"
 result_file="${tmp_dir}/issue-result.json"
 make_patch "$repo" "$patch_file" src/app.txt "new issue content"
-write_issue_state 42 '["agent:claimed","kind:feature"]'
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-happy
 : >"$remote_head_file"
 : >"$push_log"
 : >"$gh_log"
@@ -515,8 +624,37 @@ branch="feat/issue-42-codex-cloud-issue-happy"
 assert_contains "$(<"$push_log")" "HEAD:refs/heads/${branch}"
 jq -e --arg branch "$branch" --arg sha "$new_sha" \
   '.prs | length == 1 and .[0].headRefName == $branch and .[0].headRefOid == $sha and .[0].isDraft == false and (.[0].labels | index("agent:correction-0") != null) and (.[0].body | contains("Closes #42"))' "$gh_state_file" >/dev/null || fail "issue publication state mismatch"
+jq -e '[.issues[0].comments[] | select((.body // "") | startswith("<!-- rpm-agent-correction-history:"))] | length == 1' "$gh_state_file" >/dev/null || fail "issue publication did not record correction history"
 jq -e '.issues[0].labels == ["agent:review-pending","kind:feature"]' "$gh_state_file" >/dev/null || fail "issue labels were not preserved"
 pass "issue-happy-publication"
+
+# A valid execution marker may be surrounded by ordinary multiline issue
+# text. Publication must retain that body while applying the lifecycle change.
+repo="$(new_repo issue-multiline-claim-marker)"
+base_sha="$($real_git -C "$repo" rev-parse HEAD)"
+patch_file="${tmp_dir}/issue-multiline-claim-marker.patch"
+result_file="${tmp_dir}/issue-multiline-claim-marker.json"
+make_patch "$repo" "$patch_file" src/app.txt 'multiline marker content'
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-multiline-claim-marker
+jq --arg before 'Existing issue context.' --arg after 'Additional acceptance context.' \
+  '.issues[0].body = ($before + "\n\n" + .issues[0].body + "\n\n" + $after)' \
+  "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+expected_issue_body="$(jq -r '.issues[0].body' "$gh_state_file")"
+: >"$remote_head_file"
+: >"$push_log"
+: >"$gh_log"
+jq -n --arg base "$base_sha" \
+  '{version:1,lane:"issue",status:"patch",issue:42,pr:null,base_sha:$base,head_sha:null,summary:"Multiline marker issue",validation:["focused test: PASS"],actionable_findings_remaining:false,next_state:"review-pending",correction_label:"agent:correction-0",resolved_thread_ids:[],followups:[]}' \
+  >"$result_file"
+export RPM_TEST_BASE_SHA="$base_sha"
+output="$(run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-multiline-claim-marker)" ||
+  fail "multiline issue marker publication failed: $output"
+assert_contains "$output" '"status":"published"'
+jq -e --arg expected_body "$expected_issue_body" \
+  '.issues[0].body == $expected_body and .issues[0].labels == ["agent:review-pending","kind:feature"]' \
+  "$gh_state_file" >/dev/null || fail "multiline issue body or labels changed"
+pass "issue-multiline-claim-marker-publication"
 
 # Review happy path: base_sha identifies main while head_sha identifies the
 # starting PR head.  The lease-protected fast-forward push supplies the CAS.
@@ -540,6 +678,7 @@ output="$(run_publisher "$repo" --mode review --result "$result_file" --patch "$
 assert_contains "$output" '"status":"published"'
 review_new_sha="$(<"$remote_head_file")"
 jq -e --arg sha "$review_new_sha" '.prs[0].headRefOid == $sha and (.prs[0].labels | index("agent:correction-1") != null) and (.prs[0].labels | index("agent:correction-0") == null)' "$gh_state_file" >/dev/null || fail "review correction label was not replaced"
+jq -e '[.issues[0].comments[] | select((.body // "") | startswith("<!-- rpm-agent-correction-history:"))] | length == 2' "$gh_state_file" >/dev/null || fail "review correction history was not appended"
 assert_contains "$(<"$gh_log")" 'api graphql'
 jq -e '.issues[0].labels == ["agent:review-pending","kind:feature"]' "$gh_state_file" >/dev/null || fail "review ordinary labels changed"
 pass "review-distinct-shas-and-thread-resolution"
@@ -566,10 +705,10 @@ reset_fake() {
   : >"$pr_view_count_file"
   : >"$resolve_count_file"
   unset RPM_TEST_REMOTE_RACE RPM_TEST_FAIL_PUSH RPM_TEST_PR_CREATE_AFTER_WRITE
-  unset RPM_TEST_PUSH_RACE RPM_TEST_EXPECTED_ISSUE RPM_TEST_LABEL_RACE RPM_TEST_AWAITING_HEAD_RACE
+  unset RPM_TEST_PUSH_RACE RPM_TEST_EXPECTED_ISSUE RPM_TEST_LABEL_RACE RPM_TEST_LABEL_RACE_AFTER_HISTORY RPM_TEST_AWAITING_HEAD_RACE
   unset RPM_TEST_THREAD_REPO RPM_TEST_THREAD_PR RPM_TEST_THREAD_TYPE RPM_TEST_EXPECTED_THREAD_HEAD
   unset RPM_TEST_THREAD_MODE RPM_TEST_SECOND_THREAD_MODE RPM_TEST_LIVE_UNRESOLVED RPM_TEST_LIVE_PAGINATED RPM_TEST_RESOLVE_HEAD_RACE
-  unset RPM_TEST_CLOSING_REF_MODE
+  unset RPM_TEST_CLOSING_REF_MODE RPM_TEST_COMMENT_MODE
 }
 
 write_issue_result() {
@@ -659,6 +798,163 @@ fi
 jq -e '.prs[0].labels == ["agent:correction-3"]' "$gh_state_file" >/dev/null || fail "correction label race did not preserve newer label"
 unset RPM_TEST_LABEL_RACE
 
+# Removing the current correction label cannot reset the correction budget.
+# The publisher requires the live counter and its trusted history to agree
+# before it pushes or resolves any review thread.
+prepare_review_thread_case review-correction-label-removed
+jq '.prs[0].labels = []' "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+expect_failure "correction-label-removal-fails-closed" 'pr-correction-label-count' \
+  run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-label-removed
+[ ! -s "$push_log" ] || fail "removed correction label reached push"
+
+# Lowering the current label cannot hide a previously accepted correction.
+# The trusted marker history records correction-1 while the mutable label is
+# deliberately rolled back to correction-0.
+prepare_review_thread_case review-correction-label-lowered
+lowered_marker="<!-- rpm-agent-correction-history: pr=7; counter=agent:correction-1; head=${head_sha} -->"
+jq --arg marker "$lowered_marker" \
+  '.issues[0].comments += [{body:$marker,author:{login:"github-actions[bot]"}}] | .prs[0].labels = ["agent:correction-0"]' \
+  "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+write_review_result "$result_file" "$base_sha" "$head_sha" patch review-pending true agent:correction-1
+expect_failure "correction-label-lowering-fails-closed" 'correction-history-label-lowered' \
+  run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-label-lowered
+[ ! -s "$push_log" ] || fail "lowered correction label reached push"
+
+# A marker-shaped comment must be an exact publisher record.  An extra newline
+# after the allowed body-file newline is treated as malformed history.
+prepare_review_thread_case review-correction-history-malformed
+jq '.issues[0].comments[0].body += "\n\n"' "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+expect_failure "correction-history-malformed-fails-closed" 'correction-history-malformed' \
+  run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-history-malformed
+[ ! -s "$push_log" ] || fail "malformed correction history reached push"
+
+# A marker authored by a non-publisher account cannot establish correction
+# history, even when its body and head look valid.
+prepare_review_thread_case review-correction-history-untrusted
+jq '.issues[0].comments[0].author.login = "human-user"' "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+expect_failure "correction-history-untrusted-author-is-ignored" 'correction-history-sequence-missing' \
+  run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-history-untrusted
+[ ! -s "$push_log" ] || fail "untrusted correction history reached push"
+
+# Exact and malformed marker-like comments from untrusted or deleted authors
+# remain ordinary comments and do not block a valid trusted history.
+prepare_review_thread_case review-correction-history-untrusted-extra
+jq --arg head "$head_sha" '.issues[0].comments += [
+  {body:("<!-- rpm-agent-correction-history: pr=7; counter=agent:correction-5; head=" + $head + " -->"),author:{login:"human-user"}},
+  {body:"<!-- rpm-agent-correction-history: malformed",author:null}
+]' "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+write_review_result "$result_file" "$base_sha" "$head_sha" patch review-pending true agent:correction-1
+output="$(run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-history-untrusted-extra)" || fail "untrusted marker comments blocked valid history: $output"
+jq -e '[.issues[0].comments[] | select((.body // "" | startswith("<!-- rpm-agent-correction-history:")) and ((.author.login // "") == "github-actions[bot]"))] | length == 2' "$gh_state_file" >/dev/null || fail 'untrusted-extra-history-not-published'
+
+# A trusted correction marker may sit after a full first page of ordinary
+# comments. The publisher must fetch the next page before spending a counter.
+prepare_review_thread_case review-correction-history-second-page
+filler_comments="$(jq -nc '[range(0;100) | {id:("filler-" + tostring),body:"ordinary comment",author:null}]')"
+jq --argjson filler "$filler_comments" '.issues[0].comments = ($filler + .issues[0].comments)' "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+write_review_result "$result_file" "$base_sha" "$head_sha" patch review-pending true agent:correction-1
+reset_fake
+printf '%s\n' "$head_sha" >"$remote_head_file"
+output="$(run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-history-second-page)" || fail "second-page correction history failed: $output"
+assert_contains "$output" '"status":"published"'
+jq -e '[.issues[0].comments[] | select((.body // "") | startswith("<!-- rpm-agent-correction-history:"))] | length == 2' "$gh_state_file" >/dev/null || fail 'second-page-history-not-published'
+pass 'correction-history-second-page'
+
+# Malformed pages, GraphQL errors, stalled cursors, duplicate IDs, and the
+# pagination limit stop before a push or any GitHub mutation.
+for comment_mode in response-invalid graphql-errors cursor-stalled duplicate-id page-limit; do
+  prepare_review_thread_case "review-correction-history-${comment_mode}"
+  write_review_result "$result_file" "$base_sha" "$head_sha" patch review-pending true agent:correction-1
+  reset_fake
+  printf '%s\n' "$head_sha" >"$remote_head_file"
+  export RPM_TEST_COMMENT_MODE="$comment_mode"
+  if [ "$comment_mode" = page-limit ]; then
+    expected_history_error='correction-history-pagination-limit'
+  elif [ "$comment_mode" = cursor-stalled ]; then
+    expected_history_error='correction-history-pagination-cursor-stalled'
+  elif [ "$comment_mode" = duplicate-id ]; then
+    expected_history_error='correction-history-pagination-duplicate-id'
+  else
+    expected_history_error='correction-history-response-invalid'
+  fi
+  expect_failure "correction-history-${comment_mode}-fails-closed" "$expected_history_error" \
+    run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id "review-correction-history-${comment_mode}"
+  [ ! -s "$push_log" ] || fail "correction-history-${comment_mode}-pushed"
+  ! rg -q 'issue edit|issue comment|pr edit|pr ready|pr create' "$gh_log" || fail "correction-history-${comment_mode}-mutated"
+  unset RPM_TEST_COMMENT_MODE
+done
+
+# Two trusted records for one counter are still conflicting history.  A retry
+# must not interpret a duplicate marker as permission to spend another turn.
+prepare_review_thread_case review-correction-history-conflict
+conflict_marker="<!-- rpm-agent-correction-history: pr=7; counter=agent:correction-0; head=0000000000000000000000000000000000000001 -->"
+jq --arg marker "$conflict_marker" \
+  '.issues[0].comments += [{body:$marker,author:{login:"github-actions[bot]"}}]' \
+  "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+expect_failure "correction-history-conflict-fails-closed" 'correction-history-conflict' \
+  run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-history-conflict
+[ ! -s "$push_log" ] || fail "conflicting correction history reached push"
+
+# Even an identical repeated marker is rejected.  History entries are one
+# record per counter, so a duplicate cannot be used as a retry budget.
+prepare_review_thread_case review-correction-history-duplicate
+jq '.issues[0].comments += [.issues[0].comments[0]]' "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+expect_failure "correction-history-duplicate-fails-closed" 'correction-history-duplicate' \
+  run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-history-duplicate
+[ ! -s "$push_log" ] || fail "duplicate correction history reached push"
+
+# Removing the durable history cannot reset the visible counter.  The current
+# correction label alone is insufficient evidence for another patch.
+prepare_review_thread_case review-correction-history-removed
+jq '.issues[0].comments = []' "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+expect_failure "correction-history-removal-fails-closed" 'correction-history-sequence-missing' \
+  run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-history-removed
+[ ! -s "$push_log" ] || fail "removed correction history reached push"
+
+# A fully exhausted correction history blocks the sixth patch even if the
+# result claims the highest representable next label.
+prepare_review_thread_case review-correction-limit
+history_markers="$(jq -nc --arg head "$head_sha" '[range(1;6) | {body:("<!-- rpm-agent-correction-history: pr=7; counter=agent:correction-" + tostring + "; head=" + $head + " -->"),author:{login:"github-actions[bot]"}}]')"
+jq --argjson markers "$history_markers" \
+  '.issues[0].comments += $markers | .prs[0].labels = ["agent:correction-5"]' \
+  "$gh_state_file" >"${gh_state_file}.next"
+mv -- "${gh_state_file}.next" "$gh_state_file"
+write_review_result "$result_file" "$base_sha" "$head_sha" patch review-pending true agent:correction-5
+expect_failure "correction-limit-fails-closed" 'correction-limit-exceeded' \
+  run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-limit
+[ ! -s "$push_log" ] || fail "exhausted correction history reached push"
+
+# A label lowered after the post-push history check is detected before any
+# review thread can be resolved.  This covers the stale-snapshot window.
+prepare_review_thread_case review-correction-history-label-race
+export RPM_TEST_LABEL_RACE_AFTER_HISTORY=true
+expect_failure "correction-history-label-race-fails-closed" 'correction-history-label-lowered' \
+  run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-history-label-race
+[ ! -s "$resolve_count_file" ] || fail "history label race resolved a review thread"
+unset RPM_TEST_LABEL_RACE_AFTER_HISTORY
+
+# A replay after a successful correction is rejected by the old-head CAS and
+# does not append another trusted history marker.
+prepare_review_thread_case review-correction-replay
+output="$(run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-replay)" || fail "first correction replay setup failed: $output"
+assert_contains "$output" '"status":"published"'
+history_count="$(jq '[.issues[0].comments[] | select((.body // "") | startswith("<!-- rpm-agent-correction-history:"))] | length' "$gh_state_file")"
+[ "$history_count" -eq 2 ] || fail "first correction did not append exactly one history marker"
+expect_failure "correction-replay-fails-cas" 'head-mismatch' \
+  run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-correction-replay
+history_count_after="$(jq '[.issues[0].comments[] | select((.body // "") | startswith("<!-- rpm-agent-correction-history:"))] | length' "$gh_state_file")"
+[ "$history_count_after" -eq 2 ] || fail "correction replay appended a duplicate history marker"
+pass "correction-replay-is-idempotent"
+
 # An unclaimed, ready issue can report no work without a GitHub mutation.
 repo="$(new_repo issue-no-work-ready)"
 base_sha="$($real_git -C "$repo" rev-parse HEAD)"
@@ -680,13 +976,175 @@ base_sha="$($real_git -C "$repo" rev-parse HEAD)"
 patch_file="${tmp_dir}/issue-no-work-claimed.patch"
 result_file="${tmp_dir}/issue-no-work-claimed.json"
 : >"$patch_file"
-write_issue_state 42 '["agent:claimed","kind:feature"]'
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-no-work-claimed
 write_issue_result "$result_file" "$base_sha" no-work unchanged false ""
 reset_fake
 output="$(run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-no-work-claimed)" || fail "claimed no-work recovery failed: $output"
 assert_contains "$output" '"reason":"no-work-left-claimed"'
 jq -e '.issues[0].labels == ["agent:blocked","kind:feature"] and (.issues[0].comments | length) == 1' "$gh_state_file" >/dev/null || fail "claimed no-work was not blocked"
 pass "issue-no-work-claimed-recovers-idempotently"
+
+# A stale issue result cannot publish a patch while another Cloud run owns the
+# claim marker.  The ownership check runs before branch or PR operations.
+repo="$(new_repo issue-claim-stale-patch)"
+base_sha="$($real_git -C "$repo" rev-parse HEAD)"
+patch_file="${tmp_dir}/issue-claim-stale-patch.patch"
+result_file="${tmp_dir}/issue-claim-stale-patch.json"
+make_patch "$repo" "$patch_file" src/app.txt 'stale patch content'
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-claim-stale-patch-current
+write_issue_result "$result_file" "$base_sha"
+reset_fake
+expect_failure "issue-stale-claim-patch-rejected" 'issue-claim-ownership-mismatch' \
+  run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-claim-stale-patch
+[ ! -s "$push_log" ] || fail "stale issue claim patch reached push"
+! rg -q 'issue edit|issue comment|pr create|pr edit|pr ready' "$gh_log" || fail "stale issue claim patch mutated GitHub"
+pass "issue-stale-claim-patch-is-no-mutation"
+
+# The blocked handoff has the same ownership boundary.  A stale result cannot
+# demote or comment on the claim currently owned by another run.
+repo="$(new_repo issue-claim-stale-blocked)"
+base_sha="$($real_git -C "$repo" rev-parse HEAD)"
+patch_file="${tmp_dir}/issue-claim-stale-blocked.patch"
+result_file="${tmp_dir}/issue-claim-stale-blocked.json"
+: >"$patch_file"
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-claim-stale-blocked-current
+write_issue_result "$result_file" "$base_sha" blocked blocked false ""
+reset_fake
+expect_failure "issue-stale-claim-blocked-rejected" 'issue-claim-ownership-mismatch' \
+  run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-claim-stale-blocked
+[ ! -s "$push_log" ] || fail "stale blocked claim reached push"
+! rg -q 'issue edit|issue comment|pr create|pr edit|pr ready' "$gh_log" || fail "stale blocked claim mutated GitHub"
+pass "issue-stale-claim-blocked-is-no-mutation"
+
+# A stale no-work handoff cannot recover a currently owned claim to blocked.
+repo="$(new_repo issue-claim-stale-no-work)"
+base_sha="$($real_git -C "$repo" rev-parse HEAD)"
+patch_file="${tmp_dir}/issue-claim-stale-no-work.patch"
+result_file="${tmp_dir}/issue-claim-stale-no-work.json"
+: >"$patch_file"
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-claim-stale-no-work-current
+write_issue_result "$result_file" "$base_sha" no-work unchanged false ""
+reset_fake
+expect_failure "issue-stale-claim-no-work-rejected" 'issue-claim-ownership-mismatch' \
+  run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-claim-stale-no-work
+[ ! -s "$push_log" ] || fail "stale no-work claim reached push"
+! rg -q 'issue edit|issue comment|pr create|pr edit|pr ready' "$gh_log" || fail "stale no-work claim mutated GitHub"
+pass "issue-stale-claim-no-work-is-no-mutation"
+
+# A claimed issue lease must be a policy-compatible RFC3339 timestamp in the
+# future. Every issue mutation result checks this before touching a branch or
+# GitHub state.
+run_invalid_issue_lease_case() {
+  local lease_case="$1" result_status="$2" case_repo case_base case_patch case_result
+  local case_run_id expires_at expected_error next_state
+  case_run_id="issue-lease-${lease_case}-${result_status}"
+  case_repo="$(new_repo "$case_run_id")"
+  case_base="$($real_git -C "$case_repo" rev-parse HEAD)"
+  case_patch="${tmp_dir}/${case_run_id}.patch"
+  case_result="${tmp_dir}/${case_run_id}.json"
+  case "$lease_case" in
+    expired)
+      expires_at="2000-01-01T00:00:00Z"
+      expected_error="issue-claim-lease-expired"
+      ;;
+    malformed)
+      expires_at="not-a-utc-timestamp"
+      expected_error="issue-claim-lease-invalid"
+      ;;
+    *) fail "unknown issue lease test case: ${lease_case}" ;;
+  esac
+  case "$result_status" in
+    patch)
+      make_patch "$case_repo" "$case_patch" src/app.txt 'invalid lease patch'
+      next_state=review-pending
+      ;;
+    blocked)
+      : >"$case_patch"
+      next_state=blocked
+      ;;
+    no-work)
+      : >"$case_patch"
+      next_state=unchanged
+      ;;
+    *) fail "unknown issue result test case: ${result_status}" ;;
+  esac
+  write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' "$case_run_id" "$expires_at"
+  if [ "$result_status" = patch ]; then
+    write_issue_result "$case_result" "$case_base" patch "$next_state" false agent:correction-0
+  else
+    write_issue_result "$case_result" "$case_base" "$result_status" "$next_state" false ""
+  fi
+  reset_fake
+  expect_failure "${case_run_id}-rejected" "$expected_error" \
+    run_publisher "$case_repo" --mode issue --result "$case_result" --patch "$case_patch" --expected-base-sha "$case_base" --run-id "$case_run_id"
+  [ ! -s "$push_log" ] || fail "${case_run_id} reached push"
+  ! rg -q 'issue edit|issue comment|pr create|pr edit|pr ready' "$gh_log" || fail "${case_run_id} mutated GitHub"
+  jq -e '.issues[0].labels == ["agent:claimed","kind:feature"] and (.issues[0].comments | length) == 0 and (.prs | length) == 0' "$gh_state_file" >/dev/null ||
+    fail "${case_run_id} changed issue or PR state"
+  pass "${case_run_id}-is-no-mutation"
+}
+
+for lease_case in expired malformed; do
+  for result_status in patch blocked no-work; do
+    run_invalid_issue_lease_case "$lease_case" "$result_status"
+  done
+done
+
+# The lease parser accepts the same future RFC3339 forms as the queue
+# contract: fractional seconds in UTC and numeric timezone offsets.
+run_valid_issue_lease_case() {
+  local lease_case="$1" expires_at="$2" case_repo case_base case_patch case_result case_run_id output
+  case_run_id="issue-lease-${lease_case}-future"
+  case_repo="$(new_repo "$case_run_id")"
+  case_base="$($real_git -C "$case_repo" rev-parse HEAD)"
+  case_patch="${tmp_dir}/${case_run_id}.patch"
+  case_result="${tmp_dir}/${case_run_id}.json"
+  : >"$case_patch"
+  write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' "$case_run_id" "$expires_at"
+  write_issue_result "$case_result" "$case_base" no-work unchanged false ""
+  reset_fake
+  output="$(run_publisher "$case_repo" --mode issue --result "$case_result" --patch "$case_patch" --expected-base-sha "$case_base" --run-id "$case_run_id")" ||
+    fail "${case_run_id} was rejected: ${output}"
+  assert_contains "$output" '"reason":"no-work-left-claimed"'
+  jq -e '.issues[0].labels == ["agent:blocked","kind:feature"] and (.issues[0].comments | length) == 1' "$gh_state_file" >/dev/null ||
+    fail "${case_run_id} did not complete the claimed no-work recovery"
+  pass "${case_run_id}-accepted"
+}
+
+run_valid_issue_lease_case fractional-z '2099-01-01T00:00:00.123456Z'
+run_valid_issue_lease_case timezone-offset '2099-01-01T09:00:00+09:00'
+
+# The publisher accepts only the complete deterministic claim contract.  Each
+# malformed or conflicting marker must stop before the patch can reach push.
+run_invalid_issue_claim_case() {
+  local mutation="$1" case_repo case_base case_patch case_result case_run_id expected_error
+  case_run_id="issue-claim-contract-${mutation}"
+  case_repo="$(new_repo "$case_run_id")"
+  case_base="$($real_git -C "$case_repo" rev-parse HEAD)"
+  case_patch="${tmp_dir}/${case_run_id}.patch"
+  case_result="${tmp_dir}/${case_run_id}.json"
+  make_patch "$case_repo" "$case_patch" src/app.txt 'invalid claim contract'
+  write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' "$case_run_id"
+  mutate_issue_claim_marker "$mutation"
+  write_issue_result "$case_result" "$case_base"
+  reset_fake
+  if [ "$mutation" = conflicting-run ]; then
+    expected_error=issue-claim-ownership-mismatch
+  else
+    expected_error=issue-claim-contract-invalid
+  fi
+  expect_failure "${case_run_id}-rejected" "$expected_error" \
+    run_publisher "$case_repo" --mode issue --result "$case_result" --patch "$case_patch" --expected-base-sha "$case_base" --run-id "$case_run_id"
+  [ ! -s "$push_log" ] || fail "${case_run_id} reached push"
+  ! rg -q 'issue edit|issue comment|pr create|pr edit|pr ready' "$gh_log" || fail "${case_run_id} mutated GitHub"
+  jq -e '.issues[0].labels == ["agent:claimed","kind:feature"] and (.issues[0].comments | length) == 0 and (.prs | length) == 0' "$gh_state_file" >/dev/null ||
+    fail "${case_run_id} changed issue or PR state"
+  pass "${case_run_id}-is-no-mutation"
+}
+
+for mutation in missing-approval missing-plan missing-scope wrong-executor wrong-repository wrong-issue wrong-scope wrong-idempotency duplicate-run conflicting-run missing-run duplicate-json-key; do
+  run_invalid_issue_claim_case "$mutation"
+done
 
 # Blocked work may still publish up to the validated follow-up limit.  A
 # repeated blocked result keeps both the lifecycle and follow-up idempotent.
@@ -695,7 +1153,7 @@ base_sha="$($real_git -C "$repo" rev-parse HEAD)"
 patch_file="${tmp_dir}/issue-blocked-followup.patch"
 result_file="${tmp_dir}/issue-blocked-followup.json"
 : >"$patch_file"
-write_issue_state 42 '["agent:claimed","kind:feature"]'
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-blocked-followup
 write_issue_result "$result_file" "$base_sha" blocked blocked false ""
 add_followup_to_result "$result_file" 'Deferred unrelated finding' issue:42 'This finding is outside the selected change.'
 reset_fake
@@ -713,13 +1171,14 @@ base_sha="$($real_git -C "$repo" rev-parse HEAD)"
 patch_file="${tmp_dir}/issue-dry-run.patch"
 result_file="${tmp_dir}/issue-dry-run.json"
 make_patch "$repo" "$patch_file" src/app.txt 'dry run content'
-write_issue_state 42 '["agent:claimed","kind:feature"]'
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' '12345:2'
 write_issue_result "$result_file" "$base_sha"
 reset_fake
 before_head="$($real_git -C "$repo" rev-parse HEAD)"
 before_status="$($real_git -C "$repo" status --porcelain=v1 --untracked-files=all)"
-output="$(run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-dry-run --dry-run)" || fail "dry-run failed: $output"
+output="$(run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id '12345:2' --dry-run)" || fail "dry-run failed: $output"
 assert_contains "$output" '"reason":"dry-run-validated"'
+assert_contains "$output" '"head_ref":"feat/issue-42-codex-cloud-12345-2"'
 [ ! -s "$push_log" ] && [ ! -s "$gh_log" ] || fail "dry-run mutated an API or remote"
 [ "$before_head" = "$($real_git -C "$repo" rev-parse HEAD)" ] || fail "dry-run changed HEAD"
 [ "$before_status" = "$($real_git -C "$repo" status --porcelain=v1 --untracked-files=all)" ] || fail "dry-run changed worktree"
@@ -731,12 +1190,26 @@ base_sha="$($real_git -C "$repo" rev-parse HEAD)"
 patch_file="${tmp_dir}/issue-protected.patch"
 result_file="${tmp_dir}/issue-protected.json"
 make_protected_patch "$repo" "$patch_file"
-write_issue_state 42 '["agent:claimed","kind:feature"]'
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-protected-patch
 write_issue_result "$result_file" "$base_sha"
 reset_fake
 expect_failure "protected-path-defense-in-depth" 'patch-protected-path:scripts/safe-direct-merge.sh' \
   run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-protected-patch
 [ ! -s "$push_log" ] || fail "protected patch reached push"
+
+# The correction-limit quarantine writer runs from a trusted checkout with
+# issue-write permission.  A Cloud patch must not be able to replace it.
+repo="$(new_repo issue-quarantine-protected-patch)"
+base_sha="$($real_git -C "$repo" rev-parse HEAD)"
+patch_file="${tmp_dir}/issue-quarantine-protected.patch"
+result_file="${tmp_dir}/issue-quarantine-protected.json"
+make_quarantine_protected_patch "$repo" "$patch_file"
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-quarantine-protected-patch
+write_issue_result "$result_file" "$base_sha"
+reset_fake
+expect_failure "quarantine-writer-protected-path" 'patch-protected-path:scripts/quarantine-review-correction-limit.sh' \
+  run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-quarantine-protected-patch
+[ ! -s "$push_log" ] || fail "quarantine protected patch reached push"
 
 # The old canonical_body alias and oversized UTF-8 summary are rejected
 # before any GitHub read or write.
@@ -770,6 +1243,16 @@ PY
 jq --arg summary "$long_summary" '.summary = $summary' "$result_file" >"${result_file}.next"; mv -- "${result_file}.next" "$result_file"
 expect_failure "summary-utf8-byte-limit" 'invalid-result-integrity' \
   run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-summary-bytes
+
+write_issue_result "$result_file" "$base_sha" no-work unchanged false ""
+jq '.summary = "Closes https://github.com/nerdchanii/rpm/issues/42"' "$result_file" >"${result_file}.next"; mv -- "${result_file}.next" "$result_file"
+expect_failure "summary-closing-directive-forbidden" 'invalid-result-integrity' \
+  run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-summary-closing-directive
+
+write_issue_result "$result_file" "$base_sha" no-work unchanged false ""
+jq '.validation = ["Resolves: #999"]' "$result_file" >"${result_file}.next"; mv -- "${result_file}.next" "$result_file"
+expect_failure "validation-closing-directive-forbidden" 'invalid-result-integrity' \
+  run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id issue-validation-closing-directive
 
 # A review PR from a fork is never eligible for an in-repository ref push.
 repo="$(new_repo review-fork)"
@@ -908,7 +1391,7 @@ base_sha="$($real_git -C "$repo" rev-parse HEAD)"
 patch_file="${tmp_dir}/issue-create-race.patch"
 result_file="${tmp_dir}/issue-create-race.json"
 make_patch "$repo" "$patch_file" src/app.txt 'create race content'
-write_issue_state 42 '["agent:claimed","kind:feature"]'
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-create-race
 write_issue_result "$result_file" "$base_sha"
 reset_fake
 export RPM_TEST_BASE_SHA="$base_sha"
@@ -927,7 +1410,7 @@ base_sha="$($real_git -C "$repo" rev-parse HEAD)"
 patch_file="${tmp_dir}/issue-closing-reference-create.patch"
 result_file="${tmp_dir}/issue-closing-reference-create.json"
 make_patch "$repo" "$patch_file" src/app.txt 'closing reference create content'
-write_issue_state 42 '["agent:claimed","kind:feature"]'
+write_issue_state 42 '["agent:claimed","kind:feature"]' '[]' issue-closing-reference-create
 write_issue_result "$result_file" "$base_sha"
 reset_fake
 export RPM_TEST_BASE_SHA="$base_sha"
@@ -946,7 +1429,7 @@ patch_file="${tmp_dir}/issue-closing-reference-existing.patch"
 result_file="${tmp_dir}/issue-closing-reference-existing.json"
 make_patch "$repo" "$patch_file" src/app.txt 'closing reference existing content'
 prs_json="$(jq -nc --arg base "$base_sha" --arg branch "$branch" '[{number:7,url:"https://github.com/nerdchanii/rpm/pull/7",title:"existing",body:"Closes #42",state:"OPEN",isDraft:false,baseRefName:"main",baseRefOid:$base,headRefName:$branch,headRefOid:$base,headRepository:{nameWithOwner:"nerdchanii/rpm"},headRepositoryOwner:{login:"nerdchanii"},labels:["agent:correction-0"]}]')"
-write_issue_state 42 '["agent:claimed","kind:feature"]' "$prs_json"
+write_issue_state 42 '["agent:claimed","kind:feature"]' "$prs_json" issue-closing-reference-existing
 write_issue_result "$result_file" "$base_sha"
 reset_fake
 export RPM_TEST_BASE_SHA="$base_sha"
@@ -983,12 +1466,13 @@ unset RPM_TEST_THREAD_REPO
 # A body or timeline hint cannot stand in for GitHub's actual closing issue
 # connection.  Missing, duplicate, malformed, and absent connections all fail
 # before the review patch is pushed.
-for closing_ref_mode in missing duplicate malformed absent wrong-repo; do
+for closing_ref_mode in missing duplicate extra malformed absent wrong-repo; do
   prepare_review_thread_case "review-closing-reference-${closing_ref_mode}" '[]'
   export RPM_TEST_CLOSING_REF_MODE="$closing_ref_mode"
   case "$closing_ref_mode" in
     missing) closing_needle=closing-issue-binding-missing ;;
     duplicate) closing_needle=closing-reference-duplicate ;;
+    extra) closing_needle=closing-reference-count-invalid ;;
     malformed|absent|wrong-repo) closing_needle=closing-reference-response-invalid ;;
   esac
   expect_failure "review-closing-reference-${closing_ref_mode}" "$closing_needle" \
@@ -1201,7 +1685,7 @@ reset_fake
 printf '%s\n' "$head_sha" >"$remote_head_file"
 output="$(run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-blocked-repeat)" || fail "review blocked handoff failed: $output"
 output="$(run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-blocked-repeat)" || fail "review blocked repeat failed: $output"
-jq -e '.issues[0].labels == ["agent:blocked","kind:feature"] and (.issues[0].comments | length) == 1' "$gh_state_file" >/dev/null || fail "review blocked repeat was not idempotent"
+jq -e '.issues[0].labels == ["agent:blocked","kind:feature"] and ([.issues[0].comments[] | select((.body // "") | startswith("<!-- rpm-agent-cloud-block:"))] | length) == 1 and ([.issues[0].comments[] | select((.body // "") | startswith("<!-- rpm-agent-correction-history:"))] | length) == 1' "$gh_state_file" >/dev/null || fail "review blocked repeat was not idempotent"
 [ ! -s "$push_log" ] || fail "review blocked handoff pushed code"
 pass "review-blocked-transition-idempotent"
 
@@ -1220,7 +1704,7 @@ index 1111111..2222222 100644
 -old
 +new
 PATCH
-write_issue_state 42 '["agent:claimed"]'
+write_issue_state 42 '["agent:claimed"]' '[]' issue-malformed
 write_issue_result "$result_file" "$base_sha"
 reset_fake
 expect_failure "traversal-path-defense-in-depth" 'patch-traversal' \
@@ -1240,7 +1724,7 @@ index 0000000..1111111
 @@ -0,0 +1 @@
 +target
 PATCH
-write_issue_state 42 '["agent:claimed"]'
+write_issue_state 42 '["agent:claimed"]' '[]' issue-symlink-mode
 write_issue_result "$result_file" "$base_sha"
 reset_fake
 expect_failure "symlink-mode-defense-in-depth" 'symlink-or-submodule-mode' \

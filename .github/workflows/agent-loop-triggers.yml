@@ -15,6 +15,14 @@ on:
     workflows: ["Rust", "PR Metadata"]
     types: [completed]
 
+# Serialize every run of this workflow for this repository. The lock covers
+# selection, Cloud execution, and the trusted publisher together, so a
+# schedule/event/dispatch run cannot submit a second task while the first run
+# is still active. A queued run remains available for the next turn.
+concurrency:
+  group: codex-cloud-agent-loop-${{ github.repository }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -79,6 +87,12 @@ jobs:
             write_no_selection
             exit 1
           }
+          if [ "$(jq 'length' <<<"$issues_json")" -ge 1000 ]; then
+            echo '::error title=Incomplete issue queue::The open issue inventory reached the 1000-item limit and may be truncated; no issue was selected.'
+            write_no_selection
+            echo 'selection=blocked reason=issue-inventory-may-be-truncated' >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
           queue_states="$(jq -c '
             map({
@@ -219,7 +233,7 @@ jobs:
           base_ref='
           prompt+="${BASE_REF}"
           prompt+=" base_sha=${BASE_SHA}."
-          prompt+=' Finish by asking rpm_cloud_result_writer to write exactly one root file named .codex-cloud-result.json. The file is the Action handoff and must include lane=issue, issue, base_sha, status, summary, validation, next_state, and any follow-up/thread data. Do not commit, push, create/update a PR, change final lifecycle labels, or resolve review threads in Cloud.'
+          prompt+=' Finish by asking rpm_cloud_result_writer to write exactly one root file named .codex-cloud-result.json. The file is the Action handoff and must include lane=issue, issue, base_sha, status, summary, validation, next_state, and any follow-up/thread data. Do not commit, push, create/update a PR, or resolve review threads in Cloud. Do not change final lifecycle labels in Cloud: the trusted Action publisher owns normal claimed-to-review-pending and other successful final transitions. The sole exception is the take-ticket contract for a policy-checked malformed-ready candidate: after verifying the candidate ready-transition actor and compare-and-set conditions, perform only the prescribed agent:ready to agent:blocked quarantine, preserve ordinary labels, refetch, and stop. Do not select a replacement issue or retry that demotion.'
           prompt+=$'\n\nFixed dispatcher inputs: '
           prompt+="dispatcher_run_id=${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}, event_id=github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:issue. The claim lease run_id and ledger run_id must equal dispatcher_run_id exactly, and the ledger event_id must equal this event_id exactly. Treat these values as fixed idempotency inputs."
 
@@ -383,20 +397,114 @@ jobs:
             echo '::error title=Recovery ownership unavailable::The issue is no longer exactly open and claimed; no state was changed.'
             exit 1
           fi
-          marker_count="$(jq -r '[.body // "" | split("\\n")[] | select(test("^\\s*<!--\\s*rpm-agent-execution:\\s*\\{.*\\}\\s*-->\\s*$"))] | length' <<<"$issue_json")"
+          marker_count="$(jq -r '[.body // "" | split("\n")[] | select(test("^\\s*<!--\\s*rpm-agent-execution:\\s*\\{.*\\}\\s*-->\\s*$"))] | length' <<<"$issue_json")"
           [ "$marker_count" = 1 ] || { echo '::error title=Recovery marker unavailable::The issue claim marker is missing or ambiguous; no state was changed.'; exit 1; }
-          marker_json="$(jq -r '[.body // "" | split("\\n")[] | select(test("^\\s*<!--\\s*rpm-agent-execution:\\s*\\{.*\\}\\s*-->\\s*$"))] | .[0] | capture("^\\s*<!--\\s*rpm-agent-execution:\\s*(?<json>\\{.*\\})\\s*-->\\s*$").json' <<<"$issue_json")"
+          marker_json="$(jq -r '[.body // "" | split("\n")[] | select(test("^\\s*<!--\\s*rpm-agent-execution:\\s*\\{.*\\}\\s*-->\\s*$"))] | .[0] | capture("^\\s*<!--\\s*rpm-agent-execution:\\s*(?<json>\\{.*\\})\\s*-->\\s*$").json' <<<"$issue_json")"
           dispatcher_run_id="${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
           event_id="github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:issue"
-          if ! jq -e --arg run_id "$dispatcher_run_id" --arg event "$event_id" '
-            .executor == "cloud" and
+          if ! jq -e '
+            type == "object" and
+            (.approval_id | type == "string" and length > 0) and
+            (.plan_revision | type == "string" and length > 0) and
+            (.scope_hash | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+            (.executor | type == "string" and . == "cloud") and
             (.lease | type == "object" and
-              (.run_id == $run_id) and
-              (.owner | type == "string" and startswith("cloud:"))) and
-            (.runs | type == "array" and
-              any(.[]; .run_id == $run_id and .event_id == $event))
-          ' <<<"$marker_json" >/dev/null; then
-            echo '::error title=Recovery ownership unavailable::The claim marker has no matching Cloud event for this run; no state was changed.'
+              (.run_id | type == "string" and length > 0) and
+              (.owner | type == "string" and length > 0) and
+              (.expires_at | type == "string" and length > 0)) and
+            (.runs | type == "array" and all(.[];
+              type == "object" and
+              (.repository | type == "string" and length > 0) and
+              (.issue | type == "number" and floor == . and . > 0) and
+              (.plan_revision | type == "string" and length > 0) and
+              (.scope_hash | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+              (.event_id | type == "string" and length > 0) and
+              (.idempotency_key | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+              (.run_id | type == "string" and length > 0) and
+              (.status | type == "string" and . == "active")
+            ))
+          ' <<<"$marker_json" >/dev/null 2>&1; then
+            echo '::error title=Recovery ownership unavailable::The claim marker metadata, lease, or run ledger is malformed; no state was changed.'
+            exit 1
+          fi
+          if ! jq -e --arg run_id "$dispatcher_run_id" --arg event "$event_id" '
+            (.lease.run_id == $run_id) and
+            (.lease.owner | type == "string" and startswith("cloud:")) and
+            (.runs | ([.[] | .idempotency_key] | length == (unique | length))) and
+            (.runs | ([.[] | .event_id] | length == (unique | length))) and
+            (.runs | ([.[] | .run_id] | length == (unique | length))) and
+            (.runs | any(.[]; .run_id == $run_id and .event_id == $event))
+          ' <<<"$marker_json" >/dev/null 2>&1; then
+            echo '::error title=Recovery ownership unavailable::The claim marker has no unique matching Cloud event for this run; no state was changed.'
+            exit 1
+          fi
+          plan_revision="$(jq -er '.plan_revision' <<<"$marker_json")" || {
+            echo '::error title=Recovery ownership unavailable::The claim plan revision is missing; no state was changed.'
+            exit 1
+          }
+          scope_hash="$(jq -er '.scope_hash' <<<"$marker_json")" || {
+            echo '::error title=Recovery ownership unavailable::The claim scope hash is missing; no state was changed.'
+            exit 1
+          }
+          expected_key="$(python3 - "$GITHUB_REPOSITORY" "$ISSUE_NUMBER" "$plan_revision" "$scope_hash" "$event_id" <<'PY'
+          import hashlib
+          import sys
+
+          print("sha256:" + hashlib.sha256("\0".join(sys.argv[1:]).encode("utf-8")).hexdigest())
+          PY
+          )" || {
+            echo '::error title=Recovery ownership unavailable::The claim idempotency key could not be calculated; no state was changed.'
+            exit 1
+          }
+          if ! jq -e --arg repo "$GITHUB_REPOSITORY" --argjson issue "$ISSUE_NUMBER" \
+            --arg plan_revision "$plan_revision" --arg scope_hash "$scope_hash" \
+            --arg run_id "$dispatcher_run_id" --arg event "$event_id" --arg expected_key "$expected_key" '
+            (.runs |
+              ([.[] | select(.run_id == $run_id)] | length == 1) and
+              ([.[] | select(.event_id == $event)] | length == 1) and
+              ([.[] | select(.idempotency_key == $expected_key)] | length == 1) and
+              ([.[] | select(.run_id == $run_id)] | .[0] ==
+                {repository:$repo,issue:$issue,plan_revision:$plan_revision,
+                 scope_hash:$scope_hash,event_id:$event,
+                 idempotency_key:$expected_key,run_id:$run_id,status:"active"}))
+          ' <<<"$marker_json" >/dev/null 2>&1; then
+            echo '::error title=Recovery ownership unavailable::The claim does not contain the exact current run tuple; no state was changed.'
+            exit 1
+          fi
+          expires_at="$(jq -er '.lease.expires_at | select(type == "string")' <<<"$marker_json")" || {
+            echo '::error title=Recovery lease unavailable::The claim lease expiry is missing; no state was changed.'
+            exit 1
+          }
+          if lease_check="$(python3 - "$expires_at" 2>/dev/null <<'PY'
+          import datetime
+          import re
+          import sys
+
+          value = sys.argv[1]
+          if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})", value) is None:
+              raise SystemExit(1)
+          try:
+              normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+              expires = datetime.datetime.fromisoformat(normalized)
+          except ValueError:
+              raise SystemExit(1)
+          if expires.tzinfo is None:
+              raise SystemExit(1)
+          if expires <= datetime.datetime.now(datetime.timezone.utc):
+              print("expired")
+          else:
+              print("future")
+          PY
+          )"; then
+            case "$lease_check" in
+              future|expired) ;;
+              *)
+              echo '::error title=Recovery lease unavailable::The claim lease expiry is invalid; no state was changed.'
+              exit 1
+              ;;
+            esac
+          else
+            echo '::error title=Recovery lease unavailable::The claim lease expiry is invalid; no state was changed.'
             exit 1
           fi
           ordinary_before="$(jq -c '[.labels[] | .name | select(startswith("agent:") | not)] | sort' <<<"$issue_json")"
@@ -441,6 +549,14 @@ jobs:
       pr: ${{ steps.select.outputs.pr }}
       head_ref: ${{ steps.select.outputs.head_ref }}
       head_sha: ${{ steps.select.outputs.head_sha }}
+      correction_limit_exhausted: ${{ steps.select.outputs.correction_limit_exhausted }}
+      terminal_issue: ${{ steps.select.outputs.terminal_issue }}
+      terminal_pr: ${{ steps.select.outputs.terminal_pr }}
+      terminal_base_ref: ${{ steps.select.outputs.terminal_base_ref }}
+      terminal_base_sha: ${{ steps.select.outputs.terminal_base_sha }}
+      terminal_head_ref: ${{ steps.select.outputs.terminal_head_ref }}
+      terminal_head_sha: ${{ steps.select.outputs.terminal_head_sha }}
+      terminal_reason: ${{ steps.select.outputs.terminal_reason }}
     steps:
       - id: select
         name: Resolve exactly one same-repository open PR
@@ -451,7 +567,10 @@ jobs:
           write_no_selection() {
             printf '%s\n' \
               'selected=false' 'issue=' 'pr=' 'base_ref=' 'base_sha=' \
-              'head_ref=' 'head_sha=' >>"$GITHUB_OUTPUT"
+              'head_ref=' 'head_sha=' 'correction_limit_exhausted=false' \
+              'terminal_issue=' 'terminal_pr=' 'terminal_base_ref=' \
+              'terminal_base_sha=' 'terminal_head_ref=' 'terminal_head_sha=' \
+              'terminal_reason=' >>"$GITHUB_OUTPUT"
             echo 'selection=no-work' >>"$GITHUB_STEP_SUMMARY"
           }
 
@@ -475,6 +594,12 @@ jobs:
             write_no_selection
             exit 1
           }
+          if [ "$(jq 'length' <<<"$queue_json")" -ge 1000 ]; then
+            echo '::error title=Incomplete issue queue::The open issue inventory reached the 1000-item limit and may be truncated; no review was selected.'
+            write_no_selection
+            echo 'selection=blocked reason=issue-inventory-may-be-truncated' >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           queue_states="$(jq -c '
             map({
               number,
@@ -504,6 +629,21 @@ jobs:
           fi
 
           issues_json="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label 'agent:review-pending' --limit 1000 --json number)"
+          jq -e '
+            type == "array" and
+            all(.[]; type == "object" and
+              (.number | type == "number" and floor == . and . > 0))
+          ' <<<"$issues_json" >/dev/null || {
+            echo '::error title=Invalid review issue list::The review-pending issue response is malformed.'
+            write_no_selection
+            exit 1
+          }
+          if [ "$(jq 'length' <<<"$issues_json")" -ge 1000 ]; then
+            echo '::error title=Incomplete review issue list::The review-pending issue inventory reached the 1000-item limit and may be truncated; no review was selected.'
+            write_no_selection
+            echo 'selection=blocked reason=issue-inventory-may-be-truncated' >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           issue_numbers="$(jq -r 'sort_by(.number) | .[].number' <<<"$issues_json")"
           protected_review_path() {
             case "$1" in
@@ -512,6 +652,7 @@ jobs:
               scripts/agent-loop-*|scripts/check-agent-*|scripts/check-cloud-*|scripts/check-merge-*|scripts/check-workflow-*|\
               scripts/collect-pr-review-context*|scripts/collect-merge-gate-evidence*|scripts/create-review-followup-issue*|\
               scripts/publish-cloud-diff*|scripts/publish-cloud-merge*|scripts/quarantine-merge-selector-anomaly*|\
+              scripts/quarantine-review-correction-limit*|\
               scripts/safe-direct-merge*|scripts/validate-agent-workflow-assets*|scripts/validate-cloud-diff*|scripts/test-*|\
               scripts/setup-codex-cloud-lane.sh|scripts/codex-cloud-setup.sh|scripts/codex-rust-analyzer.sh|\
               scripts/install-git-hooks.sh|scripts/run-local-git-hook-gate.sh|scripts/worktree-setup.sh|scripts/worktree-cleanup.sh)
@@ -524,6 +665,331 @@ jobs:
           if [ "$protected_base_ref" != main ]; then echo "::error title=Unexpected protected branch::The repository default branch must be main, got ${protected_base_ref:-empty}."; exit 1; fi
           dispatch_base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${protected_base_ref}" --jq '.object.sha')"
           if ! [[ "$dispatch_base_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then echo '::error title=Invalid base SHA::The current default branch ref did not return one 40-hex commit.'; exit 1; fi
+          write_terminal_selection() {
+            local reason="$1"
+            {
+              echo 'selected=false'
+              echo "issue=$issue_number"
+              echo "pr=$pr_number"
+              echo "base_ref=$base_ref"
+              echo "base_sha=$dispatch_base_sha"
+              echo "head_ref=$head_ref"
+              echo "head_sha=$head_sha"
+              echo 'correction_limit_exhausted=true'
+              echo "terminal_issue=$issue_number"
+              echo "terminal_pr=$pr_number"
+              echo "terminal_base_ref=$base_ref"
+              echo "terminal_base_sha=$dispatch_base_sha"
+              echo "terminal_head_ref=$head_ref"
+              echo "terminal_head_sha=$head_sha"
+              echo "terminal_reason=$reason"
+            } >>"$GITHUB_OUTPUT"
+          }
+          closing_references_failure_reason=''
+          closing_issue_references_json=''
+          read_closing_issue_references() {
+            local target_pr="$1"
+            local pages_file="${RUNNER_TEMP}/rpm-review-closing-references-${target_pr}.jsonl"
+            local cursors_file="${RUNNER_TEMP}/rpm-review-closing-reference-cursors-${target_pr}.txt"
+            local query response page_count=0 reference_count=0 page_reference_count has_next next_cursor
+            local max_pages=100 max_references=10000
+            local cursor=''
+            local -a gh_args
+            closing_references_failure_reason=''
+            closing_issue_references_json=''
+            [[ "$target_pr" =~ ^[1-9][0-9]*$ ]] || { closing_references_failure_reason='pr-invalid'; return 1; }
+            : >"$pages_file" || { closing_references_failure_reason='temporary-file-failed'; return 1; }
+            : >"$cursors_file" || { closing_references_failure_reason='temporary-file-failed'; return 1; }
+            query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){nameWithOwner,pullRequest(number:$number){number,repository{nameWithOwner},closingIssuesReferences(first:100,after:$after){pageInfo{hasNextPage,endCursor},nodes{id,number,repository{nameWithOwner}}}}}}'
+            while :; do
+              page_count=$((page_count + 1))
+              [ "$page_count" -le "$max_pages" ] || { closing_references_failure_reason='pagination-limit'; return 1; }
+              if [ -n "$cursor" ]; then
+                if grep -Fqx -- "$cursor" "$cursors_file"; then
+                  closing_references_failure_reason='pagination-cursor-repeat'
+                  return 1
+                fi
+                case "$cursor" in *$'\n'*|*$'\r'*) closing_references_failure_reason='pagination-cursor-invalid'; return 1 ;; esac
+                printf '%s\n' "$cursor" >>"$cursors_file" || { closing_references_failure_reason='temporary-file-failed'; return 1; }
+              fi
+              gh_args=(api graphql -f query="$query" \
+                -f owner="${GITHUB_REPOSITORY%%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F number="$target_pr")
+              [ -z "$cursor" ] || gh_args+=(-f after="$cursor")
+              if ! response="$(GH_REPO="$GITHUB_REPOSITORY" gh "${gh_args[@]}")"; then
+                closing_references_failure_reason='read-failed'
+                return 1
+              fi
+              jq -e --arg repo "$GITHUB_REPOSITORY" --argjson pr "$target_pr" '
+                type == "object" and
+                (.errors? == null) and
+                (.data | type == "object") and
+                (.data.repository | type == "object") and
+                (.data.repository.nameWithOwner == $repo) and
+                (.data.repository.pullRequest | type == "object") and
+                (.data.repository.pullRequest.number == $pr) and
+                (.data.repository.pullRequest.repository | type == "object") and
+                (.data.repository.pullRequest.repository.nameWithOwner == $repo) and
+                (.data.repository.pullRequest.closingIssuesReferences | type == "object") and
+                (.data.repository.pullRequest.closingIssuesReferences.pageInfo | type == "object") and
+                (.data.repository.pullRequest.closingIssuesReferences.pageInfo.hasNextPage | type == "boolean") and
+                (.data.repository.pullRequest.closingIssuesReferences.pageInfo | has("endCursor")) and
+                ((.data.repository.pullRequest.closingIssuesReferences.pageInfo.endCursor == null) or
+                 (.data.repository.pullRequest.closingIssuesReferences.pageInfo.endCursor | type == "string" and length > 0)) and
+                (.data.repository.pullRequest.closingIssuesReferences.nodes | type == "array" and length <= 100 and all(.[];
+                  type == "object" and
+                  (.id | type == "string" and length > 0) and
+                  (.number | type == "number" and floor == . and . > 0) and
+                  (.repository | type == "object") and
+                  (.repository.nameWithOwner | type == "string" and test("^[^/]+/[^/]+$"))
+                ))
+              ' <<<"$response" >/dev/null 2>&1 || {
+                closing_references_failure_reason='response-invalid'
+                return 1
+              }
+              printf '%s\n' "$response" >>"$pages_file" || { closing_references_failure_reason='temporary-file-failed'; return 1; }
+              page_reference_count="$(jq -er '.data.repository.pullRequest.closingIssuesReferences.nodes | length' <<<"$response")" || {
+                closing_references_failure_reason='response-invalid'
+                return 1
+              }
+              reference_count=$((reference_count + page_reference_count))
+              [ "$reference_count" -le "$max_references" ] || { closing_references_failure_reason='reference-limit'; return 1; }
+              jq -s -e '
+                [.[].data.repository.pullRequest.closingIssuesReferences.nodes[]] as $nodes |
+                ([ $nodes[].id ] | length) == ([ $nodes[].id ] | unique | length) and
+                ([ $nodes[] | (.repository.nameWithOwner + "#" + (.number | tostring)) ] | length) ==
+                  ([ $nodes[] | (.repository.nameWithOwner + "#" + (.number | tostring)) ] | unique | length)
+              ' "$pages_file" >/dev/null 2>&1 || {
+                closing_references_failure_reason='pagination-duplicate-id'
+                return 1
+              }
+              has_next="$(jq -r '.data.repository.pullRequest.closingIssuesReferences.pageInfo.hasNextPage' <<<"$response")" || {
+                closing_references_failure_reason='response-invalid'
+                return 1
+              }
+              case "$has_next" in true|false) ;; *) closing_references_failure_reason='response-invalid'; return 1 ;; esac
+              next_cursor="$(jq -r '.data.repository.pullRequest.closingIssuesReferences.pageInfo.endCursor // empty' <<<"$response")" || {
+                closing_references_failure_reason='response-invalid'
+                return 1
+              }
+              if [ "$has_next" = true ]; then
+                [ -n "$next_cursor" ] || { closing_references_failure_reason='pagination-cursor-invalid'; return 1; }
+                [ "$next_cursor" != "$cursor" ] || { closing_references_failure_reason='pagination-cursor-stalled'; return 1; }
+                cursor="$next_cursor"
+              else
+                break
+              fi
+            done
+            closing_issue_references_json="$(jq -s -c '[.[].data.repository.pullRequest.closingIssuesReferences.nodes[] | {id,number,repository:{nameWithOwner:.repository.nameWithOwner}}]' "$pages_file" 2>/dev/null)" || {
+              closing_references_failure_reason='normalization-failed'
+              return 1
+            }
+            jq -e 'type == "array" and all(.[]; type == "object" and (.id | type == "string" and length > 0) and (.number | type == "number" and floor == . and . > 0) and (.repository.nameWithOwner | type == "string" and test("^[^/]+/[^/]+$")))' \
+              <<<"$closing_issue_references_json" >/dev/null 2>&1 || {
+              closing_references_failure_reason='normalization-failed'
+              return 1
+            }
+          }
+          review_comments_failure_reason=''
+          read_review_issue_comments() {
+            local target_issue="$1"
+            local pages_file="${RUNNER_TEMP}/rpm-review-correction-comments-${target_issue}.jsonl"
+            local cursors_file="${RUNNER_TEMP}/rpm-review-correction-cursors-${target_issue}.txt"
+            local query response page_count=0 comment_count=0 page_comment_count has_next next_cursor
+            local cursor=''
+            local -a gh_args
+            review_comments_failure_reason=''
+            [[ "$target_issue" =~ ^[1-9][0-9]*$ ]] || { review_comments_failure_reason='issue-invalid'; return 1; }
+            : >"$pages_file" || { review_comments_failure_reason='temporary-file-failed'; return 1; }
+            : >"$cursors_file" || { review_comments_failure_reason='temporary-file-failed'; return 1; }
+            query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){nameWithOwner,issue(number:$number){number,repository{nameWithOwner},comments(first:100,after:$after){pageInfo{hasNextPage,endCursor},nodes{id,body,author{login}}}}}}'
+            while :; do
+              page_count=$((page_count + 1))
+              [ "$page_count" -le 100 ] || { review_comments_failure_reason='pagination-limit'; return 1; }
+              if [ -n "$cursor" ]; then
+                if grep -Fqx -- "$cursor" "$cursors_file"; then
+                  review_comments_failure_reason='pagination-cursor-repeat'
+                  return 1
+                fi
+                case "$cursor" in *$'\n'*|*$'\r'*) review_comments_failure_reason='pagination-cursor-invalid'; return 1 ;; esac
+                printf '%s\n' "$cursor" >>"$cursors_file" || { review_comments_failure_reason='temporary-file-failed'; return 1; }
+              fi
+              gh_args=(api graphql -f query="$query" \
+                -f owner="${GITHUB_REPOSITORY%%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F number="$target_issue")
+              [ -z "$cursor" ] || gh_args+=(-f after="$cursor")
+              if ! response="$(GH_REPO="$GITHUB_REPOSITORY" gh "${gh_args[@]}")"; then
+                review_comments_failure_reason='read-failed'
+                return 1
+              fi
+              jq -e --arg repo "$GITHUB_REPOSITORY" --argjson issue "$target_issue" '
+                type == "object" and
+                (.errors? == null) and
+                (.data | type == "object") and
+                (.data.repository | type == "object") and
+                (.data.repository.nameWithOwner == $repo) and
+                (.data.repository.issue | type == "object") and
+                (.data.repository.issue.number == $issue) and
+                (.data.repository.issue.repository | type == "object") and
+                (.data.repository.issue.repository.nameWithOwner == $repo) and
+                (.data.repository.issue.comments | type == "object") and
+                (.data.repository.issue.comments.pageInfo | type == "object") and
+                (.data.repository.issue.comments.pageInfo.hasNextPage | type == "boolean") and
+                (.data.repository.issue.comments.pageInfo | has("endCursor")) and
+                ((.data.repository.issue.comments.pageInfo.endCursor == null) or
+                 (.data.repository.issue.comments.pageInfo.endCursor | type == "string" and length > 0)) and
+                (.data.repository.issue.comments.nodes | type == "array" and length <= 100 and all(.[];
+                  type == "object" and
+                  (.id | type == "string" and length > 0) and
+                  (.body | type == "string") and
+                  (has("author") and ((.author == null) or
+                   (.author | type == "object" and
+                    (.login | type == "string" and length > 0))))
+                ))
+              ' <<<"$response" >/dev/null 2>&1 || {
+                review_comments_failure_reason='response-invalid'
+                return 1
+              }
+              printf '%s\n' "$response" >>"$pages_file" || { review_comments_failure_reason='temporary-file-failed'; return 1; }
+              page_comment_count="$(jq -er '.data.repository.issue.comments.nodes | length' <<<"$response")" || {
+                review_comments_failure_reason='response-invalid'
+                return 1
+              }
+              comment_count=$((comment_count + page_comment_count))
+              [ "$comment_count" -le 10000 ] || { review_comments_failure_reason='comment-limit'; return 1; }
+              jq -s -e '[.[].data.repository.issue.comments.nodes[].id] as $ids | ($ids | length) == ($ids | unique | length)' \
+                "$pages_file" >/dev/null 2>&1 || {
+                review_comments_failure_reason='pagination-duplicate-id'
+                return 1
+              }
+              has_next="$(jq -r '.data.repository.issue.comments.pageInfo.hasNextPage' <<<"$response")" || {
+                review_comments_failure_reason='response-invalid'
+                return 1
+              }
+              case "$has_next" in true|false) ;; *) review_comments_failure_reason='response-invalid'; return 1 ;; esac
+              next_cursor="$(jq -r '.data.repository.issue.comments.pageInfo.endCursor // empty' <<<"$response")" || {
+                review_comments_failure_reason='response-invalid'
+                return 1
+              }
+              if [ "$has_next" = true ]; then
+                [ -n "$next_cursor" ] || { review_comments_failure_reason='pagination-cursor-invalid'; return 1; }
+                [ "$next_cursor" != "$cursor" ] || { review_comments_failure_reason='pagination-cursor-stalled'; return 1; }
+                cursor="$next_cursor"
+              else
+                break
+              fi
+            done
+            review_issue_comments_json="$(jq -s -c '
+              {comments: [.[].data.repository.issue.comments.nodes[] |
+                {id,body,author:(if .author == null then null else {login:(.author.login // null)} end)}]}
+            ' "$pages_file" 2>/dev/null)" || {
+              review_comments_failure_reason='normalization-failed'
+              return 1
+            }
+            jq -e '
+              type == "object" and (.comments | type == "array" and all(.[];
+                type == "object" and (.id | type == "string" and length > 0) and
+                (.body | type == "string") and
+                ((.author == null) or (.author | type == "object" and
+                  (.login | type == "string" and length > 0)))
+              ))
+            ' <<<"$review_issue_comments_json" >/dev/null 2>&1 || {
+              review_comments_failure_reason='normalization-failed'
+              return 1
+            }
+          }
+          classify_review_correction_state() {
+            local issue_json="$1" candidate_pr_json="$2"
+            local marker_data marker_pr marker_counter marker_head author
+            local marker_re='^<!-- rpm-agent-correction-history: pr=(?<pr>[1-9][0-9]*); counter=(?<counter>agent:correction-[0-5]); head=(?<head>[0-9a-f]{40}) -->\n?$'
+            local history_json='[]' correction_names_json correction_name correction_count
+            review_correction_reason=''
+            if ! jq -e '
+              type == "object" and
+              (.comments | type == "array" and all(.[];
+                type == "object" and
+                (.id | type == "string" and length > 0) and
+                (.body | type == "string") and
+                ((.author == null) or
+                 (.author | type == "object" and (.login | type == "string" and length > 0)))
+              ))
+            ' <<<"$issue_json" >/dev/null 2>&1; then
+              review_correction_reason='correction-history-response-invalid'
+              return 0
+            fi
+            correction_names_json="$(jq -c '[.labels[]?.name | select(startswith("agent:correction-"))]' <<<"$candidate_pr_json")" || {
+              review_correction_reason='correction-label-invalid'
+              return 0
+            }
+            correction_count="$(jq 'length' <<<"$correction_names_json")"
+            while IFS= read -r correction_name; do
+              case "$correction_name" in
+                agent:correction-0|agent:correction-1|agent:correction-2|agent:correction-3|agent:correction-4|agent:correction-5) ;;
+                *) review_correction_reason='correction-label-invalid'; return 0 ;;
+              esac
+            done < <(jq -r '.[]' <<<"$correction_names_json")
+            if [ "$correction_count" -ne 1 ]; then
+              review_correction_reason='correction-label-invalid'
+              return 0
+            fi
+            correction_counter="$(jq -r '.[0] | split("-")[-1]' <<<"$correction_names_json")"
+            while IFS= read -r comment_json || [ -n "$comment_json" ]; do
+              author="$(jq -r '.author.login // ""' <<<"$comment_json")" || {
+                review_correction_reason='correction-history-response-invalid'
+                return 0
+              }
+              case "$author" in
+                "github-actions[bot]"|nerdchanii) ;;
+                *) continue ;;
+              esac
+              if ! jq -e --arg prefix '<!-- rpm-agent-correction-history:' '.body | type == "string" and contains($prefix)' <<<"$comment_json" >/dev/null 2>&1; then
+                continue
+              fi
+              marker_data="$(jq -r --arg prefix '<!-- rpm-agent-correction-history:' --arg re "$marker_re" '
+                if ((.body | contains($prefix)) | not) then "NONE"
+                elif (.body | test($re)) then
+                  (.body | capture($re)) as $match |
+                  [$match.pr, $match.counter, $match.head, (.author.login // "")] | @tsv
+                else "MALFORMED" end
+              ' <<<"$comment_json")" || {
+                review_correction_reason='correction-history-response-invalid'
+                return 0
+              }
+              [ "$marker_data" = NONE ] && continue
+              if [ "$marker_data" = MALFORMED ]; then
+                review_correction_reason='correction-history-malformed'
+                return 0
+              fi
+              IFS=$'\t' read -r marker_pr marker_counter marker_head author <<<"$marker_data"
+              [ "$marker_pr" = "$pr_number" ] || continue
+              marker_counter="${marker_counter##*-}"
+              if [ "$(jq --argjson counter "$marker_counter" '[.[] | select(.counter == $counter)] | length' <<<"$history_json")" -ne 0 ]; then
+                review_correction_reason='correction-history-duplicate'
+                return 0
+              fi
+              history_json="$(jq -c --argjson counter "$marker_counter" --arg head "${marker_head,,}" '. + [{counter:$counter,head:$head}]' <<<"$history_json")"
+            done < <(jq -c '.comments[]' <<<"$issue_json")
+            if [ "$(jq --argjson current "$correction_counter" '[.[] | select(.counter > $current)] | length' <<<"$history_json")" -gt 0 ]; then
+              review_correction_reason='correction-history-label-lowered'
+              return 0
+            fi
+            for counter in $(seq 0 "$correction_counter"); do
+              if [ "$(jq --argjson counter "$counter" '[.[] | select(.counter == $counter)] | length' <<<"$history_json")" -ne 1 ]; then
+                review_correction_reason='correction-history-sequence-missing'
+                return 0
+              fi
+            done
+            if [ "$(jq 'length' <<<"$history_json")" -ne $((correction_counter + 1)) ]; then
+              review_correction_reason='correction-history-sequence-invalid'
+              return 0
+            fi
+            marker_head="$(jq --argjson current "$correction_counter" -r '[.[] | select(.counter == $current) | .head][0] // empty' <<<"$history_json")"
+            if [ "$marker_head" != "${head_sha,,}" ]; then
+              review_correction_reason='correction-history-head-mismatch'
+              return 0
+            fi
+            if [ "$correction_counter" -eq 5 ]; then
+              review_correction_reason='correction-limit'
+            fi
+          }
           found=0
           while IFS= read -r issue_number; do
             [ -n "$issue_number" ] || continue
@@ -538,11 +1004,67 @@ jobs:
               case "$pr_number" in ''|*[!0-9]*) echo '::error title=Invalid linked PR::The issue timeline returned a non-numeric pull request number.'; exit 1;; esac
               pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
               [ "$(jq -r '.state // empty' <<<"$pr_json")" = open ] || continue
-              closing_json="$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences)"
-              jq -e --argjson issue "$issue_number" '
-                (.closingIssuesReferences | type == "array") and
-                any(.closingIssuesReferences[]; .number == $issue)
-              ' <<<"$closing_json" >/dev/null || continue
+              if ! read_closing_issue_references "$pr_number"; then
+                echo "::error title=Invalid closing issue inventory::PR #${pr_number} returned an invalid closing issue page (${closing_references_failure_reason}); no review was selected."
+                write_no_selection
+                echo "selection=blocked reason=closing-reference-${closing_references_failure_reason} issue-${issue_number} pr=${pr_number}" >>"$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              if ! jq -e --arg repo "$GITHUB_REPOSITORY" --argjson issue "$issue_number" '
+                any(.[]; .number == $issue and .repository.nameWithOwner == $repo)
+              ' <<<"$closing_issue_references_json" >/dev/null; then
+                continue
+              fi
+              if ! jq -e --arg repo "$GITHUB_REPOSITORY" --argjson issue "$issue_number" '
+                (length == 1 and .[0].number == $issue and
+                  .[0].repository.nameWithOwner == $repo)
+              ' <<<"$closing_issue_references_json" >/dev/null; then
+                # This is a terminal candidate anomaly. Capture the complete
+                # PR identity before handing it to the trusted quarantine job
+                # so a repeated scheduler run cannot skip this issue forever.
+                base_ref="$(jq -r '.base.ref // empty' <<<"$pr_json")"
+                pr_base_sha="$(jq -r '.base.sha // empty' <<<"$pr_json")"
+                head_ref="$(jq -r '.head.ref // empty' <<<"$pr_json")"
+                head_sha="$(jq -r '.head.sha // empty' <<<"$pr_json")"
+                base_repo="$(jq -r '.base.repo.full_name // empty' <<<"$pr_json")"
+                head_repo="$(jq -r '.head.repo.full_name // empty' <<<"$pr_json")"
+                if [ "$base_repo" != "$GITHUB_REPOSITORY" ] || [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+                  echo "::error title=Cross-repository review PR rejected::PR #${pr_number} is not entirely within this repository."
+                  write_no_selection
+                  exit 1
+                fi
+                case "$head_ref" in
+                  ''|main|master|develop|release|HEAD|refs/*|*'..'*|*'//'*)
+                    echo "::error title=Unsafe review branches::PR #${pr_number} uses a protected or malformed head branch."
+                    write_no_selection
+                    exit 1
+                    ;;
+                esac
+                if [[ ! "$head_ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ || "$head_ref" == */ || "$head_ref" == /* || "$head_ref" == -* ]] || ! git check-ref-format --branch "$head_ref" >/dev/null 2>&1; then
+                  echo "::error title=Unsafe review branches::PR #${pr_number} uses a malformed head branch."
+                  write_no_selection
+                  exit 1
+                fi
+                if [ "$base_ref" != main ]; then
+                  echo "::error title=Unsafe review branches::PR #${pr_number} must target main."
+                  write_no_selection
+                  exit 1
+                fi
+                if ! [[ "$pr_base_sha" =~ ^[0-9a-fA-F]{40}$ && "$dispatch_base_sha" =~ ^[0-9a-fA-F]{40}$ && "$head_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                  echo "::error title=Invalid review SHA::PR #${pr_number} did not return exact base and head SHAs."
+                  write_no_selection
+                  exit 1
+                fi
+                if [ "$pr_base_sha" != "$dispatch_base_sha" ]; then
+                  echo "::error title=Stale review base::PR #${pr_number} no longer targets the selected main SHA."
+                  write_no_selection
+                  exit 1
+                fi
+                echo "::warning title=Multiple closing references::PR #${pr_number} would close more than the selected issue; the review issue will be quarantined without Cloud."
+                write_terminal_selection multiple-closing-references
+                echo "selection=blocked reason=multiple-closing-references issue-${issue_number} pr=${pr_number} base=${base_ref}@${dispatch_base_sha} head=${head_ref}@${head_sha}" >>"$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
               head_repo="$(jq -r '.head.repo.full_name // empty' <<<"$pr_json")"
               if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then open_fork=1; continue; fi
               open_same_repo+=("$pr_number")
@@ -552,6 +1074,14 @@ jobs:
             if [ "${#open_same_repo[@]}" -ne 1 ]; then echo "::error title=Ambiguous review PR::Issue #${issue_number} has more than one linked open same-repository PR."; exit 1; fi
             pr_number="${open_same_repo[0]}"
             pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+            jq -e '
+              .labels | type == "array" and
+              all(.[]; type == "object" and (.name | type == "string"))
+            ' <<<"$pr_json" >/dev/null || {
+              echo "::error title=Invalid review labels::PR #${pr_number} returned a malformed label inventory."
+              write_no_selection
+              exit 1
+            }
             base_ref="$(jq -r '.base.ref // empty' <<<"$pr_json")"
             pr_base_sha="$(jq -r '.base.sha // empty' <<<"$pr_json")"
             head_ref="$(jq -r '.head.ref // empty' <<<"$pr_json")"
@@ -566,6 +1096,47 @@ jobs:
             if [ "$base_ref" != main ]; then echo "::error title=Unsafe review branches::PR #${pr_number} must target main."; exit 1; fi
             if ! [[ "$pr_base_sha" =~ ^[0-9a-fA-F]{40}$ && "$dispatch_base_sha" =~ ^[0-9a-fA-F]{40}$ && "$head_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then echo "::error title=Invalid review SHA::PR #${pr_number} did not return exact base and head SHAs."; exit 1; fi
             if [ "$pr_base_sha" != "$dispatch_base_sha" ]; then echo "::error title=Stale review base::PR #${pr_number} no longer targets the selected main SHA."; exit 1; fi
+            review_issue_metadata="$(gh issue view "$issue_number" --repo "$GITHUB_REPOSITORY" --json number,state,labels 2>/dev/null)" || {
+              echo "::error title=Invalid review issue::Issue #${issue_number} could not be read for correction-history validation."
+              write_no_selection
+              exit 1
+            }
+            if ! read_review_issue_comments "$issue_number"; then
+              echo "::error title=Invalid correction-history comments::Issue #${issue_number} comment page ${review_comments_failure_reason} could not be validated; no review was selected."
+              write_no_selection
+              echo "selection=blocked reason=correction-history-${review_comments_failure_reason} issue-${issue_number} pr=${pr_number}" >>"$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            review_issue_json="$(jq -c --argjson comments "$review_issue_comments_json" '. + $comments' <<<"$review_issue_metadata")" || {
+              echo '::error title=Invalid review issue::The issue metadata could not be combined with the complete comment inventory.'
+              write_no_selection
+              exit 1
+            }
+            if ! jq -e --argjson issue "$issue_number" '
+              type == "object" and .number == $issue and .state == "OPEN" and
+              (.labels | type == "array" and all(.[]; type == "object" and (.name | type == "string"))) and
+              ([.labels[]?.name | select(
+                . == "agent:research" or
+                . == "agent:ready" or
+                . == "agent:claimed" or
+                . == "agent:review-pending" or
+                . == "agent:awaiting-merge" or
+                . == "agent:blocked"
+              )] | sort) == ["agent:review-pending"]
+            ' <<<"$review_issue_json" >/dev/null 2>&1; then
+              continue
+            fi
+            classify_review_correction_state "$review_issue_json" "$pr_json"
+            if [ -n "$review_correction_reason" ]; then
+              if [ "$review_correction_reason" = correction-limit ]; then
+                echo "::warning title=Correction limit exhausted::PR #${pr_number} has a valid correction-5 history; no review Cloud task was started."
+              else
+                echo "::warning title=Correction history is invalid::PR #${pr_number} has ${review_correction_reason}; no review Cloud task was started."
+              fi
+              write_terminal_selection "$review_correction_reason"
+              echo "selection=blocked reason=${review_correction_reason} issue-${issue_number} pr=${pr_number} head=${head_ref}@${head_sha}" >>"$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             changed_files="$(jq -er '.changed_files | select(type == "number" and floor == . and . >= 0 and . <= 3000)' <<<"$pr_json")" || { echo "::error title=Invalid review file count::PR #${pr_number} has an invalid or unsupported changed-file count."; exit 1; }
             files_pages="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100")"
             files_json="$(jq -ce 'if type == "array" and all(.[]; type == "array") then [ .[][] ] else error("invalid pages") end' <<<"$files_pages")" || { echo "::error title=Invalid review file list::PR #${pr_number} returned a malformed changed-file response."; exit 1; }
@@ -613,14 +1184,80 @@ jobs:
               echo "base_sha=$base_sha"
               echo "head_ref=$head_ref"
               echo "head_sha=$head_sha"
+              echo 'correction_limit_exhausted=false'
+              echo 'terminal_issue='
+              echo 'terminal_pr='
+              echo 'terminal_base_ref='
+              echo 'terminal_base_sha='
+              echo 'terminal_head_ref='
+              echo 'terminal_head_sha='
+              echo 'terminal_reason='
             } >>"$GITHUB_OUTPUT"
             echo "selection=issue-${issue_number} pr=${pr_number} base=${base_ref}@${base_sha} head=${head_ref}@${head_sha}" >>"$GITHUB_STEP_SUMMARY"
             break
           done <<<"$issue_numbers"
           if [ "$found" -eq 0 ]; then
-            printf '%s\n' 'selected=false' 'issue=' 'pr=' 'base_ref=' 'base_sha=' 'head_ref=' 'head_sha=' >>"$GITHUB_OUTPUT"
-            echo 'selection=no-work' >>"$GITHUB_STEP_SUMMARY"
+            write_no_selection
           fi
+
+  review-selector-quarantine:
+    name: Quarantine exhausted review
+    needs: select-review
+    if: >-
+      ${{ always() && github.repository == 'nerdchanii/rpm' &&
+          needs.select-review.result == 'success' &&
+          needs.select-review.outputs.correction_limit_exhausted == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    timeout-minutes: 10
+    concurrency:
+      group: codex-cloud-review-selector-quarantine-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      ISSUE_NUMBER: ${{ needs.select-review.outputs.terminal_issue }}
+      PR_NUMBER: ${{ needs.select-review.outputs.terminal_pr }}
+      BASE_REF: ${{ needs.select-review.outputs.terminal_base_ref }}
+      BASE_SHA: ${{ needs.select-review.outputs.terminal_base_sha }}
+      HEAD_REF: ${{ needs.select-review.outputs.terminal_head_ref }}
+      HEAD_SHA: ${{ needs.select-review.outputs.terminal_head_sha }}
+      TERMINAL_REASON: ${{ needs.select-review.outputs.terminal_reason }}
+    steps:
+      - name: Check out trusted review terminal writer at protected main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.select-review.outputs.terminal_base_sha }}
+          path: rpm-cloud-tools
+          sparse-checkout: |
+            .agents/workflows/backlog-policy.json
+            scripts/quarantine-review-correction-limit.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Verify protected review terminal writer revision
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          [ "$(git -C "$GITHUB_WORKSPACE/rpm-cloud-tools" rev-parse HEAD)" = "$BASE_SHA" ] || {
+            echo '::error title=Untrusted review terminal writer revision::The terminal writer must come from the selected protected main SHA.'
+            exit 1
+          }
+          mv "$GITHUB_WORKSPACE/rpm-cloud-tools" "${RUNNER_TEMP}/rpm-cloud-tools"
+      - name: Move exhausted review to blocked with one reason
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash "${RUNNER_TEMP}/rpm-cloud-tools/scripts/quarantine-review-correction-limit.sh" \
+            --policy "${RUNNER_TEMP}/rpm-cloud-tools/.agents/workflows/backlog-policy.json" \
+            --issue "$ISSUE_NUMBER" \
+            --pr "$PR_NUMBER" \
+            --base-ref "$BASE_REF" \
+            --base-sha "$BASE_SHA" \
+            --head-ref "$HEAD_REF" \
+            --head-sha "$HEAD_SHA" \
+            --reason "$TERMINAL_REASON"
 
   review-cloud:
     name: Execute review task in Codex Cloud
@@ -923,6 +1560,12 @@ jobs:
             write_no_work
             exit 1
           }
+          if [ "$(jq 'length' <<<"$queue_json")" -ge 1000 ]; then
+            echo '::error title=Incomplete issue queue::The open issue inventory reached the 1000-item limit and may be truncated; no merge was selected.'
+            write_no_work
+            echo 'selection=blocked reason=issue-inventory-may-be-truncated' >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           queue_states="$(jq -c '
             map({
               number,
@@ -958,8 +1601,15 @@ jobs:
               (.number | type == "number" and floor == . and . > 0))
           ' <<<"$issues_json" >/dev/null || {
             echo '::error title=Invalid merge issue list::The awaiting-merge issue response is malformed.'
+            write_no_work
             exit 1
           }
+          if [ "$(jq 'length' <<<"$issues_json")" -ge 1000 ]; then
+            echo '::error title=Incomplete merge issue list::The awaiting-merge issue inventory reached the 1000-item limit and may be truncated; no merge was selected.'
+            write_no_work
+            echo 'selection=blocked reason=issue-inventory-may-be-truncated' >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           issue_numbers="$(jq -r 'sort_by(.number) | .[0].number // empty' <<<"$issues_json")"
           if [ -z "$issue_numbers" ]; then
             write_no_work
@@ -1027,18 +1677,24 @@ jobs:
               echo "::error title=Closing reference read failed::PR #${pr_number} could not be checked."
               exit 1
             }
-            if ! jq -e '
+            if ! jq -e --arg repo "$GITHUB_REPOSITORY" '
               type == "object" and
               (.closingIssuesReferences | type == "array" and
                 all(.[]; type == "object" and
-                  (.number | type == "number" and floor == . and . > 0)))
+                  (.number | type == "number" and floor == . and . > 0) and
+                  (.repository | type == "object" and
+                    (.name | type == "string" and length > 0) and
+                    (.owner | type == "object" and (.login | type == "string" and length > 0)))))
             ' <<<"$closing_json" >/dev/null; then
               echo "::error title=Invalid closing reference::PR #${pr_number} returned malformed issue links."
               exit 1
             fi
-            if ! jq -e --argjson issue "$issue_number" \
-              'any(.closingIssuesReferences[]; .number == $issue)' <<<"$closing_json" >/dev/null; then
-              continue
+            if ! jq -e --arg repo "$GITHUB_REPOSITORY" --argjson issue "$issue_number" '
+              (.closingIssuesReferences | length == 1 and .[0].number == $issue and
+                ((.[0].repository.owner.login + "/" + .[0].repository.name) == $repo))
+            ' <<<"$closing_json" >/dev/null; then
+              write_anomaly "$issue_number" multiple-closing-references "PR #${pr_number}의 자동 종료 이슈 연결이 정확히 하나가 아닙니다."
+              exit 0
             fi
             base_repo="$(jq -r '.base.repo.full_name' <<<"$pr_json")"
             head_repo="$(jq -r '.head.repo.full_name' <<<"$pr_json")"

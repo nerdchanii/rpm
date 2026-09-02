@@ -226,9 +226,11 @@ closing_references_query() {
   local query='query($owner:String!,$name:String!,$number:Int!,$after:String) {
     repository(owner:$owner,name:$name) {
       pullRequest(number:$number) {
+        number
+        repository { nameWithOwner }
         closingIssuesReferences(first:100,after:$after) {
           pageInfo { hasNextPage endCursor }
-          nodes { number }
+          nodes { number repository { nameWithOwner } }
         }
       }
     }
@@ -239,19 +241,24 @@ closing_references_query() {
 }
 
 closing_issue_numbers_for_pr() {
-  local number="$1" after='' done=false page=0 response nodes has_next cursor all='[]'
+  local number="$1" after='' done=false page=0 response nodes has_next cursor all='[]' reference_count
   while [ "$done" != true ]; do
     page=$((page + 1))
     [ "$page" -le "$max_graphql_pages" ] || error "closing-reference-pagination-limit:${number}"
     response="$(closing_references_query "$number" "$after")" || error "closing-reference-read-failed:${number}"
-    if ! jq -e '
+    if ! jq -e --arg repo "$repo" --argjson pr "$number" '
       type == "object" and ((.errors? == null) or (.errors | type == "array" and length == 0)) and
       (.data.repository.pullRequest | type == "object") and
+      (.data.repository.pullRequest.number == $pr) and
+      (.data.repository.pullRequest.repository | type == "object" and .nameWithOwner == $repo) and
       (.data.repository.pullRequest.closingIssuesReferences | type == "object") and
       (.data.repository.pullRequest.closingIssuesReferences.pageInfo | type == "object") and
       (.data.repository.pullRequest.closingIssuesReferences.nodes | type == "array") and
       all(.data.repository.pullRequest.closingIssuesReferences.nodes[];
-        type == "object" and (.number | type == "number" and floor == . and . >= 1))
+        type == "object" and
+        (.number | type == "number" and floor == . and . >= 1) and
+        (.repository | type == "object" and .nameWithOwner == $repo)
+      )
     ' <<<"$response" >/dev/null 2>&1; then
       error "closing-reference-response-invalid:${number}"
     fi
@@ -269,6 +276,10 @@ closing_issue_numbers_for_pr() {
       done=true
     fi
   done
+  reference_count="$(jq 'length' <<<"$all")"
+  if [ "$reference_count" -gt 1 ]; then
+    error "closing-reference-count-invalid:${number}"
+  fi
   jq -S -c 'unique | sort' <<<"$all"
 }
 
@@ -496,15 +507,63 @@ while [ "$threads_done" != true ] || [ "$reviews_done" != true ]; do
   [ "$threads_done" = true ] && include_threads=false
   [ "$reviews_done" = true ] && include_reviews=false
   response="$(graphql_query "$review_query" "$pr_number" "$threads_after" "$reviews_after" "$include_threads" "$include_reviews")" || error 'graphql-read-failed'
-  if ! jq -e '
-    type == "object" and ((.errors? == null) or (.errors | type == "array" and length == 0)) and
-    (.data.repository.pullRequest | type == "object")
+  if ! jq -e --argjson expected_pr "$pr_number" --argjson include_threads "$include_threads" --argjson include_reviews "$include_reviews" '
+    def valid_page_info:
+      type == "object"
+      and (.hasNextPage | type == "boolean")
+      and ((.endCursor == null) or (.endCursor | type == "string"));
+    def valid_sha:
+      type == "string" and test("^[0-9a-fA-F]{40}$");
+    def valid_author:
+      (. == null) or (type == "object" and (.login | type == "string" and length > 0));
+    def valid_commit:
+      (. == null) or (type == "object" and (.oid | valid_sha));
+    def valid_review:
+      type == "object"
+      and (.id | type == "string" and length > 0)
+      and (.state | type == "string" and IN("APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"))
+      and (.body | type == "string")
+      and ((.submittedAt == null) or (.submittedAt | type == "string" and length > 0))
+      and (.author | valid_author)
+      and (.commit | valid_commit)
+      and (
+        (.state == "PENDING" and .submittedAt == null)
+        or (
+          .state != "PENDING"
+          and (.submittedAt | type == "string" and length > 0)
+          and (.commit | type == "object" and (.oid | valid_sha))
+        )
+      );
+    type == "object"
+    and ((.errors? == null) or (.errors | type == "array" and length == 0))
+    and (.data | type == "object")
+    and (.data.repository | type == "object")
+    and (.data.repository.pullRequest | type == "object")
+    and (.data.repository.pullRequest.number | type == "number" and floor == . and . == $expected_pr)
+    and (.data.repository.pullRequest.headRefOid | valid_sha)
+    and (
+      ($include_threads | not)
+      or (
+        .data.repository.pullRequest.reviewThreads | type == "object"
+        and (.pageInfo | valid_page_info)
+        and (.nodes | type == "array")
+      )
+    )
+    and (
+      ($include_reviews | not)
+      or (
+        .data.repository.pullRequest.reviews | type == "object"
+        and (.pageInfo | valid_page_info)
+        and (.nodes | type == "array")
+        and all(.nodes[]; valid_review)
+      )
+    )
   ' <<<"$response" >/dev/null 2>&1; then
     error 'graphql-response-invalid'
   fi
+  graphql_head_sha="$(jq -er '.data.repository.pullRequest.headRefOid | ascii_downcase' <<<"$response" 2>/dev/null)" || error 'graphql-head-sha-invalid'
+  [ "$graphql_head_sha" = "$head_sha" ] || error 'head-sha-drift-during-review-read'
   if [ "$graphql_page" -eq 1 ]; then
-    graphql_head_sha="$(jq -r '.data.repository.pullRequest.headRefOid // ""' <<<"$response")"
-    [ "$graphql_head_sha" = "$head_sha" ] || error 'head-sha-drift-during-review-read'
     queue_json="$(jq -c '.data.repository.pullRequest.mergeQueueEntry // null' <<<"$response")"
     repository_queue_json="$(jq -c '.data.repository.mergeQueue // null' <<<"$response")"
     if ! jq -e '(. == null) or (type == "object" and (.id | type == "string" and length > 0))' <<<"$repository_queue_json" >/dev/null 2>&1; then
@@ -559,7 +618,7 @@ review_threads="$(jq -s '
   | unique_by(.id) | sort_by(.id)
 ' "$tmp_dir/threads.jsonl")"
 reviews="$(jq -s '
-  map({id,state:(.state // ""),body:(.body // ""),submitted_at:(.submittedAt // null),url:(.url // null),author:((.author.login // null)),commit_oid:((.commit.oid // null))})
+  map({id,state:(.state | ascii_upcase),body:(.body // ""),submitted_at:(.submittedAt // null),url:(.url // null),author:((.author.login // null)),commit_oid:(if .commit == null then null else (.commit.oid | ascii_downcase) end)})
   | unique_by(.id) | sort_by(.id)
 ' "$tmp_dir/reviews.jsonl")"
 
@@ -568,13 +627,24 @@ unresolved_threads="$(jq '[.[] | select(.is_resolved != true and .is_outdated !=
 # explicit finding boolean as well because top-level review bodies have no
 # ReviewThread object and can contain a P0/P1 heading by themselves.
 unresolved_p0_p1="$(jq -r '
-  def p01: test("(^|\\n)[[:space:]]*\\*{0,2}P[01]\\*{0,2}[[:space:]]*[:—–-]"; "im");
+  # Keep this marker grammar in step with safe-direct-merge.sh.  Markdown
+  # headings may bold the priority itself (`**P1**:`) or the priority plus
+  # its delimiter (`**P1:**`).
+  def p01: test("\\*{0,2}P[01]\\*{0,2}[[:space:]]*[:—–-]|\\[P[01]\\]|\\*{0,2}P[01]\\*{0,2}[[:space:]]+Badge"; "im");
   any(.[]; ((.is_resolved != true and .is_outdated != true) and any(.comments[]?; (.body | p01))))
 ' <<<"$review_threads")"
 top_level_p0_p1="$(jq -r '
-  def p01: test("(^|\\n)[[:space:]]*\\*{0,2}P[01]\\*{0,2}[[:space:]]*[:—–-]"; "im");
-  any(.[]; ((.state | ascii_upcase) == "CHANGES_REQUESTED" or (.body | p01)))
-' <<<"$reviews")"
+  # Keep this marker grammar in step with safe-direct-merge.sh.  Markdown
+  # headings may bold the priority itself (`**P1**:`) or the priority plus
+  # its delimiter (`**P1:**`).
+  def p01: test("\\*{0,2}P[01]\\*{0,2}[[:space:]]*[:—–-]|\\[P[01]\\]|\\*{0,2}P[01]\\*{0,2}[[:space:]]+Badge"; "im");
+  def current_submitted_review:
+    .state != "DISMISSED"
+    and .state != "PENDING"
+    and (.submitted_at | type == "string" and length > 0)
+    and .commit_oid == $head_sha;
+  any(.[]; current_submitted_review and ((.state == "CHANGES_REQUESTED") or (.body | p01)))
+' --arg head_sha "$head_sha" <<<"$reviews")"
 if [ "$unresolved_threads" -gt 0 ] || [ "$top_level_p0_p1" = true ]; then
   unresolved_p0_p1=true
 fi

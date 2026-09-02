@@ -149,6 +149,8 @@ ready_label="$(jq -er '.labels.ready | strings' "$policy" 2>/dev/null)" || error
 claimed_label="$(jq -er '.labels.claimed | strings' "$policy" 2>/dev/null)" || error 'policy-claimed-label-invalid'
 review_pending_label="$(jq -er '.labels["review-pending"] | strings' "$policy" 2>/dev/null)" || error 'policy-review-pending-label-invalid'
 max_no_work_attempts="$(jq -er '.merge_gate.max_no_work_attempts | select(type == "number" and floor == . and . == 5)' "$policy" 2>/dev/null)" || error 'policy-no-work-limit-invalid'
+readonly max_graphql_pages=100
+readonly max_graphql_comments=10000
 if [ "$protected_branch" != "$expected_base_ref" ]; then
   error 'trusted-base-ref-policy-mismatch'
 fi
@@ -214,6 +216,17 @@ class Invalid(Exception):
     pass
 
 
+# The merge publisher consumes Cloud-written text too.  GitHub interprets
+# these keywords as closing directives in a PR body, so only the publisher's
+# own managed directive may appear in the lifecycle flow.
+closing_directive = re.compile(
+    r"(?im)(^|[^A-Za-z0-9])"
+    r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\b"
+    r"(?:[^\r\n#]{0,80}#[1-9][0-9]*(?![0-9])|"
+    r"[^\r\n]{0,80}https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*(?![0-9]))"
+)
+
+
 def unique_pairs(pairs):
     result = {}
     for key, value in pairs:
@@ -261,11 +274,15 @@ try:
     summary = value["summary"]
     if type(summary) is not str or len(summary.encode("utf-8")) > 4000:
         raise Invalid("summary-invalid")
+    if closing_directive.search(summary):
+        raise Invalid("summary-closing-directive-forbidden")
     validation = value["validation"]
     if type(validation) is not list or len(validation) > 50:
         raise Invalid("validation-invalid")
     if any(type(item) is not str or len(item.encode("utf-8")) > 2048 for item in validation):
         raise Invalid("validation-entry-invalid")
+    if any(closing_directive.search(item) for item in validation):
+        raise Invalid("validation-closing-directive-forbidden")
     if value["actionable_findings_remaining"] is not False:
         raise Invalid("actionable-findings-invalid")
     if value["correction_label"] is not None:
@@ -299,8 +316,107 @@ PY
 result_status="$(jq -er '.status' <<<"$result_json")"
 result_summary="$(jq -er '.summary' <<<"$result_json")"
 
+read_issue_comments() {
+  local target_issue="$1" comments_file="$2"
+  local pages_file="$tmp_dir/merge-issue-comment-pages.jsonl"
+  local cursors_file="$tmp_dir/merge-issue-comment-cursors.txt"
+  local query response page_count=0 comment_count=0 page_comment_count has_next next_cursor cursor=''
+  local -a gh_args
+
+  [[ "$target_issue" =~ ^[1-9][0-9]*$ ]] || error 'merge-comment-issue-invalid'
+  : >"$pages_file"
+  : >"$cursors_file"
+  query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){nameWithOwner,issue(number:$number){number,repository{nameWithOwner},comments(first:100,after:$after){pageInfo{hasNextPage,endCursor},nodes{id,body,author{login}}}}}}'
+
+  while :; do
+    page_count=$((page_count + 1))
+    [ "$page_count" -le "$max_graphql_pages" ] || error 'merge-comment-pagination-limit'
+    if [ -n "$cursor" ]; then
+      if grep -Fqx -- "$cursor" "$cursors_file"; then
+        error 'merge-comment-pagination-cursor-repeat'
+      fi
+      case "$cursor" in *$'\n'*|*$'\r'*) error 'merge-comment-pagination-cursor-invalid' ;; esac
+      printf '%s\n' "$cursor" >>"$cursors_file"
+    fi
+
+    gh_args=(api graphql -f query="$query" \
+      -f owner="${repo%%/*}" -f name="${repo#*/}" -F number="$target_issue")
+    [ -z "$cursor" ] || gh_args+=(-f after="$cursor")
+    if ! response="$(GH_REPO="$repo" gh "${gh_args[@]}")"; then
+      error 'merge-comment-read-failed'
+    fi
+    jq -e --arg expected_repo "$repo" --argjson expected_issue "$target_issue" '
+      type == "object" and
+      ((.errors? == null) or (.errors | type == "array" and length == 0)) and
+      (.data | type == "object") and
+      (.data.repository | type == "object") and
+      (.data.repository.nameWithOwner == $expected_repo) and
+      (.data.repository.issue | type == "object") and
+      (.data.repository.issue.number == $expected_issue) and
+      (.data.repository.issue.repository | type == "object") and
+      (.data.repository.issue.repository.nameWithOwner == $expected_repo) and
+      (.data.repository.issue.comments | type == "object") and
+      (.data.repository.issue.comments.pageInfo | type == "object") and
+      (.data.repository.issue.comments.pageInfo.hasNextPage | type == "boolean") and
+      (.data.repository.issue.comments.pageInfo | has("endCursor")) and
+      ((.data.repository.issue.comments.pageInfo.endCursor == null) or
+       (.data.repository.issue.comments.pageInfo.endCursor | type == "string" and length > 0)) and
+      (.data.repository.issue.comments.nodes | type == "array" and length <= 100 and all(.[];
+        type == "object" and
+        (.id | type == "string" and length > 0) and
+        (.body | type == "string") and
+        (has("author") and ((.author == null) or
+         (.author | type == "object" and
+          (.login | type == "string" and length > 0))))
+      ))
+    ' <<<"$response" >/dev/null 2>&1 || error 'merge-comment-response-invalid'
+    printf '%s\n' "$response" >>"$pages_file"
+
+    page_comment_count="$(jq -er '.data.repository.issue.comments.nodes | length' <<<"$response")" ||
+      error 'merge-comment-response-invalid'
+    comment_count=$((comment_count + page_comment_count))
+    [ "$comment_count" -le "$max_graphql_comments" ] || error 'merge-comment-count-limit'
+    jq -s -e '
+      [.[].data.repository.issue.comments.nodes[].id] as $ids |
+      ($ids | length) == ($ids | unique | length)
+    ' "$pages_file" >/dev/null 2>&1 || error 'merge-comment-pagination-duplicate-id'
+
+    has_next="$(jq -r '.data.repository.issue.comments.pageInfo.hasNextPage' <<<"$response")" ||
+      error 'merge-comment-response-invalid'
+    next_cursor="$(jq -r '.data.repository.issue.comments.pageInfo.endCursor // empty' <<<"$response")" ||
+      error 'merge-comment-response-invalid'
+    if [ "$has_next" = true ]; then
+      [ -n "$next_cursor" ] || error 'merge-comment-pagination-cursor-invalid'
+      [ "$next_cursor" != "$cursor" ] || error 'merge-comment-pagination-cursor-stalled'
+      cursor="$next_cursor"
+    elif [ "$has_next" = false ]; then
+      break
+    else
+      error 'merge-comment-response-invalid'
+    fi
+  done
+
+  jq -s -c '
+    {comments: [.[].data.repository.issue.comments.nodes[] |
+      {id,body,author:(if .author == null then null else {login:.author.login} end)}]}
+  ' "$pages_file" >"$comments_file" 2>/dev/null || error 'merge-comment-normalization-failed'
+  jq -e '
+    type == "object" and
+    (.comments | type == "array" and all(.[];
+      type == "object" and (.id | type == "string" and length > 0) and
+      (.body | type == "string") and
+      ((.author == null) or
+       (.author | type == "object" and (.login | type == "string" and length > 0)))
+    ))
+  ' "$comments_file" >/dev/null 2>&1 || error 'merge-comment-normalization-failed'
+}
+
 issue_state_json() {
-  gh issue view "$expected_issue" --repo "$repo" --json number,state,labels,comments
+  local metadata comments_file
+  metadata="$(gh issue view "$expected_issue" --repo "$repo" --json number,state,labels)" || return 1
+  comments_file="$tmp_dir/merge-issue-comments.json"
+  read_issue_comments "$expected_issue" "$comments_file" || return 1
+  jq -c --slurpfile comments "$comments_file" '. + {comments:$comments[0].comments}' <<<"$metadata"
 }
 
 validate_issue_state_json() {
@@ -310,7 +426,13 @@ validate_issue_state_json() {
     .number == $issue and
     (.state | type == "string") and
     (.labels | type == "array" and all(.[]; ((type == "object" and (.name | type == "string")) or type == "string"))) and
-    (.comments | type == "array" and all(.[]; ((type == "object" and (.body | type == "string")) or type == "string")))
+    (.comments | type == "array" and all(.[];
+      type == "object" and
+      (.id | type == "string" and length > 0) and
+      (.body | type == "string") and
+      ((.author == null) or
+       (.author | type == "object" and (.login | type == "string" and length > 0)))
+    ))
   ' <<<"$issue_json" >/dev/null 2>&1 || error 'invalid-merge-issue-response'
 }
 
@@ -351,7 +473,10 @@ validate_exact_issue_state() {
 comment_has_marker() {
   local comments_json="$1" marker="$2"
   jq -e --arg marker "$marker" '
-    any(.comments[]; (((.body // .) | strings | split("\n")[0]) == $marker))
+    any(.comments[];
+      ((.author | type == "object" and (.login == "github-actions[bot]" or .login == "nerdchanii"))) and
+      ((.body | split("\n")[0]) == $marker)
+    )
   ' <<<"$comments_json" >/dev/null 2>&1
 }
 
@@ -377,19 +502,18 @@ friendly_reason() {
 
 post_comment_once() {
   local marker="$1" body_file="$2" comments_json comments_after
-  comments_json="$(gh issue view "$expected_issue" --repo "$repo" --json comments 2>/dev/null)" ||
+  local comments_file="$tmp_dir/merge-comment-inventory.json"
+  read_issue_comments "$expected_issue" "$comments_file" ||
     error 'merge-comment-inventory-failed'
-  jq -e 'type == "object" and (.comments | type == "array" and all(.[]; ((type == "object" and (.body | type == "string")) or type == "string")))' \
-    <<<"$comments_json" >/dev/null 2>&1 || error 'invalid-merge-comment-inventory'
+  comments_json="$(<"$comments_file")"
   if comment_has_marker "$comments_json" "$marker"; then
     return 0
   fi
   gh issue comment "$expected_issue" --repo "$repo" --body-file "$body_file" >/dev/null 2>&1 ||
     error 'merge-comment-write-failed'
-  comments_after="$(gh issue view "$expected_issue" --repo "$repo" --json comments 2>/dev/null)" ||
+  read_issue_comments "$expected_issue" "$comments_file" ||
     error 'merge-comment-refetch-failed'
-  jq -e 'type == "object" and (.comments | type == "array")' <<<"$comments_after" >/dev/null 2>&1 ||
-    error 'invalid-merge-comment-refetch'
+  comments_after="$(<"$comments_file")"
   comment_has_marker "$comments_after" "$marker" || error 'merge-comment-not-verified'
 }
 
@@ -443,13 +567,45 @@ publish_blocked_state() {
 }
 
 no_work_retry_count() {
-  local comments_json="$1" marker attempt count=0
-  for ((attempt = 1; attempt <= max_no_work_attempts; attempt++)); do
-    marker="<!-- rpm-agent-merge-retry: issue=${expected_issue};pr=${expected_pr};head=${expected_head_sha};attempt=${attempt} -->"
-    if comment_has_marker "$comments_json" "$marker"; then
-      count="$attempt"
+  local comments_json="$1" comment_json body first_line author marker_data
+  local marker_re='^<!-- rpm-agent-merge-retry: issue=([1-9][0-9]*);pr=([1-9][0-9]*);head=([0-9a-f]{40});attempt=([1-5]) -->$'
+  local attempts_json='[]' marker_issue marker_pr marker_head marker_attempt count attempt
+
+  while IFS= read -r comment_json || [ -n "$comment_json" ]; do
+    body="$(jq -r '.body' <<<"$comment_json")" || error 'merge-retry-comment-invalid'
+    author="$(jq -r '.author.login // empty' <<<"$comment_json")" || error 'merge-retry-comment-invalid'
+    case "$author" in
+      'github-actions[bot]'|nerdchanii) ;;
+      *) continue ;;
+    esac
+    [[ "$body" == *'<!-- rpm-agent-merge-retry:'* ]] || continue
+    first_line="${body%%$'\n'*}"
+    if [[ ! "$first_line" =~ $marker_re ]]; then
+      error 'merge-retry-marker-malformed'
     fi
+    marker_issue="${BASH_REMATCH[1]}"
+    marker_pr="${BASH_REMATCH[2]}"
+    marker_head="${BASH_REMATCH[3]}"
+    marker_attempt="${BASH_REMATCH[4]}"
+    [ "$marker_issue" = "$expected_issue" ] || error 'merge-retry-marker-issue-mismatch'
+    # Retry history belongs to one issue/PR/head tuple.  A valid marker for
+    # the same issue but an older PR or head is retained as audit history and
+    # must not consume attempts for the current head.
+    if [ "$marker_pr" != "$expected_pr" ] || [ "$marker_head" != "$expected_head_sha" ]; then
+      continue
+    fi
+    if [ "$(jq --argjson attempt "$marker_attempt" '[.[] | select(. == $attempt)] | length' <<<"$attempts_json")" -ne 0 ]; then
+      error 'merge-retry-marker-duplicate'
+    fi
+    attempts_json="$(jq -c --argjson attempt "$marker_attempt" '. + [$attempt]' <<<"$attempts_json")"
+  done < <(jq -c '.comments[]' <<<"$comments_json")
+
+  count="$(jq 'length' <<<"$attempts_json")"
+  for ((attempt = 1; attempt <= count; attempt++)); do
+    jq -e --argjson attempt "$attempt" 'any(.[]; . == $attempt)' <<<"$attempts_json" >/dev/null 2>&1 ||
+      error 'merge-retry-marker-sequence-gap'
   done
+  [ "$count" -le "$max_no_work_attempts" ] || error 'merge-retry-marker-attempt-limit'
   printf '%s\n' "$count"
 }
 
@@ -642,7 +798,10 @@ if ! jq -e --argjson issue "$expected_issue" --argjson pr "$expected_pr" \
 fi
 if ! jq -e --argjson issue "$expected_issue" --argjson pr "$expected_pr" \
   --arg base_ref "$expected_base_ref" --arg head_ref "$expected_head_ref" \
-  '.issues | any(.[]; .number == $issue and any(.closing_prs[]?; .number == $pr and .base_ref == $base_ref and .head_ref == $head_ref))' \
+  '.issues | any(.[]; .number == $issue and
+    (.closing_prs | type == "array" and length == 1) and
+    (.closing_prs[0].number == $pr and .closing_prs[0].base_ref == $base_ref and .closing_prs[0].head_ref == $head_ref) and
+    (.closing_prs[0].closing_issue_numbers | type == "array" and length == 1 and .[0] == $issue))' \
   "$tmp_dir/evidence-second.json" >/dev/null 2>&1; then
   publish_gate_terminal_state blocked 'merge-evidence-target-mismatch' 'The live evidence does not bind the selected issue to the selected PR.'
   exit 0
@@ -667,10 +826,15 @@ query($owner:String!,$name:String!,$number:Int!) {
       baseRefName
       headRefOid
       baseRefOid
+      repository { nameWithOwner }
+      closingIssuesReferences(first:100) {
+        pageInfo { hasNextPage endCursor }
+        nodes { number repository { nameWithOwner } }
+      }
     }
   }
 }'
-merge_preflight_response="$(gh api graphql \
+merge_preflight_response="$(GH_REPO="$repo" gh api graphql \
   -f "query=${merge_preflight_query}" \
   -f "owner=${repo%%/*}" \
   -f "name=${repo#*/}" \
@@ -680,7 +844,9 @@ if ! jq -e \
   --arg head "$expected_head_sha" \
   --arg base "$expected_base_sha" \
   --arg base_ref "$expected_base_ref" \
-  --arg head_ref "$expected_head_ref" '
+  --arg head_ref "$expected_head_ref" \
+  --arg repo "$repo" \
+  --argjson issue "$expected_issue" '
     type == "object" and
     ((.errors? == null) or (.errors | type == "array" and length == 0)) and
     (.data.repository | type == "object") and
@@ -691,7 +857,13 @@ if ! jq -e \
     (.data.repository.pullRequest.headRefName == $head_ref) and
     (.data.repository.pullRequest.baseRefName == $base_ref) and
     (.data.repository.pullRequest.headRefOid | type == "string" and ascii_downcase == ($head | ascii_downcase)) and
-    (.data.repository.pullRequest.baseRefOid | type == "string" and ascii_downcase == ($base | ascii_downcase))
+    (.data.repository.pullRequest.baseRefOid | type == "string" and ascii_downcase == ($base | ascii_downcase)) and
+    (.data.repository.pullRequest.repository | type == "object" and .nameWithOwner == $repo) and
+    (.data.repository.pullRequest.closingIssuesReferences | type == "object") and
+    (.data.repository.pullRequest.closingIssuesReferences.pageInfo | type == "object" and .hasNextPage == false) and
+    (.data.repository.pullRequest.closingIssuesReferences.nodes | type == "array" and length == 1) and
+    (.data.repository.pullRequest.closingIssuesReferences.nodes[0] | type == "object" and .number == $issue and
+      (.repository | type == "object" and .nameWithOwner == $repo))
   ' <<<"$merge_preflight_response" >/dev/null 2>&1; then
   error 'merge-preflight-response-invalid'
 fi
@@ -723,7 +895,7 @@ if ! jq -n \
   >"$merge_request_path"; then
   error 'merge-input-build-failed'
 fi
-merge_response="$(gh api graphql --input "$merge_request_path" 2>/dev/null)" ||
+merge_response="$(GH_REPO="$repo" gh api graphql --input "$merge_request_path" 2>/dev/null)" ||
   error 'merge-command-failed'
 if ! jq -e \
   --argjson pr "$expected_pr" \
@@ -756,10 +928,26 @@ if ! jq -e --argjson pr "$expected_pr" --arg head "$expected_head_sha" --arg bas
 ' <<<"$post_pr" >/dev/null 2>&1; then
   error 'post-merge-pr-state-invalid'
 fi
-post_issue="$(gh issue view "$expected_issue" --repo "$repo" --json number,state 2>/dev/null)" || error 'post-merge-issue-read-failed'
-if ! jq -e --argjson issue "$expected_issue" '.number == $issue and .state == "CLOSED"' <<<"$post_issue" >/dev/null 2>&1; then
-  error 'post-merge-issue-state-invalid'
-fi
+post_issue_attempt=1
+post_issue_max_attempts=5
+while [ "$post_issue_attempt" -le "$post_issue_max_attempts" ]; do
+  post_issue="$(gh issue view "$expected_issue" --repo "$repo" --json number,state 2>/dev/null)" ||
+    error 'post-merge-issue-read-failed'
+  if ! jq -e --argjson issue "$expected_issue" '
+    type == "object" and .number == $issue and
+    (.state == "OPEN" or .state == "CLOSED")
+  ' <<<"$post_issue" >/dev/null 2>&1; then
+    error 'post-merge-issue-state-invalid'
+  fi
+  if jq -e --argjson issue "$expected_issue" '.number == $issue and .state == "CLOSED"' <<<"$post_issue" >/dev/null 2>&1; then
+    break
+  fi
+  if [ "$post_issue_attempt" -eq "$post_issue_max_attempts" ]; then
+    error 'post-merge-issue-state-invalid'
+  fi
+  sleep 1 || error 'post-merge-issue-retry-delay-failed'
+  post_issue_attempt=$((post_issue_attempt + 1))
+done
 
 merge_commit="$(jq -r '.mergeCommit.oid' <<<"$post_pr")"
 printf 'publish_cloud_merge: status=merged; merge=1; issue=%s; pr=%s; head=%s; merge_commit=%s\n' \

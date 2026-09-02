@@ -510,6 +510,7 @@ def validate_patch(
                 "scripts/collect-merge-gate-evidence.sh",
                 "scripts/publish-cloud-merge.sh",
                 "scripts/quarantine-merge-selector-anomaly.sh",
+                "scripts/quarantine-review-correction-limit.sh",
             }
             or path.startswith(".cargo/")
             or path.startswith(
@@ -525,6 +526,7 @@ def validate_patch(
                     "scripts/create-review-followup-issue",
                     "scripts/publish-cloud-merge",
                     "scripts/quarantine-merge-selector-anomaly",
+                    "scripts/quarantine-review-correction-limit",
                     "scripts/publish-cloud-diff",
                     "scripts/validate-agent-workflow-assets",
                     "scripts/validate-cloud-diff",

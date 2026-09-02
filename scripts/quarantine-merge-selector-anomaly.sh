@@ -60,7 +60,7 @@ case "$issue_number" in
 esac
 [ "$issue_number" -gt 0 ] 2>/dev/null || error 'invalid-issue'
 case "$reason" in
-  no-closing-pr|fork-pr|multiple-prs|unsafe-base|unsafe-head|stale-base) ;;
+  no-closing-pr|fork-pr|multiple-prs|multiple-closing-references|unsafe-base|unsafe-head|stale-base) ;;
   *) error 'invalid-reason' ;;
 esac
 case "$details" in
@@ -149,6 +149,7 @@ friendly_reason() {
     no-closing-pr) printf '이슈를 닫는 열린 PR을 찾지 못했습니다.' ;;
     fork-pr) printf '다른 저장소에서 온 PR이 연결되어 있습니다.' ;;
     multiple-prs) printf '이슈를 닫는 열린 PR이 여러 개입니다.' ;;
+    multiple-closing-references) printf '이슈를 닫는 PR 연결 정보가 여러 개입니다.' ;;
     unsafe-base) printf 'PR이 안전한 main 브랜치를 대상으로 하지 않습니다.' ;;
     unsafe-head) printf 'PR의 작업 브랜치 이름을 안전하게 확인하지 못했습니다.' ;;
     stale-base) printf 'PR이 현재 main 버전을 기준으로 하지 않습니다.' ;;

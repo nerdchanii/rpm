@@ -20,8 +20,14 @@ readonly max_followup_labels=20
 readonly max_thread_ids=100
 readonly max_followups=5
 readonly max_graphql_pages=100
+readonly max_graphql_comments=10000
 readonly trusted_review_actor_bot="chatgpt-codex-connector[bot]"
 readonly trusted_review_actor_login="chatgpt-codex-connector"
+readonly trusted_publisher_actor_bot="github-actions[bot]"
+readonly trusted_publisher_actor_login="nerdchanii"
+readonly correction_history_marker_prefix='<!-- rpm-agent-correction-history:'
+readonly repository_owner="${repository%%/*}"
+readonly repository_name="${repository#*/}"
 
 usage() {
   cat <<'USAGE'
@@ -309,6 +315,7 @@ is_protected_path() {
     scripts/collect-pr-review-context*|scripts/create-review-followup-issue*|\
     scripts/collect-merge-gate-evidence*|scripts/publish-cloud-merge*|\
     scripts/quarantine-merge-selector-anomaly*|\
+    scripts/quarantine-review-correction-limit*|\
     scripts/safe-direct-merge*|scripts/validate-agent-workflow-assets*|\
     scripts/publish-cloud-diff*|scripts/validate-cloud-diff*|\
     scripts/test-*)
@@ -393,6 +400,7 @@ protected = (
     "scripts/collect-merge-gate-evidence", "scripts/create-review-followup-issue",
     "scripts/publish-cloud-diff", "scripts/publish-cloud-merge",
     "scripts/quarantine-merge-selector-anomaly",
+    "scripts/quarantine-review-correction-limit",
     "scripts/safe-direct-merge", "scripts/validate-agent-workflow-assets",
     "scripts/validate-cloud-diff", "scripts/test-",
     "scripts/test-cloud-automation", "scripts/test-codex-cloud-dispatch",
@@ -745,6 +753,17 @@ def text(value, limit, allow_newlines=False):
                 raise Invalid("text-control-character")
     return value
 
+
+# GitHub turns these keywords into automatic issue-closing references when
+# they appear in a PR body.  The publisher owns the one managed `Closes #N`
+# directive, so untrusted Cloud text must never be able to add another one.
+closing_directive = re.compile(
+    r"(?im)(^|[^A-Za-z0-9])"
+    r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\b"
+    r"(?:[^\r\n#]{0,80}#[1-9][0-9]*(?![0-9])|"
+    r"[^\r\n]{0,80}https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*(?![0-9]))"
+)
+
 try:
     with open(path, "rb") as stream:
         value = json.loads(stream.read().decode("utf-8"), object_pairs_hook=unique, parse_constant=reject_constant)
@@ -765,11 +784,15 @@ try:
         if type(value["head_sha"]) is not str or re.fullmatch(r"[0-9a-f]{40}", value["head_sha"]) is None:
             raise Invalid("head-sha-invalid")
         allowed_sources = {f"issue:{value['issue']}", f"pr:{value['pr']}"}
-    text(value["summary"], summary_limit)
+    summary = text(value["summary"], summary_limit)
+    if closing_directive.search(summary):
+        raise Invalid("summary-closing-directive-forbidden")
     if type(value["validation"]) is not list or len(value["validation"]) > 50:
         raise Invalid("validation-invalid")
     for item in value["validation"]:
-        text(item, validation_limit)
+        validation_item = text(item, validation_limit)
+        if closing_directive.search(validation_item):
+            raise Invalid("validation-closing-directive-forbidden")
     if type(value["actionable_findings_remaining"]) is not bool:
         raise Invalid("actionable-invalid")
     if value["next_state"] not in {"unchanged", "review-pending", "awaiting-merge", "blocked"}:
@@ -1051,6 +1074,133 @@ validate_issue_json() {
   [ "$(jq -r '.state' <<<"$json" | tr '[:lower:]' '[:upper:]')" = "OPEN" ] || error "issue-not-open"
 }
 
+# A Cloud issue result may mutate a claimed issue only while it owns the
+# exact claim created for this Action run.  The execution marker is the
+# durable compare-and-set record written by the claim controller.  Validate
+# its shape and run/event binding from the complete body before any branch,
+# PR, label, or comment mutation is attempted.
+validate_issue_claim_ownership() {
+  local json="$1" marker_re marker_count marker_json expected_event expires_at lease_check
+  local plan_revision scope_hash expected_key
+  marker_re='^\s*<!--\s*rpm-agent-execution:\s*(?<json>\{.*\})\s*-->\s*$'
+  marker_count="$(jq -r --arg marker_re "$marker_re" '[.body // "" | split("\n")[] | select(test($marker_re))] | length' <<<"$json")" ||
+    error "issue-claim-marker-invalid"
+  [ "$marker_count" -eq 1 ] || error "issue-claim-marker-invalid"
+  marker_json="$(jq -r --arg marker_re "$marker_re" '[.body // "" | split("\n")[] | select(test($marker_re))] | .[0] | capture($marker_re).json' <<<"$json")" ||
+    error "issue-claim-marker-invalid"
+  if ! python3 - "$marker_json" >/dev/null 2>&1 <<'PY'
+import json
+import sys
+
+
+def unique_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate-json-key")
+        result[key] = value
+    return result
+
+
+def reject_constant(value):
+    raise ValueError(f"invalid-json-constant:{value}")
+
+
+value = json.loads(
+    sys.argv[1], object_pairs_hook=unique_pairs, parse_constant=reject_constant
+)
+if not isinstance(value, dict):
+    raise ValueError("execution-marker-not-object")
+PY
+  then
+    error "issue-claim-contract-invalid"
+  fi
+  jq -e '
+    type == "object" and
+    (.approval_id | type == "string" and length > 0 and test("\\S")) and
+    (.plan_revision | type == "string" and length > 0 and test("\\S")) and
+    (.scope_hash | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+    (.executor | type == "string" and . == "cloud") and
+    (.lease | type == "object" and
+      (.run_id | type == "string" and length > 0) and
+      (.owner | type == "string" and length > 0) and
+      (.expires_at | type == "string" and length > 0)) and
+    (.runs | type == "array" and all(.[];
+      type == "object" and
+      (.repository | type == "string" and length > 0) and
+      (.issue | type == "number" and floor == . and . > 0) and
+      (.plan_revision | type == "string" and length > 0 and test("\\S")) and
+      (.scope_hash | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+      (.event_id | type == "string" and length > 0) and
+      (.idempotency_key | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+      (.run_id | type == "string" and length > 0 and test("\\S")) and
+      (.status | type == "string" and . == "active")
+    )) and
+    ([.runs[] | .run_id] | length == (unique | length)) and
+    ([.runs[] | .event_id] | length == (unique | length)) and
+    ([.runs[] | .idempotency_key] | length == (unique | length))
+  ' <<<"$marker_json" >/dev/null 2>&1 || error "issue-claim-contract-invalid"
+  expected_event="github-actions:${run_id}:issue"
+  jq -e --arg run_id "$run_id" --arg event_id "$expected_event" '
+    (.lease.run_id == $run_id) and
+    (.lease.owner | type == "string" and startswith("cloud:")) and
+    (.runs | any(.[]; .run_id == $run_id and .event_id == $event_id))
+  ' <<<"$marker_json" >/dev/null 2>&1 || error "issue-claim-ownership-mismatch"
+
+  plan_revision="$(jq -er '.plan_revision' <<<"$marker_json")" || error "issue-claim-contract-invalid"
+  scope_hash="$(jq -er '.scope_hash' <<<"$marker_json")" || error "issue-claim-contract-invalid"
+  expected_key="$(python3 - "$repository" "$result_issue" "$plan_revision" "$scope_hash" "$expected_event" <<'PY'
+import hashlib
+import sys
+
+print("sha256:" + hashlib.sha256("\0".join(sys.argv[1:]).encode("utf-8")).hexdigest())
+PY
+  )" || error "issue-claim-idempotency-invalid"
+  jq -e --arg repo "$repository" --argjson issue "$result_issue" \
+    --arg plan_revision "$plan_revision" --arg scope_hash "$scope_hash" \
+    --arg run_id "$run_id" --arg event_id "$expected_event" --arg expected_key "$expected_key" '
+    (.runs |
+      ([.[] | select(.run_id == $run_id)] | length == 1) and
+      ([.[] | select(.event_id == $event_id)] | length == 1) and
+      ([.[] | select(.idempotency_key == $expected_key)] | length == 1) and
+      ([.[] | select(.run_id == $run_id)] | .[0] ==
+        {repository:$repo,issue:$issue,plan_revision:$plan_revision,
+         scope_hash:$scope_hash,event_id:$event_id,
+         idempotency_key:$expected_key,run_id:$run_id,status:"active"}))
+  ' <<<"$marker_json" >/dev/null 2>&1 || error "issue-claim-contract-invalid"
+
+  expires_at="$(jq -er '.lease.expires_at | select(type == "string")' <<<"$marker_json")" ||
+    error "issue-claim-lease-invalid"
+  if lease_check="$(python3 - "$expires_at" 2>/dev/null <<'PY'
+import datetime
+import sys
+
+value = sys.argv[1]
+try:
+    # Keep this parser aligned with check-cloud-queue-contract.py.  The
+    # contract accepts RFC3339 UTC (Z), fractional seconds, and numeric
+    # timezone offsets; all comparisons happen after UTC normalization.
+    normalized = value.replace("Z", "+00:00")
+    expires = datetime.datetime.fromisoformat(normalized)
+    if expires.tzinfo is None:
+        raise ValueError("timestamp must include a timezone")
+    expires = expires.astimezone(datetime.timezone.utc)
+except (TypeError, ValueError, OverflowError):
+    print("invalid")
+    raise SystemExit(1)
+if expires <= datetime.datetime.now(datetime.timezone.utc):
+    print("expired")
+    raise SystemExit(2)
+print("valid")
+PY
+  )"; then
+    [ "$lease_check" = "valid" ] || error "issue-claim-lease-invalid"
+  else
+    [ "$lease_check" = "expired" ] && error "issue-claim-lease-expired"
+    error "issue-claim-lease-invalid"
+  fi
+}
+
 issue_labels() {
   jq -r '.labels[] | if type == "object" then .name else . end' <<<"$1"
 }
@@ -1092,6 +1242,7 @@ verify_awaiting_merge_pr_head() {
   actual_head="$(jq -r '.headRefOid' <<<"$pr_snapshot" | tr '[:upper:]' '[:lower:]')"
   [ "$actual_head" = "$expected_sha" ] || error "awaiting-merge-pr-head-mismatch"
   validate_pr_json "$pr_snapshot" "$expected_sha"
+  validate_pr_correction_history "$pr_snapshot" "$expected_sha" "$expected_pr"
 }
 
 transition_issue() {
@@ -1139,6 +1290,244 @@ pr_correction_label() {
   printf '%s\n' "$correction_labels" | sed -n '1p'
 }
 
+is_trusted_publisher_actor() {
+  case "$1" in
+    "$trusted_publisher_actor_bot"|"$trusted_publisher_actor_login") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Read every issue comment through the GraphQL connection. `gh issue view`
+# returns a bounded comment list, which can hide an older correction marker
+# after enough ordinary comments have been added. This manual cursor loop
+# validates the complete response before any GitHub state is written.
+read_issue_comments() {
+  local target_issue="$1" comments_file="$2"
+  local pages_file="${temporary_dir}/correction-history-pages.jsonl"
+  local query response page_count=0 comment_count=0 page_comment_count has_next next_cursor
+  local cursor='' seen_cursors_file="${temporary_dir}/correction-history-cursors.txt"
+  local -a gh_args
+
+  [[ "$target_issue" =~ ^[1-9][0-9]*$ ]] || error "correction-history-issue-invalid"
+  : >"$pages_file"
+  : >"$seen_cursors_file"
+  query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){nameWithOwner,issue(number:$number){number,repository{nameWithOwner},comments(first:100,after:$after){pageInfo{hasNextPage,endCursor},nodes{id,body,author{login}}}}}}'
+
+  while :; do
+    page_count=$((page_count + 1))
+    [ "$page_count" -le "$max_graphql_pages" ] || error "correction-history-pagination-limit"
+    if [ -n "$cursor" ]; then
+      if grep -Fqx -- "$cursor" "$seen_cursors_file"; then
+        error "correction-history-pagination-cursor-repeat"
+      fi
+      case "$cursor" in *$'\n'*|*$'\r'*) error "correction-history-pagination-cursor-invalid" ;; esac
+      printf '%s\n' "$cursor" >>"$seen_cursors_file"
+    fi
+
+    gh_args=(api graphql -f query="$query" \
+      -f owner="$repository_owner" -f name="$repository_name" -F number="$target_issue")
+    [ -z "$cursor" ] || gh_args+=(-f after="$cursor")
+    if ! response="$(GH_REPO="$repository" gh "${gh_args[@]}")"; then
+      error "correction-history-read-failed"
+    fi
+    jq -e --arg repo "$repository" --argjson issue "$target_issue" '
+      type == "object" and
+      (.errors? == null) and
+      (.data | type == "object") and
+      (.data.repository | type == "object") and
+      (.data.repository.nameWithOwner == $repo) and
+      (.data.repository.issue | type == "object") and
+      (.data.repository.issue.number == $issue) and
+      (.data.repository.issue.repository | type == "object") and
+      (.data.repository.issue.repository.nameWithOwner == $repo) and
+      (.data.repository.issue.comments | type == "object") and
+      (.data.repository.issue.comments.pageInfo | type == "object") and
+      (.data.repository.issue.comments.pageInfo.hasNextPage | type == "boolean") and
+      (.data.repository.issue.comments.pageInfo | has("endCursor")) and
+      ((.data.repository.issue.comments.pageInfo.endCursor == null) or
+       (.data.repository.issue.comments.pageInfo.endCursor | type == "string" and length > 0)) and
+      (.data.repository.issue.comments.nodes | type == "array" and length <= 100 and all(.[];
+        type == "object" and
+        (.id | type == "string" and length > 0) and
+        (.body | type == "string") and
+        (has("author") and ((.author == null) or
+         (.author | type == "object" and
+          (.login | type == "string" and length > 0))))
+      ))
+    ' <<<"$response" >/dev/null 2>&1 || error "correction-history-response-invalid"
+    printf '%s\n' "$response" >>"$pages_file"
+
+    page_comment_count="$(jq -er '.data.repository.issue.comments.nodes | length' <<<"$response")" ||
+      error "correction-history-response-invalid"
+    comment_count=$((comment_count + page_comment_count))
+    [ "$comment_count" -le "$max_graphql_comments" ] || error "correction-history-comment-limit"
+    jq -s -e '
+      [.[].data.repository.issue.comments.nodes[].id] as $ids |
+      ($ids | length) == ($ids | unique | length)
+    ' "$pages_file" >/dev/null 2>&1 || error "correction-history-pagination-duplicate-id"
+
+    has_next="$(jq -r '.data.repository.issue.comments.pageInfo.hasNextPage' <<<"$response")" ||
+      error "correction-history-response-invalid"
+    case "$has_next" in true|false) ;; *) error "correction-history-response-invalid" ;; esac
+    next_cursor="$(jq -r '.data.repository.issue.comments.pageInfo.endCursor // empty' <<<"$response")" ||
+      error "correction-history-response-invalid"
+    if [ "$has_next" = true ]; then
+      [ -n "$next_cursor" ] || error "correction-history-pagination-cursor-invalid"
+      [ "$next_cursor" != "$cursor" ] || error "correction-history-pagination-cursor-stalled"
+      cursor="$next_cursor"
+    else
+      break
+    fi
+  done
+
+  jq -s -c '
+    {
+      comments: [.[].data.repository.issue.comments.nodes[] |
+        {id, body, author:(if .author == null then null else {login:(.author.login // null)} end)}]
+    }
+  ' "$pages_file" >"$comments_file" 2>/dev/null || error "correction-history-normalization-failed"
+  jq -e '
+    type == "object" and
+    (.comments | type == "array" and all(.[];
+      type == "object" and (.id | type == "string" and length > 0) and
+      (.body | type == "string") and
+      ((.author == null) or
+       (.author | type == "object" and
+        (.login | type == "string" and length > 0)))
+    ))
+  ' "$comments_file" >/dev/null 2>&1 || error "correction-history-normalization-failed"
+}
+
+# The correction label is a convenient current-state view.  The durable
+# correction count lives in publisher-authored issue comments so deleting or
+# lowering that label cannot reset the budget. Each marker records the exact
+# PR and head accepted for one counter. A malformed marker from a trusted
+# publisher is rejected; a marker-like comment from an untrusted or deleted
+# author is an ordinary comment and has no effect on the counter.
+read_correction_history() {
+  local target_pr="$1" comments_file comment_json body first_line author
+  local marker_re marker_pr counter head counter_number existing_count existing_head
+  correction_history='[]'
+  comments_file="${temporary_dir}/correction-history-comments.jsonl"
+  read_issue_comments "$result_issue" "${temporary_dir}/correction-history-comments.json"
+  jq -c '.comments[]' "${temporary_dir}/correction-history-comments.json" >"$comments_file" ||
+    error "correction-history-comments-invalid"
+
+  marker_re='^<!-- rpm-agent-correction-history: pr=([1-9][0-9]*); counter=(agent:correction-[0-5]); head=([0-9a-f]{40}) -->$'
+  while IFS= read -r comment_json || [ -n "$comment_json" ]; do
+    body="$(jq -r '.body' <<<"$comment_json")" || error "correction-history-response-invalid"
+    author="$(jq -r '.author.login // ""' <<<"$comment_json")" || error "correction-history-response-invalid"
+    is_trusted_publisher_actor "$author" || continue
+    [[ "$body" == *"$correction_history_marker_prefix"* ]] || continue
+    # Bash command substitution removes trailing newlines, so validate the
+    # JSON string before extracting it.  A marker may have the one newline
+    # produced by --body-file, and no other suffix is accepted.
+    if ! jq -e --arg prefix "$correction_history_marker_prefix" --arg marker_re "$marker_re" '
+      .body as $body |
+      if ($body | contains($prefix)) then
+        ($body | match($marker_re)) as $match |
+        ($match.offset == 0 and
+          (($match.length == ($body | length)) or
+           ($match.length + 1 == ($body | length) and ($body | endswith("\n")))))
+      else
+        true
+      end
+    ' <<<"$comment_json" >/dev/null 2>&1; then
+      error "correction-history-malformed"
+    fi
+    first_line="${body%%$'\n'*}"
+    [[ "$first_line" =~ $marker_re ]] || error "correction-history-malformed"
+    marker_pr="${BASH_REMATCH[1]}"
+    counter="${BASH_REMATCH[2]}"
+    head="${BASH_REMATCH[3]}"
+    [ "$marker_pr" = "$target_pr" ] || continue
+    counter_number="${counter##*-}"
+    existing_count="$(jq --argjson counter "$counter_number" '[.[] | select(.counter == $counter)] | length' <<<"$correction_history")"
+    if [ "$existing_count" -gt 0 ]; then
+      existing_head="$(jq -r --argjson counter "$counter_number" '.[] | select(.counter == $counter) | .head' <<<"$correction_history")"
+      [ "$existing_head" = "$head" ] || error "correction-history-conflict"
+      correction_history="$(jq -c --argjson counter "$counter_number" 'map(if .counter == $counter then .count += 1 else . end)' <<<"$correction_history")"
+    else
+      correction_history="$(jq -c --argjson counter "$counter_number" --arg head "$head" '. + [{counter:$counter,head:$head,count:1}]' <<<"$correction_history")"
+    fi
+  done <"$comments_file"
+}
+
+correction_history_count() {
+  local counter="$1"
+  jq --argjson counter "$counter" '[.[] | select(.counter == $counter)] | if length == 0 then 0 else .[0].count end' <<<"$correction_history"
+}
+
+correction_history_head() {
+  local counter="$1"
+  jq -r --argjson counter "$counter" '.[] | select(.counter == $counter) | .head' <<<"$correction_history" | sed -n '1p'
+}
+
+validate_correction_history_for_pr() {
+  local current_counter="$1" expected_head="$2" counter count head future_count history_count
+  [[ "$current_counter" =~ ^[0-5]$ ]] || error "correction-history-counter-invalid"
+  is_sha "$expected_head" || error "correction-history-head-invalid"
+  for counter in $(seq 0 "$current_counter"); do
+    count="$(correction_history_count "$counter")"
+    if [ "$count" -ne 1 ]; then
+      [ "$count" -gt 1 ] && error "correction-history-duplicate"
+      error "correction-history-sequence-missing"
+    fi
+  done
+  future_count="$(jq --argjson counter "$current_counter" '[.[] | select(.counter > $counter)] | length' <<<"$correction_history")"
+  [ "$future_count" -eq 0 ] || error "correction-history-label-lowered"
+  history_count="$(jq 'length' <<<"$correction_history")"
+  [ "$history_count" -eq $((current_counter + 1)) ] || error "correction-history-sequence-invalid"
+  head="$(correction_history_head "$current_counter")"
+  [ "$head" = "$expected_head" ] || error "correction-history-head-mismatch"
+}
+
+validate_pr_correction_history() {
+  local json="$1" expected_head="$2" target_pr="$3" current_label current_counter
+  validate_pr_correction_inventory "$json"
+  current_label="$(pr_correction_label "$json")"
+  current_counter="${current_label##*-}"
+  read_correction_history "$target_pr"
+  validate_correction_history_for_pr "$current_counter" "$expected_head"
+}
+
+validate_live_pr_correction_history() {
+  local expected_head="$1" live_pr_json
+  live_pr_json="$(read_pr "$expected_pr")" || error "correction-history-live-pr-read-failed"
+  validate_pr_correction_history "$live_pr_json" "$expected_head" "$expected_pr"
+}
+
+append_correction_history() {
+  local target_pr="$1" counter="$2" head="$3" marker existing_count existing_head
+  local previous_counter previous_count
+  [[ "$counter" =~ ^[0-5]$ ]] || error "correction-history-counter-invalid"
+  is_sha "$head" || error "correction-history-head-invalid"
+  read_correction_history "$target_pr"
+  existing_count="$(correction_history_count "$counter")"
+  if [ "$existing_count" -gt 0 ]; then
+    [ "$existing_count" -eq 1 ] || error "correction-history-duplicate"
+    existing_head="$(correction_history_head "$counter")"
+    [ "$existing_head" = "$head" ] || error "correction-history-conflict"
+    validate_correction_history_for_pr "$counter" "$head"
+    return 0
+  fi
+  if [ "$counter" -eq 0 ]; then
+    [ "$(jq 'length' <<<"$correction_history")" -eq 0 ] || error "correction-history-initialized-conflict"
+  else
+    previous_counter=$((counter - 1))
+    previous_count="$(correction_history_count "$previous_counter")"
+    [ "$previous_count" -eq 1 ] || error "correction-history-sequence-missing"
+  fi
+  marker="${correction_history_marker_prefix} pr=${target_pr}; counter=$(counter_label "$counter"); head=${head} -->"
+  correction_marker_body_file="${temporary_dir}/correction-history-marker.md"
+  printf '%s\n' "$marker" >"$correction_marker_body_file"
+  gh issue comment "$result_issue" --repo "$repository" --body-file "$correction_marker_body_file" >/dev/null 2>&1 || error "correction-history-write-failed"
+  read_correction_history "$target_pr"
+  [ "$(correction_history_count "$counter")" -eq 1 ] || error "correction-history-write-unverified"
+  [ "$(correction_history_head "$counter")" = "$head" ] || error "correction-history-write-mismatch"
+  validate_correction_history_for_pr "$counter" "$head"
+}
+
 validate_pr_json() {
   local json="$1"
   local expected_head="${2:-$expected_head_sha}"
@@ -1179,11 +1568,11 @@ verify_pr_closing_issue_binding() {
   while :; do
     page=$((page + 1))
     [ "$page" -le "$max_graphql_pages" ] || error "closing-reference-pagination-limit"
-    gh_args=(api graphql --repo "$repository" -f query="$closing_references_query" -F number="$pr_number")
+    gh_args=(api graphql -f query="$closing_references_query" -F number="$pr_number")
     if [ -n "$after" ]; then
       gh_args+=(-f after="$after")
     fi
-    response="$(gh "${gh_args[@]}" 2>/dev/null)" || error "closing-reference-read-failed"
+    response="$(GH_REPO="$repository" gh "${gh_args[@]}" 2>/dev/null)" || error "closing-reference-read-failed"
     jq -s -e --arg repo "$repository" --argjson pr "$pr_number" '
       (length == 1) and
       (.[0] |
@@ -1219,20 +1608,26 @@ verify_pr_closing_issue_binding() {
     fi
   done
 
-  jq -e --argjson issue "$result_issue" '
-    (length == (unique_by(.number) | length)) and
-    ([.[] | select(.number == $issue)] | length == 1)
-  ' <<<"$all_refs" >/dev/null 2>&1 || {
-    if jq -e --argjson issue "$result_issue" '[.[] | select(.number == $issue)] | length > 0' <<<"$all_refs" >/dev/null 2>&1; then
+  reference_count="$(jq 'length' <<<"$all_refs")"
+  if [ "$reference_count" -eq 0 ]; then
+    error "closing-issue-binding-missing"
+  fi
+  if [ "$reference_count" -ne 1 ]; then
+    if jq -e --argjson issue "$result_issue" "all(.[]; .number == \$issue)" <<<"$all_refs" >/dev/null 2>&1; then
       error "closing-reference-duplicate"
     fi
+    error "closing-reference-count-invalid"
+  fi
+  jq -e --argjson issue "$result_issue" '.[0].number == $issue' <<<"$all_refs" >/dev/null 2>&1 ||
     error "closing-issue-binding-missing"
-  }
 }
 
 if [ "$result_status" = "patch" ] || [ "$result_status" = "blocked" ]; then
   issue_json="$(read_issue "$result_issue")" || error "issue-read-failed"
   validate_issue_json "$issue_json"
+  if [ "$mode" = "issue" ]; then
+    validate_issue_claim_ownership "$issue_json"
+  fi
 fi
 
 if [ "$mode" = "issue" ]; then
@@ -1266,15 +1661,14 @@ else
     remote_review_sha="$(remote_ref_sha "$verified_push_url" "refs/heads/$branch_ref")"
     [ "$remote_review_sha" = "$expected_head_sha" ] || error "remote-review-head-mismatch"
     if [ "$result_status" = "patch" ]; then
-      labels="$(pr_labels "$pr_json")"
-      correction_labels="$(printf '%s\n' "$labels" | grep -E '^agent:correction-[0-5]$' || true)"
-      correction_count="$(printf '%s\n' "$correction_labels" | awk 'NF { count++ } END { print count + 0 }')"
-      [ "$correction_count" -eq 1 ] || error "pr-correction-label-count"
-      current_correction_label="$(printf '%s\n' "$correction_labels" | sed -n '1p')"
+      validate_pr_correction_history "$pr_json" "$expected_head_sha" "$expected_pr"
+      current_correction_label="$(pr_correction_label "$pr_json")"
       current_counter="${current_correction_label##*-}"
       expected_counter=$((current_counter + 1))
       [ "$expected_counter" -le "$max_attempts" ] || error "correction-limit-exceeded"
       [ "$result_correction_label" = "$(counter_label "$expected_counter")" ] || error "review-counter-sequence-mismatch"
+    elif [ "$result_status" = "no-work" ]; then
+      validate_pr_correction_history "$pr_json" "$expected_head_sha" "$expected_pr"
     fi
   fi
 fi
@@ -1480,6 +1874,9 @@ publish_issue_pr() {
   correction_labels="$(printf '%s\n' "$labels" | grep -E '^agent:correction-[0-5]$' || true)"
   correction_count="$(printf '%s\n' "$correction_labels" | awk 'NF { count++ } END { print count + 0 }')"
   [ "$correction_count" -le 1 ] || error "pr-correction-label-conflict"
+  if [ "$existing_count" -eq 1 ]; then
+    validate_pr_correction_history "$current_pr_json" "$pushed_sha" "$pr_number"
+  fi
   if [ "$correction_count" -eq 0 ]; then
     verify_pr_closing_issue_binding "$pr_number"
     gh pr edit "$pr_number" --repo "$repository" --add-label "$(counter_label 0)" >/dev/null 2>&1 || error "pr-correction-label-add-failed"
@@ -1491,6 +1888,9 @@ publish_issue_pr() {
   validate_pr_correction_inventory "$current_pr_json"
   labels="$(pr_labels "$current_pr_json")"
   [ "$(label_count "$labels" "$(counter_label 0)")" -eq 1 ] || error "pr-correction-label-not-verified"
+  append_correction_history "$pr_number" 0 "$pushed_sha"
+  current_pr_json="$(read_pr "$pr_number")" || error "pr-correction-history-pr-refetch-failed"
+  validate_pr_correction_history "$current_pr_json" "$pushed_sha" "$pr_number"
 
   if [ "$(jq -r '.isDraft' <<<"$current_pr_json")" = "true" ]; then
     gh pr ready "$pr_number" --repo "$repository" >/dev/null 2>&1 || error "pr-ready-failed"
@@ -1503,6 +1903,7 @@ publish_issue_pr() {
   # issue label.  The exact state transition is the only issue mutation.
   issue_before="$(read_issue "$result_issue")" || error "issue-pre-transition-read-failed"
   validate_issue_json "$issue_before"
+  validate_issue_claim_ownership "$issue_before"
   validate_exact_issue_state "$issue_before" "$claimed_label"
   ordinary_before="$(ordinary_issue_labels "$issue_before")"
   verify_pr_closing_issue_binding "$pr_number"
@@ -1536,6 +1937,9 @@ publish_blocked_state() {
   fi
   issue_before="$(read_issue "$result_issue")" || error "blocked-issue-read-failed"
   validate_issue_json "$issue_before"
+  if [ "$mode" = "issue" ]; then
+    validate_issue_claim_ownership "$issue_before"
+  fi
   labels="$(issue_labels "$issue_before")"
   if [ "$(label_count "$labels" "$blocked_label")" -eq 0 ]; then
     validate_exact_issue_state "$issue_before" "$from_label"
@@ -1618,11 +2022,11 @@ fetch_review_thread_snapshot() {
   while :; do
     page=$((page + 1))
     [ "$page" -le "$max_graphql_pages" ] || error "review-thread-pagination-limit"
-    gh_args=(api graphql --repo "$repository" -f query="$review_thread_query" -f threadId="$thread_id")
+    gh_args=(api graphql -f query="$review_thread_query" -f threadId="$thread_id")
     if [ -n "$after" ]; then
       gh_args+=(-f commentsAfter="$after")
     fi
-    response="$(gh "${gh_args[@]}" 2>/dev/null)" || error "review-thread-read-failed"
+    response="$(GH_REPO="$repository" gh "${gh_args[@]}" 2>/dev/null)" || error "review-thread-read-failed"
     printf '%s\n' "$response" >>"$pages_file"
     jq -s -e --arg id "$thread_id" '
       (length == 1) and
@@ -1728,11 +2132,11 @@ verify_live_no_unresolved_review_threads() {
   while :; do
     page=$((page + 1))
     [ "$page" -le "$max_graphql_pages" ] || error "review-thread-pagination-limit"
-    gh_args=(api graphql --repo "$repository" -f query="$review_threads_query" -F number="$expected_pr")
+    gh_args=(api graphql -f query="$review_threads_query" -F number="$expected_pr")
     if [ -n "$after" ]; then
       gh_args+=(-f threadsAfter="$after")
     fi
-    response="$(gh "${gh_args[@]}" 2>/dev/null)" || error "review-thread-inventory-read-failed"
+    response="$(GH_REPO="$repository" gh "${gh_args[@]}" 2>/dev/null)" || error "review-thread-inventory-read-failed"
     printf '%s\n' "$response" >>"$pages_file"
     jq -s -e --argjson pr "$expected_pr" '
       (length == 1) and
@@ -1790,6 +2194,7 @@ if [ "$result_status" = "no-work" ]; then
     validate_issue_json "$issue_json"
     labels="$(issue_labels "$issue_json")"
     if [ "$(label_count "$labels" "$claimed_label")" -eq 1 ]; then
+      validate_issue_claim_ownership "$issue_json"
       publish_blocked_state
       emit_result blocked "no-work-left-claimed"
       exit 0
@@ -1822,7 +2227,7 @@ if [ "$mode" = "review" ] && [ "$result_status" = "no-work" ]; then
   validate_issue_json "$issue_json"
   validate_exact_issue_state "$issue_json" "$review_pending_label"
   [ "$(remote_ref_sha "$verified_push_url" "refs/heads/$branch_ref")" = "$expected_head_sha" ] || error "no-work-review-head-mismatch"
-  validate_pr_correction_inventory "$pr_json"
+  validate_pr_correction_history "$pr_json" "$expected_head_sha" "$expected_pr"
   verify_pr_closing_issue_binding "$expected_pr"
   if [ "$(jq '.followups | length' "$result_file")" -gt 0 ]; then
     process_followups
@@ -1876,6 +2281,9 @@ correction_labels="$(printf '%s\n' "$labels" | grep -E '^agent:correction-[0-5]$
 correction_count="$(printf '%s\n' "$correction_labels" | awk 'NF { count++ } END { print count + 0 }')"
 [ "$correction_count" -eq 1 ] || error "post-push-correction-label-count"
 current_correction_label="$(printf '%s\n' "$correction_labels" | sed -n '1p')"
+current_counter="${current_correction_label##*-}"
+read_correction_history "$expected_pr"
+validate_correction_history_for_pr "$current_counter" "$expected_head_sha"
 ordinary_pr_before="$(ordinary_pr_labels "$post_push_pr")"
 if [ "$current_correction_label" != "$result_correction_label" ]; then
   # Labels have no compare-and-set API.  Re-read the exact pre-value directly
@@ -1892,10 +2300,17 @@ if [ "$current_correction_label" != "$result_correction_label" ]; then
   gh pr edit "$expected_pr" --repo "$repository" --remove-label "$current_correction_label" --add-label "$result_correction_label" >/dev/null 2>&1 || error "correction-label-replace-failed"
   post_push_pr="$(read_pr "$expected_pr")" || error "correction-label-refetch-failed"
   validate_pr_json "$post_push_pr" "$pushed_sha"
+  append_correction_history "$expected_pr" "${result_correction_label##*-}" "$pushed_sha"
 fi
+# Re-read after the label/history transaction.  The previous PR snapshot may
+# have become stale while the append-only marker was being written, and a
+# lowered label must never be allowed to pass from that stale snapshot.
+post_push_pr="$(read_pr "$expected_pr")" || error "correction-label-final-refetch-failed"
+validate_pr_json "$post_push_pr" "$pushed_sha"
 validate_pr_correction_inventory "$post_push_pr"
 labels="$(pr_labels "$post_push_pr")"
 [ "$(label_count "$labels" "$result_correction_label")" -eq 1 ] || error "correction-label-not-verified"
+validate_pr_correction_history "$post_push_pr" "$pushed_sha" "$expected_pr"
 ordinary_pr_after="$(ordinary_pr_labels "$post_push_pr")"
 [ "$ordinary_pr_before" = "$ordinary_pr_after" ] || error "pr-ordinary-labels-changed"
 
@@ -1904,21 +2319,24 @@ jq -r '.resolved_thread_ids[]' "$result_file" >"$resolved_ids_file"
 # A label/body update may have taken time.  Revalidate every claim once more
 # before beginning the resolution sequence.
 validate_all_review_thread_claims "$expected_head_sha"
+validate_live_pr_correction_history "$pushed_sha"
 verify_review_head_unchanged "$pushed_sha" "review-thread-pre-resolve"
 while IFS= read -r thread_id || [ -n "$thread_id" ]; do
   [ -n "$thread_id" ] || continue
   # Each individual mutation has a live claim check and a head check on both
   # sides.  A concurrent head update therefore stops the remaining sequence.
+  validate_live_pr_correction_history "$pushed_sha"
   verify_review_head_unchanged "$pushed_sha" "review-thread-before-resolve"
   thread_json="$(fetch_review_thread_snapshot "$thread_id")" || error "review-thread-read-failed"
   verify_review_thread_claim "$thread_id" "$thread_json"
   verify_review_head_unchanged "$pushed_sha" "review-thread-before-resolve-mutation"
   graphql_query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}'
-  if ! thread_result="$(gh api graphql --repo "$repository" -f query="$graphql_query" -f threadId="$thread_id" 2>/dev/null)"; then
+  if ! thread_result="$(GH_REPO="$repository" gh api graphql -f query="$graphql_query" -f threadId="$thread_id" 2>/dev/null)"; then
     error "review-thread-resolve-failed"
   fi
   jq -e '.data.resolveReviewThread.thread.isResolved == true' <<<"$thread_result" >/dev/null 2>&1 || error "review-thread-not-resolved"
   verify_review_head_unchanged "$pushed_sha" "review-thread-after-resolve"
+  validate_live_pr_correction_history "$pushed_sha"
   verify_resolved_thread "$thread_id"
 done <"$resolved_ids_file"
 

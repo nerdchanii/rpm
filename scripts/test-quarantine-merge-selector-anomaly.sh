@@ -46,7 +46,7 @@ printf '%s\n' \
 chmod +x "$fake_gh"
 
 run_case() {
-  local name="$1" initial="$2" expected_rc="$3" edit_mode="${4:-normal}" read_mode="${5:-normal}"
+  local name="$1" initial="$2" expected_rc="$3" edit_mode="${4:-normal}" read_mode="${5:-normal}" reason="${6:-no-closing-pr}"
   local case_dir state log output
   case_dir="${tmp_dir}/${name}"
   state="${case_dir}/state.json"
@@ -63,7 +63,7 @@ run_case() {
       FAKE_READ_MODE="$read_mode" \
       GITHUB_REPOSITORY=nerdchanii/rpm \
       GH_TOKEN=test-token \
-      bash "$helper" --policy "$policy" --issue 12 --reason no-closing-pr --details '테스트 사유' \
+      bash "$helper" --policy "$policy" --issue 12 --reason "$reason" --details '테스트 사유' \
       2>"${case_dir}/stderr"
   )"
   local actual_rc=$?
@@ -87,6 +87,15 @@ jq -e '
   (.comments[0].body | startswith("<!-- rpm-agent-merge-selector-block: issue=12;reason=no-closing-pr -->"))
 ' "$success_state" >/dev/null || fail 'success-state'
 
+run_case multiple-closing-references "$awaiting" 0 normal normal multiple-closing-references
+multiple_state="${tmp_dir}/multiple-closing-references/state.json"
+jq -e '
+  .state == "OPEN" and
+  ([.labels[].name] | sort) == ["agent:blocked", "kind:bug"] and
+  (.comments | length) == 1 and
+  (.comments[0].body | startswith("<!-- rpm-agent-merge-selector-block: issue=12;reason=multiple-closing-references -->"))
+' "$multiple_state" >/dev/null || fail 'multiple-closing-references-state'
+
 run_case dedupe "$blocked" 0
 dedupe_state="${tmp_dir}/dedupe/state.json"
 jq -e '(.comments | length) == 1 and ([.labels[].name] | sort) == ["agent:blocked", "kind:bug"]' "$dedupe_state" >/dev/null || fail 'dedupe-state'
@@ -100,5 +109,9 @@ invalid_log="${tmp_dir}/invalid-read/gh.log"
 ! rg -q 'issue edit|issue comment' "$invalid_log" || fail 'invalid-read-mutated'
 
 run_case ordinary-label-loss "$awaiting" 1 drop-ordinary
+
+run_case unknown-reason "$awaiting" 1 normal normal unknown-reason
+unknown_log="${tmp_dir}/unknown-reason/gh.log"
+! rg -q 'issue edit|issue comment' "$unknown_log" || fail 'unknown-reason-mutated'
 
 printf 'quarantine_merge_selector_test.PASS=state-cas-labels-comment-dedupe\n'

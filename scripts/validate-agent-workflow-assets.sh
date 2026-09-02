@@ -1896,6 +1896,11 @@ if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
   exit 0
 fi
 
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ]; then
+  printf '[]\n'
+  exit 0
+fi
+
 if [ "${1:-}" = "api" ] && [ "${2:-}" = "graphql" ]; then
   count_file="${RPM_COLLECT_FIXTURE}/.count"
   count=0
@@ -2530,15 +2535,19 @@ for script in \
   scripts/backlog-gen \
   scripts/check-agent-backlog-access.sh \
   scripts/collect-pr-review-context.sh \
+  scripts/quarantine-review-correction-limit.sh \
   scripts/create-review-followup-issue.sh \
   scripts/validate-cloud-diff.sh \
   scripts/publish-cloud-diff.sh \
   scripts/collect-merge-gate-evidence.sh \
   scripts/publish-cloud-merge.sh \
   scripts/test-validate-cloud-diff.sh \
+  scripts/test-collect-pr-review-context.sh \
   scripts/test-publish-cloud-diff.sh \
   scripts/test-collect-merge-gate-evidence.sh \
   scripts/test-publish-cloud-merge.sh \
+  scripts/test-quarantine-review-correction-limit.sh \
+  scripts/test-safe-direct-merge.sh \
   scripts/test-semver-workflow-security.sh \
   scripts/setup-codex-cloud-lane.sh \
   scripts/test-setup-codex-cloud-lane.sh \
@@ -2577,6 +2586,12 @@ check "cloud_diff_boundary_regression" \
   bash scripts/test-validate-cloud-diff.sh
 check "cloud_diff_publisher_regression" \
   bash scripts/test-publish-cloud-diff.sh
+check "collect_pr_review_context_regression" \
+  bash scripts/test-collect-pr-review-context.sh
+check "safe_direct_merge_regression" \
+  bash scripts/test-safe-direct-merge.sh
+check "review_correction_quarantine_regression" \
+  bash scripts/test-quarantine-review-correction-limit.sh
 check "merge_gate_evidence_regression" \
   bash scripts/test-collect-merge-gate-evidence.sh
 check "trusted_merge_publisher_regression" \

@@ -25,20 +25,58 @@ For an explicit or local/manual run, require a clean JSONL `review_input` event:
 If `may_create_followup_issues` is not exactly `true`, draft follow-up issue bodies only.
 
 Read `review_correction.max_attempts` and `review_correction.counter_labels` from
-`.agents/workflows/backlog-policy.json`. The counter is persisted on the PR with
-exactly one of `agent:correction-0` through `agent:correction-5`. Ticket
-publication initializes `agent:correction-0`; a missing or conflicting counter
-in scheduled mode is blocked. Each accepted correction advances the label by
-one. When `agent:correction-5` is already present, the sixth attempt leaves the
-PR head and counter unchanged, moves the linked issue to `agent:blocked`, and
-posts one reason comment so the schedule cannot resubmit it forever. The
-blocking comment includes the deterministic marker
-`<!-- rpm-agent-correction-block: source=pr:<positive integer>; reason=<reason-code>; counter=<agent:correction-N> -->`.
-Before posting, read existing issue comments and skip the write when the same
-marker already exists. Read
+`.agents/workflows/backlog-policy.json`. The PR has exactly one current counter
+label from `agent:correction-0` through `agent:correction-5`. Ticket publication
+initializes `agent:correction-0`; each accepted correction advances the label by
+one. A missing or conflicting counter produces a blocked handoff and leaves the
+PR head unchanged. Read
 `followup.max_per_source` before creating deferred issues and stop at five per
 source. A matching `source` and `fingerprint` is a deterministic `duplicate`
 result and must not create an issue.
+
+The counter label is only the current state view. The publisher keeps the
+budget in append-only issue-comment markers, one marker for each accepted PR
+head:
+
+```text
+<!-- rpm-agent-correction-history: pr=<positive integer>; counter=agent:correction-N; head=<40 lowercase hex> -->
+```
+
+Only `github-actions[bot]` and `nerdchanii` may author these markers. For a PR
+whose current label is `agent:correction-N`, the history must contain exactly
+one marker for every counter from `0` through `N`, with no later counter. The
+marker for `N` must bind to the exact current PR head; earlier markers bind the
+heads accepted at those earlier counters. A removed marker, a deleted or
+lowered counter label, a duplicate counter, a conflicting head, or a malformed
+marker from a trusted author fails closed. A marker-like comment from an
+untrusted author or a deleted author (`author:null`) is an ordinary comment
+and is ignored. These checks prevent a label or comment edit from resetting
+the correction budget.
+
+Correction-history comments are read from the GitHub GraphQL issue connection
+with a cursor loop. The reader binds the repository owner/name and issue
+number, validates the response, `pageInfo`, every node `id`/`body`/`author`,
+and rejects GraphQL errors, stalled or repeated cursors, and duplicate IDs.
+It reads at most 100 pages and 10,000 comments. A malformed, incomplete, or
+over-limit response stops before any Cloud, push, label, or comment mutation.
+The selector, Cloud publisher, and terminal quarantine writer use this same
+contract.
+
+The review selector validates this relation for every visible counter before
+starting Cloud. A missing, malformed, duplicate, lowered, or head-conflicting
+trusted history is a terminal state, including a label that advanced before
+its marker was written. Untrusted marker-like comments are ignored before this
+check. The selector writes `selected=false`, the exact
+issue, PR, base, and head snapshot, and a terminal reason. Cloud is not
+started.
+
+The trusted terminal quarantine rechecks the exact issue, PR, base, head,
+counter label, and the same history result. If a concurrent publisher has
+finished a valid history, it returns `no-work` without mutation. Otherwise it
+moves the issue to `agent:blocked` while preserving ordinary labels, the PR
+head, and the counter label. It posts one deduplicated reason comment with the marker
+`<!-- rpm-agent-correction-limit-block: issue=<positive integer>;pr=<positive integer> -->`.
+It never repairs or trusts a user-created history marker.
 
 A trusted follow-up source is exactly `pr:<positive integer>` or
 `issue:<positive integer>`. Its body starts with these two lines, in this
