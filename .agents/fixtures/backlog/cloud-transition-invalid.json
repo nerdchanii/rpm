@@ -1,0 +1,17 @@
+{
+  "issues": [
+    {
+      "number": 3,
+      "state": "OPEN",
+      "labels": ["agent:ready", "kind:bug"],
+      "ready_transition_actor": "nerdchanii",
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "approval-3",
+        "plan_revision": "plan-3",
+        "scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executor": "cloud"
+      }
+    }
+  ]
+}

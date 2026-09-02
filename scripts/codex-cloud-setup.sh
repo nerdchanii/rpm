@@ -22,6 +22,17 @@ case "${original_home}" in
   *:*|*$'\n'*) die 'HOME must not contain colon or newline' ;;
 esac
 
+# The review Cloud environment checks out an untrusted pull request head.  Its
+# setup must not compile that checkout, because Cargo build scripts and
+# procedural macros execute during a build.  Issue and merge lanes retain the
+# normal dependency and compiler-cache warm-up; an unset value preserves the
+# setup behavior used by the manually configured environment.
+cloud_lane="${RPM_CLOUD_LANE:-}"
+case "${cloud_lane}" in
+  ''|issue|review|merge) ;;
+  *) die 'RPM_CLOUD_LANE must be issue, review, or merge' ;;
+esac
+
 cargo_home="${original_home}/.cargo"
 cargo_bin="${cargo_home}/bin"
 
@@ -834,7 +845,11 @@ find_command jq >/dev/null
 find_command node >/dev/null
 find_command python3 >/dev/null
 
-run_clean_exact_online "${stable_cargo_command}" fetch --quiet --locked
-run_clean_exact_offline "${stable_cargo_command}" check --quiet --offline --locked --all-targets
+if [ "${cloud_lane}" = review ]; then
+  printf 'codex-cloud-setup: review lane; skipped repository dependency and build warm-up\n'
+else
+  run_clean_exact_online "${stable_cargo_command}" fetch --quiet --locked
+  run_clean_exact_offline "${stable_cargo_command}" check --quiet --offline --locked --all-targets
+fi
 
 printf 'codex-cloud-setup: ready (%s)\n' "${repo_root}"

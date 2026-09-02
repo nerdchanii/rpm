@@ -1,0 +1,16 @@
+{
+  "issues": [
+    {
+      "number": 12,
+      "state": "OPEN",
+      "labels": ["agent:awaiting-merge", "kind:feature"],
+      "awaiting_merge_transition_actor": "untrusted-user",
+      "closing_prs": [
+        {
+          "number": 44,
+          "state": "OPEN"
+        }
+      ]
+    }
+  ]
+}

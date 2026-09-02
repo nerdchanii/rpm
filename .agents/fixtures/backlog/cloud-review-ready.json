@@ -4,6 +4,7 @@
       "number": 12,
       "state": "OPEN",
       "labels": ["agent:review-pending", "kind:feature"],
+      "awaiting_merge_transition_actor": "nerdchanii",
       "closing_prs": [{"number": 44, "state": "OPEN"}],
       "codex_review_present": true
     }

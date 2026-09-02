@@ -139,7 +139,7 @@ for variable in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_prox
   CARGO_REGISTRIES_CRATES_IO_INDEX CARGO_HTTP_PROXY CARGO_NET_OFFLINE \
   CARGO_SOURCE_CRATES_IO_REPLACE_WITH CARGO_SOURCE_FOO_REPLACE_WITH \
   CARGO_REGISTRY_TOKEN RUSTUP_DIST_SERVER RUSTUP_UPDATE_ROOT RUSTC_WRAPPER \
-  RUSTFLAGS RPM_CLOUD_TEST_SECRET NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH \
+  RUSTFLAGS RPM_CLOUD_TEST_SECRET RPM_CLOUD_LANE NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH \
   RUSTDOCFLAGS RUSTC_WORKSPACE_WRAPPER SSL_CERT_FILE SSL_CERT_DIR \
   CURL_CA_BUNDLE CARGO_HTTP_CAINFO
 do
@@ -175,7 +175,7 @@ canonical_rustup_home='${canonical_rustup_home}'
 for variable in CARGO_REGISTRIES_CRATES_IO_INDEX CARGO_HTTP_PROXY CARGO_NET_OFFLINE \
   CARGO_SOURCE_CRATES_IO_REPLACE_WITH CARGO_SOURCE_FOO_REPLACE_WITH CARGO_REGISTRY_TOKEN RUSTUP_DIST_SERVER \
   RUSTUP_UPDATE_ROOT RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER RUSTFLAGS \
-  RPM_CLOUD_TEST_SECRET NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH RUSTDOCFLAGS RUSTC_WORKSPACE_WRAPPER
+  RPM_CLOUD_TEST_SECRET RPM_CLOUD_LANE NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH RUSTDOCFLAGS RUSTC_WORKSPACE_WRAPPER
 do
   [ -z "\${!variable+x}" ] || { printf 'env-leak=%s\\n' "\${variable}" >>"\${log_file}"; exit 90; }
 done
@@ -300,7 +300,7 @@ for variable in CARGO_HOME RUSTUP_HOME CARGO_REGISTRIES_CRATES_IO_INDEX \
   CARGO_HTTP_PROXY CARGO_NET_OFFLINE CARGO_SOURCE_CRATES_IO_REPLACE_WITH \
   CARGO_SOURCE_FOO_REPLACE_WITH CARGO_REGISTRY_TOKEN \
   RUSTUP_DIST_SERVER RUSTUP_UPDATE_ROOT RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER \
-  RUSTFLAGS RPM_CLOUD_TEST_SECRET NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH \
+  RUSTFLAGS RPM_CLOUD_TEST_SECRET RPM_CLOUD_LANE NVM_BIN RPM_CODEX_CLOUD_TRUSTED_PATH \
   RUSTDOCFLAGS RUSTC_WORKSPACE_WRAPPER
 do
   case "\${variable}" in
@@ -347,6 +347,9 @@ case "\${HOME}" in '${ambient_tmp}'*) exit 96 ;; esac
 [ "\${GIT_TERMINAL_PROMPT}" = 0 ] || exit 99
 printf 'cargo %s\\n' "\$*" >>"\${log_file}"
 printf 'env=scrubbed\\n' >>"\${log_file}"
+if [ "\${1:-}" = check ] && [ -f '${repo_dir}/build.rs' ]; then
+  printf 'build.rs executed\\n' >'${case_dir}/build-script-ran'
+fi
 case "\${1:-}" in
   install)
     if [ "\${mode}" = fresh ]; then
@@ -439,6 +442,7 @@ run_setup() {
   local home_override="${6:-${case_dir}/home}"
   local nvm_bin_override="${7:-}"
   local transport_override="${8:-}"
+  local cloud_lane_override="${9:-}"
   local -a env_args
 
   mkdir -p "${case_dir}/outside" "${case_dir}/ambient-tmp"
@@ -483,8 +487,11 @@ run_setup() {
   if [ "$#" -ge 7 ] && [ "${nvm_bin_override}" != __NO_NVM__ ]; then
     env_args+=("NVM_BIN=${nvm_bin_override}")
   fi
-  if [ "$#" -ge 8 ]; then
+  if [ "$#" -ge 8 ] && [ -n "${transport_override}" ]; then
     env_args+=("${transport_override}")
+  fi
+  if [ "$#" -ge 9 ]; then
+    env_args+=("RPM_CLOUD_LANE=${cloud_lane_override}")
   fi
   NVM_BIN=/tmp/ambient-nvm-bin \
   RPM_CODEX_CLOUD_TRUSTED_PATH=/tmp/ambient-trusted/bin \
@@ -579,6 +586,50 @@ actual_warm="$(commands_without_environment_markers "${warm_log}")"
 }
 assert_not_contains "$(<"${warm_log}")" 'cargo-proxy'
 assert_not_contains "$(<"${warm_log}")" 'rustup-proxy-network-attempt'
+
+# Review Cloud runs on the PR head.  The setup still validates the trusted
+# toolchain, but it must not invoke Cargo with the repository manifest: a
+# cargo check would compile and execute a PR-controlled build.rs or proc macro.
+review_case="$(new_case review-lane)"
+make_fake_environment "${review_case}" warm
+review_output="${review_case}/output"
+review_status="${review_case}/status"
+review_log="${review_case}/commands"
+printf 'fn main() {}\n' >"${review_case}/repo/build.rs"
+run_setup "${review_case}" "${review_case}/trusted/bin" "${review_case}/trusted/bin" \
+  "${review_output}" "${review_status}" "${review_case}/home" __NO_NVM__ '' review
+[ "$(<"${review_status}")" -eq 0 ]
+assert_contains "$(<"${review_output}")" \
+  'codex-cloud-setup: review lane; skipped repository dependency and build warm-up'
+assert_contains "$(<"${review_output}")" 'codex-cloud-setup: ready ('
+assert_not_contains "$(<"${review_log}")" 'cargo fetch'
+assert_not_contains "$(<"${review_log}")" 'cargo check'
+[ ! -e "${review_case}/build-script-ran" ] || fail 'review setup executed PR build.rs'
+
+# Explicit issue mode keeps the existing repository warm-up contract.
+issue_lane_case="$(new_case issue-lane)"
+make_fake_environment "${issue_lane_case}" warm
+issue_lane_output="${issue_lane_case}/output"
+issue_lane_status="${issue_lane_case}/status"
+issue_lane_log="${issue_lane_case}/commands"
+run_setup "${issue_lane_case}" "${issue_lane_case}/trusted/bin" \
+  "${issue_lane_case}/trusted/bin" "${issue_lane_output}" \
+  "${issue_lane_status}" "${issue_lane_case}/home" __NO_NVM__ '' issue
+[ "$(<"${issue_lane_status}")" -eq 0 ]
+assert_contains "$(<"${issue_lane_log}")" 'cargo fetch --quiet --locked'
+assert_contains "$(<"${issue_lane_log}")" 'cargo check --quiet --offline --locked --all-targets'
+
+invalid_lane_case="$(new_case invalid-lane)"
+make_fake_environment "${invalid_lane_case}" warm
+invalid_lane_output="${invalid_lane_case}/output"
+invalid_lane_status="${invalid_lane_case}/status"
+run_setup "${invalid_lane_case}" "${invalid_lane_case}/trusted/bin" \
+  "${invalid_lane_case}/trusted/bin" "${invalid_lane_output}" \
+  "${invalid_lane_status}" "${invalid_lane_case}/home" __NO_NVM__ '' hostile
+[ "$(<"${invalid_lane_status}")" -eq 1 ]
+assert_contains "$(<"${invalid_lane_output}")" \
+  'RPM_CLOUD_LANE must be issue, review, or merge'
+assert_not_contains "$(<"${invalid_lane_case}/commands")" 'rustup '
 
 rustup_proxies_case="$(new_case rustup-proxies)"
 make_fake_environment "${rustup_proxies_case}" rustup-proxies

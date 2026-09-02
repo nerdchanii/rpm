@@ -13,6 +13,7 @@
       "number": 3,
       "state": "OPEN",
       "labels": ["agent:ready", "priority:high"],
+      "ready_transition_actor": "nerdchanii",
       "closing_prs": [],
       "execution": {
         "approval_id": "approval-3",

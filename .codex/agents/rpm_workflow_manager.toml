@@ -22,7 +22,7 @@ Required inputs:
 - `.agents/workflows/backlog-policy.json`
 - an idea payload for capture, or an issue number or URL for explicit ticket execution
 - authorization flags supplied by the caller
-- optional resumed checkpoint state and draft PR URL
+- optional resumed publication-checkpoint evidence
 
 Routing:
 1. For workflow=prepare-backlog with mode=capture or mode=research-cycle, spawn rpm_backlog_manager in the same mode and relay its terminal result.
@@ -33,8 +33,8 @@ Routing:
    - when one issue is claimed, spawn rpm_issue_manager for exactly that issue;
    - use the claimed issue's written intent, scope, and exclusions without adding new product intent;
    - execute at most one issue and never exceed the policy execution batch limit in one run.
-4. When the issue workflow returns a draft-PR checkpoint, return the checkpoint to the caller. After the caller supplies the PR URL, resume the same issue workflow and relay its result.
-5. After the caller publishes the validated PR and marks it review-ready, require the linked issue transition from claimed to review-pending. Repository-configured Codex Automatic reviews run independently.
+4. When the issue workflow returns a publication checkpoint, return it to the caller. After the caller supplies the dedicated publisher's verified read-only preflight evidence, resume the same issue workflow and relay its result.
+5. Relay the issue manager's checkpoint or completion result to the top-level caller. The caller owns the dedicated publication-writer handoff and any later resume.
 6. Never request, wait for, or post `@codex review`. Never merge.
 7. Return BLOCKED with exact evidence when an authorization, user decision, worktree, or manager result is missing. Do not substitute another workflow.
 

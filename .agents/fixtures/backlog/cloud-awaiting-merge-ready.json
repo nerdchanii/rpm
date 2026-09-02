@@ -1,0 +1,35 @@
+{
+  "issues": [
+    {
+      "number": 12,
+      "state": "OPEN",
+      "labels": [
+        "agent:awaiting-merge",
+        "kind:feature"
+      ],
+      "awaiting_merge_transition_actor": "github-actions[bot]",
+      "closing_prs": [
+        {
+          "number": 44,
+          "state": "OPEN"
+        }
+      ]
+    },
+    {
+      "number": 16,
+      "state": "OPEN",
+      "labels": [
+        "agent:ready",
+        "kind:bug"
+      ],
+      "ready_transition_actor": "nerdchanii",
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "approval-16",
+        "plan_revision": "plan-16",
+        "scope_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "executor": "cloud"
+      }
+    }
+  ]
+}

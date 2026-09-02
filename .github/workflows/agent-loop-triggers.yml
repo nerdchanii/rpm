@@ -1,0 +1,1406 @@
+name: Codex agent loop
+
+# Cloud executes the model work. Separate, short-lived publisher jobs own the
+# GitHub write token and apply only validated Cloud diffs. The merge lane uses
+# the same boundary: Cloud supplies a read-only gate result, then the trusted
+# Action publisher performs the guarded merge.
+on:
+  repository_dispatch:
+    types: [codex-cloud-run]
+  schedule:
+    - cron: "*/5 * * * *"
+  issues:
+    types: [labeled]
+  workflow_run:
+    workflows: ["Rust", "PR Metadata"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  select-issue:
+    name: Select one ready issue
+    if: >-
+      ${{ github.repository == 'nerdchanii/rpm' &&
+          ((github.event_name == 'repository_dispatch' &&
+            github.actor == 'nerdchanii' &&
+            github.ref == 'refs/heads/main' &&
+            (github.event.client_payload.lane == 'all' ||
+             github.event.client_payload.lane == 'issue')) ||
+           (vars.CODEX_CLOUD_AUTOMATION_ENABLED == 'true' &&
+            (github.event_name == 'schedule' ||
+             (github.event_name == 'issues' &&
+              github.event.action == 'labeled' &&
+              github.actor == 'nerdchanii' &&
+              github.event.label.name == 'agent:ready')))) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    concurrency:
+      group: codex-cloud-issue-selector-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      selected: ${{ steps.select.outputs.selected }}
+      issue: ${{ steps.select.outputs.issue }}
+      base_ref: ${{ steps.select.outputs.base_ref }}
+      base_sha: ${{ steps.select.outputs.base_sha }}
+    steps:
+      - id: select
+        name: Select the lowest numbered ready issue and current base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          write_no_selection() {
+            printf '%s\n' \
+              'selected=false' 'issue=' 'base_ref=' 'base_sha=' >>"$GITHUB_OUTPUT"
+          }
+
+          # Read the complete open lifecycle queue before considering any ready
+          # candidate. This keeps the Action selector aligned with the Cloud
+          # queue contract and prevents main drift from a second implementation.
+          issues_json="$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 1000 \
+            --json number,labels)"
+          jq -e '
+            type == "array" and
+            all(.[]; type == "object" and
+              (.number | type == "number" and floor == . and . > 0) and
+              (.labels | type == "array" and
+                all(.[]; type == "object" and (.name | type == "string"))))
+          ' <<<"$issues_json" >/dev/null || {
+            echo '::error title=Invalid issue queue::The open issue response is malformed.'
+            write_no_selection
+            exit 1
+          }
+
+          queue_states="$(jq -c '
+            map({
+              number,
+              states: [ .labels[]?.name | select(
+                . == "agent:research" or
+                . == "agent:ready" or
+                . == "agent:claimed" or
+                . == "agent:review-pending" or
+                . == "agent:awaiting-merge" or
+                . == "agent:blocked"
+              ) ] | sort
+            })
+          ' <<<"$issues_json")"
+          invalid_lifecycle="$(jq -c '[.[] | select((.states | length) > 1)]' <<<"$queue_states")"
+          if [ "$(jq 'length' <<<"$invalid_lifecycle")" -gt 0 ]; then
+            echo '::error title=Invalid issue lifecycle::An open issue has multiple lifecycle labels; no issue was selected.'
+            write_no_selection
+            echo "selection=blocked reason=multiple-lifecycle-labels details=$(jq -c . <<<"$invalid_lifecycle")" >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          blocking_states="$(jq -r '
+            [ .[] |
+              select(.states | any(. == "agent:claimed" or
+                                    . == "agent:review-pending" or
+                                    . == "agent:awaiting-merge")) |
+              .number
+            ] | sort | join(",")
+          ' <<<"$queue_states")"
+          if [ -n "$blocking_states" ]; then
+            write_no_selection
+            echo "selection=no-work reason=active-work blockers=${blocking_states}" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          selected="$(jq -r '[.[] | select(.states == ["agent:ready"])] | sort_by(.number) | .[0].number // empty' <<<"$queue_states")"
+          if [ -z "$selected" ]; then
+            write_no_selection
+            echo 'selection=no-work' >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          case "$selected" in
+            ''|*[!0-9]*)
+              echo "::error title=Invalid selected issue::The issue selector returned a non-numeric value."
+              exit 1
+              ;;
+          esac
+
+          base_ref="$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq '.defaultBranchRef.name // empty')"
+          if [ "$base_ref" != "main" ]; then
+            echo "::error title=Unexpected protected branch::The repository default branch must be main, got ${base_ref:-empty}."
+            exit 1
+          fi
+          base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${base_ref}" --jq '.object.sha')"
+          if ! [[ "$base_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error title=Invalid base SHA::The current default branch ref did not return one 40-hex commit."
+            exit 1
+          fi
+
+          {
+            echo 'selected=true'
+            echo "issue=$selected"
+            echo "base_ref=$base_ref"
+            echo "base_sha=$base_sha"
+          } >>"$GITHUB_OUTPUT"
+          echo "selection=issue-${selected} base=${base_ref}@${base_sha}" >>"$GITHUB_STEP_SUMMARY"
+
+  issue-cloud:
+    name: Execute issue task in Codex Cloud
+    needs: select-issue
+    if: github.repository == 'nerdchanii/rpm' && needs.select-issue.outputs.selected == 'true'
+    runs-on: ubuntu-latest
+    environment: codex-cloud-issue
+    permissions:
+      contents: read
+      issues: read
+    timeout-minutes: 350
+    concurrency:
+      group: codex-cloud-issue-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      CLOUD_ARTIFACT_NAME: codex-cloud-issue-${{ github.run_id }}-${{ github.run_attempt }}
+      ISSUE_NUMBER: ${{ needs.select-issue.outputs.issue }}
+      BASE_REF: ${{ needs.select-issue.outputs.base_ref }}
+      BASE_SHA: ${{ needs.select-issue.outputs.base_sha }}
+    steps:
+      - name: Install pinned Codex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_root="${RUNNER_TEMP}/codex-cloud-cli"
+          mkdir -p "$cli_root"
+          npm install \
+            --prefix "$cli_root" \
+            --no-save \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund \
+            "@openai/codex@0.152.0"
+          codex_bin="${cli_root}/node_modules/.bin/codex"
+          [ -x "$codex_bin" ]
+          "$codex_bin" --version
+          echo "CODEX_BIN=$codex_bin" >>"$GITHUB_ENV"
+
+      - name: Submit, poll, and download issue Cloud diff
+        env:
+          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          CODEX_CLOUD_ENV_ID: ${{ vars.CODEX_CLOUD_ISSUE_ENV_ID }}
+          EXPECTED_CLOUD_LANE: issue
+        run: |
+          set -euo pipefail
+
+          case "$ISSUE_NUMBER" in ''|*[!0-9]*) echo '::error title=Invalid issue::The selected issue number is invalid.'; exit 1;; esac
+          if [ "$BASE_REF" != main ] || ! [[ "$BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo '::error title=Invalid issue base::Issue Cloud work must start from main at the exact selected SHA.'
+            exit 1
+          fi
+          if [ -z "${CODEX_CLOUD_ENV_ID:-}" ]; then echo '::error title=Missing issue Cloud environment ID::Set CODEX_CLOUD_ISSUE_ENV_ID.'; exit 1; fi
+          if [ -z "${CODEX_ACCESS_TOKEN:-}" ]; then echo '::error title=Missing issue Cloud token::Set CODEX_ACCESS_TOKEN in codex-cloud-issue.'; exit 1; fi
+          current_base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BASE_REF}" --jq '.object.sha')"
+          [ "$current_base_sha" = "$BASE_SHA" ] || { echo '::error title=Issue base changed::The selected main SHA changed before Cloud submission.'; exit 1; }
+          current_issue="$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,labels)"
+          jq -e '
+            .state == "OPEN" and
+            ([.labels[] | .name] | sort | map(select(startswith("agent:")))) == ["agent:ready"]
+          ' <<<"$current_issue" >/dev/null || { echo '::error title=Issue eligibility changed::The selected issue is no longer exactly ready.'; exit 1; }
+          unset GH_TOKEN GITHUB_TOKEN
+
+          prompt='Cloud preflight: RPM_CLOUD_LANE must equal issue exactly. If it is missing or has another value, return blocked and perform no mutation.
+
+          Run the $take-ticket scheduled skill. The GitHub Action selected issue #'
+          prompt+="${ISSUE_NUMBER}"
+          prompt+=' as a hint only. Re-read the complete queue, enforce the claimed, review-pending, and awaiting-merge blockers and issue-number order, and perform the compare-and-set claim before acting. Keep the execution batch limit at 1. Follow-up issues are capped at 5 per source. Do not merge or perform any merge operation.
+
+          This Cloud task starts from the exact immutable base commit below. Do not change the base or use another branch/ref:
+          base_ref='
+          prompt+="${BASE_REF}"
+          prompt+=" base_sha=${BASE_SHA}."
+          prompt+=' Finish by asking rpm_cloud_result_writer to write exactly one root file named .codex-cloud-result.json. The file is the Action handoff and must include lane=issue, issue, base_sha, status, summary, validation, next_state, and any follow-up/thread data. Do not commit, push, create/update a PR, change final lifecycle labels, or resolve review threads in Cloud.'
+          prompt+=$'\n\nFixed dispatcher inputs: '
+          prompt+="dispatcher_run_id=${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}, event_id=github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:issue. The claim lease run_id and ledger run_id must equal dispatcher_run_id exactly, and the ledger event_id must equal this event_id exactly. Treat these values as fixed idempotency inputs."
+
+          output_log="${RUNNER_TEMP}/codex-cloud-submit.log"
+          if ! "$CODEX_BIN" cloud exec --env "$CODEX_CLOUD_ENV_ID" --branch "$BASE_SHA" --attempts 1 "$prompt" >"$output_log" 2>&1; then echo '::error title=Codex Cloud submission failed::The issue task could not be submitted.'; exit 1; fi
+          task_url="$(grep -Eo 'https://chatgpt\.com/codex/tasks/[^/?#[:space:]]+' "$output_log" | tail -n 1)"
+          if [[ ! "$task_url" =~ ^https://chatgpt\.com/codex/tasks/([A-Za-z0-9._~-]+)$ ]]; then echo '::error title=Invalid Codex Cloud response::The issue submission returned no valid task URL.'; exit 1; fi
+          task_id="${BASH_REMATCH[1]}"
+          task_status=pending
+          poll_count=0
+          missing_polls=0
+          while [ "$poll_count" -lt 600 ]; do
+            poll_count=$((poll_count + 1))
+            if ! tasks_json="$($CODEX_BIN cloud list --json --env "$CODEX_CLOUD_ENV_ID" --limit 20)"; then echo '::error title=Codex Cloud status failed::The issue task status could not be read.'; exit 1; fi
+            if ! jq -e 'type == "object" and (.tasks | type == "array")' <<<"$tasks_json" >/dev/null; then echo '::error title=Invalid Codex Cloud status::The task list response is invalid.'; exit 1; fi
+            observed="$(jq -r --arg id "$task_id" '[.tasks[] | select(.id == $id) | .status][0] // empty' <<<"$tasks_json")"
+            case "$observed" in
+              ready|applied) task_status="$observed"; break;;
+              error) echo '::error title=Codex Cloud task failed::The issue task ended with an error.'; exit 1;;
+              pending) task_status=pending; missing_polls=0;;
+              '') missing_polls=$((missing_polls + 1)); task_status=pending-index; if [ "$missing_polls" -ge 10 ]; then echo '::error title=Codex Cloud task missing::The issue task disappeared from status results.'; exit 1; fi;;
+              *) echo '::error title=Unknown Codex Cloud status::The issue task returned an unsupported status.'; exit 1;;
+            esac
+            sleep 30
+          done
+          if [ "$task_status" != ready ] && [ "$task_status" != applied ]; then echo '::error title=Codex Cloud task timed out::The issue task did not finish within five hours.'; exit 1; fi
+          raw_diff="${RUNNER_TEMP}/${CLOUD_ARTIFACT_NAME}.patch"
+          if ! "$CODEX_BIN" cloud diff --attempt 1 "$task_id" >"$raw_diff"; then echo '::error title=Codex Cloud diff failed::The completed issue task did not provide a diff.'; exit 1; fi
+          [ -s "$raw_diff" ] || { echo '::error title=Empty Codex Cloud diff::The issue task must return its result handoff file.'; exit 1; }
+          {
+            echo '## Codex Cloud issue task'
+            echo
+            echo "task_status: ${task_status}"
+            echo "task_url: ${task_url}"
+            echo "base: ${BASE_REF}@${BASE_SHA}"
+            echo "artifact: ${CLOUD_ARTIFACT_NAME}"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable issue Cloud diff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.CLOUD_ARTIFACT_NAME }}
+          path: ${{ runner.temp }}/${{ env.CLOUD_ARTIFACT_NAME }}.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  issue-publish:
+    name: Publish validated issue result
+    needs: [select-issue, issue-cloud]
+    if: github.repository == 'nerdchanii/rpm' && needs.issue-cloud.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    timeout-minutes: 30
+    concurrency:
+      group: codex-cloud-issue-publisher-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      CLOUD_ARTIFACT_NAME: codex-cloud-issue-${{ github.run_id }}-${{ github.run_attempt }}
+      ISSUE_NUMBER: ${{ needs.select-issue.outputs.issue }}
+      BASE_REF: ${{ needs.select-issue.outputs.base_ref }}
+      BASE_SHA: ${{ needs.select-issue.outputs.base_sha }}
+    steps:
+      - name: Check out exact Cloud base commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.select-issue.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out trusted Cloud publisher tools
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.select-issue.outputs.base_sha }}
+          path: rpm-cloud-tools
+          sparse-checkout: |
+            .agents/workflows/backlog-policy.json
+            scripts
+          persist-credentials: false
+      - name: Verify trusted issue publisher revision
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          [ "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$BASE_SHA" ]
+          [ "$(git -C "$GITHUB_WORKSPACE/rpm-cloud-tools" rev-parse HEAD)" = "$BASE_SHA" ] || {
+            echo '::error title=Untrusted issue publisher revision::Issue tools must come from the selected protected main SHA.'
+            exit 1
+          }
+          mv "$GITHUB_WORKSPACE/rpm-cloud-tools" "${RUNNER_TEMP}/rpm-cloud-tools"
+      - name: Download issue Cloud diff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ env.CLOUD_ARTIFACT_NAME }}
+          path: ${{ runner.temp }}/codex-cloud-issue
+      - name: Validate untrusted Cloud diff
+        env:
+          PATCH_FILE: ${{ runner.temp }}/codex-cloud-issue/${{ env.CLOUD_ARTIFACT_NAME }}.patch
+          VALIDATED_PATCH: ${{ runner.temp }}/codex-cloud-issue/validated.patch
+          RESULT_FILE: ${{ runner.temp }}/codex-cloud-issue/result.json
+        run: |
+          set -euo pipefail
+          test -f "$PATCH_FILE"
+          bash "${RUNNER_TEMP}/rpm-cloud-tools/scripts/validate-cloud-diff.sh" \
+            --patch "$PATCH_FILE" \
+            --lane issue \
+            --expected-issue "$ISSUE_NUMBER" \
+            --expected-base-sha "$BASE_SHA" \
+            --result-out "$RESULT_FILE" \
+            --code-patch-out "$VALIDATED_PATCH"
+      - name: Publish issue branch, PR, and lifecycle state
+        env:
+          GH_TOKEN: ${{ secrets.RPM_AUTOMATION_GITHUB_TOKEN }}
+          PATCH_FILE: ${{ runner.temp }}/codex-cloud-issue/validated.patch
+          RESULT_FILE: ${{ runner.temp }}/codex-cloud-issue/result.json
+        run: |
+          set -euo pipefail
+          [ -n "${GH_TOKEN:-}" ] || { echo '::error title=Missing automation publisher token::Set RPM_AUTOMATION_GITHUB_TOKEN before publishing issue work.'; exit 1; }
+          gh auth setup-git
+          bash "${RUNNER_TEMP}/rpm-cloud-tools/scripts/publish-cloud-diff.sh" \
+            --mode issue \
+            --result "$RESULT_FILE" \
+            --patch "$PATCH_FILE" \
+            --expected-issue "$ISSUE_NUMBER" \
+            --expected-base-sha "$BASE_SHA" \
+            --run-id "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
+
+  issue-recover:
+    name: Recover failed issue run safely
+    needs: [select-issue, issue-cloud, issue-publish]
+    if: >-
+      ${{ always() && github.repository == 'nerdchanii/rpm' &&
+          needs.select-issue.outputs.selected == 'true' &&
+          (needs.issue-cloud.result == 'failure' || needs.issue-cloud.result == 'cancelled' ||
+           needs.issue-publish.result == 'failure' || needs.issue-publish.result == 'cancelled') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 10
+    concurrency:
+      group: codex-cloud-issue-recovery-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      ISSUE_NUMBER: ${{ needs.select-issue.outputs.issue }}
+    steps:
+      - name: Block only the exact failed claim
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$ISSUE_NUMBER" in ''|*[!0-9]*) echo '::error title=Invalid recovery issue::The selected issue number is invalid.'; exit 1;; esac
+          case "$GITHUB_RUN_ID" in ''|*[!0-9]*) echo '::error title=Invalid recovery run::The Action run id is invalid.'; exit 1;; esac
+          case "$GITHUB_RUN_ATTEMPT" in ''|*[!0-9]*) echo '::error title=Invalid recovery attempt::The Action run attempt is invalid.'; exit 1;; esac
+          issue_json="$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json number,state,body,labels,comments)"
+          if ! jq -e '
+            .state == "OPEN" and
+            ([.labels[] | .name] as $labels |
+              ($labels | map(select(startswith("agent:")))) == ["agent:claimed"])
+          ' <<<"$issue_json" >/dev/null; then
+            echo '::error title=Recovery ownership unavailable::The issue is no longer exactly open and claimed; no state was changed.'
+            exit 1
+          fi
+          marker_count="$(jq -r '[.body // "" | split("\\n")[] | select(test("^\\s*<!--\\s*rpm-agent-execution:\\s*\\{.*\\}\\s*-->\\s*$"))] | length' <<<"$issue_json")"
+          [ "$marker_count" = 1 ] || { echo '::error title=Recovery marker unavailable::The issue claim marker is missing or ambiguous; no state was changed.'; exit 1; }
+          marker_json="$(jq -r '[.body // "" | split("\\n")[] | select(test("^\\s*<!--\\s*rpm-agent-execution:\\s*\\{.*\\}\\s*-->\\s*$"))] | .[0] | capture("^\\s*<!--\\s*rpm-agent-execution:\\s*(?<json>\\{.*\\})\\s*-->\\s*$").json' <<<"$issue_json")"
+          dispatcher_run_id="${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
+          event_id="github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:issue"
+          if ! jq -e --arg run_id "$dispatcher_run_id" --arg event "$event_id" '
+            .executor == "cloud" and
+            (.lease | type == "object" and
+              (.run_id == $run_id) and
+              (.owner | type == "string" and startswith("cloud:"))) and
+            (.runs | type == "array" and
+              any(.[]; .run_id == $run_id and .event_id == $event))
+          ' <<<"$marker_json" >/dev/null; then
+            echo '::error title=Recovery ownership unavailable::The claim marker has no matching Cloud event for this run; no state was changed.'
+            exit 1
+          fi
+          ordinary_before="$(jq -c '[.labels[] | .name | select(startswith("agent:") | not)] | sort' <<<"$issue_json")"
+          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label agent:claimed --add-label agent:blocked >/dev/null
+          issue_after="$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json number,state,body,labels,comments)"
+          jq -e '[.labels[] | .name] as $labels | .state == "OPEN" and ($labels | map(select(startswith("agent:")))) == ["agent:blocked"]' <<<"$issue_after" >/dev/null || { echo '::error title=Recovery verification failed::The blocked state could not be verified.'; exit 1; }
+          ordinary_after="$(jq -c '[.labels[] | .name | select(startswith("agent:") | not)] | sort' <<<"$issue_after")"
+          [ "$ordinary_before" = "$ordinary_after" ] || { echo '::error title=Recovery label preservation failed::An ordinary label changed unexpectedly.'; exit 1; }
+          recovery_marker="<!-- rpm-agent-cloud-recovery: issue=${ISSUE_NUMBER};run=${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT} -->"
+          if ! jq -e --arg marker "$recovery_marker" 'any(.comments[]?; ((.body // .) | type == "string" and contains($marker)))' <<<"$issue_after" >/dev/null; then
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "${recovery_marker} Codex Cloud failed before the Action publisher completed. The claim was moved to agent:blocked for manual inspection. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >/dev/null
+          fi
+          comments_after="$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json comments)" || { echo '::error title=Recovery comment verification failed::The recovery comment could not be read back.'; exit 1; }
+          jq -e --arg marker "$recovery_marker" 'any(.comments[]?; ((.body // .) | type == "string" and contains($marker)))' <<<"$comments_after" >/dev/null || { echo '::error title=Recovery comment verification failed::The deduplicated recovery marker was not found after the state transition.'; exit 1; }
+          echo "recovery=blocked issue=${ISSUE_NUMBER} reason=cloud-or-publisher-failure" >>"$GITHUB_STEP_SUMMARY"
+
+  select-review:
+    name: Select one pending review and exact PR head
+    if: >-
+      ${{ github.repository == 'nerdchanii/rpm' &&
+          ((github.event_name == 'repository_dispatch' &&
+            github.actor == 'nerdchanii' &&
+            github.ref == 'refs/heads/main' &&
+            (github.event.client_payload.lane == 'all' ||
+             github.event.client_payload.lane == 'review')) ||
+           (vars.CODEX_CLOUD_AUTOMATION_ENABLED == 'true' &&
+            (github.event_name == 'schedule' ||
+             github.event_name == 'workflow_run'))) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    concurrency:
+      group: codex-cloud-review-selector-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      selected: ${{ steps.select.outputs.selected }}
+      issue: ${{ steps.select.outputs.issue }}
+      base_ref: ${{ steps.select.outputs.base_ref }}
+      base_sha: ${{ steps.select.outputs.base_sha }}
+      pr: ${{ steps.select.outputs.pr }}
+      head_ref: ${{ steps.select.outputs.head_ref }}
+      head_sha: ${{ steps.select.outputs.head_sha }}
+    steps:
+      - id: select
+        name: Resolve exactly one same-repository open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          write_no_selection() {
+            printf '%s\n' \
+              'selected=false' 'issue=' 'pr=' 'base_ref=' 'base_sha=' \
+              'head_ref=' 'head_sha=' >>"$GITHUB_OUTPUT"
+            echo 'selection=no-work' >>"$GITHUB_STEP_SUMMARY"
+          }
+
+          # The review selector can be invoked independently of the issue
+          # selector. Re-read the complete open lifecycle queue so a stale or
+          # manually triggered lane cannot start work while two issues are
+          # already in flight.
+          queue_json="$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 1000 \
+            --json number,labels)"
+          jq -e '
+            type == "array" and
+            all(.[]; type == "object" and
+              (.number | type == "number" and floor == . and . > 0) and
+              (.labels | type == "array" and
+                all(.[]; type == "object" and (.name | type == "string"))))
+          ' <<<"$queue_json" >/dev/null || {
+            echo '::error title=Invalid issue queue::The open issue response is malformed.'
+            write_no_selection
+            exit 1
+          }
+          queue_states="$(jq -c '
+            map({
+              number,
+              states: [ .labels[]?.name | select(
+                . == "agent:research" or
+                . == "agent:ready" or
+                . == "agent:claimed" or
+                . == "agent:review-pending" or
+                . == "agent:awaiting-merge" or
+                . == "agent:blocked"
+              ) ] | sort
+            })
+          ' <<<"$queue_json")"
+          invalid_lifecycle="$(jq -c '[.[] | select((.states | length) > 1)]' <<<"$queue_states")"
+          if [ "$(jq 'length' <<<"$invalid_lifecycle")" -gt 0 ]; then
+            echo '::error title=Invalid issue lifecycle::An open issue has multiple lifecycle labels; no review was selected.'
+            write_no_selection
+            echo "selection=blocked reason=multiple-lifecycle-labels details=$(jq -c . <<<"$invalid_lifecycle")" >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          active_issues="$(jq -c '[.[] | select(.states | any(. == "agent:claimed" or . == "agent:review-pending" or . == "agent:awaiting-merge"))]' <<<"$queue_states")"
+          if [ "$(jq 'length' <<<"$active_issues")" -gt 1 ]; then
+            active_numbers="$(jq -r '[.[] | .number] | sort | join(",")' <<<"$active_issues")"
+            write_no_selection
+            echo "selection=no-work reason=active-work blockers=${active_numbers}" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          issues_json="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label 'agent:review-pending' --limit 1000 --json number)"
+          issue_numbers="$(jq -r 'sort_by(.number) | .[].number' <<<"$issues_json")"
+          protected_review_path() {
+            case "$1" in
+              .agents|.agents/*|.codex|.codex/*|.github|.github/*|.githooks|.githooks/*|.cargo|.cargo/*|\
+              AGENTS.md|*/AGENTS.md|clippy.toml|justfile|rust-toolchain|rust-toolchain.toml|rustfmt.toml|.rustfmt.toml|\
+              scripts/agent-loop-*|scripts/check-agent-*|scripts/check-cloud-*|scripts/check-merge-*|scripts/check-workflow-*|\
+              scripts/collect-pr-review-context*|scripts/collect-merge-gate-evidence*|scripts/create-review-followup-issue*|\
+              scripts/publish-cloud-diff*|scripts/publish-cloud-merge*|scripts/quarantine-merge-selector-anomaly*|\
+              scripts/safe-direct-merge*|scripts/validate-agent-workflow-assets*|scripts/validate-cloud-diff*|scripts/test-*|\
+              scripts/setup-codex-cloud-lane.sh|scripts/codex-cloud-setup.sh|scripts/codex-rust-analyzer.sh|\
+              scripts/install-git-hooks.sh|scripts/run-local-git-hook-gate.sh|scripts/worktree-setup.sh|scripts/worktree-cleanup.sh)
+                return 0
+                ;;
+            esac
+            return 1
+          }
+          protected_base_ref="$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq '.defaultBranchRef.name // empty')"
+          if [ "$protected_base_ref" != main ]; then echo "::error title=Unexpected protected branch::The repository default branch must be main, got ${protected_base_ref:-empty}."; exit 1; fi
+          dispatch_base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${protected_base_ref}" --jq '.object.sha')"
+          if ! [[ "$dispatch_base_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then echo '::error title=Invalid base SHA::The current default branch ref did not return one 40-hex commit.'; exit 1; fi
+          found=0
+          while IFS= read -r issue_number; do
+            [ -n "$issue_number" ] || continue
+            case "$issue_number" in ''|*[!0-9]*) echo '::error title=Invalid review issue::The selector returned a non-numeric value.'; exit 1;; esac
+            timeline="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${issue_number}/timeline?per_page=100")"
+            if ! linked_prs_text="$(jq -r 'add | [ .[] | select(.event == "cross-referenced" or .event == "connected") | .source.issue? // empty | select(.pull_request? != null) | .number ] | unique | .[]' <<<"$timeline")"; then echo '::error title=Invalid review timeline::The linked pull request timeline response is malformed.'; exit 1; fi
+            mapfile -t linked_prs <<<"$linked_prs_text"
+            open_same_repo=()
+            open_fork=0
+            for pr_number in "${linked_prs[@]}"; do
+              [ -n "$pr_number" ] || continue
+              case "$pr_number" in ''|*[!0-9]*) echo '::error title=Invalid linked PR::The issue timeline returned a non-numeric pull request number.'; exit 1;; esac
+              pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+              [ "$(jq -r '.state // empty' <<<"$pr_json")" = open ] || continue
+              closing_json="$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences)"
+              jq -e --argjson issue "$issue_number" '
+                (.closingIssuesReferences | type == "array") and
+                any(.closingIssuesReferences[]; .number == $issue)
+              ' <<<"$closing_json" >/dev/null || continue
+              head_repo="$(jq -r '.head.repo.full_name // empty' <<<"$pr_json")"
+              if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then open_fork=1; continue; fi
+              open_same_repo+=("$pr_number")
+            done
+            if [ "$open_fork" -eq 1 ]; then echo "::error title=Fork review PR rejected::Issue #${issue_number} has an open linked PR from another repository."; exit 1; fi
+            if [ "${#open_same_repo[@]}" -eq 0 ]; then continue; fi
+            if [ "${#open_same_repo[@]}" -ne 1 ]; then echo "::error title=Ambiguous review PR::Issue #${issue_number} has more than one linked open same-repository PR."; exit 1; fi
+            pr_number="${open_same_repo[0]}"
+            pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+            base_ref="$(jq -r '.base.ref // empty' <<<"$pr_json")"
+            pr_base_sha="$(jq -r '.base.sha // empty' <<<"$pr_json")"
+            head_ref="$(jq -r '.head.ref // empty' <<<"$pr_json")"
+            head_sha="$(jq -r '.head.sha // empty' <<<"$pr_json")"
+            base_repo="$(jq -r '.base.repo.full_name // empty' <<<"$pr_json")"
+            head_repo="$(jq -r '.head.repo.full_name // empty' <<<"$pr_json")"
+            if [ "$base_repo" != "$GITHUB_REPOSITORY" ] || [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then echo "::error title=Cross-repository review PR rejected::PR #${pr_number} is not entirely within this repository."; exit 1; fi
+            case "$head_ref" in
+              ''|main|master|develop|release|HEAD|refs/*|*'..'*|*'//'*) echo "::error title=Unsafe review branches::PR #${pr_number} uses a protected or malformed head branch."; exit 1;;
+            esac
+            if [[ ! "$head_ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ || "$head_ref" == */ || "$head_ref" == /* || "$head_ref" == -* ]] || ! git check-ref-format --branch "$head_ref" >/dev/null 2>&1; then echo "::error title=Unsafe review branches::PR #${pr_number} uses a malformed head branch."; exit 1; fi
+            if [ "$base_ref" != main ]; then echo "::error title=Unsafe review branches::PR #${pr_number} must target main."; exit 1; fi
+            if ! [[ "$pr_base_sha" =~ ^[0-9a-fA-F]{40}$ && "$dispatch_base_sha" =~ ^[0-9a-fA-F]{40}$ && "$head_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then echo "::error title=Invalid review SHA::PR #${pr_number} did not return exact base and head SHAs."; exit 1; fi
+            if [ "$pr_base_sha" != "$dispatch_base_sha" ]; then echo "::error title=Stale review base::PR #${pr_number} no longer targets the selected main SHA."; exit 1; fi
+            changed_files="$(jq -er '.changed_files | select(type == "number" and floor == . and . >= 0 and . <= 3000)' <<<"$pr_json")" || { echo "::error title=Invalid review file count::PR #${pr_number} has an invalid or unsupported changed-file count."; exit 1; }
+            files_pages="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100")"
+            files_json="$(jq -ce 'if type == "array" and all(.[]; type == "array") then [ .[][] ] else error("invalid pages") end' <<<"$files_pages")" || { echo "::error title=Invalid review file list::PR #${pr_number} returned a malformed changed-file response."; exit 1; }
+            jq -e --argjson count "$changed_files" '
+              type == "array" and length == $count and
+              all(.[];
+                type == "object" and
+                (.filename | type == "string" and length > 0) and
+                ((.previous_filename? == null) or (.previous_filename | type == "string" and length > 0)))
+            ' <<<"$files_json" >/dev/null || { echo "::error title=Incomplete review file list::PR #${pr_number} changed-file inventory is incomplete or malformed."; exit 1; }
+            while IFS= read -r encoded_paths; do
+              [ -n "$encoded_paths" ] || continue
+              path_pair="$(printf '%s' "$encoded_paths" | base64 --decode 2>/dev/null)" || { echo "::error title=Invalid review path::PR #${pr_number} returned an undecodable path."; exit 1; }
+              filename="$(jq -er '.[0]' <<<"$path_pair")" || { echo "::error title=Invalid review path::PR #${pr_number} returned a malformed filename."; exit 1; }
+              previous_filename="$(jq -er '.[1]' <<<"$path_pair")" || { echo "::error title=Invalid review path::PR #${pr_number} returned a malformed previous filename."; exit 1; }
+              for changed_path in "$filename" "$previous_filename"; do
+                [ -n "$changed_path" ] || continue
+                if [[ "$changed_path" == /* || "$changed_path" == *\\* || "$changed_path" == *//* ||
+                      "$changed_path" == . || "$changed_path" == .. || "$changed_path" == ../* ||
+                      "$changed_path" == */../* || "$changed_path" == */.. ||
+                      "$changed_path" =~ [[:space:]] ]]; then
+                  echo "::error title=Invalid review path::PR #${pr_number} returned an unsafe changed-file path."
+                  exit 1
+                fi
+                if protected_review_path "$changed_path"; then
+                  echo "::error title=Protected review path::PR #${pr_number} changes ${changed_path}; Cloud review was not submitted."
+                  exit 1
+                fi
+              done
+            done < <(jq -r '.[] | [.filename, (.previous_filename // "")] | @json | @base64' <<<"$files_json")
+            pr_guard_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+            jq -e --arg repo "$GITHUB_REPOSITORY" --arg base "$base_ref" --arg base_sha "$pr_base_sha" --arg head "$head_ref" --arg head_sha "$head_sha" '
+              .state == "open" and
+              .base.ref == $base and .base.sha == $base_sha and
+              .head.ref == $head and .head.sha == $head_sha and
+              .base.repo.full_name == $repo and .head.repo.full_name == $repo
+            ' <<<"$pr_guard_json" >/dev/null || { echo "::error title=Review PR changed::PR #${pr_number} changed during protected-path validation."; exit 1; }
+            base_sha="$dispatch_base_sha"
+            found=1
+            {
+              echo 'selected=true'
+              echo "issue=$issue_number"
+              echo "pr=$pr_number"
+              echo "base_ref=$base_ref"
+              echo "base_sha=$base_sha"
+              echo "head_ref=$head_ref"
+              echo "head_sha=$head_sha"
+            } >>"$GITHUB_OUTPUT"
+            echo "selection=issue-${issue_number} pr=${pr_number} base=${base_ref}@${base_sha} head=${head_ref}@${head_sha}" >>"$GITHUB_STEP_SUMMARY"
+            break
+          done <<<"$issue_numbers"
+          if [ "$found" -eq 0 ]; then
+            printf '%s\n' 'selected=false' 'issue=' 'pr=' 'base_ref=' 'base_sha=' 'head_ref=' 'head_sha=' >>"$GITHUB_OUTPUT"
+            echo 'selection=no-work' >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+  review-cloud:
+    name: Execute review task in Codex Cloud
+    needs: select-review
+    if: github.repository == 'nerdchanii/rpm' && needs.select-review.outputs.selected == 'true'
+    runs-on: ubuntu-latest
+    environment: codex-cloud-review
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    timeout-minutes: 350
+    concurrency:
+      group: codex-cloud-review-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      CLOUD_ARTIFACT_NAME: codex-cloud-review-${{ github.run_id }}-${{ github.run_attempt }}
+      ISSUE_NUMBER: ${{ needs.select-review.outputs.issue }}
+      PR_NUMBER: ${{ needs.select-review.outputs.pr }}
+      BASE_REF: ${{ needs.select-review.outputs.base_ref }}
+      BASE_SHA: ${{ needs.select-review.outputs.base_sha }}
+      HEAD_REF: ${{ needs.select-review.outputs.head_ref }}
+      HEAD_SHA: ${{ needs.select-review.outputs.head_sha }}
+    steps:
+      - name: Install pinned Codex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_root="${RUNNER_TEMP}/codex-cloud-cli"
+          mkdir -p "$cli_root"
+          npm install --prefix "$cli_root" --no-save --ignore-scripts --no-audit --no-fund "@openai/codex@0.152.0"
+          codex_bin="${cli_root}/node_modules/.bin/codex"
+          [ -x "$codex_bin" ]
+          "$codex_bin" --version
+          echo "CODEX_BIN=$codex_bin" >>"$GITHUB_ENV"
+      - name: Submit, poll, and download review Cloud diff
+        env:
+          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          CODEX_CLOUD_ENV_ID: ${{ vars.CODEX_CLOUD_REVIEW_ENV_ID }}
+          EXPECTED_CLOUD_LANE: review
+        run: |
+          set -euo pipefail
+          for value in "$ISSUE_NUMBER" "$PR_NUMBER"; do case "$value" in ''|*[!0-9]*) echo '::error title=Invalid review target::The selected issue or PR number is invalid.'; exit 1;; esac; done
+          case "$HEAD_REF" in ''|main|master|develop|release|HEAD|refs/*|*'..'*|*'//'*) echo '::error title=Invalid review refs::Review Cloud work must use a safe non-protected head.'; exit 1;; esac
+          if [[ ! "$HEAD_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ || "$HEAD_REF" == */ || "$HEAD_REF" == /* || "$HEAD_REF" == -* || "$BASE_REF" != main ]] || ! git check-ref-format --branch "$HEAD_REF" >/dev/null 2>&1; then echo '::error title=Invalid review refs::Review Cloud work must target main from a safe head.'; exit 1; fi
+          if ! [[ "$BASE_SHA" =~ ^[0-9a-fA-F]{40}$ && "$HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then echo '::error title=Invalid review SHA::The selected PR did not provide exact commit SHAs.'; exit 1; fi
+          if [ -z "${CODEX_CLOUD_ENV_ID:-}" ]; then echo '::error title=Missing review Cloud environment ID::Set CODEX_CLOUD_REVIEW_ENV_ID.'; exit 1; fi
+          if [ -z "${CODEX_ACCESS_TOKEN:-}" ]; then echo '::error title=Missing review Cloud token::Set CODEX_ACCESS_TOKEN in codex-cloud-review.'; exit 1; fi
+          current_base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BASE_REF}" --jq '.object.sha')"
+          [ "$current_base_sha" = "$BASE_SHA" ] || { echo '::error title=Review base changed::The selected main SHA changed before Cloud submission.'; exit 1; }
+          current_issue="$(gh issue view "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,labels)"
+          jq -e '
+            .state == "OPEN" and
+            ([.labels[] | .name] | sort | map(select(startswith("agent:")))) == ["agent:review-pending"]
+          ' <<<"$current_issue" >/dev/null || { echo '::error title=Review eligibility changed::The selected issue is no longer exactly review-pending.'; exit 1; }
+          current_pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg base "$BASE_REF" --arg base_sha "$BASE_SHA" --arg head "$HEAD_REF" --arg head_sha "$HEAD_SHA" '
+            .state == "open" and
+            .base.ref == $base and .base.sha == $base_sha and
+            .head.ref == $head and .head.sha == $head_sha and
+            .base.repo.full_name == $repo and .head.repo.full_name == $repo and
+            .head.ref != "main"
+          ' <<<"$current_pr" >/dev/null || { echo '::error title=Review PR changed::The selected PR base or head changed before Cloud submission.'; exit 1; }
+          unset GH_TOKEN GITHUB_TOKEN
+          prompt='Cloud preflight: RPM_CLOUD_LANE must equal review exactly. If it is missing or has another value, return blocked and perform no mutation.
+
+          Run the $pr-review-resolution scheduled skill. The GitHub Action selected issue #'
+          prompt+="${ISSUE_NUMBER}"
+          prompt+=' and PR #'
+          prompt+="${PR_NUMBER}"
+          prompt+=' as hints only. Re-read current review eligibility, process at most one item, honor the correction limit of 5 and follow-up limit of 5 per source, and never merge.
+
+          This Cloud task starts from the exact immutable pull request head below. Keep the PR base and head identity unchanged:
+          base_ref='
+          prompt+="${BASE_REF} base_sha=${BASE_SHA}"
+          prompt+='; head_ref='
+          prompt+="${HEAD_REF} head_sha=${HEAD_SHA}."
+          prompt+=' Finish by asking rpm_cloud_result_writer to write exactly one root file named .codex-cloud-result.json. The file is the Action handoff and must include lane=review, issue, pr, base_sha, head_sha, status, summary, validation, correction_label, resolved_thread_ids, next_state, and follow-up data. Do not commit, push, create/update a PR, change final lifecycle labels, or resolve review threads in Cloud.'
+          prompt+=$'\n\nFixed dispatcher inputs: '
+          prompt+="dispatcher_run_id=${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}, event_id=github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:review. Treat these values as fixed idempotency inputs."
+          output_log="${RUNNER_TEMP}/codex-cloud-submit.log"
+          if ! "$CODEX_BIN" cloud exec --env "$CODEX_CLOUD_ENV_ID" --branch "$HEAD_SHA" --attempts 1 "$prompt" >"$output_log" 2>&1; then echo '::error title=Codex Cloud submission failed::The review task could not be submitted.'; exit 1; fi
+          task_url="$(grep -Eo 'https://chatgpt\.com/codex/tasks/[^/?#[:space:]]+' "$output_log" | tail -n 1)"
+          if [[ ! "$task_url" =~ ^https://chatgpt\.com/codex/tasks/([A-Za-z0-9._~-]+)$ ]]; then echo '::error title=Invalid Codex Cloud response::The review submission returned no valid task URL.'; exit 1; fi
+          task_id="${BASH_REMATCH[1]}"
+          task_status=pending
+          poll_count=0
+          missing_polls=0
+          while [ "$poll_count" -lt 600 ]; do
+            poll_count=$((poll_count + 1))
+            if ! tasks_json="$($CODEX_BIN cloud list --json --env "$CODEX_CLOUD_ENV_ID" --limit 20)"; then echo '::error title=Codex Cloud status failed::The review task status could not be read.'; exit 1; fi
+            if ! jq -e 'type == "object" and (.tasks | type == "array")' <<<"$tasks_json" >/dev/null; then echo '::error title=Invalid Codex Cloud status::The task list response is invalid.'; exit 1; fi
+            observed="$(jq -r --arg id "$task_id" '[.tasks[] | select(.id == $id) | .status][0] // empty' <<<"$tasks_json")"
+            case "$observed" in
+              ready|applied) task_status="$observed"; break;;
+              error) echo '::error title=Codex Cloud task failed::The review task ended with an error.'; exit 1;;
+              pending) task_status=pending; missing_polls=0;;
+              '') missing_polls=$((missing_polls + 1)); task_status=pending-index; if [ "$missing_polls" -ge 10 ]; then echo '::error title=Codex Cloud task missing::The review task disappeared from status results.'; exit 1; fi;;
+              *) echo '::error title=Unknown Codex Cloud status::The review task returned an unsupported status.'; exit 1;;
+            esac
+            sleep 30
+          done
+          if [ "$task_status" != ready ] && [ "$task_status" != applied ]; then echo '::error title=Codex Cloud task timed out::The review task did not finish within five hours.'; exit 1; fi
+          raw_diff="${RUNNER_TEMP}/${CLOUD_ARTIFACT_NAME}.patch"
+          if ! "$CODEX_BIN" cloud diff --attempt 1 "$task_id" >"$raw_diff"; then echo '::error title=Codex Cloud diff failed::The completed review task did not provide a diff.'; exit 1; fi
+          [ -s "$raw_diff" ] || { echo '::error title=Empty Codex Cloud diff::The review task must return its result handoff file.'; exit 1; }
+          {
+            echo '## Codex Cloud review task'
+            echo
+            echo "task_status: ${task_status}"
+            echo "task_url: ${task_url}"
+            echo "base: ${BASE_REF}@${BASE_SHA}"
+            echo "head: ${HEAD_REF}@${HEAD_SHA}"
+            echo "artifact: ${CLOUD_ARTIFACT_NAME}"
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Upload immutable review Cloud diff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.CLOUD_ARTIFACT_NAME }}
+          path: ${{ runner.temp }}/${{ env.CLOUD_ARTIFACT_NAME }}.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  review-publish:
+    name: Publish validated review result
+    needs: [select-review, review-cloud]
+    if: github.repository == 'nerdchanii/rpm' && needs.review-cloud.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    timeout-minutes: 30
+    concurrency:
+      group: codex-cloud-review-publisher-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      CLOUD_ARTIFACT_NAME: codex-cloud-review-${{ github.run_id }}-${{ github.run_attempt }}
+      ISSUE_NUMBER: ${{ needs.select-review.outputs.issue }}
+      PR_NUMBER: ${{ needs.select-review.outputs.pr }}
+      BASE_REF: ${{ needs.select-review.outputs.base_ref }}
+      BASE_SHA: ${{ needs.select-review.outputs.base_sha }}
+      HEAD_REF: ${{ needs.select-review.outputs.head_ref }}
+      HEAD_SHA: ${{ needs.select-review.outputs.head_sha }}
+    steps:
+      - name: Check out exact Cloud pull request head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.select-review.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out trusted Cloud publisher tools
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Review runs can be triggered by a pull request that changes this
+          # workflow. The selected main SHA is the immutable trust root for
+          # publisher code; github.workflow_sha may point at that PR instead.
+          ref: ${{ needs.select-review.outputs.base_sha }}
+          path: rpm-cloud-tools
+          sparse-checkout: |
+            .agents/workflows/backlog-policy.json
+            scripts
+          persist-credentials: false
+      - name: Verify trusted review publisher revision
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          [ "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$HEAD_SHA" ]
+          [ "$(git -C "$GITHUB_WORKSPACE/rpm-cloud-tools" rev-parse HEAD)" = "$BASE_SHA" ] || {
+            echo '::error title=Untrusted review publisher revision::Review tools must come from the selected protected main SHA.'
+            exit 1
+          }
+          mv "$GITHUB_WORKSPACE/rpm-cloud-tools" "${RUNNER_TEMP}/rpm-cloud-tools"
+      - name: Download review Cloud diff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ env.CLOUD_ARTIFACT_NAME }}
+          path: ${{ runner.temp }}/codex-cloud-review
+      - name: Validate untrusted Cloud diff
+        env:
+          PATCH_FILE: ${{ runner.temp }}/codex-cloud-review/${{ env.CLOUD_ARTIFACT_NAME }}.patch
+          VALIDATED_PATCH: ${{ runner.temp }}/codex-cloud-review/validated.patch
+          RESULT_FILE: ${{ runner.temp }}/codex-cloud-review/result.json
+        run: |
+          set -euo pipefail
+          test -f "$PATCH_FILE"
+          bash "${RUNNER_TEMP}/rpm-cloud-tools/scripts/validate-cloud-diff.sh" \
+            --patch "$PATCH_FILE" \
+            --lane review \
+            --expected-issue "$ISSUE_NUMBER" \
+            --expected-pr "$PR_NUMBER" \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-head-sha "$HEAD_SHA" \
+            --result-out "$RESULT_FILE" \
+            --code-patch-out "$VALIDATED_PATCH"
+      - name: Publish review branch and guarded PR state
+        env:
+          GH_TOKEN: ${{ secrets.RPM_AUTOMATION_GITHUB_TOKEN }}
+          PATCH_FILE: ${{ runner.temp }}/codex-cloud-review/validated.patch
+          RESULT_FILE: ${{ runner.temp }}/codex-cloud-review/result.json
+        run: |
+          set -euo pipefail
+          [ -n "${GH_TOKEN:-}" ] || { echo '::error title=Missing automation publisher token::Set RPM_AUTOMATION_GITHUB_TOKEN before publishing review work.'; exit 1; }
+          gh auth setup-git
+          bash "${RUNNER_TEMP}/rpm-cloud-tools/scripts/publish-cloud-diff.sh" \
+            --mode review \
+            --result "$RESULT_FILE" \
+            --patch "$PATCH_FILE" \
+            --expected-issue "$ISSUE_NUMBER" \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-head-sha "$HEAD_SHA" \
+            --expected-pr "$PR_NUMBER" \
+            --expected-head-ref "$HEAD_REF" \
+            --run-id "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
+
+  select-merge:
+    name: Select one merge candidate
+    if: >-
+      ${{ github.repository == 'nerdchanii/rpm' &&
+          vars.CODEX_CLOUD_AUTO_MERGE_ENABLED == 'true' &&
+          ((github.event_name == 'repository_dispatch' &&
+            github.actor == 'nerdchanii' &&
+            github.ref == 'refs/heads/main' &&
+            (github.event.client_payload.lane == 'all' ||
+             github.event.client_payload.lane == 'merge')) ||
+           (vars.CODEX_CLOUD_AUTOMATION_ENABLED == 'true' &&
+            (github.event_name == 'schedule' || github.event_name == 'workflow_run'))) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    concurrency:
+      group: codex-cloud-merge-selector-${{ github.repository }}
+      cancel-in-progress: false
+    outputs:
+      selected: ${{ steps.select.outputs.selected }}
+      issue: ${{ steps.select.outputs.issue }}
+      pr: ${{ steps.select.outputs.pr }}
+      base_ref: ${{ steps.select.outputs.base_ref }}
+      base_sha: ${{ steps.select.outputs.base_sha }}
+      head_ref: ${{ steps.select.outputs.head_ref }}
+      head_sha: ${{ steps.select.outputs.head_sha }}
+      anomaly: ${{ steps.select.outputs.anomaly }}
+      anomaly_issue: ${{ steps.select.outputs.anomaly_issue }}
+      anomaly_reason: ${{ steps.select.outputs.anomaly_reason }}
+      anomaly_details: ${{ steps.select.outputs.anomaly_details }}
+    steps:
+      - id: select
+        name: Select the lowest numbered merge candidate and exact PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ -n "${GITHUB_OUTPUT:-}" ] || { echo '::error title=Missing selector output::GitHub did not provide an output file.'; exit 1; }
+
+          write_no_work() {
+            printf '%s\n' \
+              'selected=false' 'issue=' 'pr=' 'base_ref=' 'base_sha=' \
+              'head_ref=' 'head_sha=' 'anomaly=false' 'anomaly_issue=' \
+              'anomaly_reason=' 'anomaly_details=' >>"$GITHUB_OUTPUT"
+            echo 'selection=no-work' >>"$GITHUB_STEP_SUMMARY"
+          }
+
+          write_anomaly() {
+            local issue_number="$1" reason="$2" details="$3"
+            details="${details//$'\n'/ }"
+            details="${details//$'\r'/ }"
+            details="${details:0:1000}"
+            {
+              printf '%s\n' \
+                'selected=false' 'issue=' 'pr=' \
+                "base_ref=${protected_base_ref}" \
+                "base_sha=${dispatch_base_sha}" \
+                'head_ref=' 'head_sha=' 'anomaly=true' \
+                "anomaly_issue=${issue_number}" \
+                "anomaly_reason=${reason}" \
+                "anomaly_details=${details}"
+            } >>"$GITHUB_OUTPUT"
+            echo "selection=blocked issue-${issue_number} reason=${reason}" >>"$GITHUB_STEP_SUMMARY"
+          }
+
+          # Merge may be dispatched independently of issue and review work.
+          # Require a single active issue across the complete open lifecycle
+          # queue before selecting an awaiting-merge candidate.
+          queue_json="$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 1000 \
+            --json number,labels)"
+          jq -e '
+            type == "array" and
+            all(.[]; type == "object" and
+              (.number | type == "number" and floor == . and . > 0) and
+              (.labels | type == "array" and
+                all(.[]; type == "object" and (.name | type == "string"))))
+          ' <<<"$queue_json" >/dev/null || {
+            echo '::error title=Invalid issue queue::The open issue response is malformed.'
+            write_no_work
+            exit 1
+          }
+          queue_states="$(jq -c '
+            map({
+              number,
+              states: [ .labels[]?.name | select(
+                . == "agent:research" or
+                . == "agent:ready" or
+                . == "agent:claimed" or
+                . == "agent:review-pending" or
+                . == "agent:awaiting-merge" or
+                . == "agent:blocked"
+              ) ] | sort
+            })
+          ' <<<"$queue_json")"
+          invalid_lifecycle="$(jq -c '[.[] | select((.states | length) > 1)]' <<<"$queue_states")"
+          if [ "$(jq 'length' <<<"$invalid_lifecycle")" -gt 0 ]; then
+            echo '::error title=Invalid issue lifecycle::An open issue has multiple lifecycle labels; no merge was selected.'
+            write_no_work
+            echo "selection=blocked reason=multiple-lifecycle-labels details=$(jq -c . <<<"$invalid_lifecycle")" >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          active_issues="$(jq -c '[.[] | select(.states | any(. == "agent:claimed" or . == "agent:review-pending" or . == "agent:awaiting-merge"))]' <<<"$queue_states")"
+          if [ "$(jq 'length' <<<"$active_issues")" -gt 1 ]; then
+            active_numbers="$(jq -r '[.[] | .number] | sort | join(",")' <<<"$active_issues")"
+            write_no_work
+            echo "selection=no-work reason=active-work blockers=${active_numbers}" >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          issues_json="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label 'agent:awaiting-merge' --limit 1000 --json number)"
+          jq -e '
+            type == "array" and
+            all(.[]; type == "object" and
+              (.number | type == "number" and floor == . and . > 0))
+          ' <<<"$issues_json" >/dev/null || {
+            echo '::error title=Invalid merge issue list::The awaiting-merge issue response is malformed.'
+            exit 1
+          }
+          issue_numbers="$(jq -r 'sort_by(.number) | .[0].number // empty' <<<"$issues_json")"
+          if [ -z "$issue_numbers" ]; then
+            write_no_work
+            exit 0
+          fi
+          protected_base_ref="$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq '.defaultBranchRef.name // empty')"
+          if [ "$protected_base_ref" != main ]; then
+            echo "::error title=Unexpected protected branch::The repository default branch must be main, got ${protected_base_ref:-empty}."
+            exit 1
+          fi
+          dispatch_base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${protected_base_ref}" --jq '.object.sha')"
+          if ! [[ "$dispatch_base_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo '::error title=Invalid merge base SHA::The current default branch ref did not return one 40-hex commit.'
+            exit 1
+          fi
+
+          issue_number="$issue_numbers"
+          case "$issue_number" in ''|*[!0-9]*) echo '::error title=Invalid merge candidate::The selector returned a non-numeric issue number.'; exit 1;; esac
+          timeline="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${issue_number}/timeline?per_page=100")"
+          if ! jq -e 'type == "array" and all(.[]; type == "array" and all(.[]; type == "object"))' <<<"$timeline" >/dev/null; then
+            echo '::error title=Invalid merge timeline::The issue timeline response is malformed.'
+            exit 1
+          fi
+          linked_prs_json="$(jq -ce '
+            (add // []) |
+            [ .[] | select(.event == "cross-referenced" or .event == "connected") |
+              if (.source? | type) != "object" then error("timeline-source-invalid")
+              elif (.source.issue? | type) != "object" then error("timeline-source-issue-invalid")
+              elif (.source.issue.pull_request? != null) then
+                if (.source.issue.number? | type) != "number" or
+                   (.source.issue.number | floor != . or . <= 0) then
+                  error("timeline-pr-number-invalid")
+                else .source.issue.number end
+              else empty end
+            ] | unique
+          ' <<<"$timeline")" || {
+            echo '::error title=Invalid linked PR metadata::The issue timeline has malformed pull request data.'
+            exit 1
+          }
+          linked_prs_text="$(jq -r '.[]' <<<"$linked_prs_json")"
+          mapfile -t linked_prs <<<"$linked_prs_text"
+          open_same_repo=()
+          open_fork=0
+          for pr_number in "${linked_prs[@]}"; do
+            [ -n "$pr_number" ] || continue
+            case "$pr_number" in ''|*[!0-9]*) echo '::error title=Invalid linked PR::The issue timeline returned a non-numeric pull request number.'; exit 1;; esac
+            pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")" || {
+              echo "::error title=Linked PR read failed::PR #${pr_number} could not be read."
+              exit 1
+            }
+            if ! jq -e '
+              type == "object" and
+              (.state | type == "string" and (. == "open" or . == "closed")) and
+              (.base | type == "object") and (.head | type == "object") and
+              (.base.ref | type == "string") and (.base.sha | type == "string") and
+              (.head.ref | type == "string") and (.head.sha | type == "string") and
+              (.base.repo | type == "object") and (.head.repo | type == "object") and
+              (.base.repo.full_name | type == "string") and (.head.repo.full_name | type == "string")
+            ' <<<"$pr_json" >/dev/null; then
+              echo "::error title=Invalid linked PR response::PR #${pr_number} returned incomplete metadata."
+              exit 1
+            fi
+            [ "$(jq -r '.state' <<<"$pr_json")" = open ] || continue
+            closing_json="$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences)" || {
+              echo "::error title=Closing reference read failed::PR #${pr_number} could not be checked."
+              exit 1
+            }
+            if ! jq -e '
+              type == "object" and
+              (.closingIssuesReferences | type == "array" and
+                all(.[]; type == "object" and
+                  (.number | type == "number" and floor == . and . > 0)))
+            ' <<<"$closing_json" >/dev/null; then
+              echo "::error title=Invalid closing reference::PR #${pr_number} returned malformed issue links."
+              exit 1
+            fi
+            if ! jq -e --argjson issue "$issue_number" \
+              'any(.closingIssuesReferences[]; .number == $issue)' <<<"$closing_json" >/dev/null; then
+              continue
+            fi
+            base_repo="$(jq -r '.base.repo.full_name' <<<"$pr_json")"
+            head_repo="$(jq -r '.head.repo.full_name' <<<"$pr_json")"
+            if [ "$base_repo" != "$GITHUB_REPOSITORY" ] || [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+              open_fork=1
+              continue
+            fi
+            open_same_repo+=("$pr_number")
+          done
+          if [ "$open_fork" -eq 1 ]; then
+            write_anomaly "$issue_number" fork-pr '열린 연결 PR 중 다른 저장소에서 온 PR이 있습니다.'
+            exit 0
+          fi
+          if [ "${#open_same_repo[@]}" -eq 0 ]; then
+            write_anomaly "$issue_number" no-closing-pr '현재 이슈를 닫는 열린 같은 저장소 PR이 없습니다.'
+            exit 0
+          fi
+          if [ "${#open_same_repo[@]}" -ne 1 ]; then
+            write_anomaly "$issue_number" multiple-prs "현재 이슈를 닫는 열린 PR이 ${#open_same_repo[@]}개입니다."
+            exit 0
+          fi
+
+          pr_number="${open_same_repo[0]}"
+          pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")" || {
+            echo "::error title=Selected PR read failed::PR #${pr_number} could not be read again."
+            exit 1
+          }
+          if ! jq -e '
+            type == "object" and .state == "open" and
+            (.base | type == "object") and (.head | type == "object") and
+            (.base.ref | type == "string") and
+            (.base.sha | type == "string") and (.head.ref | type == "string") and
+            (.head.sha | type == "string") and
+            (.base.repo.full_name | type == "string") and (.head.repo.full_name | type == "string")
+          ' <<<"$pr_json" >/dev/null; then
+            echo "::error title=Invalid selected PR response::PR #${pr_number} returned incomplete metadata."
+            exit 1
+          fi
+          base_ref="$(jq -r '.base.ref' <<<"$pr_json")"
+          pr_base_sha="$(jq -r '.base.sha' <<<"$pr_json")"
+          head_ref="$(jq -r '.head.ref' <<<"$pr_json")"
+          head_sha="$(jq -r '.head.sha' <<<"$pr_json")"
+          base_repo="$(jq -r '.base.repo.full_name' <<<"$pr_json")"
+          head_repo="$(jq -r '.head.repo.full_name' <<<"$pr_json")"
+          if [ "$base_repo" != "$GITHUB_REPOSITORY" ] || [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            write_anomaly "$issue_number" fork-pr '선택한 PR의 저장소가 현재 저장소와 다릅니다.'
+            exit 0
+          fi
+          case "$head_ref" in
+            ''|main|master|develop|release|HEAD|refs/*|*'..'*|*'//'*)
+              write_anomaly "$issue_number" unsafe-head 'PR의 작업 브랜치가 보호 브랜치 이름이거나 잘못된 형식입니다.'
+              exit 0
+              ;;
+          esac
+          if [[ ! "$head_ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ || "$head_ref" == */ || "$head_ref" == /* || "$head_ref" == -* ]] || ! git check-ref-format --branch "$head_ref" >/dev/null 2>&1; then
+            write_anomaly "$issue_number" unsafe-head 'PR의 작업 브랜치 이름이 안전한 형식이 아닙니다.'
+            exit 0
+          fi
+          if [ "$base_ref" != "$protected_base_ref" ]; then
+            write_anomaly "$issue_number" unsafe-base "PR 대상 브랜치가 ${protected_base_ref}가 아닙니다."
+            exit 0
+          fi
+          if ! [[ "$pr_base_sha" =~ ^[0-9a-fA-F]{40}$ && "$head_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error title=Invalid merge SHA::PR #${pr_number} did not return exact base and head SHAs."
+            exit 1
+          fi
+          if [ "$pr_base_sha" != "$dispatch_base_sha" ]; then
+            write_anomaly "$issue_number" stale-base "PR 기준 SHA가 현재 main SHA(${dispatch_base_sha})와 다릅니다."
+            exit 0
+          fi
+          {
+            echo 'selected=true'
+            echo "issue=$issue_number"
+            echo "pr=$pr_number"
+            echo "base_ref=$base_ref"
+            echo "base_sha=$dispatch_base_sha"
+            echo "head_ref=$head_ref"
+            echo "head_sha=$head_sha"
+            echo 'anomaly=false'
+            echo 'anomaly_issue='
+            echo 'anomaly_reason='
+            echo 'anomaly_details='
+          } >>"$GITHUB_OUTPUT"
+          echo "selection=issue-${issue_number} pr=${pr_number} base=${base_ref}@${dispatch_base_sha} head=${head_ref}@${head_sha}" >>"$GITHUB_STEP_SUMMARY"
+
+  merge-selector-quarantine:
+    name: Quarantine malformed merge candidate
+    needs: select-merge
+    if: >-
+      ${{ always() && github.repository == 'nerdchanii/rpm' &&
+          needs.select-merge.result == 'success' &&
+          needs.select-merge.outputs.anomaly == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 10
+    concurrency:
+      group: codex-cloud-merge-selector-quarantine-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      ISSUE_NUMBER: ${{ needs.select-merge.outputs.anomaly_issue }}
+      ANOMALY_REASON: ${{ needs.select-merge.outputs.anomaly_reason }}
+      ANOMALY_DETAILS: ${{ needs.select-merge.outputs.anomaly_details }}
+      BASE_SHA: ${{ needs.select-merge.outputs.base_sha }}
+    steps:
+      - name: Check out trusted selector writer at protected main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.select-merge.outputs.base_sha }}
+          path: rpm-cloud-tools
+          sparse-checkout: |
+            .agents/workflows/backlog-policy.json
+            scripts/quarantine-merge-selector-anomaly.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Verify protected selector revision
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          [ "$(git -C "$GITHUB_WORKSPACE/rpm-cloud-tools" rev-parse HEAD)" = "$BASE_SHA" ] || {
+            echo '::error title=Untrusted selector writer revision::The selector writer must come from the selected protected main SHA.'
+            exit 1
+          }
+          mv "$GITHUB_WORKSPACE/rpm-cloud-tools" "${RUNNER_TEMP}/rpm-cloud-tools"
+      - name: Move exact candidate to blocked with a deduplicated reason
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash "${RUNNER_TEMP}/rpm-cloud-tools/scripts/quarantine-merge-selector-anomaly.sh" \
+            --policy "${RUNNER_TEMP}/rpm-cloud-tools/.agents/workflows/backlog-policy.json" \
+            --issue "$ISSUE_NUMBER" \
+            --reason "$ANOMALY_REASON" \
+            --details "$ANOMALY_DETAILS"
+
+  merge-cloud:
+    name: Analyze merge gate in Codex Cloud
+    needs: select-merge
+    if: github.repository == 'nerdchanii/rpm' && needs.select-merge.outputs.selected == 'true'
+    runs-on: ubuntu-latest
+    environment: codex-cloud-merge
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    timeout-minutes: 350
+    concurrency:
+      group: codex-cloud-merge-analysis-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      CLOUD_ARTIFACT_NAME: codex-cloud-merge-${{ github.run_id }}-${{ github.run_attempt }}
+      ISSUE_NUMBER: ${{ needs.select-merge.outputs.issue }}
+      PR_NUMBER: ${{ needs.select-merge.outputs.pr }}
+      BASE_REF: ${{ needs.select-merge.outputs.base_ref }}
+      BASE_SHA: ${{ needs.select-merge.outputs.base_sha }}
+      HEAD_REF: ${{ needs.select-merge.outputs.head_ref }}
+      HEAD_SHA: ${{ needs.select-merge.outputs.head_sha }}
+    steps:
+      - name: Check out trusted merge evidence tools
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: rpm-cloud-tools
+          sparse-checkout: |
+            .agents/workflows/backlog-policy.json
+            scripts
+          persist-credentials: false
+      - name: Move trusted tools outside the workspace
+        run: mv "$GITHUB_WORKSPACE/rpm-cloud-tools" "${RUNNER_TEMP}/rpm-cloud-tools"
+      - name: Install pinned Codex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_root="${RUNNER_TEMP}/codex-cloud-cli"
+          mkdir -p "$cli_root"
+          npm install --prefix "$cli_root" --no-save --ignore-scripts --no-audit --no-fund "@openai/codex@0.152.0"
+          codex_bin="${cli_root}/node_modules/.bin/codex"
+          [ -x "$codex_bin" ]
+          "$codex_bin" --version
+          echo "CODEX_BIN=$codex_bin" >>"$GITHUB_ENV"
+      - name: Collect trusted read-only merge evidence
+        env:
+          GH_TOKEN: ${{ secrets.RPM_AUTOMATION_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "${GH_TOKEN:-}" ] || { echo '::error title=Missing automation publisher token::Set RPM_AUTOMATION_GITHUB_TOKEN before merge analysis.'; exit 1; }
+          evidence="${RUNNER_TEMP}/merge-evidence.json"
+          bash "${RUNNER_TEMP}/rpm-cloud-tools/scripts/collect-merge-gate-evidence.sh" \
+            --repo "$GITHUB_REPOSITORY" \
+            --policy "${RUNNER_TEMP}/rpm-cloud-tools/.agents/workflows/backlog-policy.json" \
+            --output "$evidence" \
+            --expected-issue "$ISSUE_NUMBER" \
+            --expected-pr "$PR_NUMBER" \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-head-sha "$HEAD_SHA"
+          bytes="$(wc -c <"$evidence" | tr -d '[:space:]')"
+          [[ "$bytes" =~ ^[0-9]+$ ]] && [ "$bytes" -le 262144 ] || {
+            echo '::error title=Merge evidence too large::The normalized gate evidence exceeds 256 KiB.'
+            exit 1
+          }
+      - name: Submit, poll, and download merge Cloud result
+        env:
+          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+          CODEX_CLOUD_ENV_ID: ${{ vars.CODEX_CLOUD_MERGE_ENV_ID }}
+          EXPECTED_CLOUD_LANE: merge
+        run: |
+          set -euo pipefail
+          for value in "$ISSUE_NUMBER" "$PR_NUMBER"; do
+            case "$value" in
+              ''|*[!0-9]*) echo '::error title=Invalid merge target::The selected issue or PR number is invalid.'; exit 1 ;;
+            esac
+          done
+          if [ "$BASE_REF" != main ] || ! [[ "$BASE_SHA" =~ ^[0-9a-fA-F]{40}$ && "$HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo '::error title=Invalid merge refs::Merge Cloud analysis must use exact protected base and PR head SHAs.'
+            exit 1
+          fi
+          if [ -z "${CODEX_CLOUD_ENV_ID:-}" ]; then echo '::error title=Missing merge Cloud environment ID::Set CODEX_CLOUD_MERGE_ENV_ID.'; exit 1; fi
+          if [ -z "${CODEX_ACCESS_TOKEN:-}" ]; then echo '::error title=Missing merge Cloud token::Set CODEX_ACCESS_TOKEN in codex-cloud-merge.'; exit 1; fi
+          unset GH_TOKEN GITHUB_TOKEN
+          evidence="$(<"${RUNNER_TEMP}/merge-evidence.json")"
+          prompt='Cloud preflight: the trusted git-dir marker and RPM_CLOUD_LANE must both equal merge. If either check fails, stop without mutation.
+
+          Run the $merge-gatekeeper skill as a read-only analyst. Evaluate the trusted normalized evidence below with scripts/check-merge-gate.py. Ask rpm_cloud_result_writer to write exactly one root file named .codex-cloud-result.json with lane=merge and the existing 14-key envelope. Do not call any GitHub connector, merge tool, gh command, label/comment/state mutation, commit, push, or PR mutation. The separate trusted GitHub Action publisher makes the final decision and merge.
+
+          Trusted normalized evidence JSON:'
+          prompt+=$'\n'
+          prompt+="$evidence"
+          prompt+=$'\n\nFixed target: '
+          prompt+="issue=${ISSUE_NUMBER}, pr=${PR_NUMBER}, base_sha=${BASE_SHA}, head_sha=${HEAD_SHA}, dispatcher_run_id=${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}, event_id=github-actions:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:merge."
+          output_log="${RUNNER_TEMP}/codex-cloud-submit.log"
+          if ! "$CODEX_BIN" cloud exec --env "$CODEX_CLOUD_ENV_ID" --branch "$BASE_SHA" --attempts 1 "$prompt" >"$output_log" 2>&1; then
+            echo '::error title=Codex Cloud submission failed::The merge analysis could not be submitted.'
+            exit 1
+          fi
+          task_url="$(grep -Eo 'https://chatgpt\.com/codex/tasks/[^/?#[:space:]]+' "$output_log" | tail -n 1)"
+          if [[ ! "$task_url" =~ ^https://chatgpt\.com/codex/tasks/([A-Za-z0-9._~-]+)$ ]]; then
+            echo '::error title=Invalid Codex Cloud response::The merge submission returned no valid task URL.'
+            exit 1
+          fi
+          task_id="${BASH_REMATCH[1]}"
+          task_status=pending
+          poll_count=0
+          missing_polls=0
+          while [ "$poll_count" -lt 600 ]; do
+            poll_count=$((poll_count + 1))
+            if ! tasks_json="$("$CODEX_BIN" cloud list --json --env "$CODEX_CLOUD_ENV_ID" --limit 20)"; then echo '::error title=Codex Cloud status failed::The merge task status could not be read.'; exit 1; fi
+            if ! jq -e 'type == "object" and (.tasks | type == "array")' <<<"$tasks_json" >/dev/null; then echo '::error title=Invalid Codex Cloud status::The task list response is invalid.'; exit 1; fi
+            observed="$(jq -r --arg id "$task_id" '[.tasks[] | select(.id == $id) | .status][0] // empty' <<<"$tasks_json")"
+            case "$observed" in
+              ready|applied) task_status="$observed"; break ;;
+              error) echo '::error title=Codex Cloud task failed::The merge task ended with an error.'; exit 1 ;;
+              pending) task_status=pending; missing_polls=0 ;;
+              '') missing_polls=$((missing_polls + 1)); task_status=pending-index; if [ "$missing_polls" -ge 10 ]; then echo '::error title=Codex Cloud task missing::The merge task disappeared from status results.'; exit 1; fi ;;
+              *) echo '::error title=Unknown Codex Cloud status::The merge task returned an unsupported status.'; exit 1 ;;
+            esac
+            sleep 30
+          done
+          if [ "$task_status" != ready ] && [ "$task_status" != applied ]; then echo '::error title=Codex Cloud task timed out::The merge task did not finish within five hours.'; exit 1; fi
+          raw_diff="${RUNNER_TEMP}/${CLOUD_ARTIFACT_NAME}.patch"
+          if ! "$CODEX_BIN" cloud diff --attempt 1 "$task_id" >"$raw_diff"; then echo '::error title=Codex Cloud diff failed::The completed merge task did not provide a result diff.'; exit 1; fi
+          [ -s "$raw_diff" ] || { echo '::error title=Empty Codex Cloud diff::The merge task must return its result handoff file.'; exit 1; }
+          {
+            echo '## Codex Cloud merge analysis'
+            echo
+            echo "task_status: ${task_status}"
+            echo "task_url: ${task_url}"
+            echo "target: issue-${ISSUE_NUMBER} pr-${PR_NUMBER} ${HEAD_REF}@${HEAD_SHA}"
+            echo "artifact: ${CLOUD_ARTIFACT_NAME}"
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Upload immutable merge Cloud result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.CLOUD_ARTIFACT_NAME }}
+          path: ${{ runner.temp }}/${{ env.CLOUD_ARTIFACT_NAME }}.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-publish:
+    name: Publish trusted merge decision
+    needs: [select-merge, merge-cloud]
+    if: github.repository == 'nerdchanii/rpm' && needs.merge-cloud.result == 'success'
+    runs-on: ubuntu-latest
+    environment: codex-cloud-merge-publisher
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    timeout-minutes: 30
+    concurrency:
+      group: codex-cloud-merge-publisher-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      CLOUD_ARTIFACT_NAME: codex-cloud-merge-${{ github.run_id }}-${{ github.run_attempt }}
+      ISSUE_NUMBER: ${{ needs.select-merge.outputs.issue }}
+      PR_NUMBER: ${{ needs.select-merge.outputs.pr }}
+      BASE_REF: ${{ needs.select-merge.outputs.base_ref }}
+      BASE_SHA: ${{ needs.select-merge.outputs.base_sha }}
+      HEAD_REF: ${{ needs.select-merge.outputs.head_ref }}
+      HEAD_SHA: ${{ needs.select-merge.outputs.head_sha }}
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - name: Check out exact merge base
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.select-merge.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out trusted merge publisher tools
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: rpm-cloud-tools
+          sparse-checkout: |
+            .agents/workflows/backlog-policy.json
+            scripts
+          persist-credentials: false
+      - name: Verify trusted workflow revision
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          [ "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$BASE_SHA" ]
+          [ "$(git -C "$GITHUB_WORKSPACE/rpm-cloud-tools" rev-parse HEAD)" = "$WORKFLOW_SHA" ]
+          [ "$WORKFLOW_SHA" = "$BASE_SHA" ] || { echo '::error title=Trusted revision drift::The workflow and selected main SHA must match exactly.'; exit 1; }
+          mv "$GITHUB_WORKSPACE/rpm-cloud-tools" "${RUNNER_TEMP}/rpm-cloud-tools"
+      - name: Download merge Cloud result
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ env.CLOUD_ARTIFACT_NAME }}
+          path: ${{ runner.temp }}/codex-cloud-merge
+      - name: Validate untrusted merge Cloud result
+        env:
+          PATCH_FILE: ${{ runner.temp }}/codex-cloud-merge/${{ env.CLOUD_ARTIFACT_NAME }}.patch
+          VALIDATED_PATCH: ${{ runner.temp }}/codex-cloud-merge/validated.patch
+          RESULT_FILE: ${{ runner.temp }}/codex-cloud-merge/result.json
+        run: |
+          set -euo pipefail
+          test -f "$PATCH_FILE"
+          bash "${RUNNER_TEMP}/rpm-cloud-tools/scripts/validate-cloud-diff.sh" \
+            --patch "$PATCH_FILE" \
+            --lane merge \
+            --expected-issue "$ISSUE_NUMBER" \
+            --expected-pr "$PR_NUMBER" \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-head-sha "$HEAD_SHA" \
+            --result-out "$RESULT_FILE" \
+            --code-patch-out "$VALIDATED_PATCH"
+          [ ! -s "$VALIDATED_PATCH" ] || { echo '::error title=Unexpected merge code patch::Merge Cloud may return only its result envelope.'; exit 1; }
+      - name: Recheck and merge exact PR head
+        env:
+          GH_TOKEN: ${{ secrets.RPM_AUTOMATION_GITHUB_TOKEN }}
+          RESULT_FILE: ${{ runner.temp }}/codex-cloud-merge/result.json
+        run: |
+          set -euo pipefail
+          [ -n "${GH_TOKEN:-}" ] || { echo '::error title=Missing automation publisher token::Set RPM_AUTOMATION_GITHUB_TOKEN before merge publishing.'; exit 1; }
+          bash "${RUNNER_TEMP}/rpm-cloud-tools/scripts/publish-cloud-merge.sh" \
+            --repo "$GITHUB_REPOSITORY" \
+            --policy "${RUNNER_TEMP}/rpm-cloud-tools/.agents/workflows/backlog-policy.json" \
+            --result "$RESULT_FILE" \
+            --expected-issue "$ISSUE_NUMBER" \
+            --expected-pr "$PR_NUMBER" \
+            --expected-base-ref "$BASE_REF" \
+            --expected-base-sha "$BASE_SHA" \
+            --expected-head-ref "$HEAD_REF" \
+            --expected-head-sha "$HEAD_SHA"

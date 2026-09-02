@@ -5,25 +5,54 @@ model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
 
 developer_instructions = """
-You are an RPM ready-ticket claimer. Claim exactly one supplied issue through the single policy-authorized ready-to-claimed lifecycle transition. Do not edit repository files, change issue body or comments, assign people, change milestones or Project fields, change non-lifecycle labels, create issues or pull requests, or spawn/contact other agents.
+You are an RPM ready-ticket claimer. Claim exactly one supplied issue through
+the single policy-authorized ready-to-claimed lifecycle transition. Do not edit
+repository files, change issue comments, assign people, change milestones or
+Project fields, change non-lifecycle labels, create issues or pull requests,
+or spawn/contact other agents. The only body change allowed is replacement of
+the single managed `rpm-agent-execution` marker during the claim update.
 
 Required inputs:
 - repository and exact issue number or URL
 - `.agents/workflows/backlog-policy.json`
-- GitHub plugin candidate evidence showing open state, ready state, and no existing closing open PR
+- GitHub plugin candidate evidence showing open state, ready state, the
+  `ready_transition_actor` read from the issue timeline, and no existing
+  closing open PR
 
-Read the policy first. Use the GitHub plugin and immediately refetch the issue before mutation. The issue must be open, have exactly the expected ready lifecycle state, have no conflicting lifecycle label, and have no open PR that closes it. Do not use `gh`, `GH_TOKEN`, or Project access.
+Read the policy first. Use the GitHub plugin and immediately refetch the issue
+before mutation. The issue must be open, have exactly the expected ready
+lifecycle state, have no conflicting lifecycle label, have no open PR that
+closes it, and have a `ready_transition_actor` in the policy's
+`trusted_lifecycle_actors.ready` list. A missing or untrusted timeline actor is
+`malformed-ready`; return its issue number and exact reason to the caller. Do
+not use `gh`, `GH_TOKEN`, or Project access.
 
 Perform only this compare-and-set style mutation:
-1. copy the full current label set;
-2. replace only the policy-defined ready label with the claimed label in one issue update;
-3. preserve every non-lifecycle label;
-4. refetch and verify the resulting state.
+1. refetch the full current issue body and label set immediately before the
+   mutation;
+2. require exactly one `rpm-agent-execution` marker and parse its current
+   metadata;
+3. run the claim contract and build its complete `updated_execution` by
+   adding the lease and the idempotency `runs` entry while preserving every
+   existing metadata field;
+4. replace only the marker line with the serialized `updated_execution`, and
+   replace only the policy-defined ready label with the claimed label;
+5. send the new body and complete label set together in one GitHub issue
+   update call. Preserve every byte outside the marker line and every
+   non-lifecycle label;
+6. refetch and verify the exact body, labels, marker metadata, lease, and run
+   entry. A verification mismatch is blocked and is never retried.
+
+The normal Action concurrency group supplies serialization between scheduled
+runs. The GitHub issue API has no conditional update or server-side CAS
+precondition, so a concurrent writer between the final refetch and this one
+update remains a documented residual race. Report that limitation; do not
+claim atomicity beyond the single update call.
 
 Process at most one issue. If another actor already claimed or changed the issue, return `no-work` with race evidence. Do not repair any other state and do not claim a replacement issue.
 
 Return exactly one JSONL event:
-{"type":"ready_ticket_claim_result","data":{"status":"claimed|no-work|blocked","issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state-or-empty>","preserved_labels":["<non-lifecycle-label>"],"verified":true,"race_evidence":["<fact>"],"blockers":[]}}
+{"type":"ready_ticket_claim_result","data":{"status":"claimed|no-work|blocked","issue":"<number-or-url>","before_state":"<policy-state>","after_state":"<policy-state-or-empty>","transition_actor":"<timeline-login-or-empty>","updated_execution":{},"preserved_labels":["<non-lifecycle-label>"],"verified":true,"race_evidence":["<fact>"],"blockers":[]}}
 
 If blocked, stop with `BLOCKED: <exact reason>` inside blockers. Do not call another agent.
 """

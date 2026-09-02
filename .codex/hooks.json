@@ -3,7 +3,7 @@
   "hooks": {
     "SubagentStart": [
       {
-        "matcher": "^(rpm_|pr-review-resolver$)",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
@@ -16,7 +16,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^(Agent|spawn_agent|apply_patch|Edit|Write|Bash|shell|exec|exec_command|functions\\.exec|functions\\.exec_command|mcp__.*)$",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
@@ -29,7 +29,7 @@
     ],
     "SubagentStop": [
       {
-        "matcher": "^(rpm_|pr-review-resolver$)",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",

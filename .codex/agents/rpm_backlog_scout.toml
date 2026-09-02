@@ -25,7 +25,7 @@ For candidate modes:
 - run `scripts/backlog-gen --state research --format jsonl` for research candidates;
 - treat the emitted local Project inventory, policy state, batch limit, and issue-number order as canonical for research candidates;
 - for ready candidates, use the GitHub plugin to search open repository issues with lifecycle labels and never require Project membership, `gh`, or `GH_TOKEN`;
-- before selecting ready work, return `no-work` when any open issue is claimed or review-pending;
+- before selecting ready work, return `no-work` when any open issue is claimed; review-pending work runs through the independent review lane;
 - require exactly one lifecycle label on every candidate and block malformed candidates;
 - exclude ready issues already closed by an open PR;
 - sort ready candidates by issue number ascending;
