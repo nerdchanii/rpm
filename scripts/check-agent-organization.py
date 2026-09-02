@@ -347,6 +347,44 @@ def check_role_contracts(
                     errors,
                     f".codex/agents/rpm_backlog_manager.toml: missing batch contract {required!r}",
                 )
+        if "execution_queue.blocking_states" not in text:
+            fail(
+                errors,
+                ".codex/agents/rpm_backlog_manager.toml: claim-ready must read "
+                "execution_queue.blocking_states from the backlog policy",
+            )
+        if "every configured blocking state" not in text:
+            fail(
+                errors,
+                ".codex/agents/rpm_backlog_manager.toml: claim-ready must enforce "
+                "every configured blocking state",
+            )
+        if "return `no-work` without mutation" not in text:
+            fail(
+                errors,
+                ".codex/agents/rpm_backlog_manager.toml: blocking states must return "
+                "no-work without mutation",
+            )
+        try:
+            policy = json.loads(POLICY_PATH.read_text())
+        except (OSError, json.JSONDecodeError):
+            policy = {}
+        queue = policy.get("execution_queue") if isinstance(policy, dict) else None
+        blocking_states = queue.get("blocking_states") if isinstance(queue, dict) else None
+        if isinstance(blocking_states, list):
+            for state in blocking_states:
+                if isinstance(state, str) and state and state not in text:
+                    fail(
+                        errors,
+                        ".codex/agents/rpm_backlog_manager.toml: claim-ready omits "
+                        f"configured blocking state {state!r}",
+                    )
+        if re.search(r"\b(?:does not|doesn't|do not)\s+block\b", text, re.IGNORECASE):
+            fail(
+                errors,
+                ".codex/agents/rpm_backlog_manager.toml: claim-ready contains a "
+                "blocking-state exemption",
+            )
 
 
 def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:

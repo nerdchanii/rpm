@@ -1652,7 +1652,7 @@ jobs:
           linked_prs_text="$(jq -r '.[]' <<<"$linked_prs_json")"
           mapfile -t linked_prs <<<"$linked_prs_text"
           open_same_repo=()
-          open_fork=0
+          ignored_fork_count=0
           for pr_number in "${linked_prs[@]}"; do
             [ -n "$pr_number" ] || continue
             case "$pr_number" in ''|*[!0-9]*) echo '::error title=Invalid linked PR::The issue timeline returned a non-numeric pull request number.'; exit 1;; esac
@@ -1673,6 +1673,19 @@ jobs:
               exit 1
             fi
             [ "$(jq -r '.state' <<<"$pr_json")" = open ] || continue
+            # An issue timeline can contain a pull request from a fork. Its
+            # closing directive is untrusted merge noise, even when it names
+            # this awaiting-merge issue. Ignore it before reading closing
+            # references so fork-only noise cannot block or quarantine the
+            # legitimate issue, and so a trusted same-repository PR can still
+            # be selected when both kinds are linked.
+            base_repo="$(jq -r '.base.repo.full_name' <<<"$pr_json")"
+            head_repo="$(jq -r '.head.repo.full_name' <<<"$pr_json")"
+            if [ "$base_repo" != "$GITHUB_REPOSITORY" ] || [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+              ignored_fork_count=$((ignored_fork_count + 1))
+              echo "::notice title=Fork merge candidate ignored::PR #${pr_number} is outside ${GITHUB_REPOSITORY}; it is not a merge candidate."
+              continue
+            fi
             closing_json="$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json closingIssuesReferences)" || {
               echo "::error title=Closing reference read failed::PR #${pr_number} could not be checked."
               exit 1
@@ -1696,19 +1709,14 @@ jobs:
               write_anomaly "$issue_number" multiple-closing-references "PR #${pr_number}의 자동 종료 이슈 연결이 정확히 하나가 아닙니다."
               exit 0
             fi
-            base_repo="$(jq -r '.base.repo.full_name' <<<"$pr_json")"
-            head_repo="$(jq -r '.head.repo.full_name' <<<"$pr_json")"
-            if [ "$base_repo" != "$GITHUB_REPOSITORY" ] || [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
-              open_fork=1
-              continue
-            fi
             open_same_repo+=("$pr_number")
           done
-          if [ "$open_fork" -eq 1 ]; then
-            write_anomaly "$issue_number" fork-pr '열린 연결 PR 중 다른 저장소에서 온 PR이 있습니다.'
-            exit 0
-          fi
           if [ "${#open_same_repo[@]}" -eq 0 ]; then
+            if [ "$ignored_fork_count" -gt 0 ]; then
+              write_no_work
+              echo "selection=no-work reason=fork-pr-ignored issue-${issue_number} count=${ignored_fork_count}" >>"$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             write_anomaly "$issue_number" no-closing-pr '현재 이슈를 닫는 열린 같은 저장소 PR이 없습니다.'
             exit 0
           fi

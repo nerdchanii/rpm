@@ -32,6 +32,7 @@ thread_state_file="${tmp_dir}/thread-state"
 race_count_file="${tmp_dir}/race-count"
 pr_view_count_file="${tmp_dir}/pr-view-count"
 resolve_count_file="${tmp_dir}/resolve-count"
+thread_outdated_file="${tmp_dir}/thread-outdated"
 
 cat >"${fake_bin}/git" <<'FAKE_GIT'
 #!/usr/bin/env bash
@@ -41,6 +42,7 @@ remote_head_file="${RPM_TEST_REMOTE_HEAD:?RPM_TEST_REMOTE_HEAD is required}"
 push_log="${RPM_TEST_PUSH_LOG:?RPM_TEST_PUSH_LOG is required}"
 gh_state_file="${RPM_TEST_GH_STATE:?RPM_TEST_GH_STATE is required}"
 race_count_file="${RPM_TEST_RACE_COUNT:?RPM_TEST_RACE_COUNT is required}"
+thread_outdated_file="${RPM_TEST_THREAD_OUTDATED_FILE:?RPM_TEST_THREAD_OUTDATED_FILE is required}"
   case "${1:-}" in
   push)
     url=""; refspec=""; lease=""; lease_seen=false
@@ -68,6 +70,9 @@ race_count_file="${RPM_TEST_RACE_COUNT:?RPM_TEST_RACE_COUNT is required}"
     [ "$actual_remote" = "$lease_expected" ] || exit 96
     if [ "${RPM_TEST_FAIL_PUSH:-false}" = "true" ]; then
       exit 95
+    fi
+    if [ "${RPM_TEST_THREAD_OUTDATED_AFTER_PUSH:-false}" = "true" ]; then
+      printf '%s\n' outdated >"$thread_outdated_file"
     fi
     printf '%s\n' "$refspec" >>"$push_log"
     new_sha="$($real_git rev-parse --verify HEAD^{commit})"
@@ -114,6 +119,7 @@ log_file="${RPM_TEST_GH_LOG:?RPM_TEST_GH_LOG is required}"
 thread_state_file="${RPM_TEST_THREAD_STATE:?RPM_TEST_THREAD_STATE is required}"
 pr_view_count_file="${RPM_TEST_PR_VIEW_COUNT:?RPM_TEST_PR_VIEW_COUNT is required}"
 resolve_count_file="${RPM_TEST_RESOLVE_COUNT:?RPM_TEST_RESOLVE_COUNT is required}"
+thread_outdated_file="${RPM_TEST_THREAD_OUTDATED_FILE:?RPM_TEST_THREAD_OUTDATED_FILE is required}"
 printf '%s\n' "$*" >>"$log_file"
 case "$*" in
   *"--repo nerdchanii/rpm"*) ;;
@@ -294,6 +300,10 @@ case "$1 $2" in
         *) shift ;;
       esac
     done
+    if [[ "$query" == *',side'* || "$query" == *',startSide'* ]]; then
+      printf '%s\n' '{"errors":[{"message":"PullRequestReviewComment has no side fields"}]}'
+      exit 0
+    fi
     if [[ "$query" == *'comments(first:100'* && "$query" == *'issue(number:'* ]]; then
       comment_mode="${RPM_TEST_COMMENT_MODE:-normal}"
       if [ "$comment_mode" = response-invalid ]; then
@@ -362,7 +372,11 @@ case "$1 $2" in
     elif [[ "$query" == *'reviewThreads(first:100'* && "$query" != *'node(id:'* ]]; then
       live_nodes='[]'
       if [ "${RPM_TEST_LIVE_UNRESOLVED:-false}" = "true" ]; then
-        live_nodes='[{"id":"LIVE_THREAD_1","isResolved":false,"isOutdated":false}]'
+        if [ "${RPM_TEST_LIVE_OUTDATED_ONLY:-false}" = "true" ]; then
+          live_nodes='[{"id":"LIVE_THREAD_1","isResolved":false,"isOutdated":true}]'
+        else
+          live_nodes='[{"id":"LIVE_THREAD_1","isResolved":false,"isOutdated":false}]'
+        fi
       fi
       live_has_next=false
       live_cursor=""
@@ -395,8 +409,18 @@ case "$1 $2" in
       thread_start_side=RIGHT
       thread_outdated=false
       comment_outdated=false
+      comment_line=1
+      if [ "${RPM_TEST_THREAD_OUTDATED_AFTER_PUSH:-false}" = "true" ] && [ -s "$thread_outdated_file" ]; then
+        thread_outdated=true
+        comment_outdated=true
+        thread_line=null
+        comment_line=null
+      fi
       comment_commit="$expected_head"
       comment_original_commit="$expected_head"
+      if [ "$thread_outdated" = true ] && [ -s "${RPM_TEST_REMOTE_HEAD:?}" ]; then
+        comment_commit="$(cat "$RPM_TEST_REMOTE_HEAD")"
+      fi
       case "$thread_mode" in
         wrong-actor) author="human-user" ;;
         wrong-path) thread_path="src/other.txt" ;;
@@ -405,16 +429,16 @@ case "$1 $2" in
         outdated) thread_outdated=true; comment_outdated=true ;;
         wrong-side) thread_side=LEFT; thread_start_side=LEFT ;;
       esac
-      root_comment="$(jq -nc --arg author "$author" --arg path "$thread_path" --arg commit "$comment_commit" --arg original "$comment_original_commit" --argjson outdated "$comment_outdated" \
-        '{id:"COMMENT_test_1",author:{login:$author},createdAt:"2026-09-02T00:00:00Z",body:"fix this",path:$path,line:1,startLine:null,originalLine:1,originalStartLine:null,diffHunk:"@@ -1 +1 @@",outdated:$outdated,side:"RIGHT",startSide:null,commit:{oid:$commit},originalCommit:{oid:$original}}')"
+      root_comment="$(jq -nc --arg author "$author" --arg path "$thread_path" --arg commit "$comment_commit" --arg original "$comment_original_commit" --argjson outdated "$comment_outdated" --argjson line "$comment_line" \
+        '{id:"COMMENT_test_1",author:{login:$author},createdAt:"2026-09-02T00:00:00Z",body:"fix this",path:$path,line:$line,startLine:null,originalLine:1,originalStartLine:null,diffHunk:"@@ -1 +1 @@",outdated:$outdated,commit:{oid:$commit},originalCommit:{oid:$original}}')"
       comments="[$root_comment]"
       if [ "$thread_mode" = "reply-actor" ]; then
         reply_comment="$(jq -nc --arg path "$thread_path" --arg commit "$comment_commit" --arg original "$comment_original_commit" \
-          '{id:"COMMENT_test_2",author:{login:"human-user"},createdAt:"2026-09-02T00:00:01Z",body:"reply",path:$path,line:1,startLine:null,originalLine:1,originalStartLine:null,diffHunk:"@@ -1 +1 @@",outdated:false,side:"RIGHT",startSide:null,commit:{oid:$commit},originalCommit:{oid:$original}}')"
+          '{id:"COMMENT_test_2",author:{login:"human-user"},createdAt:"2026-09-02T00:00:01Z",body:"reply",path:$path,line:1,startLine:null,originalLine:1,originalStartLine:null,diffHunk:"@@ -1 +1 @@",outdated:false,commit:{oid:$commit},originalCommit:{oid:$original}}')"
         comments="[$root_comment,$reply_comment]"
       fi
       if [ "${RPM_TEST_THREAD_MODE:-valid}" = "comment-pagination" ] && [ -n "$comments_after" ]; then
-        comments="$(jq -nc --arg expected "$expected_head" '[{id:"COMMENT_test_2",author:{login:"chatgpt-codex-connector[bot]"},createdAt:"2026-09-02T00:00:01Z",body:"reply",path:"src/app.txt",line:1,startLine:null,originalLine:1,originalStartLine:null,diffHunk:"@@ -1 +1 @@",outdated:false,side:"RIGHT",startSide:null,commit:{oid:$expected},originalCommit:{oid:$expected}}]')"
+        comments="$(jq -nc --arg expected "$expected_head" '[{id:"COMMENT_test_2",author:{login:"chatgpt-codex-connector[bot]"},createdAt:"2026-09-02T00:00:01Z",body:"reply",path:"src/app.txt",line:1,startLine:null,originalLine:1,originalStartLine:null,diffHunk:"@@ -1 +1 @@",outdated:false,commit:{oid:$expected},originalCommit:{oid:$expected}}]')"
       fi
       page_has_next=false
       page_cursor=""
@@ -455,6 +479,7 @@ export RPM_TEST_THREAD_STATE="$thread_state_file"
 export RPM_TEST_RACE_COUNT="$race_count_file"
 export RPM_TEST_PR_VIEW_COUNT="$pr_view_count_file"
 export RPM_TEST_RESOLVE_COUNT="$resolve_count_file"
+export RPM_TEST_THREAD_OUTDATED_FILE="$thread_outdated_file"
 
 new_repo() {
   local name="$1"
@@ -704,10 +729,11 @@ reset_fake() {
   : >"$race_count_file"
   : >"$pr_view_count_file"
   : >"$resolve_count_file"
+  : >"$thread_outdated_file"
   unset RPM_TEST_REMOTE_RACE RPM_TEST_FAIL_PUSH RPM_TEST_PR_CREATE_AFTER_WRITE
   unset RPM_TEST_PUSH_RACE RPM_TEST_EXPECTED_ISSUE RPM_TEST_LABEL_RACE RPM_TEST_LABEL_RACE_AFTER_HISTORY RPM_TEST_AWAITING_HEAD_RACE
   unset RPM_TEST_THREAD_REPO RPM_TEST_THREAD_PR RPM_TEST_THREAD_TYPE RPM_TEST_EXPECTED_THREAD_HEAD
-  unset RPM_TEST_THREAD_MODE RPM_TEST_SECOND_THREAD_MODE RPM_TEST_LIVE_UNRESOLVED RPM_TEST_LIVE_PAGINATED RPM_TEST_RESOLVE_HEAD_RACE
+  unset RPM_TEST_THREAD_MODE RPM_TEST_SECOND_THREAD_MODE RPM_TEST_LIVE_UNRESOLVED RPM_TEST_LIVE_OUTDATED_ONLY RPM_TEST_LIVE_PAGINATED RPM_TEST_RESOLVE_HEAD_RACE RPM_TEST_THREAD_OUTDATED_AFTER_PUSH
   unset RPM_TEST_CLOSING_REF_MODE RPM_TEST_COMMENT_MODE
 }
 
@@ -769,6 +795,42 @@ add_followup_to_result() {
     '.followups = [{title:$title,body:$body,source:$source,fingerprint:$fingerprint,labels:["bug"]}]' "$path" >"$tmp"
   mv -- "$tmp" "$path"
 }
+
+# Every publisher mutation requires exactly one lifecycle label. Research and
+# ready are valid queue labels, but they cannot remain alongside a claimed
+# issue while the Cloud publisher is changing it.
+for extra_lifecycle_label in agent:research agent:ready; do
+  extra_lifecycle_name="${extra_lifecycle_label##*:}"
+  repo="$(new_repo "issue-lifecycle-extra-${extra_lifecycle_name}")"
+  base_sha="$($real_git -C "$repo" rev-parse HEAD)"
+  patch_file="${tmp_dir}/issue-lifecycle-extra-${extra_lifecycle_name}.patch"
+  result_file="${tmp_dir}/issue-lifecycle-extra-${extra_lifecycle_name}.json"
+  make_patch "$repo" "$patch_file" src/app.txt "extra ${extra_lifecycle_name} lifecycle label"
+  labels_json="$(jq -nc --arg extra "$extra_lifecycle_label" '["agent:claimed",$extra,"kind:feature"]')"
+  write_issue_state 42 "$labels_json" '[]' "issue-lifecycle-extra-${extra_lifecycle_name}"
+  write_issue_result "$result_file" "$base_sha"
+  reset_fake
+  expect_failure "issue-extra-${extra_lifecycle_name}-lifecycle-rejected" 'issue-conflicting-lifecycle-label' \
+    run_publisher "$repo" --mode issue --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --run-id "issue-lifecycle-extra-${extra_lifecycle_name}"
+  [ ! -s "$push_log" ] || fail "issue extra ${extra_lifecycle_name} lifecycle reached push"
+  ! rg -q 'issue edit|issue comment|pr create|pr edit|pr ready' "$gh_log" || fail "issue extra ${extra_lifecycle_name} lifecycle mutated GitHub"
+  jq -e --argjson labels "$labels_json" '.issues[0].labels == $labels' "$gh_state_file" >/dev/null || fail "issue extra ${extra_lifecycle_name} lifecycle changed labels"
+done
+
+# Review publication uses the same six-label invariant before its first push.
+for extra_lifecycle_label in agent:research agent:ready; do
+  extra_lifecycle_name="${extra_lifecycle_label##*:}"
+  prepare_review_thread_case "review-lifecycle-extra-${extra_lifecycle_name}"
+  jq --arg extra "$extra_lifecycle_label" '.issues[0].labels += [$extra]' "$gh_state_file" >"${gh_state_file}.next"
+  mv -- "${gh_state_file}.next" "$gh_state_file"
+  reset_fake
+  printf '%s\n' "$head_sha" >"$remote_head_file"
+  expect_failure "review-extra-${extra_lifecycle_name}-lifecycle-rejected" 'issue-conflicting-lifecycle-label' \
+    run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id "review-lifecycle-extra-${extra_lifecycle_name}"
+  [ ! -s "$push_log" ] || fail "review extra ${extra_lifecycle_name} lifecycle reached push"
+  ! rg -q 'issue edit|issue comment|pr create|pr edit|pr ready' "$gh_log" || fail "review extra ${extra_lifecycle_name} lifecycle mutated GitHub"
+  jq -e --arg extra "$extra_lifecycle_label" '.issues[0].labels | index($extra) != null and index("agent:review-pending") != null' "$gh_state_file" >/dev/null || fail "review extra ${extra_lifecycle_name} lifecycle changed labels"
+done
 
 # A correction label changed after the publisher's initial snapshot is never
 # replaced from a stale run.  The fake GitHub mutates it on the guard read;
@@ -1541,6 +1603,18 @@ for thread_mode in wrong-actor reply-actor wrong-path wrong-line stale-commit ou
   unset RPM_TEST_THREAD_MODE
 done
 
+# A thread that was actionable at the pre-push claim can become outdated as
+# GitHub indexes the new commit. It is then left unresolved without an API
+# resolution call, while the review publication still completes.
+prepare_review_thread_case review-thread-becomes-outdated-after-push
+export RPM_TEST_THREAD_OUTDATED_AFTER_PUSH=true
+output="$(run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-thread-becomes-outdated-after-push)" || fail "newly outdated review thread was rejected: $output"
+assert_contains "$output" '"status":"published"'
+[ ! -s "$resolve_count_file" ] || fail "newly outdated review thread reached resolution"
+jq -e '.issues[0].labels == ["agent:review-pending","kind:feature"]' "$gh_state_file" >/dev/null || fail "newly outdated review thread changed issue state"
+unset RPM_TEST_THREAD_OUTDATED_AFTER_PUSH
+pass "review-thread-becomes-outdated-after-push"
+
 # One invalid claim blocks the whole set, including a valid claim listed first.
 prepare_review_thread_case review-thread-one-invalid ' ["PRRT_test_1", "PRRT_test_2"] '
 export RPM_TEST_SECOND_THREAD_MODE=wrong-path
@@ -1582,6 +1656,19 @@ expect_failure "no-work-live-thread-inventory" 'no-work-unresolved-review-thread
 jq -e '.issues[0].labels == ["agent:review-pending","kind:feature"]' "$gh_state_file" >/dev/null || fail "live unresolved no-work changed issue state"
 [ ! -s "$resolve_count_file" ] || fail "live unresolved no-work reached resolve"
 unset RPM_TEST_LIVE_PAGINATED
+
+# An unresolved thread marked outdated is excluded from the live actionable
+# inventory, matching the review collector's semantics.
+prepare_review_thread_case review-no-work-live-outdated '[]'
+: >"$patch_file"
+jq '.status = "no-work" | .actionable_findings_remaining = false | .correction_label = null | .next_state = "awaiting-merge"' "$result_file" >"${result_file}.next"
+mv -- "${result_file}.next" "$result_file"
+export RPM_TEST_LIVE_UNRESOLVED=true RPM_TEST_LIVE_OUTDATED_ONLY=true
+output="$(run_publisher "$repo" --mode review --result "$result_file" --patch "$patch_file" --expected-base-sha "$base_sha" --expected-head-sha "$head_sha" --expected-pr 7 --expected-head-ref "$branch" --run-id review-no-work-live-outdated)" || fail "outdated live thread blocked no-work transition: $output"
+assert_contains "$output" '"reason":"review-no-code-change"'
+jq -e '.issues[0].labels == ["agent:awaiting-merge","kind:feature"]' "$gh_state_file" >/dev/null || fail "outdated live thread changed unexpected issue state"
+unset RPM_TEST_LIVE_UNRESOLVED RPM_TEST_LIVE_OUTDATED_ONLY
+pass "no-work-live-outdated-is-non-actionable"
 
 # A no-work result carrying thread IDs is incoherent and is rejected before
 # the live GitHub inventory or any mutation.

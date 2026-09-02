@@ -518,19 +518,22 @@ while [ "$threads_done" != true ] || [ "$reviews_done" != true ]; do
       (. == null) or (type == "object" and (.login | type == "string" and length > 0));
     def valid_commit:
       (. == null) or (type == "object" and (.oid | valid_sha));
+    def valid_submitted_at:
+      type == "string"
+      and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$");
     def valid_review:
       type == "object"
       and (.id | type == "string" and length > 0)
       and (.state | type == "string" and IN("APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"))
       and (.body | type == "string")
-      and ((.submittedAt == null) or (.submittedAt | type == "string" and length > 0))
+      and ((.submittedAt == null) or (.submittedAt | valid_submitted_at))
       and (.author | valid_author)
       and (.commit | valid_commit)
       and (
         (.state == "PENDING" and .submittedAt == null)
         or (
           .state != "PENDING"
-          and (.submittedAt | type == "string" and length > 0)
+          and (.submittedAt | valid_submitted_at)
           and (.commit | type == "object" and (.oid | valid_sha))
         )
       );
@@ -613,6 +616,16 @@ while [ "$threads_done" != true ] || [ "$reviews_done" != true ]; do
   fi
 done
 
+# A GraphQL connection can repeat a node when its contents change between
+# pages.  Silently collapsing repeated review IDs would let the effective
+# review depend on page timing, so reject the snapshot before normalizing it.
+if ! jq -s -e '
+  all(.[]; type == "object" and (.id | type == "string" and length > 0))
+  and (map(.id) | length == (unique | length))
+' "$tmp_dir/reviews.jsonl" >/dev/null 2>&1; then
+  error 'review-id-duplicate-or-invalid'
+fi
+
 review_threads="$(jq -s '
   map({id,is_resolved:.isResolved,is_outdated:.isOutdated,comments:(.comments.nodes | map({id,body:(.body // ""),created_at:(.createdAt // null),url:(.url // null),author:((.author.login // null))}) | sort_by(.id))})
   | unique_by(.id) | sort_by(.id)
@@ -643,8 +656,19 @@ top_level_p0_p1="$(jq -r '
     and .state != "PENDING"
     and (.submitted_at | type == "string" and length > 0)
     and .commit_oid == $head_sha;
-  any(.[]; current_submitted_review and ((.state == "CHANGES_REQUESTED") or (.body | p01)))
-' --arg head_sha "$head_sha" <<<"$reviews")"
+  # Review IDs are the deterministic tie-breaker for two reviews submitted at
+  # the same instant.  GitHub returns submittedAt in UTC RFC3339 form, whose
+  # lexical order is chronological.  Grouping by author prevents an older
+  # CHANGES_REQUESTED review from surviving a later APPROVED review by the
+  # same reviewer, while preserving independent reviewer decisions.
+  [ .[] | select(current_submitted_review) ]
+  | if any(.[]; (.author | type != "string" or length == 0)) then
+      error("current submitted review author is invalid")
+    else . end
+  | group_by(.author | ascii_downcase)
+  | map(sort_by([.submitted_at, .id]) | last)
+  | any(.[]; (.state == "CHANGES_REQUESTED") or (.body | p01))
+' --arg head_sha "$head_sha" <<<"$reviews")" || error 'effective-review-invalid'
 if [ "$unresolved_threads" -gt 0 ] || [ "$top_level_p0_p1" = true ]; then
   unresolved_p0_p1=true
 fi

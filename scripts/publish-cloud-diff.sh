@@ -252,6 +252,8 @@ patch_input_size="$(wc -c <"$patch_file" | tr -d '[:space:]')"
 policy_repository="$(jq -er '.repository | select(type == "string")' "$policy_file" 2>/dev/null)" || error "invalid-policy-repository"
 [ "$policy_repository" = "$repository" ] || error "policy-repository-mismatch"
 
+research_label="$(jq -er '.labels.research | select(type == "string" and length > 0)' "$policy_file" 2>/dev/null)" || error "invalid-policy-research-label"
+ready_label="$(jq -er '.labels.ready | select(type == "string" and length > 0)' "$policy_file" 2>/dev/null)" || error "invalid-policy-ready-label"
 claimed_label="$(jq -er '.labels.claimed | select(type == "string" and length > 0)' "$policy_file" 2>/dev/null)" || error "invalid-policy-claimed-label"
 review_pending_label="$(jq -er '.labels["review-pending"] | select(type == "string" and length > 0)' "$policy_file" 2>/dev/null)" || error "invalid-policy-review-label"
 awaiting_merge_label="$(jq -er '.labels["awaiting-merge"] | select(type == "string" and length > 0)' "$policy_file" 2>/dev/null)" || error "invalid-policy-awaiting-label"
@@ -1207,7 +1209,7 @@ issue_labels() {
 
 ordinary_issue_labels() {
   issue_labels "$1" |
-    grep -Fvx -e "$claimed_label" -e "$review_pending_label" \
+    grep -Fvx -e "$research_label" -e "$ready_label" -e "$claimed_label" -e "$review_pending_label" \
       -e "$awaiting_merge_label" -e "$blocked_label" | sort || true
 }
 
@@ -1222,12 +1224,12 @@ validate_exact_issue_state() {
   local expected_state_label="$2"
   local labels state_count
   labels="$(issue_labels "$json")"
-  for state_label in "$claimed_label" "$review_pending_label" "$awaiting_merge_label" "$blocked_label"; do
+  for state_label in "$research_label" "$ready_label" "$claimed_label" "$review_pending_label" "$awaiting_merge_label" "$blocked_label"; do
     state_count="$(label_count "$labels" "$state_label")"
     [ "$state_count" -le 1 ] || error "duplicate-lifecycle-label"
   done
   [ "$(label_count "$labels" "$expected_state_label")" -eq 1 ] || error "issue-state-mismatch"
-  for state_label in "$claimed_label" "$review_pending_label" "$awaiting_merge_label" "$blocked_label"; do
+  for state_label in "$research_label" "$ready_label" "$claimed_label" "$review_pending_label" "$awaiting_merge_label" "$blocked_label"; do
     if [ "$state_label" != "$expected_state_label" ]; then
       [ "$(label_count "$labels" "$state_label")" -eq 0 ] || error "issue-conflicting-lifecycle-label"
     fi
@@ -2006,9 +2008,12 @@ process_followups() {
   done <"$followups_file"
 }
 
-review_thread_query='query($threadId:ID!,$commentsAfter:String){node(id:$threadId){__typename ... on PullRequestReviewThread{id,isResolved,isOutdated,path,line,startLine,originalLine,originalStartLine,diffSide,startDiffSide,pullRequest{number,repository{nameWithOwner}},comments(first:100,after:$commentsAfter){pageInfo{hasNextPage,endCursor}nodes{id,author{login},createdAt,body,path,line,startLine,originalLine,originalStartLine,diffHunk,outdated,side,startSide,commit{oid},originalCommit{oid}}}}}}'
+review_thread_query='query($threadId:ID!,$commentsAfter:String){node(id:$threadId){__typename ... on PullRequestReviewThread{id,isResolved,isOutdated,path,line,startLine,originalLine,originalStartLine,diffSide,startDiffSide,pullRequest{number,repository{nameWithOwner}},comments(first:100,after:$commentsAfter){pageInfo{hasNextPage,endCursor}nodes{id,author{login},createdAt,body,path,line,startLine,originalLine,originalStartLine,diffHunk,outdated,commit{oid},originalCommit{oid}}}}}}'
 
 review_threads_query='query($number:Int!,$threadsAfter:String){repository(owner:"nerdchanii",name:"rpm"){pullRequest(number:$number){number,repository{nameWithOwner},reviewThreads(first:100,after:$threadsAfter){pageInfo{hasNextPage,endCursor}nodes{id,isResolved,isOutdated}}}}}'
+
+review_claim_snapshots_file=""
+review_thread_actionable=false
 
 trusted_review_actor() {
   [ "$1" = "$trusted_review_actor_bot" ] || [ "$1" = "$trusted_review_actor_login" ]
@@ -2103,25 +2108,127 @@ verify_review_thread_claim() {
       .path == $path and
       (.line | type == "number" and floor == . and . > 0) and
       ((.startLine == null) or ((.startLine | type == "number" and floor == . and . > 0) and (.startLine <= .line))) and
-      .side == "RIGHT" and
-      ((.startSide == null) or (.startSide == "RIGHT")) and
       (.commit.oid | type == "string" and ascii_downcase == $expected) and
       (.originalCommit.oid | type == "string" and ascii_downcase == $expected)
     )
   ' <<<"$thread_json" >/dev/null 2>&1 || error "review-thread-not-bound-or-already-resolved"
 }
 
+review_thread_identity_matches_claim() {
+  local thread_id="$1" thread_json="$2" current_head="$3" claim_json
+  [ -f "$review_claim_snapshots_file" ] || error "review-thread-claim-snapshot-missing"
+  claim_json="$(jq -sc --arg id "$thread_id" '
+    map(select(.id == $id)) |
+    if length == 1 then .[0] else empty end
+  ' "$review_claim_snapshots_file")" || error "review-thread-claim-snapshot-invalid"
+  [ -n "$claim_json" ] || error "review-thread-claim-snapshot-missing"
+  jq -e --arg id "$thread_id" --arg repo "$repository" --argjson pr "$expected_pr" '
+    type == "object" and
+    .__typename == "PullRequestReviewThread" and
+    .id == $id and
+    (.isResolved | type == "boolean") and
+    (.isOutdated | type == "boolean") and
+    (.pullRequest | type == "object") and
+    (.pullRequest.number == $pr) and
+    (.pullRequest.repository | type == "object" and .nameWithOwner == $repo) and
+    (.comments | type == "object") and
+    (.comments.nodes | type == "array") and
+    all(.comments.nodes[]; .id | type == "string" and length > 0)
+  ' <<<"$thread_json" >/dev/null 2>&1 || error "review-thread-identity-invalid"
+  jq -e --argjson claim "$claim_json" '
+    def identity:
+      {
+        __typename,
+        id,
+        path,
+        originalLine,
+        originalStartLine,
+        diffSide,
+        startDiffSide,
+        pullRequest: {
+          number: .pullRequest.number,
+          repository: .pullRequest.repository.nameWithOwner
+        }
+      };
+    identity == ($claim | identity)
+  ' <<<"$thread_json" >/dev/null 2>&1 || error "review-thread-identity-substitution"
+  jq -e --argjson claim "$claim_json" --arg expected "$expected_head_sha" --arg current "$current_head" '
+    def valid_sha: type == "string" and test("^[0-9A-Fa-f]{40}$");
+    def stable_comment:
+      {
+        id,
+        author,
+        createdAt,
+        body,
+        path,
+        originalLine,
+        originalStartLine,
+        diffHunk,
+        originalCommit
+      };
+    ($claim.comments.nodes) as $claimed_comments |
+    (.comments.nodes) as $current_comments |
+    ($claimed_comments | length) == ($current_comments | length) and
+    ([$claimed_comments[] | stable_comment] | sort_by(.id)) ==
+      ([$current_comments[] | stable_comment] | sort_by(.id)) and
+    all($current_comments[];
+      . as $comment |
+      ($comment.outdated | type == "boolean") and
+      (($comment.line == null) or
+        ($comment.line | type == "number" and floor == . and . > 0)) and
+      (($comment.startLine == null) or
+        ($comment.startLine | type == "number" and floor == . and . > 0) and
+        (($comment.line == null) or ($comment.startLine <= $comment.line))) and
+      ($comment.commit.oid | valid_sha) and
+      (($comment.commit.oid | ascii_downcase) == $expected or
+       ($comment.commit.oid | ascii_downcase) == $current) and
+      ($comment.originalCommit.oid | type == "string" and ascii_downcase == $expected)
+    )
+  ' <<<"$thread_json" >/dev/null 2>&1 || error "review-thread-head-substitution"
+}
+
+verify_post_push_review_thread_claim() {
+  local thread_id="$1" thread_json="$2" current_head="$3"
+  review_thread_actionable=false
+  is_safe_thread_id "$thread_id" || error "unsafe-thread-id"
+  is_sha "$current_head" || error "review-thread-current-head-invalid"
+  review_thread_identity_matches_claim "$thread_id" "$thread_json" "$current_head"
+  if jq -e '.isOutdated == true and .isResolved == false' <<<"$thread_json" >/dev/null 2>&1; then
+    # GitHub can mark a claimed thread outdated as soon as the new commit is
+    # pushed.  The pre-push claim and the stable thread binding prove that it
+    # was actionable for this run; the now-outdated thread needs no mutation.
+    review_thread_actionable=false
+    return 0
+  fi
+  verify_review_thread_claim "$thread_id" "$thread_json"
+  review_thread_actionable=true
+}
+
 validate_all_review_thread_claims() {
-  local expected_input_head="$1" thread_id thread_json
+  local expected_input_head="$1" phase="${2:-pre-push}" thread_id thread_json
   [ "$mode" = "review" ] || error "review-thread-claim-review-only"
   [ "$expected_input_head" = "$expected_head_sha" ] || error "review-thread-input-head-mismatch"
-  review_claim_snapshots_file="${temporary_dir}/review-claim-snapshots.jsonl"
-  : >"$review_claim_snapshots_file"
+  case "$phase" in
+    pre-push)
+      review_claim_snapshots_file="${temporary_dir}/review-claim-snapshots.jsonl"
+      : >"$review_claim_snapshots_file"
+      ;;
+    post-push)
+      [ -s "$review_claim_snapshots_file" ] || {
+        [ "$(jq '.resolved_thread_ids | length' "$result_file")" -eq 0 ] || error "review-thread-claim-snapshot-missing"
+      }
+      ;;
+    *) error "review-thread-claim-phase-invalid" ;;
+  esac
   while IFS= read -r thread_id || [ -n "$thread_id" ]; do
     [ -n "$thread_id" ] || continue
     thread_json="$(fetch_review_thread_snapshot "$thread_id")" || error "review-thread-read-failed"
-    verify_review_thread_claim "$thread_id" "$thread_json"
-    printf '%s\n' "$thread_json" >>"$review_claim_snapshots_file"
+    if [ "$phase" = "pre-push" ]; then
+      verify_review_thread_claim "$thread_id" "$thread_json"
+      printf '%s\n' "$thread_json" >>"$review_claim_snapshots_file"
+    else
+      verify_post_push_review_thread_claim "$thread_id" "$thread_json" "$pushed_sha"
+    fi
   done < <(jq -r '.resolved_thread_ids[]' "$result_file")
 }
 
@@ -2159,7 +2266,7 @@ verify_live_no_unresolved_review_threads() {
     [ "$cursor" != "$after" ] || error "review-thread-pagination-cursor-repeated"
     after="$cursor"
   done
-  unresolved_count="$(jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved != true)] | length' "$pages_file")" || error "review-thread-inventory-assemble-failed"
+  unresolved_count="$(jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved != true and .isOutdated != true)] | length' "$pages_file")" || error "review-thread-inventory-assemble-failed"
   rm -f -- "$pages_file"
   [ "$unresolved_count" -eq 0 ] || error "no-work-unresolved-review-threads"
 }
@@ -2262,10 +2369,14 @@ verify_pr_closing_issue_binding "$expected_pr"
 # Validate every claimed thread while the exact PR/head snapshot is still
 # unchanged.  This completes the whole claim set before any code mutation, so
 # one invalid claim prevents all later resolution calls.
-validate_all_review_thread_claims "$expected_head_sha"
+validate_all_review_thread_claims "$expected_head_sha" pre-push
 verify_pr_closing_issue_binding "$expected_pr"
 apply_and_commit "fix(agent): resolve review for PR #${expected_pr} via Codex Cloud"
 verify_pr_closing_issue_binding "$expected_pr"
+# The local commit may take time to create. Recheck the complete actionable
+# claim set immediately before the server-side CAS push and refresh the
+# snapshots used for the post-push comparison.
+validate_all_review_thread_claims "$expected_head_sha" pre-push
 pushed_sha="$(push_captured_ref "$branch_ref" "$expected_head_sha")"
 post_push_pr="$(read_pr "$expected_pr")" || error "post-push-pr-read-failed"
 validate_pr_json "$post_push_pr" "$pushed_sha"
@@ -2273,7 +2384,7 @@ validate_pr_json "$post_push_pr" "$pushed_sha"
 verify_pr_closing_issue_binding "$expected_pr"
 # Revalidate the complete claim set against live GitHub data after the exact
 # push.  No thread mutation is allowed until this second full snapshot passes.
-validate_all_review_thread_claims "$expected_head_sha"
+validate_all_review_thread_claims "$expected_head_sha" post-push
 verify_review_head_unchanged "$pushed_sha" "review-thread-post-push"
 
 labels="$(pr_labels "$post_push_pr")"
@@ -2318,7 +2429,7 @@ resolved_ids_file="${temporary_dir}/resolved-thread-ids"
 jq -r '.resolved_thread_ids[]' "$result_file" >"$resolved_ids_file"
 # A label/body update may have taken time.  Revalidate every claim once more
 # before beginning the resolution sequence.
-validate_all_review_thread_claims "$expected_head_sha"
+validate_all_review_thread_claims "$expected_head_sha" post-push
 validate_live_pr_correction_history "$pushed_sha"
 verify_review_head_unchanged "$pushed_sha" "review-thread-pre-resolve"
 while IFS= read -r thread_id || [ -n "$thread_id" ]; do
@@ -2328,7 +2439,10 @@ while IFS= read -r thread_id || [ -n "$thread_id" ]; do
   validate_live_pr_correction_history "$pushed_sha"
   verify_review_head_unchanged "$pushed_sha" "review-thread-before-resolve"
   thread_json="$(fetch_review_thread_snapshot "$thread_id")" || error "review-thread-read-failed"
-  verify_review_thread_claim "$thread_id" "$thread_json"
+  verify_post_push_review_thread_claim "$thread_id" "$thread_json" "$pushed_sha"
+  if [ "$review_thread_actionable" != "true" ]; then
+    continue
+  fi
   verify_review_head_unchanged "$pushed_sha" "review-thread-before-resolve-mutation"
   graphql_query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}'
   if ! thread_result="$(GH_REPO="$repository" gh api graphql -f query="$graphql_query" -f threadId="$thread_id" 2>/dev/null)"; then

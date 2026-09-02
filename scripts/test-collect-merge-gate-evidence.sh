@@ -101,6 +101,18 @@ if [ "${1:-}" = api ]; then
           current-bold-p1)
             review_nodes='[{"id":"review-current-commented","state":"COMMENTED","body":"**P1:** current commented finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}},{"id":"review-current-changes-requested","state":"CHANGES_REQUESTED","body":"**P1:** current requested finding","submittedAt":"2026-09-01T00:00:01Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
             ;;
+          same-reviewer-approved-after-requested)
+            review_nodes='[{"id":"review-requested-first","state":"CHANGES_REQUESTED","body":"**P1:** superseded finding","submittedAt":"2026-09-01T00:00:01Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}},{"id":"review-approved-later","state":"APPROVED","body":"Looks good after the fix.","submittedAt":"2026-09-01T00:00:02Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          same-reviewer-requested-after-approved)
+            review_nodes='[{"id":"review-approved-first","state":"APPROVED","body":"Looks good.","submittedAt":"2026-09-01T00:00:01Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}},{"id":"review-requested-later","state":"CHANGES_REQUESTED","body":"Please address this finding.","submittedAt":"2026-09-01T00:00:02Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          same-reviewer-tie-breaker)
+            review_nodes='[{"id":"review-approved-tie","state":"APPROVED","body":"Looks good.","submittedAt":"2026-09-01T00:00:01Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}},{"id":"review-requested-tie","state":"CHANGES_REQUESTED","body":"Tie-breaker finding.","submittedAt":"2026-09-01T00:00:01Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          independent-reviewer-blocks)
+            review_nodes='[{"id":"review-approved-reviewer-a","state":"APPROVED","body":"Looks good.","submittedAt":"2026-09-01T00:00:02Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer-a"}},{"id":"review-requested-reviewer-b","state":"CHANGES_REQUESTED","body":"Please address this finding.","submittedAt":"2026-09-01T00:00:01Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer-b"}}]'
+            ;;
           current-bold-wrapped-p1)
             review_nodes='[{"id":"review-current-bold-wrapped-p1","state":"COMMENTED","body":"**P1**: current critical finding","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
             ;;
@@ -130,6 +142,15 @@ if [ "${1:-}" = api ]; then
             ;;
           invalid-commit)
             review_nodes='[{"id":"review-invalid-commit","state":"COMMENTED","body":"review","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"not-a-sha"},"author":{"login":"reviewer"}}]'
+            ;;
+          invalid-submitted-at)
+            review_nodes='[{"id":"review-invalid-submitted-at","state":"COMMENTED","body":"review","submittedAt":"later","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
+            ;;
+          current-null-author)
+            review_nodes='[{"id":"review-current-null-author","state":"COMMENTED","body":"**P1:** reviewer identity missing","submittedAt":"2026-09-01T00:00:00Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":null}]'
+            ;;
+          duplicate-review-id)
+            review_nodes='[{"id":"review-duplicate","state":"APPROVED","body":"Looks good.","submittedAt":"2026-09-01T00:00:01Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}},{"id":"review-duplicate","state":"CHANGES_REQUESTED","body":"**P1:** duplicate node","submittedAt":"2026-09-01T00:00:02Z","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"author":{"login":"reviewer"}}]'
             ;;
         esac
         if [ -n "$threads_after" ]; then
@@ -220,6 +241,10 @@ run_review_case old-head-p1 false merge
 run_review_case dismissed-p1 false merge
 run_review_case pending-null false merge
 run_review_case current-bold-p1 true blocked
+run_review_case same-reviewer-approved-after-requested false merge
+run_review_case same-reviewer-requested-after-approved true blocked
+run_review_case same-reviewer-tie-breaker true blocked
+run_review_case independent-reviewer-blocks true blocked
 run_review_case current-bold-wrapped-p1 true blocked
 run_review_case current-bold-wrapped-p0 true blocked
 run_review_case current-bracket-p0 true blocked
@@ -229,7 +254,7 @@ run_review_case current-en-dash-p1 true blocked
 run_review_case current-hyphen-p1 true blocked
 run_review_case current-badge-p1 true blocked
 
-for invalid_review_mode in invalid-state invalid-commit; do
+for invalid_review_mode in invalid-state invalid-commit invalid-submitted-at current-null-author duplicate-review-id; do
   export GH_REVIEW_MODE="$invalid_review_mode"
   if "$collector" --repo nerdchanii/rpm --policy "$policy" >/dev/null 2>"$tmp_dir/${invalid_review_mode}.err"; then
     fail "collector accepted malformed top-level review: ${invalid_review_mode}"

@@ -49,7 +49,7 @@ RESEARCH_CYCLE:
 CLAIM_READY:
 1. Spawn rpm_backlog_scout with mode=ready-candidates.
 2. Require GitHub plugin evidence for every open issue carrying any lifecycle label. Do not run `gh`, Project queries, or Project preflights.
-3. If an open issue is already claimed, return `no-work` without mutation. A review-pending issue does not block the independent ready-issue lane.
+3. Read `execution_queue.blocking_states` from `.agents/workflows/backlog-policy.json`. If any open issue is in any configured blocking state (`claimed`, `review-pending`, or `awaiting-merge`), return `no-work` without mutation. Apply every configured blocking state uniformly; do not special-case or exempt a state.
 4. Reject candidates with zero or multiple lifecycle labels. Select open ready issues in deterministic issue-number ascending order, no more than the policy execution batch limit.
 5. If there is no eligible item, return `no-work`.
 6. Reject a selected issue when an open PR already closes it.

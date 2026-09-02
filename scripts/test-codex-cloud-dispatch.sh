@@ -1086,10 +1086,10 @@ printf '%s\n' \
   '    exit 91' \
   '    ;;' \
   '  *"/issues/12/timeline"*)' \
-  '    case "$mode" in malformed) printf "%s\\n" "{}" ;; no-closing-pr) printf "%s\\n" '\''[[]]'\'' ;; multiple-prs) printf "%s\\n" '\''[[{"event":"cross-referenced","source":{"issue":{"number":44,"pull_request":{"url":"x"}}}},{"event":"cross-referenced","source":{"issue":{"number":45,"pull_request":{"url":"x"}}}}]]'\'' ;; *) printf "%s\\n" '\''[[{"event":"cross-referenced","source":{"issue":{"number":44,"pull_request":{"url":"x"}}}}]]'\'' ;; esac' \
+  '    case "$mode" in malformed) printf "%s\\n" "{}" ;; no-closing-pr) printf "%s\\n" '\''[[]]'\'' ;; multiple-prs) printf "%s\\n" '\''[[{"event":"cross-referenced","source":{"issue":{"number":44,"pull_request":{"url":"x"}}}},{"event":"cross-referenced","source":{"issue":{"number":45,"pull_request":{"url":"x"}}}}]]'\'' ;; same-repo-plus-fork) printf "%s\\n" '\''[[{"event":"cross-referenced","source":{"issue":{"number":44,"pull_request":{"url":"x"}}}},{"event":"cross-referenced","source":{"issue":{"number":45,"pull_request":{"url":"x"}}}}]]'\'' ;; *) printf "%s\\n" '\''[[{"event":"cross-referenced","source":{"issue":{"number":44,"pull_request":{"url":"x"}}}}]]'\'' ;; esac' \
   '    ;;' \
   '  *"/pulls/44"*|*"/pulls/45"*)' \
-  '    case "$mode" in fork-pr) printf "%s\\n" '\''{"state":"open","base":{"ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"other/repo"}},"head":{"ref":"feat/safe","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"other/repo"}}}'\'' ;; unsafe-base) printf "%s\\n" '\''{"state":"open","base":{"ref":"release","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"feat/safe","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"nerdchanii/rpm"}}}'\'' ;; unsafe-head) printf "%s\\n" '\''{"state":"open","base":{"ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"main","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"nerdchanii/rpm"}}}'\'' ;; stale-base) printf "%s\\n" '\''{"state":"open","base":{"ref":"main","sha":"cccccccccccccccccccccccccccccccccccccccc","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"feat/safe","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"nerdchanii/rpm"}}}'\'' ;; *) printf "%s\\n" '\''{"state":"open","base":{"ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"feat/safe","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"nerdchanii/rpm"}}}'\'' ;; esac' \
+  '    case "$mode" in fork-pr) printf "%s\\n" '\''{"state":"open","base":{"ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"feat/fork-noise","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"other/rpm"}}}'\'' ;; same-repo-plus-fork) if [[ "$request" == *"/pulls/44"* ]]; then printf "%s\\n" '\''{"state":"open","base":{"ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"feat/fork-noise","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"other/rpm"}}}'\''; else printf "%s\\n" '\''{"state":"open","base":{"ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"feat/trusted","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"nerdchanii/rpm"}}}'\''; fi ;; unsafe-base) printf "%s\\n" '\''{"state":"open","base":{"ref":"release","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"feat/safe","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"nerdchanii/rpm"}}}'\'' ;; unsafe-head) printf "%s\\n" '\''{"state":"open","base":{"ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"main","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"nerdchanii/rpm"}}}'\'' ;; stale-base) printf "%s\\n" '\''{"state":"open","base":{"ref":"main","sha":"cccccccccccccccccccccccccccccccccccccccc","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"feat/safe","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"nerdchanii/rpm"}}}'\'' ;; *) printf "%s\\n" '\''{"state":"open","base":{"ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"nerdchanii/rpm"}},"head":{"ref":"feat/safe","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repo":{"full_name":"nerdchanii/rpm"}}}'\'' ;; esac' \
   '    ;;' \
   "  \"pr view 44 --repo nerdchanii/rpm --json closingIssuesReferences\")" \
   '    if [ "$mode" = extra-closing ]; then printf "%s\\n" '\''{"closingIssuesReferences":[{"number":12,"repository":{"name":"rpm","owner":{"login":"nerdchanii"}}},{"number":13,"repository":{"name":"rpm","owner":{"login":"nerdchanii"}}}]}'\''; else printf "%s\\n" '\''{"closingIssuesReferences":[{"number":12,"repository":{"name":"rpm","owner":{"login":"nerdchanii"}}}]}'\''; fi' \
@@ -1149,9 +1149,35 @@ run_merge_selector_anomaly() {
 # The fake is selected through PATH as `gh`; keep the mode-specific assertions
 # above independent from the review selector fixture.
 cp "$merge_selector_gh" "${selector_bin}/gh"
+
+# A linked PR whose head comes from a fork is merge noise. It must be ignored
+# before closing-reference validation, produce bounded no-work output, and
+# avoid the anomaly path that would quarantine the awaiting-merge issue.
+fork_only_outputs="${runs_dir}/merge-selector-fork-only.outputs"
+fork_only_summary="${runs_dir}/merge-selector-fork-only.summary"
+env PATH="${selector_bin}:$PATH" GH_TOKEN=test-token MERGE_SELECTOR_MODE=fork-pr \
+  GITHUB_REPOSITORY=nerdchanii/rpm GITHUB_OUTPUT="$fork_only_outputs" GITHUB_STEP_SUMMARY="$fork_only_summary" \
+  bash "$merge_selector" >/dev/null || fail 'merge-selector-fork-only-failed'
+grep -Fxq 'selected=false' "$fork_only_outputs" || fail 'merge-selector-fork-only-selected'
+grep -Fxq 'anomaly=false' "$fork_only_outputs" || fail 'merge-selector-fork-only-anomaly'
+! grep -Fq 'anomaly_issue=12' "$fork_only_outputs" || fail 'merge-selector-fork-only-quarantined'
+grep -Fq 'selection=no-work reason=fork-pr-ignored issue-12 count=1' "$fork_only_summary" || fail 'merge-selector-fork-only-reason'
+
+# Fork noise must not hide a valid same-repository candidate. The selector
+# should ignore PR #44 and evaluate the trusted PR #45 completely.
+trusted_with_fork_outputs="${runs_dir}/merge-selector-same-repo-plus-fork.outputs"
+trusted_with_fork_summary="${runs_dir}/merge-selector-same-repo-plus-fork.summary"
+env PATH="${selector_bin}:$PATH" GH_TOKEN=test-token MERGE_SELECTOR_MODE=same-repo-plus-fork \
+  GITHUB_REPOSITORY=nerdchanii/rpm GITHUB_OUTPUT="$trusted_with_fork_outputs" GITHUB_STEP_SUMMARY="$trusted_with_fork_summary" \
+  bash "$merge_selector" >/dev/null || fail 'merge-selector-same-repo-plus-fork-failed'
+grep -Fxq 'selected=true' "$trusted_with_fork_outputs" || fail 'merge-selector-same-repo-plus-fork-not-selected'
+grep -Fxq 'issue=12' "$trusted_with_fork_outputs" || fail 'merge-selector-same-repo-plus-fork-issue'
+grep -Fxq 'pr=45' "$trusted_with_fork_outputs" || fail 'merge-selector-same-repo-plus-fork-pr'
+grep -Fxq 'anomaly=false' "$trusted_with_fork_outputs" || fail 'merge-selector-same-repo-plus-fork-anomaly'
+grep -Fq 'selection=issue-12 pr=45' "$trusted_with_fork_summary" || fail 'merge-selector-same-repo-plus-fork-summary'
+
 for selector_case in \
   'no-closing-pr no-closing-pr' \
-  'fork-pr fork-pr' \
   'extra-closing multiple-closing-references' \
   'cross-repo-extra multiple-closing-references' \
   'multiple-prs multiple-prs' \
