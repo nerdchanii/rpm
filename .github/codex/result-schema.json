@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "status",
+    "issue",
+    "pr",
+    "base_sha",
+    "head_sha",
+    "summary",
+    "validation",
+    "actionable_findings_remaining",
+    "followups"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "status": { "enum": ["patch", "no-work", "blocked"] },
+    "issue": {
+      "anyOf": [
+        { "type": "integer", "minimum": 1 },
+        { "type": "null" }
+      ]
+    },
+    "pr": {
+      "anyOf": [
+        { "type": "integer", "minimum": 1 },
+        { "type": "null" }
+      ]
+    },
+    "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "head_sha": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        { "type": "null" }
+      ]
+    },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "validation": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "type": "string", "maxLength": 1000 }
+    },
+    "actionable_findings_remaining": { "type": "boolean" },
+    "followups": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "fingerprint", "body", "labels"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32768,
+            "pattern": "[\\s\\S]*<!-- rpm-agent-followup-source: [^\\s]+#[1-9][0-9]* -->[\\s\\S]*<!-- rpm-agent-followup-fingerprint: sha256:[0-9a-f]{64} -->[\\s\\S]*"
+          },
+          "labels": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
+      }
+    },
+    "reason": { "type": "string", "maxLength": 1000 }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "issue": { "type": "integer", "minimum": 1 },
+        "pr": { "type": "null" }
+      }
+    },
+    {
+      "properties": {
+        "issue": { "type": "null" },
+        "pr": { "type": "integer", "minimum": 1 }
+      }
+    }
+  ]
+}
