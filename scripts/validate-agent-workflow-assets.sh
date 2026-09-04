@@ -1858,6 +1858,517 @@ for name, (prompt, expected) in token_boundary_cases.items():
 PY
 }
 
+check_role_taxonomy_contract_negative() {
+  PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import copy
+import importlib.util
+import pathlib
+
+checker_path = pathlib.Path("scripts/check-agent-organization.py")
+spec = importlib.util.spec_from_file_location("rpm_agent_organization", checker_path)
+checker = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(checker)
+
+
+def check_taxonomy(taxonomy, agents):
+    original = checker.ROLE_TAXONOMY
+    try:
+        checker.ROLE_TAXONOMY = taxonomy
+        errors = []
+        checker.check_role_taxonomy(agents, errors)
+        return errors
+    finally:
+        checker.ROLE_TAXONOMY = original
+
+
+load_errors = []
+agents = checker.load_agents(load_errors)
+if load_errors:
+    raise SystemExit(f"could not load agent fixtures: {load_errors!r}")
+
+taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
+taxonomy["rpm_backlog_scout"]["sandbox_mode"] = "workspace-write"
+path, data = agents["rpm_backlog_scout"]
+mutated_agents = dict(agents)
+mutated_data = dict(data)
+mutated_data["sandbox_mode"] = "workspace-write"
+mutated_agents["rpm_backlog_scout"] = (path, mutated_data)
+errors = check_taxonomy(taxonomy, mutated_agents)
+if not any("non-writing role must use read-only sandbox" in error for error in errors):
+    raise SystemExit(f"write_scope=none accepted workspace-write sandbox: {errors!r}")
+
+taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
+taxonomy["rpm_backlog_scout"]["responsibility"] = " \t "
+errors = check_taxonomy(taxonomy, agents)
+if not any("responsibility must be non-empty" in error for error in errors):
+    raise SystemExit(f"whitespace-only responsibility was accepted: {errors!r}")
+
+entrypoint_errors = checker.validate_external_role_entrypoint(
+    "The pr-review-resolver role exists, but this entrypoint does not route to it.\n",
+    "pr-review-resolver",
+    "Use `pr-review-resolver` to classify actionable feedback.",
+)
+if not entrypoint_errors:
+    raise SystemExit("orphaned pr-review-resolver entrypoint was accepted")
+
+valid_entrypoint = pathlib.Path(
+    ".agents/skills/pr-review-resolution/SKILL.md"
+).read_text()
+if checker.validate_external_role_entrypoint(
+    valid_entrypoint,
+    "pr-review-resolver",
+    "Use `pr-review-resolver` to classify actionable feedback.",
+):
+    raise SystemExit("valid pr-review-resolution entrypoint was rejected")
+
+if checker.role_route_leaks("route pr-review-resolver", {"rpm_workflow_manager"}) != [
+    "pr-review-resolver"
+]:
+    raise SystemExit("hyphenated external role was omitted from route reachability")
+if checker.role_route_leaks("route pr-review-resolver", {"pr-review-resolver"}):
+    raise SystemExit("explicitly allowed external role was reported as leaked")
+
+manager_path, manager_data = agents["rpm_backlog_manager"]
+manager_with_external_route = dict(manager_data)
+manager_with_external_route["developer_instructions"] = (
+    str(manager_data["developer_instructions"])
+    + "\nDirectly route to pr-review-resolver.\n"
+)
+agents_with_external_route = dict(agents)
+agents_with_external_route["rpm_backlog_manager"] = (
+    manager_path,
+    manager_with_external_route,
+)
+route_errors = []
+checker.check_role_contracts(agents_with_external_route, route_errors)
+if not any(
+    "manager exposes non-report roles: pr-review-resolver" in error
+    for error in route_errors
+):
+    raise SystemExit(
+        "manager direct route to pr-review-resolver was accepted: "
+        f"{route_errors!r}"
+    )
+
+resolver_path, resolver_data = agents["pr-review-resolver"]
+resolver_with_internal_route = dict(resolver_data)
+resolver_with_internal_route["developer_instructions"] = (
+    str(resolver_data["developer_instructions"])
+    + "\nDirectly route to rpm_implementer.\n"
+)
+agents_with_resolver_route = dict(agents)
+agents_with_resolver_route["pr-review-resolver"] = (
+    resolver_path,
+    resolver_with_internal_route,
+)
+resolver_route_errors = []
+checker.check_role_contracts(agents_with_resolver_route, resolver_route_errors)
+if not any(
+    "leaf exposes other role names: rpm_implementer" in error
+    for error in resolver_route_errors
+):
+    raise SystemExit(
+        "pr-review-resolver direct route to internal writer was accepted: "
+        f"{resolver_route_errors!r}"
+    )
+
+missing_roles, invalid_matchers = checker.hook_matcher_missing_roles(
+    [{"matcher": "^(rpm_|pr-review-resolver$)"}],
+    {"rpm_existing", "pr-review-resolver", "custom-role"},
+)
+if invalid_matchers or missing_roles != ["custom-role"]:
+    raise SystemExit(
+        "future taxonomy role was not rejected by hook coverage: "
+        f"missing={missing_roles!r}, invalid={invalid_matchers!r}"
+    )
+missing_roles, invalid_matchers = checker.hook_matcher_missing_roles(
+    [{"matcher": "["}],
+    {"rpm_existing"},
+)
+if missing_roles != ["rpm_existing"] or not invalid_matchers:
+    raise SystemExit(
+        "invalid hook matcher was accepted: "
+        f"missing={missing_roles!r}, invalid={invalid_matchers!r}"
+    )
+
+taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
+taxonomy["rpm_backlog_manager"].update(
+    write_scope="github", mcp_scope="read", coordination="single-writer"
+)
+errors = check_taxonomy(taxonomy, agents)
+if not any("coordinator must have write_scope='none'" in error for error in errors):
+    raise SystemExit(f"coordinator mutation scope was accepted: {errors!r}")
+PY
+}
+
+check_role_tool_policy_contract_negative() {
+  PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import copy
+import importlib.util
+import pathlib
+import tempfile
+
+checker_path = pathlib.Path("scripts/check-agent-organization.py")
+spec = importlib.util.spec_from_file_location("rpm_agent_organization", checker_path)
+checker = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(checker)
+
+taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
+taxonomy["rpm_idea_issue_creator"]["write_scope"] = "none"
+taxonomy["rpm_idea_issue_creator"]["coordination"] = "independent-read"
+original = checker.ROLE_TAXONOMY
+try:
+    checker.ROLE_TAXONOMY = taxonomy
+    errors = []
+    checker.check_tool_policy_mutation_capabilities(errors)
+finally:
+    checker.ROLE_TAXONOMY = original
+
+if not any(
+    "GITHUB_MUTATION_ROLES" in error
+    and "rpm_idea_issue_creator" in error
+    for error in errors
+):
+    raise SystemExit(
+        "taxonomy write_scope=none left GitHub mutation capability accepted: "
+        f"{errors!r}"
+    )
+
+taxonomy = copy.deepcopy(checker.ROLE_TAXONOMY)
+taxonomy["rpm_backlog_scout"]["mcp_scope"] = "none"
+original = checker.ROLE_TAXONOMY
+try:
+    checker.ROLE_TAXONOMY = taxonomy
+    errors = []
+    checker.check_tool_policy_mutation_capabilities(errors)
+finally:
+    checker.ROLE_TAXONOMY = original
+if not any(
+    "MCP_READ_ROLES" in error and "rpm_backlog_scout" in error
+    for error in errors
+):
+    raise SystemExit(
+        "taxonomy mcp_scope=none left MCP capability accepted: "
+        f"{errors!r}"
+    )
+
+hook_source = pathlib.Path(".codex/hooks/agent_tool_policy.py").read_text()
+for mutation, expected in (
+    ("GITHUB_MUTATION_ROLES |= {'rpm_backlog_scout'}", "augmented assignment"),
+    ("GITHUB_MUTATION_ROLES.update({'rpm_backlog_scout'})", "GITHUB_MUTATION_ROLES.update"),
+    ("GITHUB_MUTATION_ROLES.add('rpm_backlog_scout')", "GITHUB_MUTATION_ROLES.add"),
+    (
+        "role_alias = GITHUB_MUTATION_ROLES\nrole_alias |= {'rpm_backlog_scout'}",
+        "aliasing, argument passing, and dynamic access are forbidden",
+    ),
+    (
+        "role_alias = GITHUB_MUTATION_ROLES\nrole_alias.update({'rpm_backlog_scout'})",
+        "aliasing, argument passing, and dynamic access are forbidden",
+    ),
+    (
+        "def pass_capability(value):\n    return value\npass_capability(GITHUB_MUTATION_ROLES)",
+        "capability sets cannot be passed as call arguments",
+    ),
+    (
+        "GITHUB_MUTATION_ROLES.__ior__({'rpm_backlog_scout'})",
+        "GITHUB_MUTATION_ROLES.__ior__",
+    ),
+    (
+        "GITHUB_MUTATION_ROLES[0] = 'rpm_backlog_scout'",
+        "capability sets cannot be accessed through subscripts",
+    ),
+    (
+        "namespace['GITHUB_MUTATION_ROLES'] = set()",
+        "dynamic namespace and capability-name subscripts are forbidden",
+    ),
+    (
+        "globals()['GITHUB_MUTATION_ROLES'].add('rpm_backlog_scout')",
+        "dynamic namespace access through globals/locals/vars is forbidden",
+    ),
+    (
+        "getattr(namespace, 'GITHUB_MUTATION_ROLES')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "setattr(namespace, 'GITHUB_MUTATION_ROLES', set())",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "namespace.__getattribute__('GITHUB_MUTATION_ROLES')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "sys.modules[__name__].__dict__.get('LOCAL_WRITE_ROLES').add('rpm_verifier')",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "sys.modules[__name__].__dict__.update({'LOCAL_WRITE_ROLES': {'rpm_verifier'}})",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "object.__subclasses__()",
+        "introspection dunder access is forbidden",
+    ),
+    (
+        "name = 'GITHUB_' + 'MUTATION_ROLES'\n"
+        "sys._getframe().f_globals[name].add('rpm_backlog_scout')",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "dict.__setitem__(sys.modules[__name__].__dict__, 'LOCAL_WRITE_ROLES', {'rpm_verifier'})",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "for item in sys.modules[__name__].__dict__.items():\n    pass",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "getattr(sys.modules[__name__], '__dict__')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "operator.attrgetter('__dict__')(namespace)",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "operator.attrgetter('__' + 'dict__')(namespace)",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "operator.attrgetter('unrelated')(namespace)",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "import operator\n"
+        "cap = operator.methodcaller('__getattribute__', 'GITHUB_MUTATION_ROLES')"
+        "(sys.modules[__name__])\n"
+        "cap.add('rpm_backlog_scout')",
+        "dynamic attribute access is forbidden",
+    ),
+    (
+        "import pydoc\n"
+        "pydoc.locate(__name__ + '.GITHUB_MUTATION_ROLES').add('rpm_backlog_scout')",
+        "only audited standard-library imports are allowed",
+    ),
+    (
+        "attrgetter('unrelated')",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "from operator import attrgetter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "from operator import attrgetter as getter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "import operator.attrgetter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "from module import harmless as attrgetter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "import module as attrgetter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "attrgetter_alias = operator.attrgetter",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "match value:\n    case attrgetter:\n        pass",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "(dynamic_exec,) = (exec,)\ndynamic_exec(\"GITHUB_MUTATION_ROLES = {'rpm_backlog_scout'}\")",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "getattr_alias = builtins.getattr",
+        "dynamic/reflection names cannot be used or aliased",
+    ),
+    (
+        "builtins.getattr(namespace, '__' + 'dict__')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "getattr(namespace, '__' + 'dict__')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "object.__getattribute__(namespace, '__' + 'dict__')",
+        "getattr/setattr/__getattribute__/__ior__",
+    ),
+    (
+        "sys.modules[__name__]['__dict__']",
+        "dynamic namespace and capability-name subscripts are forbidden",
+    ),
+    (
+        "namespace['attrgetter']",
+        "dynamic namespace and capability-name subscripts are forbidden",
+    ),
+    ("exec('GITHUB_MUTATION_ROLES.update(set())')", "dynamic exec/eval access is forbidden"),
+    ("eval('GITHUB_MUTATION_ROLES')", "dynamic exec/eval access is forbidden"),
+    (
+        "dynamic_getattr = getattr\ndynamic_getattr(namespace, 'GITHUB_MUTATION_ROLES')",
+        "dynamic namespace and code built-in aliases are forbidden",
+    ),
+    (
+        "role in GITHUB_MUTATION_ROLES in namespace",
+        "direct membership check",
+    ),
+    (
+        "role in namespace in GITHUB_MUTATION_ROLES",
+        "direct membership check",
+    ),
+    (
+        "role in GITHUB_MUTATION_ROLES not in namespace",
+        "direct membership check",
+    ),
+    (
+        "from module import GITHUB_MUTATION_ROLES",
+        "capability names cannot be introduced through imports",
+    ),
+    (
+        "from module import GITHUB_MUTATION_ROLES as OTHER",
+        "capability names cannot be introduced through imports",
+    ),
+    (
+        "import GITHUB_MUTATION_ROLES.foo",
+        "capability names cannot be introduced through imports",
+    ),
+    (
+        "from module import *",
+        "wildcard imports are forbidden in the capability hook",
+    ),
+    (
+        "from module import harmless as GITHUB_MUTATION_ROLES",
+        "capability names cannot be introduced through import aliases",
+    ),
+    (
+        "import module as GITHUB_MUTATION_ROLES",
+        "capability names cannot be introduced through import aliases",
+    ),
+    (
+        "(lambda GITHUB_MUTATION_ROLES: GITHUB_MUTATION_ROLES)(set())",
+        "capability names cannot be used as lambda arguments",
+    ),
+    (
+        "class GITHUB_MUTATION_ROLES:\n    pass",
+        "GITHUB_MUTATION_ROLES cannot be rebound as a definition",
+    ),
+    (
+        "match value:\n    case GITHUB_MUTATION_ROLES:\n        pass",
+        "capability names cannot be used as match pattern bindings",
+    ),
+    (
+        "match value:\n"
+        "    case [item, {\"role\": GITHUB_MUTATION_ROLES}]:\n"
+        "        pass",
+        "capability names cannot be used as match pattern bindings",
+    ),
+    (
+        "match value:\n"
+        "    case [*GITHUB_MUTATION_ROLES]:\n"
+        "        pass",
+        "capability names cannot be used as match pattern bindings",
+    ),
+    (
+        "match value:\n"
+        "    case {\"role\": item, **GITHUB_MUTATION_ROLES}:\n"
+        "        pass",
+        "capability names cannot be used as match pattern bindings",
+    ),
+    (
+        "GITHUB_MUTATION_ROLES = {'rpm_backlog_scout'}",
+        "GITHUB_MUTATION_ROLES must have exactly one top-level assignment",
+    ),
+):
+    with tempfile.TemporaryDirectory() as root:
+        temporary_root = pathlib.Path(root)
+        hook_path = temporary_root / ".codex" / "hooks" / "agent_tool_policy.py"
+        hook_path.parent.mkdir(parents=True)
+        hook_path.write_text(hook_source + "\n" + mutation + "\n")
+        original_root = checker.ROOT
+        try:
+            checker.ROOT = temporary_root
+            errors = []
+            checker.check_tool_policy_mutation_capabilities(errors)
+        finally:
+            checker.ROOT = original_root
+    if not any(expected in error for error in errors):
+        raise SystemExit(
+            f"capability mutation {mutation!r} was accepted: {errors!r}"
+        )
+
+with tempfile.TemporaryDirectory() as root:
+    temporary_root = pathlib.Path(root)
+    hook_path = temporary_root / ".codex" / "hooks" / "agent_tool_policy.py"
+    hook_path.parent.mkdir(parents=True)
+    hook_path.write_text(
+        hook_source + "\nfrom module import harmless\nimport harmless.submodule\n"
+    )
+    original_root = checker.ROOT
+    try:
+        checker.ROOT = temporary_root
+        errors = []
+        checker.check_tool_policy_mutation_capabilities(errors)
+    finally:
+        checker.ROOT = original_root
+if not any("only audited standard-library imports are allowed" in error for error in errors):
+    raise SystemExit(f"unaudited unrelated import was accepted: {errors!r}")
+
+with tempfile.TemporaryDirectory() as root:
+    temporary_root = pathlib.Path(root)
+    hook_path = temporary_root / ".codex" / "hooks" / "agent_tool_policy.py"
+    hook_path.parent.mkdir(parents=True)
+    hook_path.write_text(hook_source + "\nclass Harmless:\n    pass\n")
+    original_root = checker.ROOT
+    try:
+        checker.ROOT = temporary_root
+        errors = []
+        checker.check_tool_policy_mutation_capabilities(errors)
+    finally:
+        checker.ROOT = original_root
+if errors:
+    raise SystemExit(f"harmless class definition was rejected: {errors!r}")
+
+with tempfile.TemporaryDirectory() as root:
+    temporary_root = pathlib.Path(root)
+    hook_path = temporary_root / ".codex" / "hooks" / "agent_tool_policy.py"
+    hook_path.parent.mkdir(parents=True)
+    hook_path.write_text(
+        hook_source
+        + "\n"
+        + "ordinary = {}\n"
+        + "ordinary.update({'unrelated': 'value'})\n"
+        + "ordinary['unrelated']\n"
+        + "ordinary.items()\n"
+        + "dict.__setitem__(ordinary, 'unrelated', 'value')\n"
+        + "namespace.unrelated\n"
+        + "operator.itemgetter('unrelated')(ordinary)\n"
+        + "operator.add(1, 2)\n"
+        + "match value:\n"
+        + "    case {\"role\": role, **rest}:\n"
+        + "        pass\n"
+    )
+    original_root = checker.ROOT
+    try:
+        checker.ROOT = temporary_root
+        errors = []
+        checker.check_tool_policy_mutation_capabilities(errors)
+    finally:
+        checker.ROOT = original_root
+if errors:
+    raise SystemExit(f"harmless dictionary and match patterns were rejected: {errors!r}")
+PY
+}
+
 if [ "${RPM_VALIDATE_AGENT_WORKFLOW_ASSETS_REGRESSION:-}" = "1" ]; then
   check_summary_formatter() {
     local output
@@ -2740,6 +3251,8 @@ check "script_validate_agent_workflow_assets_syntax" \
 
 check "summary_suppresses_skips" check_summary_suppresses_skips
 check "skill_policy_structure_negative" check_skill_policy_structure_negative
+check "role_taxonomy_contract_negative" check_role_taxonomy_contract_negative
+check "role_tool_policy_contract_negative" check_role_tool_policy_contract_negative
 check "just_test_verbosity" check_just_test_verbosity
 
 check "collect_pr_review_context_paginates" check_collect_paginates_comments_and_reviews

@@ -58,6 +58,12 @@ CLAIM_READY:
 
 Research selection must inventory GitHub Project #7 through the local-roadmap coordinates before narrowing candidates. Claim selection uses open GitHub issues and lifecycle labels as its source of truth. Project membership is not an execution eligibility condition.
 
+Coordination: independent read-only evidence collection may run in parallel
+when inputs are independent. Readiness review starts only after its research
+result and runs sequentially. Each backlog task has at most one active write
+owner; creator, refiner, and claimer handoffs run sequentially after the
+previous writer's result is verified.
+
 If a direct report returns malformed output, send one focused correction request. If it remains malformed, return BLOCKED.
 If you cannot continue, do not call a parent or another manager. Return `BLOCKED: <exact reason>` to the caller that is already waiting.
 

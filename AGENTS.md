@@ -14,6 +14,7 @@ This file is a navigation and judgment guide, not the enforcement layer. Determi
 - If a guardrail can be checked mechanically, prefer adding or using a check over adding more prompt text.
 - Codex is the current primary and default repository operating path. Codex Cloud execution and repository-configured Codex Automatic review are current mechanisms; provider-specific details belong in adapters, environments, or role instructions.
 - Shared lifecycle, state, validation, and mutation contracts apply provider-neutrally. They describe required outcomes and evidence while preserving the existing provider-specific execution records.
+- Independent read-only discovery and review may run in parallel; each task has one active write owner, and writer handoffs are sequential.
 
 ## Source of Truth
 

@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unicodedata
 from pathlib import Path, PurePosixPath
@@ -16,6 +19,228 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS_DIR = ROOT / ".codex" / "agents"
 POLICY_PATH = ROOT / ".agents" / "workflows" / "backlog-policy.json"
+
+# Issue #193 role-audit contract: this is the complete role taxonomy.
+# Keep one entry per TOML role so that a
+# newly added or accidentally orphaned agent fails validation before it can be
+# invoked. ``write_scope`` describes the mutation surface, while
+# ``coordination`` describes the dependency boundary for the same task.
+ROLE_TAXONOMY = {
+    "rpm_workflow_manager": {
+        "category": "backlog",
+        "responsibility": "routes one requested workflow mode to one manager",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "none",
+        "coordination": "coordinator",
+    },
+    "rpm_backlog_manager": {
+        "category": "backlog",
+        "responsibility": "coordinates one bounded backlog mode and its handoffs",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "none",
+        "coordination": "coordinator",
+    },
+    "rpm_issue_manager": {
+        "category": "reconciliation",
+        "responsibility": "coordinates one issue state machine and writer handoffs",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "none",
+        "coordination": "coordinator",
+    },
+    "rpm_backlog_scout": {
+        "category": "discovery/research",
+        "responsibility": "inventories one candidate source and duplicate evidence",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "read",
+        "coordination": "independent-read",
+    },
+    "rpm_issue_fetcher": {
+        "category": "discovery/research",
+        "responsibility": "fetches one canonical issue packet and linked context",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "read",
+        "coordination": "independent-read",
+    },
+    "rpm_issue_researcher": {
+        "category": "discovery/research",
+        "responsibility": "builds one evidence-backed implementation research packet",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "read",
+        "coordination": "independent-read",
+    },
+    "rpm_spec_reviewer": {
+        "category": "review",
+        "responsibility": "classifies the owning SPEC impact for one issue",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "none",
+        "coordination": "independent-read",
+    },
+    "rpm_issue_readiness_reviewer": {
+        "category": "review",
+        "responsibility": "judges whether one researched issue is actionable",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "read",
+        "coordination": "sequential-read",
+    },
+    "rpm_adversarial_reviewer": {
+        "category": "review",
+        "responsibility": "tries to falsify one validated change against its evidence",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "none",
+        "coordination": "sequential-read",
+    },
+    "rpm_issue_spec_reconciler": {
+        "category": "reconciliation",
+        "responsibility": "compares one issue intent with its active SPEC decision",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "none",
+        "coordination": "sequential-read",
+    },
+    "pr-review-resolver": {
+        "category": "reconciliation",
+        "responsibility": "classifies review feedback and applies accepted fixes",
+        "sandbox_mode": "workspace-write",
+        "write_scope": "local",
+        "mcp_scope": "read",
+        "coordination": "single-writer",
+    },
+    "rpm_spec_updater": {
+        "category": "implementation",
+        "responsibility": "writes one already-approved contract update",
+        "sandbox_mode": "workspace-write",
+        "write_scope": "local",
+        "mcp_scope": "none",
+        "coordination": "single-writer",
+    },
+    "rpm_implementer": {
+        "category": "implementation",
+        "responsibility": "writes one approved production behavior change",
+        "sandbox_mode": "workspace-write",
+        "write_scope": "local",
+        "mcp_scope": "none",
+        "coordination": "single-writer",
+    },
+    "rpm_test_author": {
+        "category": "testing",
+        "responsibility": "writes focused regression tests and deterministic fixtures",
+        "sandbox_mode": "workspace-write",
+        "write_scope": "local",
+        "mcp_scope": "none",
+        "coordination": "single-writer",
+    },
+    "rpm_test_runner": {
+        "category": "testing",
+        "responsibility": "runs supplied targeted tests and reports exact evidence",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "none",
+        "coordination": "sequential-read",
+    },
+    "rpm_verifier": {
+        "category": "testing",
+        "responsibility": "runs the full repository validation gate",
+        "sandbox_mode": "read-only",
+        "write_scope": "none",
+        "mcp_scope": "none",
+        "coordination": "sequential-read",
+    },
+    "rpm_idea_issue_creator": {
+        "category": "mutation",
+        "responsibility": "creates one authorized idea issue and registration",
+        "sandbox_mode": "read-only",
+        "write_scope": "github",
+        "mcp_scope": "read",
+        "coordination": "single-writer",
+    },
+    "rpm_issue_refiner": {
+        "category": "mutation",
+        "responsibility": "updates one managed research section and lifecycle state",
+        "sandbox_mode": "read-only",
+        "write_scope": "github",
+        "mcp_scope": "read",
+        "coordination": "single-writer",
+    },
+    "rpm_ready_ticket_claimer": {
+        "category": "mutation",
+        "responsibility": "claims one ready issue through the allowed state transition",
+        "sandbox_mode": "read-only",
+        "write_scope": "github",
+        "mcp_scope": "read",
+        "coordination": "single-writer",
+    },
+    "rpm_followup_issue_creator": {
+        "category": "mutation",
+        "responsibility": "creates one explicitly authorized deferred follow-up issue",
+        "sandbox_mode": "read-only",
+        "write_scope": "github",
+        "mcp_scope": "read",
+        "coordination": "single-writer",
+    },
+}
+
+EXTERNAL_ROLE_ENTRYPOINTS = {
+    ".agents/skills/pr-review-resolution/SKILL.md": (
+        "pr-review-resolver",
+        "Use `pr-review-resolver` to classify actionable feedback.",
+    ),
+}
+
+# Retained role-overlap dispositions. These pairs are intentionally retained
+# because their inputs, authority, or mutation boundary differs.
+ADJACENT_ROLE_PAIRS = (
+    (
+        "rpm_backlog_scout",
+        "rpm_issue_researcher",
+        "scout inventories candidates; researcher investigates one selected issue",
+    ),
+    (
+        "rpm_spec_reviewer",
+        "rpm_issue_spec_reconciler",
+        "SPEC reviewer classifies the owning contract; SPEC reconciler compares issue intent with that classification",
+    ),
+    (
+        "rpm_test_runner",
+        "rpm_verifier",
+        "targeted runner executes supplied commands; verifier runs the full repository gate",
+    ),
+    (
+        "rpm_workflow_manager",
+        "rpm_issue_manager",
+        "workflow manager routes a top-level mode; issue manager owns one issue state machine",
+    ),
+    (
+        "rpm_adversarial_reviewer",
+        "pr-review-resolver",
+        "adversarial reviewer finds correctness gaps; PR resolver classifies actionable feedback and applies accepted fixes",
+    ),
+    (
+        "rpm_spec_updater",
+        "rpm_implementer",
+        "SPEC updater writes approved contract text; implementer writes production behavior",
+    ),
+)
+COORDINATOR_ROLES = {
+    "rpm_workflow_manager",
+    "rpm_backlog_manager",
+    "rpm_issue_manager",
+}
+SEQUENTIAL_READ_ROLES = {
+    "rpm_issue_readiness_reviewer",
+    "rpm_issue_spec_reconciler",
+    "rpm_test_runner",
+    "rpm_verifier",
+    "rpm_adversarial_reviewer",
+}
 
 MANAGER_REPORTS = {
     "rpm_workflow_manager": {
@@ -61,9 +286,12 @@ LEAF_SANDBOX = {
     "rpm_adversarial_reviewer": "read-only",
     "rpm_followup_issue_creator": "read-only",
 }
+ROUTING_LEAF_ROLES = set(LEAF_SANDBOX) | {
+    role for role, _route_marker in EXTERNAL_ROLE_ENTRYPOINTS.values()
+}
 EXPECTED_SANDBOX = {
-    **{manager: "read-only" for manager in MANAGER_REPORTS},
-    **LEAF_SANDBOX,
+    role: str(metadata["sandbox_mode"])
+    for role, metadata in ROLE_TAXONOMY.items()
 }
 BACKLOG_ROLES = {
     "rpm_workflow_manager",
@@ -240,11 +468,17 @@ def check_role_contracts(
                 f"{relative}: expected sandbox_mode={sandbox!r}, got {data.get('sandbox_mode')!r}",
             )
         instructions = str(data.get("developer_instructions", ""))
-        if "Return exactly one JSONL event:" not in instructions or '{"type":' not in instructions:
+        if (
+            name != "pr-review-resolver"
+            and (
+                "Return exactly one JSONL event:" not in instructions
+                or '{"type":' not in instructions
+            )
+        ):
             fail(errors, f"{relative}: missing exact JSONL output contract")
         if name in BACKLOG_ROLES and ".agents/workflows/backlog-policy.json" not in instructions:
             fail(errors, f"{relative}: backlog role does not read the policy")
-        if name in LEAF_SANDBOX and "spawn/contact other agents" not in instructions:
+        if name in ROUTING_LEAF_ROLES and "spawn/contact other agents" not in instructions:
             fail(errors, f"{relative}: leaf is missing the no-delegation boundary")
         if name in {"rpm_test_runner", "rpm_verifier"}:
             environment = data.get("shell_environment_policy")
@@ -253,8 +487,6 @@ def check_role_contracts(
             }:
                 fail(errors, f"{relative}: command-only role must redirect Cargo artifacts")
 
-    role_pattern = re.compile(r"\brpm_[a-z0-9_]+\b")
-    known_roles = set(EXPECTED_SANDBOX)
     for manager, reports in MANAGER_REPORTS.items():
         if manager not in agents:
             continue
@@ -266,8 +498,7 @@ def check_role_contracts(
                     errors,
                     f"{path.relative_to(ROOT)}: direct report {report!r} is unreachable",
                 )
-        exposed = set(role_pattern.findall(text)) & known_roles
-        unexpected = exposed - reports - {manager}
+        unexpected = set(role_route_leaks(text, reports | {manager}))
         if unexpected:
             fail(
                 errors,
@@ -276,12 +507,12 @@ def check_role_contracts(
         if f"Do not spawn another {manager}" not in text:
             fail(errors, f"{path.relative_to(ROOT)}: missing self-recursion prohibition")
 
-    for leaf in LEAF_SANDBOX:
+    for leaf in ROUTING_LEAF_ROLES:
         if leaf not in agents:
             continue
         path, data = agents[leaf]
         text = str(data.get("developer_instructions", ""))
-        leaked = (set(role_pattern.findall(text)) & known_roles) - {leaf}
+        leaked = set(role_route_leaks(text, {leaf}))
         if leaked:
             fail(
                 errors,
@@ -304,6 +535,650 @@ def check_role_contracts(
                     errors,
                     f".codex/agents/rpm_backlog_manager.toml: missing batch contract {required!r}",
                 )
+
+
+# Issue #193: validate the complete role taxonomy separately from the #189
+# manager/leaf contract so later role-audit changes rebase cleanly.
+def check_role_taxonomy(
+    agents: dict[str, tuple[Path, dict[str, object]]], errors: list[str]
+) -> None:
+    taxonomy_roles = set(ROLE_TAXONOMY)
+    agent_roles = set(agents)
+    if taxonomy_roles != agent_roles:
+        missing = ", ".join(sorted(taxonomy_roles - agent_roles)) or "none"
+        unexpected = ", ".join(sorted(agent_roles - taxonomy_roles)) or "none"
+        fail(
+            errors,
+            "role taxonomy must exactly match TOML roles "
+            f"(missing: {missing}; unexpected: {unexpected})",
+        )
+
+    responsibilities: list[str] = []
+    for role, metadata in ROLE_TAXONOMY.items():
+        raw_responsibility = metadata.get("responsibility")
+        if not isinstance(raw_responsibility, str):
+            fail(errors, f"role taxonomy {role!r}: responsibility must be a string")
+            continue
+        responsibility = raw_responsibility.strip()
+        if not responsibility:
+            fail(errors, f"role taxonomy {role!r}: responsibility must be non-empty")
+            continue
+        if responsibility != raw_responsibility:
+            fail(
+                errors,
+                f"role taxonomy {role!r}: responsibility must not contain surrounding whitespace",
+            )
+        responsibilities.append(responsibility)
+    duplicates = sorted(
+        responsibility
+        for responsibility in set(responsibilities)
+        if responsibilities.count(responsibility) > 1
+    )
+    if duplicates:
+        fail(
+            errors,
+            "role taxonomy responsibilities must be unique: "
+            + ", ".join(repr(item) for item in duplicates),
+        )
+
+    allowed_categories = {
+        "discovery/research",
+        "implementation",
+        "testing",
+        "review",
+        "reconciliation",
+        "backlog",
+        "mutation",
+    }
+    allowed_write_scopes = {"none", "local", "github"}
+    allowed_mcp_scopes = {"none", "read"}
+    allowed_coordination = {
+        "independent-read",
+        "sequential-read",
+        "single-writer",
+        "coordinator",
+    }
+    used_categories = {
+        str(metadata.get("category")) for metadata in ROLE_TAXONOMY.values()
+    }
+    if used_categories != allowed_categories:
+        fail(
+            errors,
+            "role taxonomy must represent every category "
+            f"(missing: {', '.join(sorted(allowed_categories - used_categories)) or 'none'}; "
+            f"unexpected: {', '.join(sorted(used_categories - allowed_categories)) or 'none'})",
+        )
+    for role, metadata in ROLE_TAXONOMY.items():
+        category = metadata.get("category")
+        write_scope = metadata.get("write_scope")
+        mcp_scope = metadata.get("mcp_scope")
+        coordination = metadata.get("coordination")
+        if category not in allowed_categories:
+            fail(errors, f"role taxonomy {role!r}: invalid category {category!r}")
+        if write_scope not in allowed_write_scopes:
+            fail(errors, f"role taxonomy {role!r}: invalid write_scope {write_scope!r}")
+        if mcp_scope not in allowed_mcp_scopes:
+            fail(errors, f"role taxonomy {role!r}: invalid mcp_scope {mcp_scope!r}")
+        if coordination not in allowed_coordination:
+            fail(errors, f"role taxonomy {role!r}: invalid coordination {coordination!r}")
+        if write_scope != "none" and coordination != "single-writer":
+            fail(errors, f"role taxonomy {role!r}: writer must be single-writer")
+        if role in COORDINATOR_ROLES:
+            if write_scope != "none":
+                fail(
+                    errors,
+                    f"role taxonomy {role!r}: coordinator must have write_scope='none'",
+                )
+            if coordination != "coordinator":
+                fail(errors, f"role taxonomy {role!r}: manager must be coordinator")
+        if role in SEQUENTIAL_READ_ROLES and coordination != "sequential-read":
+            fail(errors, f"role taxonomy {role!r}: dependent read role must be sequential-read")
+        if (
+            write_scope == "none"
+            and role not in COORDINATOR_ROLES
+            and role not in SEQUENTIAL_READ_ROLES
+            and coordination != "independent-read"
+        ):
+            fail(errors, f"role taxonomy {role!r}: read-only judgment role must be independent-read")
+        if role not in agents:
+            continue
+        sandbox = agents[role][1].get("sandbox_mode")
+        if sandbox != metadata.get("sandbox_mode"):
+            fail(
+                errors,
+                f"{role}: taxonomy sandbox {metadata.get('sandbox_mode')!r} "
+                f"does not match TOML sandbox {sandbox!r}",
+            )
+        if write_scope == "local" and sandbox != "workspace-write":
+            fail(errors, f"{role}: local writer must use workspace-write sandbox")
+        if write_scope == "github" and sandbox != "read-only":
+            fail(errors, f"{role}: GitHub-only writer must use read-only sandbox")
+        if write_scope == "github" and mcp_scope != "read":
+            fail(errors, f"{role}: GitHub writer must have read MCP capability")
+        if write_scope == "none" and sandbox != "read-only":
+            fail(errors, f"{role}: non-writing role must use read-only sandbox")
+
+
+def check_tool_policy_mutation_capabilities(errors: list[str]) -> None:
+    # Keep the runtime hook's role capabilities aligned with this taxonomy.
+    policy_error_count = len(errors)
+    path = ROOT / ".codex" / "hooks" / "agent_tool_policy.py"
+    try:
+        tree = ast.parse(path.read_text(), filename=str(path))
+    except (OSError, SyntaxError) as error:
+        fail(errors, f"{path.relative_to(ROOT)}: cannot load tool policy: {error}")
+        return
+
+    capability_names = {
+        "MANAGERS",
+        "MANAGER_CONTACT_ROLES",
+        "MCP_READ_ROLES",
+        "LOCAL_WRITE_ROLES",
+        "GITHUB_MUTATION_ROLES",
+        "RPM_ROLES",
+    }
+    relative = str(path.relative_to(ROOT))
+    reported: set[str] = set()
+    dynamic_names = {
+        "getattr",
+        "setattr",
+        "globals",
+        "locals",
+        "vars",
+        "exec",
+        "eval",
+        "__import__",
+    }
+    dynamic_namespace_attributes = {
+        "__dict__",
+        "__globals__",
+        "_getframe",
+        "currentframe",
+        "f_globals",
+        "f_locals",
+    }
+    dynamic_reflection_names = {
+        "attrgetter",
+        "methodcaller",
+        "locate",
+        "resolve_name",
+        "import_module",
+        "getattr_static",
+        "__getattribute__",
+        "__setattr__",
+        "__ior__",
+    }
+    forbidden_dynamic_names = {
+        *dynamic_names,
+        *dynamic_namespace_attributes,
+        *dynamic_reflection_names,
+    }
+    dynamic_attributes = {
+        *forbidden_dynamic_names,
+    }
+    introspection_dunder_attributes = {
+        "__base__",
+        "__bases__",
+        "__builtins__",
+        "__class__",
+        "__closure__",
+        "__code__",
+        "__func__",
+        "__loader__",
+        "__mro__",
+        "__self__",
+        "__spec__",
+        "__subclasses__",
+    }
+    allowed_import_roots = {
+        "__future__",
+        "hashlib",
+        "json",
+        "pathlib",
+        "re",
+        "shlex",
+        "sys",
+        "tempfile",
+    }
+
+    def reject(reason: str) -> None:
+        if reason not in reported:
+            reported.add(reason)
+            fail(errors, f"{relative}: {reason}")
+
+    # The hook deliberately has a small, auditable declaration language:
+    # every capability is assigned exactly once at module scope, directly from
+    # a string-only set literal. This checker does not attempt to prove
+    # arbitrary Python; all other declaration and namespace shapes fail closed.
+    canonical_assignments: dict[str, list[ast.Assign]] = {
+        name: [] for name in capability_names
+    }
+    for statement in tree.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if isinstance(target, ast.Name) and target.id in capability_names:
+            canonical_assignments[target.id].append(statement)
+
+    canonical_targets: set[int] = set()
+    for name, candidates in canonical_assignments.items():
+        if len(candidates) != 1:
+            reject(f"{name} must have exactly one top-level assignment")
+            continue
+        statement = candidates[0]
+        canonical_targets.add(id(statement.targets[0]))
+        if not isinstance(statement.value, ast.Set):
+            reject(f"{name} must use an exact set-literal assignment")
+            continue
+        if any(
+            not isinstance(element, ast.Constant)
+            or not isinstance(element.value, str)
+            for element in statement.value.elts
+        ):
+            reject(f"{name} set literal must contain only string constants")
+
+    def contains_capability_name(node: ast.AST) -> bool:
+        return any(
+            isinstance(item, ast.Name) and item.id in capability_names
+            for item in ast.walk(node)
+        )
+
+    def forbidden_dynamic_name(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            name = node.id
+        elif isinstance(node, ast.Attribute):
+            name = node.attr
+        else:
+            return None
+        return name if name in forbidden_dynamic_names else None
+
+    def capability_root(node: ast.AST) -> str | None:
+        current = node
+        while isinstance(current, (ast.Attribute, ast.Subscript)):
+            current = current.value
+        if isinstance(current, ast.Name) and current.id in capability_names:
+            return current.id
+        return None
+
+    # Build parent links so the only permitted capability reads are direct
+    # membership checks such as `role in MCP_READ_ROLES`.
+    parents: dict[int, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[id(child)] = parent
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            if node.id in capability_names:
+                if isinstance(node.ctx, ast.Store):
+                    if id(node) in canonical_targets:
+                        continue
+                    reject(
+                        f"{node.id} cannot use augmented assignment or be rebound "
+                        "outside its canonical declaration"
+                    )
+                    continue
+                parent = parents.get(id(node))
+                if (
+                    isinstance(node.ctx, ast.Load)
+                    and isinstance(parent, ast.Compare)
+                    and len(parent.ops) == 1
+                    and len(parent.comparators) == 1
+                    and any(id(comparator) == id(node) for comparator in parent.comparators)
+                    and all(isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops)
+                ):
+                    continue
+                reject(
+                    f"{node.id} may only be read in a direct membership check; "
+                    "aliasing, argument passing, and dynamic access are forbidden"
+                )
+            elif node.id in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, ast.Attribute):
+            root = capability_root(node.value)
+            if node.attr in capability_names or root is not None:
+                access = f"{root}.{node.attr}" if root is not None else node.attr
+                reject(
+                    f"{access} attribute access is forbidden for capability sets "
+                    "(including mutation methods and __ior__)"
+                )
+            elif node.attr in dynamic_attributes:
+                reject("dynamic attribute access is forbidden in the capability hook")
+            elif node.attr in introspection_dunder_attributes:
+                reject("introspection dunder access is forbidden in the capability hook")
+        elif isinstance(node, ast.Subscript):
+            if capability_root(node.value) is not None:
+                reject("capability sets cannot be accessed through subscripts")
+            elif (
+                isinstance(node.value, ast.Name)
+                and node.value.id in {"__builtins__", "builtins"}
+            ) or (
+                isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, str)
+                and (
+                    node.slice.value in capability_names
+                    or node.slice.value in dynamic_names
+                    or node.slice.value in dynamic_namespace_attributes
+                    or node.slice.value in dynamic_reflection_names
+                )
+            ):
+                reject("dynamic namespace and capability-name subscripts are forbidden")
+        elif isinstance(node, ast.Call):
+            function = node.func
+            function_name = function.id if isinstance(function, ast.Name) else None
+            attribute_name = function.attr if isinstance(function, ast.Attribute) else None
+            if function_name in {"globals", "locals", "vars"}:
+                reject("dynamic namespace access through globals/locals/vars is forbidden")
+            if function_name in {"exec", "eval"}:
+                reject("dynamic exec/eval access is forbidden")
+            if function_name in {"getattr", "setattr"} or attribute_name in {
+                "getattr",
+                "setattr",
+                "__getattribute__",
+                "__setattr__",
+                "__ior__",
+            }:
+                reject(
+                    "capability names cannot be used with getattr/setattr/"
+                    "__getattribute__/__ior__"
+                )
+            if any(contains_capability_name(argument) for argument in node.args) or any(
+                keyword.value is not None and contains_capability_name(keyword.value)
+                for keyword in node.keywords
+            ):
+                reject("capability sets cannot be passed as call arguments")
+        elif isinstance(node, ast.Assign):
+            if isinstance(node.value, ast.Name) and node.value.id in dynamic_names:
+                reject("dynamic namespace and code built-in aliases are forbidden")
+            elif forbidden_dynamic_name(node.value) is not None:
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in capability_names:
+                reject(f"{node.name} cannot be rebound as a definition")
+            if node.name in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
+            function_arguments = (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
+            if any(
+                argument.arg in capability_names
+                for argument in function_arguments
+            ) or (
+                node.args.vararg is not None
+                and node.args.vararg.arg in capability_names
+            ) or (
+                node.args.kwarg is not None
+                and node.args.kwarg.arg in capability_names
+            ):
+                reject("capability names cannot be used as function arguments")
+            if any(argument.arg in forbidden_dynamic_names for argument in function_arguments) or (
+                node.args.vararg is not None
+                and node.args.vararg.arg in forbidden_dynamic_names
+            ) or (
+                node.args.kwarg is not None
+                and node.args.kwarg.arg in forbidden_dynamic_names
+            ):
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, ast.ClassDef):
+            if node.name in capability_names:
+                reject(f"{node.name} cannot be rebound as a definition")
+            if node.name in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, ast.Lambda):
+            lambda_arguments = (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
+            if any(argument.arg in capability_names for argument in lambda_arguments) or (
+                node.args.vararg is not None
+                and node.args.vararg.arg in capability_names
+            ) or (
+                node.args.kwarg is not None
+                and node.args.kwarg.arg in capability_names
+            ):
+                reject("capability names cannot be used as lambda arguments")
+            if any(argument.arg in forbidden_dynamic_names for argument in lambda_arguments) or (
+                node.args.vararg is not None
+                and node.args.vararg.arg in forbidden_dynamic_names
+            ) or (
+                node.args.kwarg is not None
+                and node.args.kwarg.arg in forbidden_dynamic_names
+            ):
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            if node.name in capability_names:
+                reject("capability names cannot be used as match pattern bindings")
+            elif node.name in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest in capability_names:
+                reject("capability names cannot be used as match pattern bindings")
+            elif node.rest in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                import_root = alias.name.split(".", 1)[0]
+                if import_root not in allowed_import_roots:
+                    reject("only audited standard-library imports are allowed")
+        elif isinstance(node, ast.ImportFrom):
+            import_root = (node.module or "").split(".", 1)[0]
+            if import_root not in allowed_import_roots:
+                reject("only audited standard-library imports are allowed")
+        elif isinstance(node, ast.alias):
+            import_root = node.name.split(".", 1)[0]
+            imported_name = node.name.rsplit(".", 1)[-1]
+            if node.name == "*":
+                reject("wildcard imports are forbidden in the capability hook")
+            elif import_root in capability_names:
+                reject("capability names cannot be introduced through imports")
+            elif node.asname in capability_names:
+                reject("capability names cannot be introduced through import aliases")
+            if node.name in dynamic_names:
+                reject("dynamic namespace and code built-ins cannot be imported")
+            elif imported_name in forbidden_dynamic_names or node.asname in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name in capability_names:
+                reject("capability names cannot be introduced as exception aliases")
+            elif node.name in forbidden_dynamic_names:
+                reject("dynamic/reflection names cannot be used or aliased")
+
+    if len(errors) > policy_error_count:
+        return
+
+    actual_sets: dict[str, set[str]] = {}
+    for name, candidates in canonical_assignments.items():
+        if len(candidates) != 1 or not isinstance(candidates[0].value, ast.Set):
+            continue
+        actual_sets[name] = {
+            element.value
+            for element in candidates[0].value.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        }
+
+    expected_sets = {
+        "MANAGERS": set(MANAGER_REPORTS),
+        "MANAGER_CONTACT_ROLES": {
+            f"{manager}:{report}"
+            for manager, reports in MANAGER_REPORTS.items()
+            for report in reports
+        },
+        "MCP_READ_ROLES": {
+            role
+            for role, metadata in ROLE_TAXONOMY.items()
+            if metadata.get("mcp_scope") == "read"
+        },
+        "RPM_ROLES": set(ROLE_TAXONOMY),
+        "LOCAL_WRITE_ROLES": {
+            role
+            for role, metadata in ROLE_TAXONOMY.items()
+            if metadata.get("write_scope") == "local"
+        },
+        "GITHUB_MUTATION_ROLES": {
+            role
+            for role, metadata in ROLE_TAXONOMY.items()
+            if metadata.get("write_scope") == "github"
+        },
+    }
+    for name, expected in expected_sets.items():
+        actual = actual_sets.get(name)
+        if not isinstance(actual, set):
+            fail(errors, f"{path.relative_to(ROOT)}: {name} must be a set")
+            continue
+        if actual != expected:
+            missing = ", ".join(sorted(expected - actual)) or "none"
+            unexpected = ", ".join(sorted(actual - expected)) or "none"
+            fail(
+                errors,
+                f"{path.relative_to(ROOT)}: {name} does not match role taxonomy "
+                f"(missing: {missing}; unexpected: {unexpected})",
+            )
+
+
+def validate_external_role_entrypoint(
+    text: str, role: str, route_marker: str
+) -> list[str]:
+    if route_marker not in text:
+        return [f"does not route to role {role!r} with marker {route_marker!r}"]
+    return []
+
+
+def role_route_leaks(
+    text: str, allowed: set[str] | frozenset[str] = frozenset()
+) -> list[str]:
+    return sorted(role for role in ROLE_TAXONOMY if role not in allowed and role in text)
+
+
+def hook_matcher_missing_roles(
+    entries: object, roles: set[str] | frozenset[str]
+) -> tuple[list[str], list[str]]:
+    matchers: list[re.Pattern[str]] = []
+    invalid: list[str] = []
+    if isinstance(entries, list):
+        for entry in entries:
+            matcher = entry.get("matcher") if isinstance(entry, dict) else None
+            if not isinstance(matcher, str):
+                continue
+            try:
+                matchers.append(re.compile(matcher))
+            except re.error as error:
+                invalid.append(f"{matcher!r}: {error}")
+    missing = sorted(
+        role
+        for role in roles
+        if not any(matcher.search(role) is not None for matcher in matchers)
+    )
+    return missing, invalid
+
+
+def check_external_role_entrypoints(
+    agents: dict[str, tuple[Path, dict[str, object]]], errors: list[str]
+) -> None:
+    for relative, (role, route_marker) in EXTERNAL_ROLE_ENTRYPOINTS.items():
+        path = ROOT / relative
+        if role not in agents:
+            fail(errors, f"{relative}: entrypoint targets missing role {role!r}")
+            continue
+        try:
+            text = path.read_text()
+        except OSError as error:
+            fail(errors, f"{relative}: cannot read external role entrypoint: {error}")
+            continue
+        for entrypoint_error in validate_external_role_entrypoint(
+            text, role, route_marker
+        ):
+            fail(errors, f"{relative}: {entrypoint_error}")
+
+
+def check_role_organization_docs(
+    agents: dict[str, tuple[Path, dict[str, object]]], errors: list[str]
+) -> None:
+    required_documents = {
+        ROOT / ".agents" / "docs" / "issue-agent-workflow.md": (
+            "Read-only exploration and independent review may run in parallel.",
+            "Each task has at most one active write owner.",
+            "Writer handoffs are sequential",
+            "validator checks this static inventory",
+            "coordinator enforces runtime sequencing",
+        ),
+        ROOT / ".agents" / "docs" / "backlog-agent-workflow.md": (
+            "Independent read-only evidence collection may run in parallel",
+            "Readiness review starts only after",
+            "Each backlog task has at most one active write owner",
+            "Mutation handoffs are sequential",
+            "coordinator enforces runtime ordering",
+        ),
+        ROOT / "AGENTS.md": (
+            "Independent read-only discovery and review may run in parallel; each task has one active write owner, and writer handoffs are sequential.",
+        ),
+    }
+    for path, required_phrases in required_documents.items():
+        try:
+            text = path.read_text()
+        except OSError as error:
+            fail(errors, f"{path.relative_to(ROOT)}: cannot read: {error}")
+            continue
+        for phrase in required_phrases:
+            if phrase not in text:
+                fail(errors, f"{path.relative_to(ROOT)}: missing organization contract {phrase!r}")
+    issue_doc = ROOT / ".agents" / "docs" / "issue-agent-workflow.md"
+    try:
+        issue_text = issue_doc.read_text()
+    except OSError:
+        issue_text = ""
+    for role, metadata in ROLE_TAXONOMY.items():
+        row = (
+            f"| `{role}` | {metadata['category']} | {metadata['coordination']} | "
+            f"{metadata['responsibility']} |"
+        )
+        if row not in issue_text:
+            fail(errors, f"{issue_doc.relative_to(ROOT)}: taxonomy row mismatch for {role!r}")
+    for left, right, boundary in ADJACENT_ROLE_PAIRS:
+        if left not in agents or right not in agents:
+            fail(errors, f"adjacent role pair references missing TOML role: {left}, {right}")
+            continue
+        if ROLE_TAXONOMY[left]["responsibility"] == ROLE_TAXONOMY[right]["responsibility"]:
+            fail(errors, f"adjacent role pair has duplicate responsibility: {left}, {right}")
+        if boundary not in issue_text:
+            fail(errors, f"{issue_doc.relative_to(ROOT)}: missing adjacent boundary {boundary!r}")
+
+    role_documents = {
+        "rpm_issue_manager": (
+            "Each task has at most one active write owner",
+            "Writer handoffs are sequential",
+        ),
+        "rpm_backlog_manager": (
+            "active write",
+            "handoffs run sequentially",
+        ),
+        "pr-review-resolver": (
+            "sole repository write owner",
+            "serialize this handoff",
+            "Do not spawn/contact other agents.",
+            "Return only the `review_resolution_result` JSONL shape defined in `templates.md`.",
+        ),
+    }
+    for role, phrases in role_documents.items():
+        text = _load_role_text(role)
+        if not text:
+            fail(errors, f".codex/agents/{role}.toml: cannot read role configuration")
+            continue
+        for phrase in phrases:
+            if phrase not in text:
+                fail(errors, f".codex/agents/{role}.toml: missing organization contract {phrase!r}")
+
+
+def _load_role_text(role: str) -> str:
+    path = AGENTS_DIR / (
+        "pr-review-resolver.toml" if role == "pr-review-resolver" else f"{role}.toml"
+    )
+    try:
+        return path.read_text()
+    except OSError:
+        return ""
 
 
 def parse_frontmatter(path: Path, errors: list[str]) -> dict[str, str | bool]:
@@ -1636,11 +2511,7 @@ def check_entries_and_assets(errors: list[str]) -> None:
             continue
         if "rpm_workflow_manager" not in text:
             fail(errors, f"{path.relative_to(ROOT)}: entry does not route to workflow manager")
-        leaked = sorted(
-            role
-            for role in EXPECTED_SANDBOX
-            if role != "rpm_workflow_manager" and role in text
-        )
+        leaked = role_route_leaks(text, {"rpm_workflow_manager"})
         if leaked:
             fail(
                 errors,
@@ -1672,7 +2543,7 @@ def check_entries_and_assets(errors: list[str]) -> None:
         ):
             if required not in text:
                 fail(errors, f"{gatekeeper.relative_to(ROOT)}: missing merge-gate contract {required!r}")
-        leaked = sorted(role for role in EXPECTED_SANDBOX if role in text)
+        leaked = role_route_leaks(text)
         if leaked:
             fail(
                 errors,
@@ -1726,12 +2597,39 @@ def check_deterministic_assets(errors: list[str]) -> None:
     except (OSError, json.JSONDecodeError) as error:
         fail(errors, f"{hooks_path.relative_to(ROOT)}: invalid hook config: {error}")
         return
-    pre_tool = hooks.get("hooks", {}).get("PreToolUse", [])
+    hook_groups = hooks.get("hooks", {})
+    pre_tool = hook_groups.get("PreToolUse", [])
     serialized = json.dumps(pre_tool)
-    for required in ("Agent", "apply_patch", "exec_command", "mcp__"):
+    for required in (
+        "Agent",
+        "spawn_agent",
+        "followup_task",
+        "send_message",
+        "interrupt_agent",
+        "list_agents",
+        "wait_agent",
+        "apply_patch",
+        "exec_command",
+        "mcp__",
+    ):
         if required not in serialized:
             fail(errors, f"{hooks_path.relative_to(ROOT)}: PreToolUse misses {required!r}")
-    stops = json.dumps(hooks.get("hooks", {}).get("SubagentStop", []))
+    for hook_name in ("SubagentStart", "SubagentStop"):
+        missing, invalid = hook_matcher_missing_roles(
+            hook_groups.get(hook_name, []), set(ROLE_TAXONOMY)
+        )
+        for matcher_error in invalid:
+            fail(
+                errors,
+                f"{hooks_path.relative_to(ROOT)}: {hook_name} has invalid matcher {matcher_error}",
+            )
+        if missing:
+            fail(
+                errors,
+                f"{hooks_path.relative_to(ROOT)}: {hook_name} misses taxonomy roles: "
+                f"{', '.join(missing)}",
+            )
+    stops = json.dumps(hook_groups.get("SubagentStop", []))
     if "rpm_issue_manager" not in stops or "issue_manager_stop_gate.py" not in stops:
         fail(errors, f"{hooks_path.relative_to(ROOT)}: issue completion gate is missing")
 
@@ -1764,6 +2662,7 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
         return run(
             {
                 "hook_event_name": "PreToolUse",
+                "agent_type": role,
                 "transcript_path": transcript,
                 "cwd": str(ROOT),
                 "tool_name": tool,
@@ -1771,9 +2670,93 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             }
         ).returncode
 
+    followup_body = Path("/tmp") / f"rpm-review-followup-policy-{os.getpid()}.md"
+    try:
+        followup_body.write_text("# deterministic policy fixture\n")
+    except OSError as error:
+        fail(errors, f"tool policy follow-up fixture could not be created: {error}")
+
     cases = (
         ("leaf-spawn", "rpm_issue_researcher", "spawn_agent", {}, 2),
-        ("manager-spawn", "rpm_backlog_manager", "Agent", {}, 0),
+        ("leaf-followup", "rpm_issue_researcher", "followup_task", {}, 2),
+        ("leaf-send-message", "rpm_issue_researcher", "send_message", {}, 2),
+        ("leaf-interrupt", "rpm_issue_researcher", "interrupt_agent", {}, 2),
+        ("leaf-list-agents", "rpm_issue_researcher", "list_agents", {}, 2),
+        ("leaf-wait-agent", "rpm_issue_researcher", "wait_agent", {}, 2),
+        (
+            "leaf-namespaced-followup",
+            "rpm_issue_researcher",
+            "collaboration.followup_task",
+            {},
+            2,
+        ),
+        (
+            "leaf-future-collaboration-tool",
+            "rpm_issue_researcher",
+            "functions.collaboration.future_contact",
+            {},
+            2,
+        ),
+        (
+            "manager-spawn",
+            "rpm_backlog_manager",
+            "Agent",
+            {"subagent_type": "rpm_backlog_scout"},
+            0,
+        ),
+        (
+            "manager-spawn-non-report",
+            "rpm_backlog_manager",
+            "Agent",
+            {"subagent_type": "rpm_implementer"},
+            2,
+        ),
+        (
+            "manager-spawn-agent-exact-task",
+            "rpm_backlog_manager",
+            "spawn_agent",
+            {
+                "agent_type": "rpm_backlog_scout",
+                "task_name": "rpm_backlog_scout",
+            },
+            0,
+        ),
+        (
+            "manager-spawn-agent-aliased-task",
+            "rpm_backlog_manager",
+            "spawn_agent",
+            {"agent_type": "rpm_backlog_scout", "task_name": "scout_one"},
+            2,
+        ),
+        (
+            "manager-followup-unregistered",
+            "rpm_backlog_manager",
+            "followup_task",
+            {"target": "unregistered"},
+            2,
+        ),
+        (
+            "manager-send-message-denied",
+            "rpm_backlog_manager",
+            "send_message",
+            {"target": "/root/rpm_backlog_scout"},
+            2,
+        ),
+        (
+            "manager-followup-direct-report",
+            "rpm_backlog_manager",
+            "followup_task",
+            {"target": "rpm_backlog_scout"},
+            0,
+        ),
+        (
+            "manager-future-contact-denied",
+            "rpm_backlog_manager",
+            "functions.collaboration.future_contact",
+            {"target": "rpm_backlog_scout"},
+            2,
+        ),
+        ("manager-list-agents", "rpm_backlog_manager", "list_agents", {}, 0),
         (
             "spec-patch",
             "rpm_spec_updater",
@@ -1797,11 +2780,200 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             2,
         ),
         (
+            "researcher-generic-provider-mutator",
+            "rpm_issue_researcher",
+            "mcp__provider__push_files",
+            {},
+            2,
+        ),
+        (
+            "implementer-nested-mcp-read-denied",
+            "rpm_implementer",
+            "functions.exec",
+            {"code": "await tools.mcp__github__get_issue({issue_number: 1})"},
+            2,
+        ),
+        (
+            "spec-updater-nested-patch-denied",
+            "rpm_spec_updater",
+            "functions.exec",
+            {
+                "code": "await tools.apply_patch('*** Begin Patch\\n"
+                "*** Update File: src/lib.rs\\n*** End Patch')"
+            },
+            2,
+        ),
+        (
             "creator-create",
             "rpm_idea_issue_creator",
             "mcp__github__create_issue",
-            {"title": "idea", "body": "body"},
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": "body",
+                "labels": ["agent:research"],
+            },
             0,
+        ),
+        (
+            "creator-missing-research-label-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": "body",
+            },
+            2,
+        ),
+        (
+            "creator-alternate-state-label-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": "body",
+                "labels": ["agent:claimed"],
+            },
+            2,
+        ),
+        (
+            "creator-malformed-labels-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": "body",
+                "labels": ["agent:research", 7],
+            },
+            2,
+        ),
+        (
+            "creator-non-string-title-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": {"value": "idea"},
+                "body": "body",
+                "labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "creator-non-string-body-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": ["body"],
+                "labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "creator-external-repository-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {"owner": "other", "repo": "repo", "title": "idea", "body": "body"},
+            2,
+        ),
+        (
+            "creator-assignee-field-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "idea",
+                "body": "body",
+                "labels": ["agent:research"],
+                "assignees": ["attacker"],
+            },
+            2,
+        ),
+        (
+            "followup-creator-external-repository-denied",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue",
+            {"owner": "other", "repo": "repo", "title": "followup", "body": "body"},
+            2,
+        ),
+        (
+            "followup-creator-research-label-authorized",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "followup",
+                "body": "body",
+                "labels": ["agent:research"],
+            },
+            0,
+        ),
+        (
+            "followup-creator-milestone-field-denied",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "followup",
+                "body": "body",
+                "labels": ["agent:research"],
+                "milestone": 1,
+            },
+            2,
+        ),
+        (
+            "followup-creator-non-string-title-denied",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": ["followup"],
+                "body": "body",
+                "labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "followup-creator-non-string-body-denied",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "title": "followup",
+                "body": {"value": "body"},
+                "labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "creator-project-seven-authorized",
+            "rpm_idea_issue_creator",
+            "mcp__github__add_project_item",
+            {"owner": "nerdchanii", "project_number": 7, "content_id": "ISSUE_1"},
+            0,
+        ),
+        (
+            "creator-project-wrong-number-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__add_project_item",
+            {"owner": "nerdchanii", "project_number": 999, "content_id": "ISSUE_1"},
+            2,
         ),
         (
             "refiner-project",
@@ -1814,7 +2986,13 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "claimer-labels",
             "rpm_ready_ticket_claimer",
             "mcp__github__update_issue",
-            {"labels": ["agent:claimed"]},
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:claimed"],
+                "remove_labels": ["agent:ready"],
+            },
             0,
         ),
         (
@@ -1852,11 +3030,1718 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             {"cmd": "gh pr merge 1 --squash"},
             2,
         ),
+        (
+            "gh-api-method-equals-patch",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api --method=PATCH repos/example/example"},
+            2,
+        ),
+        (
+            "gh-api-x-equals-patch",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api -X=PATCH repos/example/example"},
+            2,
+        ),
+        (
+            "gh-api-unknown-method",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api --method=custom-write repos/example/example"},
+            2,
+        ),
+        (
+            "gh-api-x-unknown-method",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api -X=custom-write repos/example/example"},
+            2,
+        ),
+        (
+            "gh-api-fields-default-write",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example --field name=value"},
+            2,
+        ),
+        (
+            "gh-api-short-field-default-write",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example -f name=value"},
+            2,
+        ),
+        (
+            "gh-api-compact-short-field-default-write",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example -fbody=value"},
+            2,
+        ),
+        (
+            "gh-api-compact-uppercase-short-field-default-write",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example -Fbody=value"},
+            2,
+        ),
+        (
+            "gh-api-input-default-write",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example --input payload.json"},
+            2,
+        ),
+        (
+            "gh-api-default-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api repos/example/example"},
+            0,
+        ),
+        (
+            "gh-api-read-after-availability-test",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "test -x /usr/bin/jq && gh api repos/example/example"},
+            0,
+        ),
+        (
+            "gh-api-method-get-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh api --method=GET repos/example/example"},
+            0,
+        ),
+        (
+            "gh-api-absolute-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "/usr/bin/gh api repos/example/example -X DELETE"},
+            2,
+        ),
+        (
+            "gh-api-command-substitution-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "result=$(gh api repos/example/example -X DELETE)"},
+            2,
+        ),
+        (
+            "gh-api-absolute-command-substitution-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "result=$(/usr/bin/gh api repos/example/example -X DELETE)"},
+            2,
+        ),
+        (
+            "gh-api-absolute-get-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "/usr/bin/gh api repos/example/example -X GET"},
+            0,
+        ),
+        (
+            "gh-api-variable-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'GH=/usr/bin/gh; "$GH" api repos/example/example -X DELETE'},
+            2,
+        ),
+        (
+            "gh-api-variable-get-fail-closed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'GH=/usr/bin/gh; "$GH" api repos/example/example -X GET'},
+            2,
+        ),
+        (
+            "gh-api-parameter-expansion-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'GH=/usr/bin/gh; "${GH:-/usr/bin/gh}" api '
+                "repos/example/example -X DELETE"
+            },
+            2,
+        ),
+        (
+            "gh-api-nested-positional-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "sh -c '\"$1\" api repos/example/example -X DELETE' "
+                "sh /usr/bin/gh"
+            },
+            2,
+        ),
+        (
+            "gh-exported-wrapper-nested-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "CMD=/usr/bin/gh; export CMD; "
+                "sh -c '\"$CMD\" pr merge 220 --squash'"
+            },
+            2,
+        ),
+        (
+            "gh-exported-wrapper-nested-variable-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "CMD=/usr/bin/gh; ACTION=merge; export CMD ACTION; "
+                "sh -c '\"$CMD\" pr \"$ACTION\" 220 --squash'"
+            },
+            2,
+        ),
+        (
+            "gh-quoted-wrapper-nested-variable-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'CMD=/usr/bin/g"h"; ACTION=merge; export CMD ACTION; '
+                "sh -c '\"$CMD\" pr \"$ACTION\" 220 --squash'"
+            },
+            2,
+        ),
+        (
+            "gh-direct-variable-group-and-action-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'CMD=/usr/bin/gh; GROUP=pr; ACTION=merge; '
+                '"$CMD" "$GROUP" "$ACTION" 220 --squash'
+            },
+            2,
+        ),
+        (
+            "gh-direct-variable-group-and-action-issue-edit",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'CMD=/usr/bin/gh; GROUP=issue; ACTION=edit; '
+                '"$CMD" "$GROUP" "$ACTION" 1 --add-label security'
+            },
+            2,
+        ),
+        (
+            "gh-direct-variable-group-decoy-issue-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'GROUP=pr; ACTION=merge; gh "$GROUP" "$ACTION" '
+                "220 issue"
+            },
+            2,
+        ),
+        (
+            "gh-global-flag-before-variable-group-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'GROUP=pr; ACTION=merge; gh --repo example/example '
+                '"$GROUP" "$ACTION" 220'
+            },
+            2,
+        ),
+        (
+            "gh-nested-command-wrapper-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sh -c 'command gh pr merge 220 --squash'"},
+            2,
+        ),
+        (
+            "gh-double-nested-command-wrapper-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sh -c 'sh -c \"command gh pr merge 220 --squash\"'"},
+            2,
+        ),
+        (
+            "gh-nested-pathname-glob-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "ACTION=merge; export ACTION; "
+                "sh -c '/opt/homebrew/bin/g[h] pr \"$ACTION\" 220 --squash'"
+            },
+            2,
+        ),
+        (
+            "gh-unknown-repo-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh repo delete example/example --yes"},
+            2,
+        ),
+        (
+            "gh-unknown-release-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh release delete v1.0 --yes"},
+            2,
+        ),
+        (
+            "gh-unknown-workflow-run",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh workflow run deploy.yml"},
+            2,
+        ),
+        (
+            "gh-audited-repo-view-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh repo view example/example"},
+            0,
+        ),
+        (
+            "gh-audited-release-view-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh release view v1.0"},
+            0,
+        ),
+        (
+            "gh-audited-workflow-view-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh workflow view deploy.yml"},
+            0,
+        ),
+        (
+            "gh-global-repo-flag-issue-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh --repo example/example issue view 1"},
+            0,
+        ),
+        (
+            "gh-global-repo-flag-api-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh --repo example/example api repos/example/example -X GET"},
+            0,
+        ),
+        (
+            "gh-global-short-repo-flag-pr-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "gh -Rexample/example pr view 220"},
+            0,
+        ),
+        (
+            "gh-newline-second-command-mutation",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "gh issue view 1\n"
+                "gh issue edit 1 --add-label security"
+            },
+            2,
+        ),
+        (
+            "gh-command-substitution-mutation",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'gh issue view 1 --jq "$(gh issue edit 1 '
+                '--add-label security)"'
+            },
+            2,
+        ),
+        (
+            "gh-process-substitution-mutation",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "diff <(gh issue view 1) <(gh issue edit 1 --title x)"},
+            2,
+        ),
+        (
+            "gh-exec-wrapper-variable-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'CMD=/opt/homebrew/bin/gh; ACTION=merge; '
+                'exec "$CMD" pr "$ACTION" 220 --squash'
+            },
+            2,
+        ),
+        (
+            "gh-unsupported-wrapper-variable-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'CMD=/opt/homebrew/bin/gh; ACTION=merge; '
+                'custom-wrapper "$CMD" pr "$ACTION" 220 --squash'
+            },
+            2,
+        ),
+        (
+            "gh-quoted-bash-login-shell-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "CMD=gh; \"bash\" -lc '\"$CMD\" pr merge 220'"
+            },
+            2,
+        ),
+        (
+            "gh-direct-pathname-glob-merge",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "/opt/homebrew/bin/g[h] pr merge 220 --squash"},
+            2,
+        ),
+        (
+            "nested-mcp-mutation-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {"code": "await tools.mcp__github__update_issue({issue_number: 1})"},
+            2,
+        ),
+        (
+            "nested-mcp-read-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {"code": "await tools.mcp__github__get_issue({issue_number: 1})"},
+            2,
+        ),
+        (
+            "safe-direct-script-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash scripts/safe-direct-merge.sh 220"},
+            2,
+        ),
+        (
+            "safe-direct-script-repeated-slash-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash scripts//safe-direct-merge.sh 220"},
+            2,
+        ),
+        (
+            "safe-direct-script-dot-segment-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash scripts/./safe-direct-merge.sh 220"},
+            2,
+        ),
+        (
+            "protected-script-bash-option-c-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -o noglob -c 'scripts/safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "protected-script-bash-option-capital-o-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -O extglob -c 'scripts/safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "protected-script-variable-assignment-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "p=scripts/safe-direct-merge.sh; \"$p\" 220"
+            },
+            2,
+        ),
+        (
+            "protected-script-busybox-shell-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "busybox sh -c 'scripts/safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "protected-script-process-substitution-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "diff <(cat scripts/safe-direct-merge.sh) "
+                "<(cat scripts/test-fixture-tools.sh)"
+            },
+            2,
+        ),
+        (
+            "protected-script-basename-reference-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "echo safe-direct-merge.sh"},
+            2,
+        ),
+        (
+            "protected-script-awk-source-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "awk -f scripts/safe-direct-merge.sh"},
+            2,
+        ),
+        (
+            "protected-script-awk-system-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "awk 'BEGIN {system(\"cat scripts/safe-direct-merge.sh\")}'"
+            },
+            2,
+        ),
+        (
+            "protected-script-awk-getline-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "awk 'BEGIN {getline line < \"scripts/safe-direct-merge.sh\"}'"},
+            2,
+        ),
+        (
+            "protected-script-sed-source-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sed -f scripts/safe-direct-merge.sh"},
+            2,
+        ),
+        (
+            "protected-script-sed-in-place-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sed -i scripts/safe-direct-merge.sh"},
+            2,
+        ),
+        (
+            "protected-script-sed-exec-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sed -e 'e cat scripts/safe-direct-merge.sh'"},
+            2,
+        ),
+        (
+            "protected-script-git-grep-pager-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "git grep --open-files-in-pager -O scripts/safe-direct-merge.sh"
+            },
+            2,
+        ),
+        (
+            "protected-script-rg-pre-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "rg --pre scripts/safe-direct-merge.sh scripts/safe-direct-merge.sh"},
+            2,
+        ),
+        (
+            "protected-script-rg-pre-glob-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "rg --pre-glob '*.md' scripts/safe-direct-merge.sh"
+            },
+            2,
+        ),
+        (
+            "safe-direct-script-nested-login-shell-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -lc 'scripts/safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "safe-direct-script-nested-dot-segment-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -lc 'scripts/./safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "safe-direct-script-parent-segment-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash scripts/../scripts/safe-direct-merge.sh 220"},
+            2,
+        ),
+        (
+            "safe-direct-script-double-nested-shell-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sh -c 'bash scripts/safe-direct-merge.sh 220'"},
+            2,
+        ),
+        (
+            "safe-direct-script-read-allowed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "rg -n mergeable scripts/safe-direct-merge.sh"},
+            0,
+        ),
+        (
+            "safe-direct-script-repeated-slash-read-allowed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "cat scripts//safe-direct-merge.sh"},
+            0,
+        ),
+        (
+            "safe-direct-script-dot-segment-read-allowed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "cat scripts/./safe-direct-merge.sh"},
+            0,
+        ),
+        (
+            "safe-direct-script-parent-segment-read-allowed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "cat scripts/../scripts/safe-direct-merge.sh"},
+            0,
+        ),
+        (
+            "safe-direct-script-nested-inline-read-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -lc 'cat scripts/safe-direct-merge.sh'"},
+            2,
+        ),
+        (
+            "safe-direct-script-bash-command-substitution-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -c \"$(cat scripts/safe-direct-merge.sh)\""},
+            2,
+        ),
+        (
+            "followup-create-script-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "scripts/create-review-followup-issue.sh --create "
+                "--title x --body-file /tmp/body"
+            },
+            2,
+        ),
+        (
+            "safe-direct-script-command-substitution-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash -c '$(cat scripts/safe-direct-merge.sh)'"},
+            2,
+        ),
+        (
+            "fixture-tools-script-name-read-allowed",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "bash scripts/test-fixture-tools.sh"},
+            0,
+        ),
+        (
+            "ruby-e-script-exec-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "ruby -e 'exec \"scripts/safe-direct-merge.sh\"'"},
+            2,
+        ),
+        (
+            "ruby-e-script-dot-exec-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "ruby -e 'exec \"scripts/./safe-direct-merge.sh\"'"},
+            2,
+        ),
+        (
+            "python-c-script-exec-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'exec(open(\"scripts/safe-direct-merge.sh\")"
+                ".read())'"
+            },
+            2,
+        ),
+        (
+            "node-e-script-require-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "node -e 'require(\"./scripts/safe-direct-merge.sh\")'"},
+            2,
+        ),
+        (
+            "python-os-execv-script-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'import os; os.execv("
+                "\"scripts/safe-direct-merge.sh\", [\"safe-direct-merge.sh\"])'"
+            },
+            2,
+        ),
+        (
+            "python-os-posix-spawn-script-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'import os; os.posix_spawn("
+                "\"scripts/safe-direct-merge.sh\", [\"safe-direct-merge.sh\"])'"
+            },
+            2,
+        ),
+        (
+            "python-c-script-inline-read-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'print(open(\"scripts/safe-direct-merge.sh\")"
+                ".read())'"
+            },
+            2,
+        ),
+        (
+            "followup-preview-script-authorized",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "scripts/create-review-followup-issue.sh --title x "
+                f"--body-file {followup_body} --label agent:research "
+                "--format jsonl"
+            },
+            0,
+        ),
+        (
+            "followup-preview-dot-segment-script-authorized",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "bash scripts/./create-review-followup-issue.sh --title x "
+                f"--body-file {followup_body} --label agent:research "
+                "--format jsonl"
+            },
+            0,
+        ),
+        (
+            "followup-create-script-authorized",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "bash scripts/create-review-followup-issue.sh --title x "
+                f"--body-file {followup_body} --label agent:research "
+                "--format jsonl --create"
+            },
+            0,
+        ),
+        (
+            "followup-script-wrong-label-denied",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "scripts/create-review-followup-issue.sh --title x "
+                f"--body-file {followup_body} --label agent:ready"
+            },
+            2,
+        ),
+        (
+            "followup-script-unsafe-body-denied",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "scripts/create-review-followup-issue.sh --title x "
+                "--body-file /tmp/body --label agent:research"
+            },
+            2,
+        ),
+        (
+            "followup-script-shell-wrapper-denied",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "bash -lc 'scripts/create-review-followup-issue.sh "
+                f"--title x --body-file {followup_body} "
+                "--label agent:research'"
+            },
+            2,
+        ),
+        (
+            "followup-parent-segment-script-denied",
+            "rpm_followup_issue_creator",
+            "exec_command",
+            {
+                "cmd": "scripts/../scripts/create-review-followup-issue.sh "
+                f"--title x --body-file {followup_body} --label agent:research"
+            },
+            2,
+        ),
+        (
+            "nested-mcp-dynamic-lookup-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {
+                "code": "await tools[ALL_TOOLS.find(x => "
+                'x.name.endsWith("update_issue")).name]({issue_number: 1})'
+            },
+            2,
+        ),
+        (
+            "nested-mcp-reflect-lookup-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {
+                "code": "const name = ['mcp', 'github', 'update_issue'].join('__'); "
+                "await Reflect.get(tools, name)({issue_number: 1})"
+            },
+            2,
+        ),
+        (
+            "nested-mcp-constructed-tools-eval-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {
+                "code": "const t = eval('to' + 'ols'); const name = "
+                "['mcp', 'github', 'update_issue'].join('__'); "
+                "await Reflect.get(t, name)({issue_number: 1})"
+            },
+            2,
+        ),
+        (
+            "nested-mcp-unicode-identifier-through-functions-exec",
+            "rpm_issue_researcher",
+            "functions.exec",
+            {
+                "code": "const n=['mcp','github','update_issue'].join('__'); "
+                "await to\\u006fls[n]({issue_number: 1})"
+            },
+            2,
+        ),
+        (
+            "git-push-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "git push origin HEAD:refs/heads/policy-bypass"},
+            2,
+        ),
+        (
+            "git-push-resolver-unsafe-denied",
+            "pr-review-resolver",
+            "exec_command",
+            {"cmd": "git push --force origin HEAD:refs/heads/policy-bypass"},
+            2,
+        ),
+        (
+            "git-push-resolver-cas-denied",
+            "pr-review-resolver",
+            "exec_command",
+            {
+                "cmd": "git push origin HEAD:refs/heads/fix/review "
+                "--force-with-lease=refs/heads/fix/review:"
+                "0123456789abcdef0123456789abcdef01234567"
+            },
+            2,
+        ),
+        (
+            "github-curl-patch-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "curl -X PATCH https://api.github.com/repos/example/example/issues/1"
+            },
+            2,
+        ),
+        (
+            "github-httpie-patch-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "http PATCH https://api.github.com/repos/example/example/issues/1"
+            },
+            2,
+        ),
+        (
+            "github-curl-dynamic-method-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "METHOD=PATCH; curl -X \"$METHOD\" "
+                "https://api.github.com/repos/example/example/issues/1"
+            },
+            2,
+        ),
+        (
+            "github-curl-json-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "curl --json payload "
+                "https://api.github.com/repos/example/example/issues/1"
+            },
+            2,
+        ),
+        (
+            "github-curl-quoted-host-patch-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'curl -X PATCH https://api.github.co""m/'
+                "repos/example/example/issues/1"
+            },
+            2,
+        ),
+        (
+            "gh-copied-glob-alias-issue-edit-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "cp /opt/homebrew/bin/g[h] /tmp/x; "
+                "/tmp/x issue edit 1 --add-label security"
+            },
+            2,
+        ),
+        (
+            "git-copied-glob-alias-push-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "cp /usr/bin/g[i]t /tmp/x; "
+                "/tmp/x push origin HEAD:refs/heads/x"
+            },
+            2,
+        ),
+        (
+            "git-config-alias-push-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "git -c alias.ship=push ship origin "
+                "HEAD:refs/heads/policy-bypass"
+            },
+            2,
+        ),
+        (
+            "git-quoted-config-alias-push-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "git -c alias.ship=p'ush' ship origin "
+                "HEAD:refs/heads/policy-bypass"
+            },
+            2,
+        ),
+        (
+            "git-dynamic-action-push-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'ACTION=push; git "$ACTION" origin '
+                "HEAD:refs/heads/policy-bypass"
+            },
+            2,
+        ),
+        (
+            "git-copied-alias-url-push-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "cp /usr/bin/g[i]t /tmp/x; /tmp/x push "
+                "https://github.com/nerdchanii/rpm HEAD:refs/heads/x"
+            },
+            2,
+        ),
+        (
+            "github-urllib-patch-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'import urllib.request; "
+                "urllib.request.Request(\"https://api.github.com/repos/"
+                "nerdchanii/rpm/issues/193\", data=b\"{}\", method=\"PATCH\")'"
+            },
+            2,
+        ),
+        (
+            "github-http-client-patch-read-role-denied",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "python3 -c 'import http.client; "
+                "http.client.HTTPSConnection(\"api.github.com\").request("
+                "\"PATCH\", \"/repos/nerdchanii/rpm/issues/193\")'"
+            },
+            2,
+        ),
+        (
+            "gh-exported-wrapper-nested-issue-edit",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "CMD=/usr/bin/gh; export CMD; "
+                "sh -c '\"$CMD\" issue edit 1 --add-label security'"
+            },
+            2,
+        ),
+        (
+            "gh-exported-wrapper-nested-api-delete",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": "CMD=/usr/bin/gh; export CMD; "
+                "sh -c '\"$CMD\" api repos/example/example -X DELETE'"
+            },
+            2,
+        ),
+        (
+            "gh-variable-issue-edit",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'GH=/usr/bin/gh; "$GH" issue edit 1 --add-label security'},
+            2,
+        ),
+        (
+            "gh-parameter-issue-comment",
+            "rpm_issue_researcher",
+            "exec_command",
+            {
+                "cmd": 'GH=/usr/bin/gh; "${GH:-/usr/bin/gh}" '
+                "issue comment 1 --body x"
+            },
+            2,
+        ),
+        (
+            "unrelated-curl-variable-api-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'curl "$URL/api"'},
+            0,
+        ),
+        (
+            "unrelated-nested-curl-api-get-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": "sh -c 'curl https://api.example.test/items -X GET'"},
+            0,
+        ),
+        (
+            "unrelated-curl-literal-api-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'echo "$value"; curl https://api.example.com/data'},
+            0,
+        ),
+        (
+            "unrelated-echo-variable-api-read",
+            "rpm_issue_researcher",
+            "exec_command",
+            {"cmd": 'echo "$value" api'},
+            0,
+        ),
+        (
+            "mcp-provider-neutral-read",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue",
+            {"operation": "read"},
+            0,
+        ),
+        (
+            "mcp-post-resource-false-positive",
+            "rpm_issue_researcher",
+            "mcp__provider__get_post",
+            {"operation": "read"},
+            0,
+        ),
+        (
+            "mcp-get-commit-read",
+            "rpm_issue_researcher",
+            "mcp__provider__get_commit",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-or-create-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_or_create_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-and-update-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_and_update_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-issue-delete-without-conjunction",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue_delete",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-issue-then-delete",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue_then_delete",
+            {},
+            2,
+        ),
+        (
+            "mcp-read-project-to-update",
+            "rpm_issue_researcher",
+            "mcp__provider__read_project_to_update",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-issue-patch",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue_patch",
+            {},
+            2,
+        ),
+        (
+            "mcp-read-then-post",
+            "rpm_issue_researcher",
+            "mcp__provider__read_then_post",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-issue-put",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue_put",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-patch-issue",
+            "rpm_issue_researcher",
+            "mcp__provider__get_patch_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-read-post-issue",
+            "rpm_issue_researcher",
+            "mcp__provider__read_post_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-fetch-put-issue",
+            "rpm_issue_researcher",
+            "mcp__provider__fetch_put_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-update-and-get-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__update_and_get_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-publish-and-get-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__publish_and_get_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-and-publish-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_and_publish_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-commit-and-get-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__commit_and_get_changes",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-and-commit-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_and_commit_changes",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-and-push-unknown-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_and_push_files",
+            {},
+            2,
+        ),
+        (
+            "mcp-search-and-replace-unknown-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__search_and_replace",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-or-upsert-unknown-compound-mutation",
+            "rpm_issue_researcher",
+            "mcp__provider__get_or_upsert_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-get-comment-resource-read",
+            "rpm_issue_researcher",
+            "mcp__github__get_comment",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-label-resource-read",
+            "rpm_issue_researcher",
+            "mcp__github__get_label",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-archive-resource-read",
+            "rpm_issue_researcher",
+            "mcp__provider__get_archive",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-comment-and-list-multi-read",
+            "rpm_issue_researcher",
+            "mcp__github__get_comment_and_list_replies",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-label-or-read-multi-read",
+            "rpm_issue_researcher",
+            "mcp__github__get_label_or_read_issue",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-archive-and-list-multi-read",
+            "rpm_issue_researcher",
+            "mcp__provider__get_archive_and_list_files",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-publish-log-read",
+            "rpm_issue_researcher",
+            "mcp__provider__get_publish_log",
+            {},
+            0,
+        ),
+        (
+            "mcp-get-commit-operation-override",
+            "rpm_issue_researcher",
+            "mcp__provider__get_commit",
+            {"operation": "publish"},
+            2,
+        ),
+        (
+            "mcp-get-publish-log-nested-http-method-override",
+            "rpm_issue_researcher",
+            "mcp__provider__get_publish_log",
+            {"request": {"http_method": "POST"}},
+            2,
+        ),
+        (
+            "mcp-get-commit-nested-request-method-override",
+            "rpm_issue_researcher",
+            "mcp__provider__get_commit",
+            {"request": {"request_method": "PUT"}},
+            2,
+        ),
+        (
+            "mcp-resolve-issue-state-ambiguity",
+            "rpm_issue_researcher",
+            "mcp__github__resolve_issue",
+            {},
+            2,
+        ),
+        (
+            "mcp-asset-false-positive",
+            "rpm_issue_researcher",
+            "mcp__provider__get_issue",
+            {"operation": "asset"},
+            0,
+        ),
+        (
+            "mcp-resource-key-does-not-override-action",
+            "rpm_issue_researcher",
+            "mcp__provider__get_commit",
+            {"commit": "abc123", "publish": False},
+            0,
+        ),
+        (
+            "mcp-codex-apps-github-get-commit-read",
+            "rpm_issue_researcher",
+            "mcp__codex_apps__github_get_commit",
+            {},
+            0,
+        ),
+        (
+            "mcp-plural-labels-refiner-denied",
+            "rpm_issue_refiner",
+            "mcp__github__add_labels_to_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "labels": ["agent:claimed"],
+            },
+            2,
+        ),
+        (
+            "mcp-plural-labels-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__add_labels_to_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "labels": ["agent:claimed"],
+            },
+            2,
+        ),
+        (
+            "mcp-external-target-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {
+                "owner": "other",
+                "repo": "repo",
+                "issue_number": 1,
+                "labels": ["agent:claimed"],
+            },
+            2,
+        ),
+        (
+            "mcp-conflicting-target-refiner-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "other",
+                "repo": "repo",
+                "repository": "nerdchanii/rpm",
+                "issue_number": 1,
+                "labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "mcp-extra-type-field-refiner-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "body": "managed body",
+                "type": "Bug",
+            },
+            2,
+        ),
+        (
+            "mcp-extra-type-field-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "labels": ["agent:claimed"],
+                "type": "Bug",
+            },
+            2,
+        ),
+        (
+            "mcp-reverse-transition-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:ready"],
+                "remove_labels": ["agent:claimed"],
+            },
+            2,
+        ),
+        (
+            "mcp-ready-replacement-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "labels": ["agent:ready"],
+            },
+            2,
+        ),
+        (
+            "mcp-create-issue-comment-idea-creator-denied",
+            "rpm_idea_issue_creator",
+            "mcp__github__create_issue_comment",
+            {"issue_number": 1, "body": "comment"},
+            2,
+        ),
+        (
+            "mcp-create-issue-comment-followup-creator-denied",
+            "rpm_followup_issue_creator",
+            "mcp__github__create_issue_comment",
+            {"issue_number": 1, "body": "comment"},
+            2,
+        ),
+        (
+            "mcp-non-lifecycle-label-refiner-denied",
+            "rpm_issue_refiner",
+            "mcp__github__add_labels_to_issue",
+            {"labels": ["security"]},
+            2,
+        ),
+        (
+            "mcp-refiner-claimed-transition-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:claimed"],
+                "remove_labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "mcp-refiner-conflicting-transition-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:ready", "agent:blocked"],
+                "remove_labels": ["agent:research"],
+            },
+            2,
+        ),
+        (
+            "mcp-refiner-ready-transition-authorized",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:ready"],
+                "remove_labels": ["agent:research"],
+            },
+            0,
+        ),
+        (
+            "mcp-refiner-blocked-transition-authorized",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:blocked"],
+                "remove_labels": ["agent:research"],
+            },
+            0,
+        ),
+        (
+            "mcp-refiner-blocked-to-research-authorized",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:research"],
+                "remove_labels": ["agent:blocked"],
+            },
+            0,
+        ),
+        (
+            "mcp-refiner-blocked-to-ready-authorized",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:ready"],
+                "remove_labels": ["agent:blocked"],
+            },
+            0,
+        ),
+        (
+            "mcp-refiner-blocked-to-claimed-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:claimed"],
+                "remove_labels": ["agent:blocked"],
+            },
+            2,
+        ),
+        (
+            "mcp-refiner-conflicting-recovery-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {
+                "owner": "nerdchanii",
+                "repo": "rpm",
+                "issue_number": 1,
+                "add_labels": ["agent:research", "agent:ready"],
+                "remove_labels": ["agent:blocked"],
+            },
+            2,
+        ),
+        (
+            "mcp-non-lifecycle-label-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__add_labels_to_issue",
+            {"labels": ["security"]},
+            2,
+        ),
+        (
+            "mcp-label-with-title-refiner-denied",
+            "rpm_issue_refiner",
+            "mcp__github__update_issue",
+            {"labels": ["agent:ready"], "title": "changed"},
+            2,
+        ),
+        (
+            "mcp-label-with-assignee-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {"labels": ["agent:claimed"], "assignees": ["attacker"]},
+            2,
+        ),
+        (
+            "mcp-update-issue-non-lifecycle-label-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__update_issue",
+            {"labels": ["security"]},
+            2,
+        ),
+        (
+            "mcp-unrelated-lifecycle-label-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "mcp__github__add_labels_to_issue",
+            {"labels": ["agent:blocked"]},
+            2,
+        ),
+        (
+            "shell-lifecycle-label-refiner-structured-tool-required",
+            "rpm_issue_refiner",
+            "exec_command",
+            {"cmd": "gh issue edit 1 --add-label agent:research"},
+            2,
+        ),
+        (
+            "shell-non-lifecycle-label-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {"cmd": "gh issue edit 1 --add-label security"},
+            2,
+        ),
+        (
+            "shell-variable-label-flag-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {
+                "cmd": 'FLAG=--add-label; GH=/usr/bin/gh; '
+                '"$GH" issue edit 1 "$FLAG" security'
+            },
+            2,
+        ),
+        (
+            "shell-variable-label-flag-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "exec_command",
+            {
+                "cmd": 'FLAG=--add-label; GH=/usr/bin/gh; '
+                '"$GH" issue edit 1 "$FLAG" security'
+            },
+            2,
+        ),
+        (
+            "shell-label-with-title-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {
+                "cmd": "gh issue edit 1 --add-label agent:ready --title changed"
+            },
+            2,
+        ),
+        (
+            "shell-add-assignee-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "exec_command",
+            {"cmd": "gh issue edit 1 --add-assignee attacker"},
+            2,
+        ),
+        (
+            "shell-remove-milestone-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {"cmd": "gh issue edit 1 --remove-milestone"},
+            2,
+        ),
+        (
+            "shell-short-title-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {"cmd": "gh issue edit 1 -t changed"},
+            2,
+        ),
+        (
+            "shell-external-issue-url-refiner-denied",
+            "rpm_issue_refiner",
+            "exec_command",
+            {
+                "cmd": "gh issue edit https://github.com/other/repo/issues/1 "
+                "--add-label agent:research"
+            },
+            2,
+        ),
+        (
+            "shell-external-repo-claimer-denied",
+            "rpm_ready_ticket_claimer",
+            "exec_command",
+            {
+                "cmd": "gh -Rother/repo issue edit 1 "
+                "--add-label agent:claimed --remove-label agent:ready"
+            },
+            2,
+        ),
     )
+    for verb in ("set", "assign", "archive", "publish", "transfer", "approve", "pin"):
+        cases += (
+            (
+                f"mcp-{verb}-mutation-alias",
+                "rpm_issue_researcher",
+                "mcp__provider__get_issue",
+                {"operation": verb},
+                2,
+            ),
+        )
+    for method in ("POST", "PATCH", "PUT"):
+        cases += (
+            (
+                f"mcp-provider-neutral-{method.casefold()}-method",
+                "rpm_issue_researcher",
+                "mcp__provider__get_issue",
+                {"method": method},
+                2,
+            ),
+        )
+
+    missing_registration = run(
+        {
+            "hook_event_name": "SubagentStart",
+            "agent_type": "rpm_issue_researcher",
+        }
+    )
+    if missing_registration.returncode != 2:
+        fail(
+            errors,
+            "tool policy probe missing-registration expected exit 2, "
+            f"got {missing_registration.returncode}",
+        )
+    missing_state_transcript = f"{transcript}-missing-state"
+    registered = run(
+        {
+            "hook_event_name": "SubagentStart",
+            "agent_type": "rpm_issue_researcher",
+            "agent_transcript_path": missing_state_transcript,
+        }
+    )
+    if registered.returncode != 0:
+        fail(errors, f"tool policy probe missing-state registration failed: {registered.stderr}")
+    else:
+        policy_path = Path(tempfile.gettempdir()) / "rpm-agent-tool-policy"
+        digest = hashlib.sha256(missing_state_transcript.encode()).hexdigest()
+        (policy_path / f"{digest}.json").unlink(missing_ok=True)
+        missing_state = run(
+            {
+                "hook_event_name": "PreToolUse",
+                "transcript_path": missing_state_transcript,
+                "tool_name": "mcp__provider__get_issue",
+                "tool_input": {},
+            }
+        )
+        if missing_state.returncode != 2:
+            fail(
+                errors,
+                "tool policy probe missing-state expected exit 2, "
+                f"got {missing_state.returncode}",
+            )
+        run(
+            {
+                "hook_event_name": "SubagentStop",
+                "agent_type": "rpm_issue_researcher",
+                "agent_transcript_path": missing_state_transcript,
+            }
+        )
+
+    external_read = run(
+        {
+            "hook_event_name": "PreToolUse",
+            "agent_type": "general-purpose",
+            "transcript_path": f"{transcript}-external",
+            "tool_name": "exec_command",
+            "tool_input": {"cmd": "gh api --method=PATCH repos/example/example"},
+        }
+    )
+    if external_read.returncode != 0:
+        fail(
+            errors,
+            "tool policy probe external-non-rpm expected exit 0, "
+            f"got {external_read.returncode}",
+        )
     for name, role, tool, tool_input, expected in cases:
         actual = pre_tool(role, tool, tool_input)
         if actual != expected:
             fail(errors, f"tool policy probe {name} expected exit {expected}, got {actual}")
+    try:
+        followup_body.unlink(missing_ok=True)
+    except OSError as error:
+        fail(errors, f"tool policy follow-up fixture could not be removed: {error}")
+
+    resolve_reason = run(
+        {
+            "hook_event_name": "PreToolUse",
+            "agent_type": "rpm_issue_researcher",
+            "transcript_path": transcript,
+            "tool_name": "mcp__github__resolve_issue",
+            "tool_input": {},
+        }
+    )
+    if resolve_reason.returncode != 2 or "detected mutation issue_other" not in resolve_reason.stderr:
+        fail(
+            errors,
+            "tool policy probe resolve_issue must reject with a mutation reason, "
+            f"got exit {resolve_reason.returncode}: {resolve_reason.stderr}",
+        )
     run(
         {
             "hook_event_name": "SubagentStop",
@@ -1875,6 +4760,10 @@ def main() -> int:
     check_policy(errors)
     check_role_contracts(agents, errors)
     check_skill_inventory(errors)
+    check_role_taxonomy(agents, errors)
+    check_tool_policy_mutation_capabilities(errors)
+    check_external_role_entrypoints(agents, errors)
+    check_role_organization_docs(agents, errors)
     check_entries_and_assets(errors)
     check_deterministic_assets(errors)
     check_tool_policy_runtime(errors)
@@ -1884,7 +4773,8 @@ def main() -> int:
         return 1
     print(
         "agent_organization.status=ok "
-        f"agents={len(agents)} rpm_roles={len(EXPECTED_SANDBOX)}"
+        f"agents={len(agents)} rpm_roles={len(EXPECTED_SANDBOX)} "
+        f"taxonomy_roles={len(ROLE_TAXONOMY)}"
     )
     return 0
 

@@ -30,6 +30,9 @@ Rules:
 - Never merge or request `@codex review`.
 - Do not assume Automatic review reruns after a fix commit; require regression tests, validation, and internal adversarial review evidence.
 - Do not make unrelated cleanup, broad refactors, formatting-only churn, or file moves.
+- This role is the sole repository write owner for its accepted review-fix batch.
+  The caller must serialize this handoff with every other writer for the task.
+- Do not spawn/contact other agents.
 - If validation fails after an accepted change, stop and return blocked JSONL.
 
 Return only the `review_resolution_result` JSONL shape defined in `templates.md`.

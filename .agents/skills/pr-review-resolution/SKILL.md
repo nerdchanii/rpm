@@ -59,7 +59,7 @@ Read [references/templates.md](references/templates.md) when you need the resolv
 - GitHub plugin review, thread, issue, label, and PR tools for scheduled Cloud reconciliation
 - `bash scripts/collect-pr-review-context.sh <pr> --format jsonl` as a local/manual fallback
 - `bash scripts/collect-pr-review-context.sh <pr> --format json` as a local/manual fallback
-- `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> [--label <label>] --format jsonl`
-- `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> [--label <label>] --create --format jsonl`
+- `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> --label agent:research --format jsonl`
+- `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> --label agent:research --create --format jsonl`
 
 Use `/tmp/rpm-review-followup-pr<pr>-<slug>.md` for temporary issue body files. Do not commit them.
