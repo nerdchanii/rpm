@@ -1,0 +1,132 @@
+{
+  "repository": "nerdchanii/rpm",
+  "repository_settings": {
+    "source": "github-repository-metadata-v1",
+    "repository": "nerdchanii/rpm",
+    "read_complete": true,
+    "delete_branch_on_merge": false
+  },
+  "selected_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "selected_pr_evidence": {
+    "repository": "nerdchanii/rpm",
+    "number": 210,
+    "base_ref": "main",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "head_repository": "nerdchanii/rpm",
+    "head_ref": "feat/issue-145-workspaces",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "is_draft": false
+  },
+  "issue_inventory": {
+    "repository": "nerdchanii/rpm",
+    "source": "repository-open-issue-merge-inventory-v1",
+    "read_complete": true,
+    "pagination_complete": true,
+    "has_next_page": false,
+    "count": 1,
+    "records": [
+      {"number": 145, "state": "OPEN", "lifecycle_state": "awaiting-merge"}
+    ]
+  },
+  "issues": [
+    {
+      "number": 145,
+      "url": "https://github.com/nerdchanii/rpm/issues/145",
+      "state": "OPEN",
+      "labels": [
+        "agent:awaiting-merge",
+        "documentation"
+      ],
+      "closing_pr_inventory": {
+        "repository": "nerdchanii/rpm",
+        "source": "github-closing-issue-references-v1",
+        "read_complete": true,
+        "pagination_complete": true,
+        "has_next_page": false,
+        "count": 1,
+        "records": [
+          {
+            "repository": "nerdchanii/rpm",
+            "pr": 210,
+            "is_draft": false
+          }
+        ]
+      },
+      "closing_prs": [
+        {
+          "number": 210,
+          "state": "OPEN",
+          "repository": "nerdchanii/rpm",
+          "base_ref": "main",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "head_repository": "nerdchanii/rpm",
+          "head_ref": "feat/issue-145-workspaces",
+          "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "is_draft": false,
+          "selected_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "checks": {
+            "source": "github-check-runs-v1",
+            "repository": "nerdchanii/rpm",
+            "pr": 210,
+            "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "read_complete": true,
+            "pagination_complete": true,
+            "has_next_page": false,
+            "count": 2,
+            "records": [
+              {
+                "name": "metadata",
+                "status": "completed",
+                "conclusion": "success",
+                "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "source": "github-actions",
+                "workflow_run_id": 41001
+              },
+              {
+                "name": "verify",
+                "status": "completed",
+                "conclusion": "success",
+                "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "source": "github-actions",
+                "workflow_run_id": 41002
+              }
+            ]
+          },
+          "mergeable": true,
+          "findings": {
+            "source": "current-head-review-findings-v1",
+            "repository": "nerdchanii/rpm",
+            "pr": 210,
+            "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "read_complete": true,
+            "pagination_complete": true,
+            "has_next_page": false,
+            "count": 0,
+            "items": []
+          },
+          "dependent_prs": {
+            "source": "repository-open-pr-base-inventory-v1",
+            "repository": "nerdchanii/rpm",
+            "pr": 210,
+            "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "read_complete": true,
+            "pagination_complete": true,
+            "has_next_page": false,
+            "count": 1,
+            "records": [
+              {
+                "number": 216,
+                "state": "OPEN",
+                "repository": "nerdchanii/rpm",
+                "base_ref": "feat/issue-145-workspaces",
+                "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "head_ref": "feat/issue-148-workspace-targeting",
+                "head_sha": "cccccccccccccccccccccccccccccccccccccccc"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

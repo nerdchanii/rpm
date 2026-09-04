@@ -1,0 +1,6 @@
+interface:
+  display_name: "Adopt Existing PR"
+  short_description: "Adopt one authorized existing RPM pull request."
+  default_prompt: "Use $adopt-existing-pr to validate and adopt one explicitly authorized existing RPM pull request."
+policy:
+  allow_implicit_invocation: false

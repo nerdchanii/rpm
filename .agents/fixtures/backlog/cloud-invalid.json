@@ -1,9 +1,37 @@
 {
+  "repository": "nerdchanii/rpm",
+  "execution_inventory": {
+    "repository": "nerdchanii/rpm",
+    "source": "repository-open-issue-lifecycle-inventory-v1",
+    "read_complete": true,
+    "pagination_complete": true,
+    "has_next_page": false,
+    "count": 1,
+    "records": [{"repository": "nerdchanii/rpm", "number": 5}]
+  },
+  "closing_pr_inventory": {
+    "repository": "nerdchanii/rpm",
+    "source": "repository-open-closing-pr-inventory-v1",
+    "read_complete": true,
+    "pagination_complete": true,
+    "has_next_page": false,
+    "count": 0,
+    "records": []
+  },
   "issues": [
     {
       "number": 5,
       "state": "OPEN",
       "labels": ["agent:ready", "agent:claimed", "kind:bug"],
+      "closing_pr_inventory": {
+        "repository": "nerdchanii/rpm",
+        "source": "github-closing-issue-references-v1",
+        "read_complete": true,
+        "pagination_complete": true,
+        "has_next_page": false,
+        "count": 0,
+        "records": []
+      },
       "closing_prs": []
     }
   ]

@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "repository": "nerdchanii/rpm",
   "execution_queue": {
     "source": "issue-labels",
@@ -68,6 +68,125 @@
       "algorithm": "sha256-nul-joined"
     }
   },
+  "existing_pr_adoption": {
+    "operation": "adopt-existing-pr",
+    "operation_version": 1,
+    "owner": "rpm_existing_pr_adopter",
+    "from_state": "untracked",
+    "to_state": "review-pending",
+    "batch_limit": 1,
+    "required_checks": [
+      "metadata",
+      "verify"
+    ],
+    "approval_identity_fields": [
+      "repository",
+      "issue",
+      "pr",
+      "base_repository",
+      "base_ref",
+      "base_sha",
+      "head_repository",
+      "head_ref",
+      "head_sha",
+      "evidence_digest"
+    ],
+    "approved_plus_one_actors": [
+      "chatgpt-codex-connector"
+    ],
+    "canonical_array_order": {
+      "authorization.closing_issues": ["repository", "number"],
+      "evidence.issue.labels": ["$value"],
+      "evidence.issue.closing_prs": ["$value"],
+      "evidence.pr.closing_issues": ["repository", "number"],
+      "evidence.checks.records": ["name", "workflow_run_id"],
+      "evidence.review.automatic_reviews.records": ["submitted_at", "actor", "reviewed_head_sha"],
+      "evidence.review.reactions.records": ["created_at", "actor", "content"],
+      "evidence.findings.items": ["severity", "id"],
+      "evidence.writers.records": ["kind", "repository", "issue", "pr", "run_id"],
+      "evidence.dependent_prs.records": ["number"]
+    },
+    "p2_terminal_dispositions": [
+      "already-addressed",
+      "defer-follow-up",
+      "residual-risk",
+      "reject-out-of-scope"
+    ],
+    "writer_inventory": {
+      "source": "repository-global-writer-inventory-v1",
+      "lease_ttl_seconds": 3600,
+      "adoption_acquisition_order": "source-comment-id-ascending",
+      "kinds": [
+        "claim",
+        "implementation",
+        "review-resolution",
+        "adoption"
+      ]
+    },
+    "dependent_pr_inventory": {
+      "source": "repository-open-pr-base-inventory-v1"
+    },
+    "stale_label_recovery": {
+      "mode": "fail-closed",
+      "delete_label": false,
+      "reason": "recovery-label-ownership-unprovable"
+    },
+    "ledger": {
+      "namespace": "rpm-agent-adoption",
+      "marker": "<!-- rpm-agent-adoption:v1 -->",
+      "approved_authors": [
+        "nerdchanii"
+      ],
+      "terminal_history": {
+        "classification": "manually-reconciled-old-head",
+        "phases": [
+          "prepared",
+          "label-mutation"
+        ],
+        "require_head_change": true
+      },
+      "phases": [
+        "prepared",
+        "label-mutation",
+        "committed",
+        "reconciled"
+      ]
+    }
+  },
+  "lifecycle_contract": {
+    "initial_states": [
+      "untracked",
+      "research",
+      "ready"
+    ],
+    "safe_stop_states": [
+      "awaiting-merge",
+      "blocked"
+    ],
+    "external_terminal_states": [
+      "closed"
+    ],
+    "edge_fixtures": {
+      "untracked->research": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "untracked->research"},
+      "research->research": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "research->research"},
+      "research->ready": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "research->ready"},
+      "research->blocked": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "research->blocked"},
+      "ready->claimed": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "ready->claimed"},
+      "ready->blocked": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "ready->blocked"},
+      "claimed->ready": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "claimed->ready"},
+      "claimed->review-pending": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "claimed->review-pending"},
+      "claimed->blocked": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "claimed->blocked"},
+      "review-pending->review-pending": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "review-pending->review-pending"},
+      "review-pending->awaiting-merge": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "review-pending->awaiting-merge"},
+      "review-pending->blocked": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "review-pending->blocked"},
+      "awaiting-merge->blocked": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "awaiting-merge->blocked"},
+      "blocked->research": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "blocked->research"},
+      "blocked->ready": {"path": "tests/fixtures/agent-workflow/lifecycle-edges.json", "case": "blocked->ready"}
+    },
+    "operation_fixtures": {
+      "adopt-existing-pr": "adopt-existing-pr"
+    }
+  },
   "allowed_transitions": {
     "untracked": [
       "research"
@@ -116,6 +235,6 @@
     "required_mergeable": true,
     "forbid_unresolved_p0_p1": true,
     "method": "squash",
-    "delete_branch": true
+    "delete_branch": false
   }
 }

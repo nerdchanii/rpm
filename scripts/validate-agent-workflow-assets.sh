@@ -2616,7 +2616,7 @@ check_just_test_verbosity() {
 for skill in .agents/skills/*; do
   [ -d "${skill}" ] || continue
   name="$(basename "${skill}")"
-  if [ "${name}" = "take-ticket" ] || [ "${name}" = "prepare-backlog" ] || [ "${name}" = "merge-gatekeeper" ]; then
+  if [ "${name}" = "take-ticket" ] || [ "${name}" = "prepare-backlog" ] || [ "${name}" = "merge-gatekeeper" ] || [ "${name}" = "adopt-existing-pr" ]; then
     emit_check \
       "skill_${name}" \
       "ok" \
@@ -2641,7 +2641,7 @@ if [ -d .codex/agents ]; then
 fi
 
 check "backlog_policy_schema" jq -e '
-  .version == 3
+  .version == 4
   and .repository == "nerdchanii/rpm"
   and .execution_queue == {
     source:"issue-labels",
@@ -2675,6 +2675,75 @@ check "backlog_policy_schema" jq -e '
       algorithm:"sha256-nul-joined"
     }
   }
+  and .existing_pr_adoption == {
+    operation:"adopt-existing-pr",
+    operation_version:1,
+    owner:"rpm_existing_pr_adopter",
+    from_state:"untracked",
+    to_state:"review-pending",
+    batch_limit:1,
+    required_checks:["metadata","verify"],
+    approval_identity_fields:["repository","issue","pr","base_repository","base_ref","base_sha","head_repository","head_ref","head_sha","evidence_digest"],
+    approved_plus_one_actors:["chatgpt-codex-connector"],
+    canonical_array_order:{
+      "authorization.closing_issues":["repository","number"],
+      "evidence.issue.labels":["$value"],
+      "evidence.issue.closing_prs":["$value"],
+      "evidence.pr.closing_issues":["repository","number"],
+      "evidence.checks.records":["name","workflow_run_id"],
+      "evidence.review.automatic_reviews.records":["submitted_at","actor","reviewed_head_sha"],
+      "evidence.review.reactions.records":["created_at","actor","content"],
+      "evidence.findings.items":["severity","id"],
+      "evidence.writers.records":["kind","repository","issue","pr","run_id"],
+      "evidence.dependent_prs.records":["number"]
+    },
+    p2_terminal_dispositions:[
+      "already-addressed",
+      "defer-follow-up",
+      "residual-risk",
+      "reject-out-of-scope"
+    ],
+    writer_inventory:{
+      source:"repository-global-writer-inventory-v1",
+      lease_ttl_seconds:3600,
+      adoption_acquisition_order:"source-comment-id-ascending",
+      kinds:["claim","implementation","review-resolution","adoption"]
+    },
+    dependent_pr_inventory:{
+      source:"repository-open-pr-base-inventory-v1"
+    },
+    stale_label_recovery:{
+      mode:"fail-closed",
+      delete_label:false,
+      reason:"recovery-label-ownership-unprovable"
+    },
+    ledger:{
+      namespace:"rpm-agent-adoption",
+      marker:"<!-- rpm-agent-adoption:v1 -->",
+      approved_authors:["nerdchanii"],
+      terminal_history:{
+        classification:"manually-reconciled-old-head",
+        phases:["prepared","label-mutation"],
+        require_head_change:true
+      },
+      phases:["prepared","label-mutation","committed","reconciled"]
+    }
+  }
+  and .lifecycle_contract.initial_states == ["untracked","research","ready"]
+  and .lifecycle_contract.safe_stop_states == ["awaiting-merge","blocked"]
+  and .lifecycle_contract.external_terminal_states == ["closed"]
+  and .lifecycle_contract.operation_fixtures == {
+    "adopt-existing-pr":"adopt-existing-pr"
+  }
+  and (.lifecycle_contract.edge_fixtures | keys) == ([
+    "untracked->research",
+    "research->research","research->ready","research->blocked",
+    "ready->claimed","ready->blocked",
+    "claimed->ready","claimed->review-pending","claimed->blocked",
+    "review-pending->review-pending","review-pending->awaiting-merge","review-pending->blocked",
+    "awaiting-merge->blocked",
+    "blocked->research","blocked->ready"
+  ] | sort)
   and .batch_limits == {research:1,execution:1}
   and .allowed_transitions == {
     untracked:["research"],
@@ -2699,11 +2768,13 @@ check "backlog_policy_schema" jq -e '
     required_mergeable:true,
     forbid_unresolved_p0_p1:true,
     method:"squash",
-    delete_branch:true
+    delete_branch:false
   }
 ' .agents/workflows/backlog-policy.json
 
 check "agent_organization" python3 scripts/check-agent-organization.py
+check "existing_pr_adoption_authorization_checkpoint" \
+  bash scripts/test-existing-pr-adoption-authorization.sh
 check "issue_206_pr_metadata" bash scripts/test-issue-206-pr-policy.sh
 check "agent_hooks_json" jq -e . .codex/hooks.json
 for hook in .codex/hooks/agent_tool_policy.py .codex/hooks/issue_manager_stop_gate.py; do
@@ -2735,6 +2806,8 @@ check "script_check_cloud_queue_contract_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-cloud-queue-contract.py").read_text())'
 check "script_check_merge_gate_syntax" \
   python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/check-merge-gate.py").read_text())'
+check "script_materialize_existing_pr_adoption_syntax" \
+  python3 -c 'import ast,pathlib; ast.parse(pathlib.Path("scripts/materialize-existing-pr-adoption.py").read_text())'
 check "script_validate_agent_workflow_assets_syntax" \
   bash -n scripts/validate-agent-workflow-assets.sh
 
@@ -2914,7 +2987,13 @@ check "merge_gate_pass" sh -c '
     and .data.issue == 12
     and .data.pr == 44
     and .data.method == \"squash\"
-    and .data.delete_branch == true
+    and .data.delete_branch == false
+    and .data.merge_request == {
+      repository_full_name:\"nerdchanii/rpm\",
+      pr_number:44,
+      merge_method:\"squash\",
+      expected_head_sha:\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"
+    }
   " >/dev/null
 '
 check "merge_gate_checks_pending_no_work" sh -c '

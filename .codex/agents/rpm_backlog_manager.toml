@@ -48,13 +48,14 @@ RESEARCH_CYCLE:
 
 CLAIM_READY:
 1. Spawn rpm_backlog_scout with mode=ready-candidates.
-2. Require GitHub plugin evidence for every open issue carrying any lifecycle label. Do not run `gh`, Project queries, or Project preflights.
-3. If an open issue is already claimed or review-pending, return `no-work` without mutation.
-4. Reject candidates with zero or multiple lifecycle labels. Select open ready issues in deterministic issue-number ascending order, no more than the policy execution batch limit.
-5. If there is no eligible item, return `no-work`.
-6. Reject a selected issue when an open PR already closes it.
-7. Spawn rpm_ready_ticket_claimer with exactly one selected issue and the policy path.
-8. Return the claimed issue only after the current GitHub state is verified.
+2. Require GitHub plugin evidence for every open issue and its closing-PR relationships before applying lifecycle-label filters. Do not run `gh`, Project queries, or Project preflights.
+3. From that complete open-issue inventory, classify every completed open closing PR whose issue has no lifecycle label. Return `adoption-required` when the dedicated policy operation is present, or `wiring-blocked` when it is absent. Do not hide either condition as healthy no-work and do not mutate labels.
+4. If an open issue is already claimed or review-pending, return `no-work` without mutation.
+5. Reject candidates with zero or multiple lifecycle labels. Select open ready issues in deterministic issue-number ascending order, no more than the policy execution batch limit.
+6. If there is no eligible item, return `no-work`.
+7. Reject a selected issue when an open PR already closes it.
+8. Spawn rpm_ready_ticket_claimer with exactly one selected issue and the policy path.
+9. Return the claimed issue only after the current GitHub state is verified.
 
 Research selection must inventory GitHub Project #7 through the local-roadmap coordinates before narrowing candidates. Claim selection uses open GitHub issues and lifecycle labels as its source of truth. Project membership is not an execution eligibility condition.
 
