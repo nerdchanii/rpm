@@ -22,7 +22,6 @@ invocation.
 | `fixture-governance` | `true` | Implicit-eligible deterministic fixture guidance. |
 | `merge-gatekeeper` | `false` | Explicit-only scheduled merge owner. |
 | `open-pr-review-batch` | `false` | Explicit-only review posting across every open PR. |
-| `pr-resolution-loop` | `false` | Explicit-only review-resolution lifecycle transition. |
 | `pr-review-resolution` | `false` | Explicit-only actionable review feedback resolution. |
 | `prepare-backlog` | `false` | Explicit-only issue capture and research entry point. |
 | `rust-analyzer` | `true` | Implicit-eligible local Rust diagnostics; historical compatibility notes remain factual. |
@@ -30,7 +29,7 @@ invocation.
 | `spec-governance` | `true` | Implicit-eligible contract and SPEC consistency guidance. |
 | `take-ticket` | `false` | Explicit-only issue claim and execution entry point. |
 
-The seven `false` entries can claim or trigger repository-wide review, issue,
+The six `false` entries can claim or trigger repository-wide review, issue,
 label, or merge lifecycle effects and require an explicit user or scheduled
 caller. The three `true` entries provide implicit-eligible local analysis or
 guidance and keep implicit discovery available. Tool and sandbox permissions
@@ -40,9 +39,6 @@ entry point itself must be hidden from model invocation.
 
 The following overlaps are deliberate dispositions for this inventory:
 
-- `pr-resolution-loop` and `pr-review-resolution` overlap in review feedback
-  handling. Issue #202 owns the eventual removal of `pr-resolution-loop`;
-  `pr-review-resolution` remains canonical. No directory is removed here.
 - `merge-gatekeeper` owns the normal `awaiting-merge` queue, while
   `safe-direct-merge` handles explicitly authorized PRs outside that queue.
 - `open-pr-review-batch` posts non-blocking reviews; `pr-review-resolution`

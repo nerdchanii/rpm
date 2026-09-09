@@ -1,0 +1,64 @@
+{
+  "repository": "nerdchanii/rpm",
+  "now": "2026-08-21T12:00:00Z",
+  "issues": [
+    {
+      "number": 3,
+      "state": "OPEN",
+      "labels": ["agent:ready"],
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "approval-3",
+        "plan_revision": "plan-3",
+        "scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executor": "cloud"
+      }
+    }
+  ],
+  "runs": [
+    {
+      "repository": "nerdchanii/rpm",
+      "issue": 3,
+      "run_id": "run-a",
+      "event_id": "delivery-a",
+      "executor": "cloud",
+      "plan_revision": "plan-3",
+      "scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "idempotency_key": "sha256:c810aad365766180fecca3f61c779d3ce4930501c8aa64dff61ef7ac1d0098b9",
+      "lease": {
+        "run_id": "run-a",
+        "owner": "cloud:a",
+        "started_at": "2026-08-21T11:59:00Z",
+        "expires_at": "2026-08-21T12:59:00Z"
+      },
+      "started_at": "2026-08-21T11:59:00Z",
+      "expires_at": "2026-08-21T12:59:00Z"
+    },
+    {
+      "repository": "nerdchanii/rpm",
+      "issue": 3,
+      "run_id": "run-b",
+      "event_id": "delivery-b",
+      "executor": "cloud",
+      "plan_revision": "plan-3",
+      "scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "idempotency_key": "sha256:49a64df903d8f720a45cbc9d7b9a774d6f35a859565545aa40797a11e486cca4",
+      "lease": {
+        "run_id": "run-b",
+        "owner": "cloud:b",
+        "started_at": "2026-08-21T11:59:30Z",
+        "expires_at": "2026-08-21T12:59:30Z"
+      },
+      "started_at": "2026-08-21T11:59:30Z",
+      "expires_at": "2026-08-21T12:59:30Z"
+    }
+  ],
+  "comments": [
+    {
+      "body": "<!-- rpm-agent-claim: {\"event_id\":\"delivery-a\",\"executor\":\"cloud\",\"expires_at\":\"2026-08-21T12:59:00Z\",\"idempotency_key\":\"sha256:c810aad365766180fecca3f61c779d3ce4930501c8aa64dff61ef7ac1d0098b9\",\"issue\":3,\"lease\":{\"expires_at\":\"2026-08-21T12:59:00Z\",\"owner\":\"cloud:a\",\"run_id\":\"run-a\",\"started_at\":\"2026-08-21T11:59:00Z\"},\"plan_revision\":\"plan-3\",\"repository\":\"nerdchanii/rpm\",\"run_id\":\"run-a\",\"scope_hash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"started_at\":\"2026-08-21T11:59:00Z\"} -->"
+    },
+    {
+      "body": "<!-- rpm-agent-claim: {\"event_id\":\"delivery-b\",\"executor\":\"cloud\",\"expires_at\":\"2026-08-21T12:59:30Z\",\"idempotency_key\":\"sha256:49a64df903d8f720a45cbc9d7b9a774d6f35a859565545aa40797a11e486cca4\",\"issue\":3,\"lease\":{\"expires_at\":\"2026-08-21T12:59:30Z\",\"owner\":\"cloud:b\",\"run_id\":\"run-b\",\"started_at\":\"2026-08-21T11:59:30Z\"},\"plan_revision\":\"plan-3\",\"repository\":\"nerdchanii/rpm\",\"run_id\":\"run-b\",\"scope_hash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"started_at\":\"2026-08-21T11:59:30Z\"} -->"
+    }
+  ]
+}

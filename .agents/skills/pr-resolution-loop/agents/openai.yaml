@@ -1,6 +1,0 @@
-interface:
-  display_name: "PR Resolution Loop"
-  short_description: "30-minute loop: select an open PR, resolve review feedback, comment, and transition it for gated merge."
-  default_prompt: "Use $pr-resolution-loop to run the scheduled PR review resolution pipeline: select PR, collect context, route fixes through subagents, comment, and transition it for gated merge."
-policy:
-  allow_implicit_invocation: false
