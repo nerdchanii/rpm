@@ -8,5 +8,7 @@ exit-code mapping, and command-specific output or side effects.
 Current CLI contracts:
 
 - `run/SPEC.md`: `rpm run` command behavior
+- `workspace-targeting/SPEC.md`: workspace target selection for opted-in CLI
+  commands; currently `rpm run` only
 
 Cross-cutting repository structure guidance lives under `docs/conventions/`.

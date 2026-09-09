@@ -158,26 +158,32 @@ parent-referencing, or empty) is likewise rejected by the linker before any
 ### Scripts field
 
 RPM reads and preserves the root `scripts` map when it is present, using
-npm-accurate type (`string -> string`). Values are preserved verbatim; RPM does
-not rewrite, validate, or canonicalize script text. A present-but-wrong-type
-`scripts` value (for example a string, an array, or a map whose values are not
-strings) is discarded as absent during deserialization rather than failing the
-manifest, mirroring the lenient handling used for other preserved fields. A
-single non-string value drops the entire `scripts` map, not just the offending
-entry, matching the per-version registry boundary's whole-map drop semantics
-(`docs/specs/core/registry/SPEC.md`). A well-typed value round-trips into
-`Some(...)`. A manifest that omits `scripts` behaves identically to one without
-it.
+npm-accurate type (`string -> string`). Workspace discovery also preserves the
+same map in each member's immutable manifest snapshot. Values are preserved
+verbatim; RPM does not rewrite, validate, or canonicalize script text. A
+present-but-wrong-type `scripts` value (for example a string, an array, or a map
+whose values are not strings) is discarded as absent during deserialization
+rather than failing the manifest, mirroring the lenient handling used for other
+preserved fields. A single non-string value drops the entire `scripts` map, not
+just the offending entry, matching the per-version registry boundary's
+whole-map drop semantics (`docs/specs/core/registry/SPEC.md`). A well-typed
+value round-trips into `Some(...)`. A manifest that omits `scripts` behaves
+identically to one without it.
 
 The manifest boundary owns reading and preserving `scripts` only. The read
 entries do not influence resolution, version selection, the resolved graph, or
 the lockfile. They are consumed by two distinct downstream behaviors, each with
 its own contract:
 
-- **`rpm run`** reads the root manifest's `scripts` map to execute a
-  user-named script on demand. Running a script must not reinstall or mutate
-  install output (`docs/specs/cli/run/SPEC.md`). Any script name is reachable
-  through `rpm run`, not only the lifecycle names below.
+- **`rpm run`** reads the targeted immutable manifest snapshot's `scripts` map
+  to execute a user-named script on demand. The default target is the root;
+  workspace-targeted invocations consume the selected member snapshots and
+  retained descriptor-validated native identities under
+  `docs/specs/cli/workspace-targeting/SPEC.md`. They do not reopen a member
+  manifest or reconstruct native filesystem identity from `member_path_key`
+  during dispatch. Running a script must not reinstall or mutate install output
+  (`docs/specs/cli/run/SPEC.md`). Any script name is reachable through
+  `rpm run`, not only the lifecycle names below.
 - **Install lifecycle execution** reads the recognized lifecycle hooks from the
   `scripts` map and runs them as an install phase. The supported install
   lifecycle hook names are exactly `preinstall`, `install`, `postinstall`, and
@@ -201,6 +207,15 @@ are an implementation target rather than a claim about the current root-only
 code path. The implementation that activates this contract must land with the
 planned fixtures in this section.
 
+The declaration-shape, pattern, unsupported-key, and duplicate-key rules in
+this subsection apply when workspace discovery is active. A root-only command
+such as `rpm run` still parses ordinary JSON and applies the manifest contract
+for the ordinary fields it consumes, including `scripts`; it does not validate
+the `workspaces` declaration or invoke workspace discovery. During workspace
+discovery, the parser must inspect object keys before generic JSON
+materialization so duplicate-key validation remains effective even when that
+representation would discard duplicates.
+
 The root manifest may declare workspace members through the `workspaces` field.
 RPM supports exactly these declaration shapes:
 
@@ -211,10 +226,11 @@ RPM supports exactly these declaration shapes:
 
 An empty array in either supported shape is an invalid declaration. It does not
 mean root-only; only an absent `workspaces` field has that meaning.
-Manifest parsing must reject more than one top-level `workspaces` key and more
-than one `packages` key inside the `workspaces` object before a generic JSON
-representation can discard the duplicate. A parser's first-key or last-key
-selection behavior must not determine the discovered member set.
+During workspace discovery, manifest parsing must reject more than one
+top-level `workspaces` key and more than one `packages` key inside the
+`workspaces` object before a generic JSON representation can discard the
+duplicate. A parser's first-key or last-key selection behavior must not
+determine the discovered member set.
 
 Workspace patterns use a portable RPM dialect. `/` is the only path separator
 and every segment must be non-empty. `*` matches zero or more non-`/`
@@ -252,27 +268,20 @@ path, the `workspaces` field, and the reason. A missing `workspaces` field means
 that the project is root-only. Nested `workspaces` declarations in a member
 manifest are not recursively discovered by this contract.
 
-For workspace discovery, RPM first opens the canonical project-root directory
-descriptor-relative from its retained canonical parent/name chain without
-following links. Every parent identity and the root directory's pre-open native
-identity must match the opened descriptor; a rename, replacement, mount/reparse
-substitution, or platform without an atomic equivalent fails before a manifest
-is read. Discovery retains the root directory descriptor, identity, and exact
-parent/name chain as filesystem-validation state. On Linux, the global
-descriptor-scoped watcher is initialized before the root is opened. Starting at
-the outermost retained ancestor anchor, discovery opens and validates each
-ancestor descriptor, installs its watch through the descriptor's
-`/proc/self/fd/<dirfd>` path, and only then opens the next child in the retained
-parent/name chain. Every ancestor watch remains installed through root open,
-root manifest lookup, complete member discovery, and the coordination-held
-final validation and drain below. The root directory watch is installed on the retained
-root descriptor before any root `package.json` lookup, open, or read, including
-the absent-manifest case. Watch setup and the initial queue drain must succeed
-before any manifest operation.
+For workspace discovery, RPM first opens the supplied current working directory
+as the project root through a descriptor-relative, no-follow operation. It does
+not search ancestor directories for another workspace root. Every retained
+parent/name identity and the root directory identity must still describe that
+supplied root; a rename, replacement, mount/reparse crossing, or unsupported
+path operation is reported before a manifest is used. Implementations may use a
+descriptor-scoped watcher or equivalent metadata checks where the host provides
+them. A watcher is an optional drift signal and is not a global filesystem
+snapshot requirement.
 
-For supported concurrent input, that final linearization cut is the
-coordination-lock cut defined below; it does not claim an uncoordinated
-filesystem-wide atomic snapshot.
+The discovery result is assembled from ordinary descriptor-relative reads and
+validated metadata. It does not claim an unobservable atomic snapshot across
+independent objects; observed identity, read, or watcher drift is reported as a
+discovery error.
 
 When the root `package.json` is absent, discovery follows the existing manifest
 initialization contract: it returns one immutable empty root snapshot and an
@@ -289,16 +298,13 @@ fresh read and is never overwritten or replaced by this discovery.
 When the root `package.json` is present, it is opened descriptor-relative to
 that retained project-root descriptor with no symlink following. The path
 itself must be a regular, non-symlink file, and its pre-open native identity must
-match the opened descriptor. Discovery pins that descriptor identity, exact
-bytes, permissions, and single-link guarantee and parses one immutable root
-snapshot. Obtaining the exact bytes requires either a platform-provided stable
-file snapshot or two complete descriptor reads from offset zero with unchanged
-identity, link count, size, permissions, and content-change metadata before,
-between, and after the reads; both reads must be byte-identical. Any detected
-in-place mutation, unstable byte sequence, or platform unable to provide one of
-these stable-read guarantees fails discovery before parsing. The snapshot
-contains at least `name`, `version`, `scripts`, `dependencies`,
-`devDependencies`, and `workspaces`. The declaration is read from this snapshot.
+match the opened descriptor. Discovery reads its exact bytes and parses one
+immutable root snapshot containing at least `name`, `version`, `scripts`,
+`dependencies`, `devDependencies`, and `workspaces`. Ordinary size, metadata,
+and descriptor checks may be used to detect a changed read. If a read is
+truncated, malformed, or changes during a check, discovery reports the observed
+corruption or drift and returns an error; it does not claim an atomic snapshot
+across independent objects.
 
 The root snapshot and member table form one read-only discovery result. Resolver
 seeding and other consumers of workspace discovery use that result and must not
@@ -354,116 +360,49 @@ the root is also an invalid workspace declaration. Discovery must not read or
 write a manifest outside the canonical root.
 
 The candidate manifest read uses a descriptor-relative, no-follow open rooted
-at the canonical member directory, followed by `fstat`-equivalent identity and
+at the canonical member directory, followed by ordinary identity and
 confinement checks. The no-follow pre-open identity must match the opened
 descriptor's regular-file type and identity, and the descriptor must remain
-inside both the canonical member directory and project root. A path swap,
-identity mismatch, or platform without an atomic equivalent for this operation
-fails the entire discovery before the candidate bytes are read; discovery must
-not fall back to a path-based open. The same stable-snapshot or repeated
-byte-identical descriptor-read rule used for the root manifest applies to every
-member manifest, so an in-place write cannot produce a mixed snapshot.
+inside both the canonical member directory and project root. A path swap or
+identity mismatch fails the entire discovery before the candidate bytes are
+used; discovery must not fall back to an unconstrained path. The same exact-read
+and malformed-input checks used for the root manifest apply to every member
+manifest, so observed truncation or drift is reported as an error.
 
-Every present root or member manifest descriptor must report exactly one
-filesystem link (`st_nlink == 1`) or a platform-equivalent atomic guarantee that
-no second pathname aliases the opened file identity. A hard-linked manifest is
-invalid even when every known link is inside the canonical root, because an
-unobserved alias could mutate the validated bytes. If the platform cannot obtain
-the link count or an equivalent guarantee from the opened descriptor, workspace
-discovery fails closed before reading or returning manifest data.
+Every present root or member manifest descriptor must pass the available link
+validation. On POSIX this rejects a manifest with more than one filesystem link
+(`st_nlink != 1`); equivalent host checks may apply the same ordinary safety
+rule. If the host cannot inspect the relevant link identity, the operation
+reports that unsupported validation before returning manifest data. This link
+check confines manifest inputs; it does not claim immunity from later writes by
+trusted workspace or store writers.
 
 Directory traversal uses descriptor-relative, no-follow directory handles for
-every enumeration and metadata operation, or an atomic equivalent with the
+every enumeration and metadata operation, or a host-equivalent handle with the
 same identity and root-confinement guarantees. Before and after each traversal
 operation, the directory handle identity must still represent the expected
 root-relative directory. Traversal must reject any descendant mount, bind
 mount, volume, or non-symlink reparse boundary that is observed while opening or
 validating a descriptor. Each opened descendant and canonical target chain
 must retain the root's reported mount/volume identity; a host that cannot
-establish that confinement fails closed. A concurrent topology substitution
-that is not observable through these retained identities is outside the
-supported concurrent-input model described below. Each directory enumeration
-must also provide a stable entry-set snapshot spanning the complete enumeration
-and final pre-return validation. Workspace discovery treats the root manifest
-snapshot and the member table as one result, so all of those operations share
-one discovery attempt and coordination lock; this does not claim a
-filesystem-wide atomic snapshot.
+establish that confinement fails before returning a member. Directory
+enumeration may use ordinary platform reads or a watcher where available. The
+result is an in-memory root snapshot and member table assembled from those
+reads; it does not promise one snapshot covering every filesystem object or
+coordination with every writer. If a retained identity, directory entry, or manifest read changes
+while discovery is in progress, discovery reports the observed drift and
+returns no partial table. Workspace/store writers are trusted participants in
+this contract; their normal writes are outside the discovery operation's
+concurrency guarantee.
 
-For supported concurrent input, the canonical RPM workspace coordination
-resource is an advisory lock bound to the retained canonical root-parent
-directory descriptor and its validated filesystem identity, or the exact
-supported platform equivalent. It is not a lock file: discovery creates no
-file. The lock deliberately covers the whole retained parent descriptor, so
-sibling workspace roots under that parent may contend. Every RPM process that
-consumes the discovery result for the same supplied root derives and uses this
-same parent-bound resource; a path alias, root replacement, member path, or newly
-created lock file is not another valid coordination resource. A process supplied
-with a member directory as an independent root does not search for or adopt an
-outer workspace and therefore uses that member's own root coordination resource.
-Concurrent mutation across those independently supplied roots is unsupported
-until #222 and #223 define and implement an explicit cross-root coordination
-boundary. An RPM-owned operation that would replace the parent lock anchor
-itself is unsupported while another operation targets a child workspace through
-that anchor.
+On Linux, a descriptor-scoped watcher may be used to report observed drift. On
+macOS and other supported hosts, ordinary descriptor-relative no-follow handles
+and native identity/metadata checks provide the same path-confinement boundary.
+The read-only discovery contract does not prescribe extra mount isolation or a
+single linearized view across independent filesystem objects.
 
-The deterministic acquisition order is: validate and retain the canonical
-ancestor chain through the root parent, acquire that parent's shared lock, open
-and validate the named canonical root descriptor, then perform root manifest
-lookup and member enumeration. Discovery holds the shared lock through final
-descriptor validation, the final drain, and construction of the immutable
-result. Every RPM-owned root-manifest writer and root-child manifest or
-mount-topology mutator follows the same parent-descriptor order and acquires the
-exclusive lock before opening or changing the named root. A root replacement
-therefore cannot re-key the lock from the old root inode to the new one. #221
-must not activate workspace discovery until all RPM-owned root writers
-participate; #222 owns integrating this lock with workspace mutation and
-transaction boundaries.
-
-Lock acquisition is nonblocking or uses one documented finite busy deadline;
-busy, timeout, identity mismatch, unsupported locking, interruption, or any
-other acquisition error fails closed without falling back to a path lock or
-continuing with an unlocked result. After final validation and immutable-result
-construction, discovery must successfully unlock before returning the result;
-an unlock failure prevents publication. The immutable result then owns the
-still-open root, ancestor, member, and manifest validation descriptors until
-all consumers finish, so #221 and #222 can perform their required fresh
-descriptor validation after coordination unlock. Abandonment closes every
-descriptor, and operating-system descriptor release handles process
-termination. A close error is reported by the active consuming operation and
-must not authorize a later path-based fallback. An external process that writes
-through an existing shared mapping or changes mount/reparse topology without
-participating in this protocol is unsupported concurrent input; discovery makes
-no guarantee for a mutation that its descriptors and watcher cannot observe.
-Any observed drift
-discards the complete attempt and restarts from fresh descriptors or fails
-closed. The returned table always uses the captured descriptor bytes from one
-attempt. #221 must fresh-validate those descriptors before consuming the table,
-and #222 must revalidate them at its transaction boundary before any mutation or
-publication.
-
-On Linux, the base revalidation primitive is descriptor-scoped inotify. On
-macOS, descriptor-relative no-follow handles, native identity/metadata checks,
-and the platform's available watcher or revalidation mechanism provide the
-same observed-drift boundary; macOS does not require a Linux mount namespace.
-Neither platform requires a filesystem-wide atomic content-version primitive
-for this read-only discovery contract.
-On Linux, discovery creates one nonblocking inotify descriptor before walking
-the retained root parent/name chain. For each ancestor edge, it installs a watch
-through the already validated ancestor's `/proc/self/fd/<dirfd>` path before
-opening the next child. After the validated root descriptor is opened, it
-installs the root directory watch before looking up the root manifest. Before
-every first read from a newly opened descendant directory, it installs that
-directory's watch through its retained descriptor path. After each root or
-member manifest descriptor is opened and its no-follow identity, link count,
-and confinement are checked, discovery installs an inode-bound watch through
-`/proc/self/fd/<manifestfd>` before the first byte read. All ancestor,
-root/member directory, and root/member manifest watches remain installed, and
-their descriptors remain open, through root-manifest lookup and stable reads,
-the complete descriptor-relative walk, candidate-manifest reads, and final
-identity/metadata checks.
-
-The queue-drain operation owns the inotify descriptor and follows one exact
-nonblocking loop: (1) read repeatedly until `EAGAIN`, requiring every returned
+When an adapter uses an inotify descriptor, its queue-drain operation follows
+one exact nonblocking loop: (1) read repeatedly until `EAGAIN`, requiring every returned
 buffer to contain complete event records; (2) call `poll` with a zero timeout;
 (3) return a quiet result only when `poll` reports no readable event, otherwise
 return to step 1. Each drain invocation has fixed starvation bounds:
@@ -489,52 +428,18 @@ root manifest operation. Drains at the root snapshot boundary, after each
 directory enumeration, and after final validation must each return quiet. The
 final validation rechecks every retained ancestor parent/name edge, root/member
 directory identity, and root/member manifest identity, link count, size,
-permissions, and content-change metadata before the last drain. Before that
-drain, every retained root/member manifest descriptor performs the ordinary
-stable-read rule defined above: two complete descriptor-relative reads from
-offset zero require unchanged identity, link count, size, permissions, and
-content-change metadata before, between, and after the reads, and the bytes
-must be identical to each other and to the exact captured bytes used for the
-immutable parsed snapshot. A mismatch against either comparison discards the
-complete discovery result and restarts discovery from fresh root/member
-descriptors; if one consistent restart cannot be completed, discovery fails
-closed. A write through a pre-existing shared writable mapping that completes
-before or during those reads therefore appears in the returned bytes or causes
-a mismatch. A coordinated RPM-owned write cannot occur after the captured
-bytes are validated until the coordination lock is released; an external write
-after the second identical read remains unsupported concurrent input even when
-it precedes the final poll. The final
-drain/poll follows final validation to check queued namespace, watch, and mount
-events. It may fail closed on role-relevant drift, but it need not be
-atomically coupled to the descriptor reads or observe a shared-mapping write.
-Ordinary Linux descriptor reads and metadata checks with the retained inotify
-watch satisfy the observed content guarantee; no general filesystem-wide
-content-version primitive is required. Unrelated ancestor entries remain
-drain-only events after their complete records are parsed, subject to the
-per-attempt event and byte budgets above. The final quiet result is required
-before publication and validates the same operation-wide captured set while
-the coordination lock is held. It is not an additional filesystem-wide
-linearization primitive. A Linux adapter must document the ordering guarantee
-for watched mutations that use the RPM coordination protocol; if its queue is
-lossy or the guarantee cannot be established, discovery fails closed. An
-uncoordinated mutation fails closed when the retained checks or watcher observe
-it, while an unobservable mutation remains outside this contract.
+permissions, and content-change metadata before the last drain. A relevant
+mutation event observed by a retained watcher is reported as drift; unrelated
+events may be ignored after their records are parsed. The final checks compare
+the retained parent/name edges, directory identities, and manifest metadata
+with the values used for the in-memory result. A mismatch returns an error and
+discards the complete discovery attempt. The checks are ordinary validation,
+not a global linearization point, and they do not claim to observe every write
+after the read. Hosts without this watcher can report drift
+through their available descriptor and metadata checks.
 
-The final validation and last quiet poll must also reject any mount-aware drift
-that is observable during the operation. Descriptor and inotify watches that
-remain attached to an underlying directory do not observe a bind mount or other
-mount substitution placed over the validated root, ancestor, or member pathname
-by an uncoordinated process. RPM-owned topology changes are serialized by the
-coordination lock above. A Linux adapter that claims atomic protection from
-uncoordinated substitution must use an isolated mount namespace or an
-equivalent mount-aware primitive; this read-only contract makes no such claim
-for unsupported concurrent input. On macOS, the supported coordination model
-uses retained descriptor-relative parent/name and identity checks and fails the
-whole discovery when they observe a replacement; it does not require a Linux
-mount namespace. A platform that cannot provide its supported identity and
-confinement checks fails closed before publishing the discovery result.
-
-The queue parser binds each watch descriptor to its role. For a root or member
+When a watcher is used, its queue parser binds each watch descriptor to its role.
+For a root or member
 directory watch, `IN_CREATE`, `IN_DELETE`, `IN_MOVED_FROM`, `IN_MOVED_TO`,
 `IN_ATTRIB`, `IN_MODIFY`, `IN_CLOSE_WRITE`, `IN_DELETE_SELF`, `IN_MOVE_SELF`,
 or `IN_UNMOUNT` affecting the watched entry set fails the full operation. For
@@ -547,27 +452,15 @@ including link-count changes and writes made through an outside hard-link alias.
 `IN_Q_OVERFLOW`, `IN_IGNORED`, or any other queue-loss/watch-loss event fails
 globally. The event is a drift signal even when later events restore the earlier
 names; discovery never interprets the event stream as a replacement entry set.
-Before the coordination cut, every retained root/member manifest descriptor is
-rechecked for identity, link count, size, permissions, and content-change
-metadata; any difference fails before the result is returned. A mutation by an
-RPM-owned writer cannot be delivered after that cut while the lock is held;
-an uncoordinated mutation delivered after it remains outside the supported
-concurrent-input model. Before a consumer accesses an enumerated member again,
-its retained parent/name and descriptor identity must still validate; a missing
-or replaced selected entry fails that consumer operation. A fixed delay or
-repeated equal enumeration does not establish stability. Linux without the descriptor-scoped
-watch, a readable lossless queue, an exact inode-bound manifest watch, or the
-required `/proc/self/fd` resolution fails closed. macOS and other supported
-hosts require descriptor-relative no-follow handles, retained parent/name and
-identity checks, and a platform-native watcher or revalidation mechanism for
-drift they can observe. They do not require a filesystem-wide enumeration
-generation or mount-substitution primitive when the operation stays within the
-RPM coordination model; uncoordinated concurrent topology mutation remains
-unsupported and any observed drift fails closed. A host that cannot retain its
-confinement and identity checks fails the entire discovery. A directory
-replacement, mount/reparse crossing, identity mismatch, entry-set mutation,
-manifest link-count/content drift, or watch loss must never continue from a
-path-based handle or return a partial member table.
+Before a consumer accesses an enumerated member again, its retained parent/name
+mapping and descriptor identity must still validate. A missing or replaced
+selected entry is reported by that consumer; it does not fall back to a new
+path. A fixed delay or repeated equal enumeration is not stability evidence.
+Watcher loss or an observed directory replacement is an ordinary discovery
+error. A host that cannot retain its confinement and identity checks fails the
+operation before returning a partial member table. The contract does not require
+an atomic enumeration snapshot, a monotonic directory-generation primitive, or
+immunity from an unobserved writer after discovery.
 
 Discovery fails closed on every filesystem I/O error that can affect the
 member table. This includes directory enumeration, directory or candidate
@@ -665,12 +558,8 @@ panics.
 Manifest fixtures live under `tests/fixtures/package_manifest/`.
 
 Workspace discovery fixtures must remain deterministic and offline. The
-workspace contract requires planned coverage for:
-
-The Linux mount-topology fixture retains the stronger atomic protection
-requirement for adapters that claim that guarantee. The macOS coordination
-fixture below covers the supported descriptor/identity path and requires an
-observed replacement to fail closed before consumer access.
+workspace contract lists planned coverage for a future implementation; this
+SPEC change does not claim that these fixtures or runtime paths already exist:
 
 - a simple root with two workspace packages;
 - the array declaration and the object `{ "packages": [...] }` declaration;
@@ -716,7 +605,7 @@ observed replacement to fail closed before consumer access.
   recursive bind mount, proving traversal and selected canonical target chains
   fail before reading external bytes or recursing through the mounted tree;
 - an injected descriptor-relative validate-open path swap and identity mismatch,
-  including a platform without an atomic equivalent, proving the candidate
+  including a platform without the required path-safe operation, proving the candidate
   target is not read and the full discovery fails without a partial table;
 - a canonical root-directory rename, every retained ancestor parent/name
   replacement, mount/reparse substitution, and root path swap between chain
@@ -726,36 +615,24 @@ observed replacement to fail closed before consumer access.
   every workspace-discovery consumer uses the immutable root snapshot and no
   workspace-aware path publishes or truncates the replacement;
 - injected in-place root/member manifest writes during descriptor reads, proving
-  the stable-snapshot check rejects changing or mixed bytes before parsing;
+  the ordinary exact-read check reports changing or mixed bytes before parsing;
 - an attempted present-manifest write by a workspace-discovery consumer,
   proving the operation is rejected before the root manifest or any alias is
   modified and remains deferred to #222;
-- root and member `package.json` files hard-linked to an external alias, writes
-  made through that alias, link-count changes, and an injected platform without
-  descriptor link-count or exact inode-watch support, proving the retained
-  descriptor/inode watches and final metadata checks reject each case before
-  parsing or returning a snapshot;
+- root and member `package.json` files hard-linked to an external alias, link-count
+  changes, and an injected platform without the required link validation,
+  proving ordinary link checks reject each case before parsing or returning a
+  snapshot;
 - an injected directory replacement during descriptor-relative enumeration or
   metadata validation, proving the traversal identity mismatch fails the full
   discovery without a partial table;
-- a Linux descriptor-scoped inotify adapter proving the root watch is installed
-  before the root `package.json` lookup/read and every descendant watch before
-  its first directory read, with all watches retained through the
-  coordination-held final validation and quiet `EAGAIN` drain; injected
-  additions, removals, renames, attribute/manifest
-  writes, self-moves, unmounts, queue overflow, lost watches, and
-  watch/poll/read/`/proc/self/fd` failures observed before publication fail the
-  full discovery, while an unchanged queue accepts the final drain and a later
-  replacement is rejected by retained parent/name and descriptor validation
-  before consumer access; an uncoordinated external addition after publication
-  remains outside the returned snapshot; fixed delays and repeated equal
-  enumerations are rejected as stability evidence;
-- an ancestor-chain adapter proving each ancestor watch is installed before
-  opening the next child and retained through the coordination-held final
-  validation and drain; injected rename, replacement, delete/create, self-move,
-  mount, watch-loss, and tracked parent/name identity drift on every ancestor
-  fail before root manifest bytes are read, while unrelated ancestor entries
-  are drained without changing the result;
+- an adapter that uses the host's ordinary descriptor and metadata checks to
+  report a root, ancestor, or member replacement observed during discovery;
+  watcher-backed adapters may add the same observed-drift cases, but no global
+  watcher or mount-namespace guarantee is required;
+- an ancestor-chain adapter proving each retained parent/name mapping is checked
+  before the next child is opened and that a changed mapping returns an error
+  before root manifest bytes are used;
 - a sustained unrelated-ancestor-event adapter that keeps the inotify queue
   readable with irrelevant entries while avoiding overflow; event-count and
   byte-count variants each exceed one per-attempt drain budget and fail closed
@@ -765,63 +642,12 @@ observed replacement to fail closed before consumer access.
   `POLLNVAL`, each unknown bit, each combination with `POLLIN`, and
   return-zero/nonzero inconsistencies fail closed; only `revents == 0` with a
   zero return or `revents == POLLIN` with a nonzero return is accepted;
-- a root/member manifest inode-watch adapter proving each exact descriptor watch
-  is installed before its first byte read and retained through the
-  coordination-held final validation and drain; injected outside-alias writes,
-  hard-link creation/removal, link-count drift, `IN_ATTRIB`, `IN_MODIFY`,
-  `IN_CLOSE_WRITE`, self-move, delete, watch-loss, and final `fstat` metadata
-  drift fail before parsing or returning a table;
-- a race adapter that replaces the root `package.json` or adds, removes, or
-  renames a selected member between root snapshot reads, the root-to-member
-  snapshot boundary, member enumeration, candidate-manifest reads, and final
-  validation; each event observed before publication fails the complete
-  discovery with no parsed bytes or partial member table, and queue-drain retry
-  exhaustion fails closed;
-- an adapter that performs a write through a pre-existing shared writable
-  mapping after the initial parsed snapshot and before or during each final
-  descriptor read, proving equal final reads that differ from the captured
-  bytes discard the whole discovery and restart or fail closed; an external
-  write after the second identical read and before the final poll remains
-  unsupported concurrent input, while role-relevant queue events still fail
-  closed;
-- an operation-wide two-manifest race adapter proving the coordination lock
-  prevents alternating RPM-owned root/member writes from producing a graph
-  assembled from different content cuts; an observed uncoordinated write
-  discards the complete attempt rather than mixing independently reread
-  manifests, while an unobservable external write remains outside the
-  concurrent-input guarantee;
-- a fake coordination-lock adapter covering immediate busy, finite-deadline
-  exhaustion, interruption, unsupported locking, parent/name identity drift,
-  and unlock failure, proving each case returns no manifest lookup or partial
-  result; canonical aliases converge on the same parent-bound resource,
-  abandoned descriptors permit a later acquisition, and validation descriptors
-  remain open after successful unlock until every consumer finishes;
-- an independently supplied member-root adapter proving that the member does not
-  search for or adopt an outer workspace and therefore uses its own root
-  coordination resource; an observed mutation during an outer discovery rejects
-  that outer attempt, while cross-root serialization remains disabled until
-  #222 and #223 own it;
-- a root-replacement coordination race in which an RPM writer holds the
-  exclusive parent-bound lock while replacing the named root, proving a later
-  discovery cannot acquire a non-conflicting lock on the replacement inode and
-  can discover the new root only after the writer releases the same parent
-  resource;
-- an ordinary Linux mount-topology adapter proving a replacement bind mount
-  observed through retained descriptor, identity, or watch checks fails the
-  complete discovery; an additional adapter that explicitly claims stronger
-  protection from uncoordinated substitution must place a replacement bind
-  mount after final metadata checks and before the last quiet poll, proving its
-  isolated mount namespace or equivalent mount-aware primitive prevents
-  publication. The stronger fixture is not required for the ordinary
-  coordination-only adapter;
-- a macOS coordination adapter proving RPM-owned manifest and mount-topology
-  writers cannot interleave with the operation-wide captured root/member set;
-  an observed uncoordinated replacement of the validated root, ancestor, or
-  member fails the complete discovery through retained parent/name and
-  descriptor identity checks. This fixture does not require a Linux mount
-  namespace and does not claim protection from an unobservable external
-  substitution; #221 and #222 perform their fresh validation obligations before
-  use or mutation;
+- a root/member manifest read that observes a changed size, metadata value, or
+  malformed byte sequence, proving the operation reports the corruption or
+  drift and returns no partial member table;
+- a retained manifest identity check that rejects a replacement before a later
+  consumer uses that member, without claiming immunity from a later write by
+  a trusted workspace or store writer;
 - a broad pattern with pre-existing `node_modules`, `.rpm`, and RPM-managed
   staging or backup paths plus ASCII case aliases of those reserved components,
   proving artifacts do not change discovery on case-sensitive or
