@@ -86,7 +86,31 @@ just validate
 
 Report exactly which checks ran and which did not. Do not claim completion without real evidence.
 
-## Code Review Rules
+## Code Review Guidelines
+
+Codex Automatic review findings are candidate evidence. Review each finding
+independently against the issue goal, the owning SPEC, and the current accepted
+contract.
+
+- Keep concrete, reachable package-manager harms in scope: path traversal,
+  unsafe archive links, credential exposure, unintended writes, integrity
+  failures, and ordinary failure or recovery errors. A blocking finding must
+  identify a reachable trigger and concrete harm; severity labels inform the
+  assessment but do not decide it.
+- Keep the accepted execution boundary explicit. Do not silently require
+  protection against arbitrary hostile concurrent writers who already have
+  filesystem write access, invisible `mmap` or mount replacement, global
+  filesystem snapshots, or process-private immutable execution environments.
+- A stronger guarantee needs a separate product decision with clear user value
+  and an implementable primitive. When a SPEC contradicts this boundary, align
+  the owning SPEC through that decision instead of inferring a new guarantee
+  from review.
+- Later rounds verify accepted fixes and regressions. New valid in-scope
+  blockers remain actionable; a new threat class needs an explicit scope
+  decision and does not silently reset completion criteria.
+- Report evidence precisely: planned fixtures, mocked checks, actual runtime
+  checks, and code present in the public PR head are distinct. A planned
+  fixture or mock PASS does not establish runtime or integration behavior.
 
 - **Public contract integrity:** Flag changes to CLI, resolver, manifest, lockfile, registry, cache, install, linker, or script behavior that conflict with the owning SPEC or lack an explicit contract decision and regression coverage. The safe path identifies the owning SPEC, classifies the change, updates the narrowest contract when authorized, and adds focused regression evidence.
 - **User-controlled filesystem safety:** Flag package metadata, tarball entries, symlinks, dependency names, or lifecycle scripts that can escape workspace, cache, store, or `node_modules` boundaries, overwrite user files, or leave a partial transaction. The safe path validates and normalizes inputs before mutation, confines writes to approved roots, rejects traversal and unsafe links, and verifies rollback or atomic completion.
