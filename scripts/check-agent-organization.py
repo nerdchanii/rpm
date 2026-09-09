@@ -16,6 +16,10 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS_DIR = ROOT / ".codex" / "agents"
 POLICY_PATH = ROOT / ".agents" / "workflows" / "backlog-policy.json"
+TERMINAL_OUTCOMES_PATH = (
+    ROOT / ".agents" / "fixtures" / "backlog" / "issue-202-terminal-outcomes.json"
+)
+CLAIM_READY_PATH = ROOT / ".agents" / "fixtures" / "backlog" / "cloud-claim-ready.json"
 
 MANAGER_REPORTS = {
     "rpm_workflow_manager": {
@@ -86,7 +90,6 @@ EXPECTED_SKILL_INVOCATION_POLICY = {
     "fixture-governance": True,
     "merge-gatekeeper": False,
     "open-pr-review-batch": False,
-    "pr-resolution-loop": False,
     "pr-review-resolution": False,
     "prepare-backlog": False,
     "rust-analyzer": True,
@@ -124,6 +127,43 @@ EXPECTED_EXECUTION_CONTRACT = {
         "ledger_field": "runs",
         "key_fields": ["repository", "issue", "plan_revision", "scope_hash", "event_id"],
         "algorithm": "sha256-nul-joined",
+    },
+    "persistence": {
+        "medium": "issue-comment",
+        "marker": {
+            "prefix": "<!-- rpm-agent-claim: ",
+            "suffix": " -->",
+        },
+        "order": [
+            "prepare",
+            "persist-marker",
+            "refetch-normalize-ledger",
+            "claim",
+            "transition",
+        ],
+        "record_fields": [
+            "repository",
+            "issue",
+            "run_id",
+            "event_id",
+            "executor",
+            "plan_revision",
+            "scope_hash",
+            "idempotency_key",
+            "lease",
+            "started_at",
+            "expires_at",
+        ],
+        "recovery_states": ["ready", "claimed"],
+        "authorization": {
+          "source": "parent-handoff",
+          "availability": "manual-until-host-trusted-handoff",
+          "token_marker": "rpm_claim_authorization=",
+            "encoding": "base64url-canonical-json",
+            "snapshot_digest": "sha256-canonical-json",
+            "phases": ["persist", "claim"],
+            "one_phase_per_claimer": True,
+        },
     },
 }
 
@@ -223,6 +263,129 @@ def check_policy(errors: list[str]) -> None:
         "delete_branch": True,
     }:
         fail(errors, f"{POLICY_PATH.relative_to(ROOT)}: invalid merge-gate contract")
+
+
+def check_terminal_outcome_fixture(errors: list[str]) -> None:
+    try:
+        outcomes = json.loads(TERMINAL_OUTCOMES_PATH.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        fail(
+            errors,
+            f"{TERMINAL_OUTCOMES_PATH.relative_to(ROOT)}: invalid fixture JSON: {error}",
+        )
+        return
+    if not isinstance(outcomes, list):
+        fail(errors, f"{TERMINAL_OUTCOMES_PATH.relative_to(ROOT)}: fixture must be an array")
+        return
+    successes = [
+        outcome
+        for outcome in outcomes
+        if isinstance(outcome, dict)
+        and outcome.get("mode") == "scheduled"
+        and isinstance(outcome.get("input"), dict)
+        and outcome["input"].get("queue") == "eligible-issue"
+        and outcome.get("expected_status") == "complete"
+    ]
+    if len(successes) != 1:
+        fail(
+            errors,
+            f"{TERMINAL_OUTCOMES_PATH.relative_to(ROOT)}: expected one scheduled success",
+        )
+        return
+    input_data = successes[0]["input"]
+    assert isinstance(input_data, dict)
+    claim_result = input_data.get("claim_result")
+    if not isinstance(claim_result, dict) or claim_result.get("type") != "ready_ticket_claim_result":
+        fail(
+            errors,
+            f"{TERMINAL_OUTCOMES_PATH.relative_to(ROOT)}: missing ready_ticket_claim_result",
+        )
+        return
+    wrapper = claim_result.get("data")
+    expected_wrapper_keys = {
+        "after_state",
+        "before_state",
+        "blockers",
+        "claim_contract",
+        "issue",
+        "preserved_labels",
+        "race_evidence",
+        "status",
+        "verified",
+    }
+    if not isinstance(wrapper, dict) or set(wrapper) != expected_wrapper_keys:
+        fail(
+            errors,
+            f"{TERMINAL_OUTCOMES_PATH.relative_to(ROOT)}: incomplete claim wrapper",
+        )
+        return
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "check-cloud-queue-contract.py"),
+        "--issues-file",
+        str(CLAIM_READY_PATH),
+        "--operation",
+        "claim",
+        "--issue",
+        "3",
+        "--run-id",
+        "run-3",
+        "--event-id",
+        "delivery-3",
+        "--executor",
+        "cloud",
+        "--plan-revision",
+        "plan-3",
+        "--scope-hash",
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "--lease-owner",
+        "cloud:executor",
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    try:
+        controller = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        controller = None
+    expected_contract = controller.get("data") if isinstance(controller, dict) else None
+    if completed.returncode != 0 or not isinstance(expected_contract, dict):
+        fail(
+            errors,
+            f"{TERMINAL_OUTCOMES_PATH.relative_to(ROOT)}: canonical claim controller failed",
+        )
+        return
+    if input_data.get("issue") != expected_contract.get("issue"):
+        fail(
+            errors,
+            f"{TERMINAL_OUTCOMES_PATH.relative_to(ROOT)}: input issue does not match claim evidence",
+        )
+    if wrapper.get("claim_contract") != expected_contract:
+        fail(
+            errors,
+            f"{TERMINAL_OUTCOMES_PATH.relative_to(ROOT)}: claim contract evidence was dropped",
+        )
+    expected_wrapper = {
+        "status": "claimed",
+        "issue": expected_contract.get("issue"),
+        "before_state": expected_contract.get("before"),
+        "after_state": expected_contract.get("after"),
+        "claim_contract": expected_contract,
+        "preserved_labels": expected_contract.get("preserved_labels"),
+        "verified": True,
+        "race_evidence": [],
+        "blockers": [],
+    }
+    if wrapper != expected_wrapper:
+        fail(
+            errors,
+            f"{TERMINAL_OUTCOMES_PATH.relative_to(ROOT)}: claim wrapper evidence was dropped",
+        )
 
 
 def check_role_contracts(
@@ -1751,6 +1914,17 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             check=False,
         )
 
+    def invoke_tool(tool: str, tool_input: object) -> int:
+        return run(
+            {
+                "hook_event_name": "PreToolUse",
+                "transcript_path": transcript,
+                "cwd": str(ROOT),
+                "tool_name": tool,
+                "tool_input": tool_input,
+            }
+        ).returncode
+
     def pre_tool(role: str, tool: str, tool_input: object) -> int:
         registered = run(
             {
@@ -1761,15 +1935,7 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
         )
         if registered.returncode != 0:
             fail(errors, f"agent tool policy could not register {role}: {registered.stderr}")
-        return run(
-            {
-                "hook_event_name": "PreToolUse",
-                "transcript_path": transcript,
-                "cwd": str(ROOT),
-                "tool_name": tool,
-                "tool_input": tool_input,
-            }
-        ).returncode
+        return invoke_tool(tool, tool_input)
 
     cases = (
         ("leaf-spawn", "rpm_issue_researcher", "spawn_agent", {}, 2),
@@ -1789,6 +1955,8 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             2,
         ),
         ("scout-read", "rpm_backlog_scout", "mcp__github__get_issue", {}, 0),
+        ("shell-http-filter", "rpm_backlog_scout", "exec_command", {"cmd": "cargo test http"}, 0),
+        ("shell-rg-https-filter", "rpm_backlog_scout", "exec_command", {"cmd": "rg https src"}, 0),
         (
             "researcher-mutate",
             "rpm_issue_researcher",
@@ -1815,7 +1983,7 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "rpm_ready_ticket_claimer",
             "mcp__github__update_issue",
             {"labels": ["agent:claimed"]},
-            0,
+            2,
         ),
         (
             "claimer-body",
@@ -1857,6 +2025,72 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
         actual = pre_tool(role, tool, tool_input)
         if actual != expected:
             fail(errors, f"tool policy probe {name} expected exit {expected}, got {actual}")
+    phases = (
+        (
+            "persist",
+            ".agents/fixtures/backlog/cloud-claim-prepare.json",
+            (
+                (
+                    "persist-attestation-manual-approval",
+                    "exec_command",
+                    {"cmd": "python3 scripts/check-cloud-queue-contract.py --operation claim --issue 3 --run-id run-3 --event-id delivery-3 --executor cloud --plan-revision plan-3 --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --lease-owner cloud:executor --issues-file .agents/fixtures/backlog/cloud-claim-prepare.json"},
+                    2,
+                ),
+                (
+                    "persist-comment-manual-approval",
+                    "add_issue_comment",
+                    {"issue_number": 3, "body": "<!-- rpm-agent-claim: unsupported-without-manual-approval -->"},
+                    2,
+                ),
+            ),
+        ),
+        (
+            "claim",
+            ".agents/fixtures/backlog/cloud-claim-ready.json",
+            (
+                (
+                    "claim-attestation-manual-approval",
+                    "exec_command",
+                    {"cmd": "python3 scripts/check-cloud-queue-contract.py --operation claim --issue 3 --run-id run-3 --event-id delivery-3 --executor cloud --plan-revision plan-3 --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --lease-owner cloud:executor --issues-file .agents/fixtures/backlog/cloud-claim-ready.json"},
+                    2,
+                ),
+                (
+                    "claim-labels-manual-approval",
+                    "mcp__github__update_issue",
+                    {"issue_number": 3, "labels": ["agent:claimed", "priority:high"]},
+                    2,
+                ),
+            ),
+        ),
+    )
+    for phase, fixture, claim_sequence in phases:
+        Path(transcript).write_text(
+            json.dumps(
+                {"role": "user", "message": {"role": "user", "content": "manual approval is unavailable"}}
+            )
+            + "\n"
+        )
+        run(
+            {
+                "hook_event_name": "SubagentStart",
+                "agent_type": "rpm_ready_ticket_claimer",
+                "agent_transcript_path": transcript,
+            }
+        )
+        for name, tool, tool_input, expected in claim_sequence:
+            actual = invoke_tool(tool, tool_input)
+            if actual != expected:
+                fail(
+                    errors,
+                    f"tool policy claim probe {phase}/{name} expected exit {expected}, got {actual}",
+                )
+        run(
+            {
+                "hook_event_name": "SubagentStop",
+                "agent_type": "rpm_ready_ticket_claimer",
+                "agent_transcript_path": transcript,
+            }
+        )
     run(
         {
             "hook_event_name": "SubagentStop",
@@ -1864,6 +2098,10 @@ def check_tool_policy_runtime(errors: list[str]) -> None:
             "agent_transcript_path": transcript,
         }
     )
+    try:
+        Path(transcript).unlink()
+    except FileNotFoundError:
+        pass
 
 
 def main() -> int:
@@ -1873,6 +2111,7 @@ def main() -> int:
         return 2
     agents = load_agents(errors)
     check_policy(errors)
+    check_terminal_outcome_fixture(errors)
     check_role_contracts(agents, errors)
     check_skill_inventory(errors)
     check_entries_and_assets(errors)

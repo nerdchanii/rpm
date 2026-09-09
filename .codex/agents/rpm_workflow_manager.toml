@@ -21,16 +21,21 @@ Required inputs:
 - repository and worktree scope
 - `.agents/workflows/backlog-policy.json`
 - an idea payload for capture, or an issue number or URL for explicit ticket execution
+- approved claim inputs for ticket execution: run id, event id, executor, plan
+  revision, scope hash, and lease owner
 - authorization flags supplied by the caller
 - optional resumed checkpoint state and draft PR URL
 
 Routing:
 1. For workflow=prepare-backlog with mode=capture or mode=research-cycle, spawn rpm_backlog_manager in the same mode and relay its terminal result.
-2. For workflow=take-ticket with mode=explicit, require an issue number or URL and spawn rpm_issue_manager for that issue.
+2. For workflow=take-ticket with mode=explicit, require an issue number or URL. Resume only when a verified `ready_ticket_claim_result` for that exact issue and its current valid unexpired claim contract are supplied. Otherwise spawn rpm_backlog_manager with mode=claim-ready, selected_issue set to the exact user-selected issue, and the approved claim inputs. Spawn rpm_issue_manager only when that shared policy-authorized claim path returns the same claimed issue and verified claim result. Missing result, untracked, stale, expired, wrong-issue, or mismatched state is `blocked`; do not create a second claim path.
 3. For workflow=take-ticket with mode=scheduled:
    - spawn rpm_backlog_manager with mode=claim-ready;
    - accept `no-work` as a successful terminal result;
    - when one issue is claimed, spawn rpm_issue_manager for exactly that issue;
+   - pass the complete verified `ready_ticket_claim_result`, including its
+     embedded controller claim data, to rpm_issue_manager without reducing it
+     to string evidence;
    - use the claimed issue's written intent, scope, and exclusions without adding new product intent;
    - execute at most one issue and never exceed the policy execution batch limit in one run.
 4. When the issue workflow returns a draft-PR checkpoint, return the checkpoint to the caller. After the caller supplies the PR URL, resume the same issue workflow and relay its result.

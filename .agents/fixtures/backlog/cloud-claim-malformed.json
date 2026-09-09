@@ -1,0 +1,27 @@
+{
+  "repository": "nerdchanii/rpm",
+  "now": "2026-08-21T12:00:00Z",
+  "runs": [
+    {
+      "repository": "nerdchanii/rpm",
+      "issue": 3,
+      "run_id": "run-3",
+      "event_id": "delivery-3",
+      "idempotency_key": "sha256:invalid"
+    }
+  ],
+  "issues": [
+    {
+      "number": 3,
+      "state": "OPEN",
+      "labels": ["agent:ready"],
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "approval-3",
+        "plan_revision": "plan-3",
+        "scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "executor": "cloud"
+      }
+    }
+  ]
+}

@@ -57,10 +57,13 @@ Found N issues:
 
 1. <brief description> (AGENTS.md / <SPEC path> says "<…>")
 <full-SHA permalink, ±1 line context>
+
 ```
 
 Permalink rules: use the full HEAD SHA (never `HEAD`/`main`/branch), repo must
-match `nameWithOwner`, `#L<start>-L<end>` after the path. Keep it brief and keep
-finding text emoji-free. Post with
-`gh pr review <n> --comment -F <file>`, then verify with
+match `nameWithOwner`, `#L<start>-L<end>` after the path. Keep it brief; keep
+finding text emoji-free (the trailer line is the only emoji). Post exactly one
+COMMENT review through the host-provided GitHub capability, then verify the
+resulting review state through that capability. The explicitly optional
+local/manual fallback is `gh pr review <n> --comment -F <file>`, then
 `gh pr view <n> --json reviews`.

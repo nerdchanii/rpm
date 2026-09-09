@@ -30,7 +30,7 @@
     {
       "number": 3,
       "state": "OPEN",
-      "labels": ["agent:ready", "priority:high"],
+      "labels": ["agent:claimed", "priority:high"],
       "closing_prs": [],
       "execution": {
         "approval_id": "approval-3",

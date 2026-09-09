@@ -1,0 +1,22 @@
+{
+  "issues": [
+    {
+      "number": 1,
+      "state": "OPEN",
+      "labels": ["agent:review-pending", "kind:feature"],
+      "closing_prs": [{"number": 10, "state": "OPEN"}]
+    },
+    {
+      "number": 2,
+      "state": "OPEN",
+      "labels": ["agent:ready", "kind:bug"],
+      "closing_prs": [],
+      "execution": {
+        "approval_id": "",
+        "plan_revision": "plan-2",
+        "scope_hash": "not-a-sha256",
+        "executor": "cloud"
+      }
+    }
+  ]
+}
