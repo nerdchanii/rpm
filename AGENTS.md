@@ -86,7 +86,7 @@ just validate
 
 Report exactly which checks ran and which did not. Do not claim completion without real evidence.
 
-## Code Review Guidelines
+## Code Review Rules
 
 Codex Automatic review findings are candidate evidence. Review each finding
 independently against the issue goal, the owning SPEC, and the current accepted
