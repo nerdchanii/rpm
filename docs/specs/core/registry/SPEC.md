@@ -593,9 +593,22 @@ side effects.
 For workspace classification, the boundary must expose whether a canonical
 request is a published dist-tag key, with the empty/`latest` bare-selector path
 handled by step 1, before semver range compatibility is considered. This
-classification is separate from version selection: it does not select a version
-or retrieve per-version metadata. External version selection continues to use
-the precedence below.
+classification consumes only the outer `dist-tags` identity needed for the
+result. It is separate from version selection: before the local/external branch
+is known, the boundary must not validate duplicate keys in the outer `versions`
+object, locate a selected version key, or read per-version metadata. Once tag
+classification and workspace matching confirm an external branch, duplicate-key
+validation may inspect `versions` only far enough to locate the selected key and
+reject an escape-equivalent duplicate; unused version values are not validated.
+A confirmed non-tag compatible-local branch therefore performs zero
+`versions` or per-version metadata reads. External version selection continues
+to use the precedence below.
+
+The version-selection precedence below applies only after the request takes the
+external branch. A duplicate in consumed `dist-tags` is checked after the
+required packument response and before tag classification; a duplicate in the
+outer `versions` object is checked only after external classification and before
+selected-version metadata is consumed.
 
 Version selection precedence at the registry boundary:
 
