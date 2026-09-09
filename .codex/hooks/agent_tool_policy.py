@@ -474,12 +474,26 @@ def uses_raw_network_client(text: str) -> bool:
 
 
 def operation_kind(value: str) -> str | None:
-    for token in operation_tokens(value):
+    tokens = operation_tokens(value)
+    signals: set[str] = set()
+    mutation_tokens: set[str] = set()
+    for token in tokens:
         if token in READ_OPERATION_WORDS:
+            signals.add("read")
+        elif token in MUTATION_OPERATION_WORDS:
+            signals.add("mutation")
+            mutation_tokens.add(token)
+    if "mutation" in signals:
+        # `get_label` and `get_comment` use mutation-shaped resource nouns.
+        # An explicit compound action such as `get_or_create` remains a write.
+        if (
+            "read" in signals
+            and "or" not in tokens
+            and mutation_tokens <= {"label", "comment"}
+        ):
             return "read"
-        if token in MUTATION_OPERATION_WORDS:
-            return "mutation"
-    return None
+        return "mutation"
+    return "read" if "read" in signals else None
 
 
 def mcp_mutation_kind(tool: str, tool_input: object) -> str | None:

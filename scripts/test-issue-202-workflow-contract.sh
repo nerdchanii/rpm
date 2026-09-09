@@ -295,6 +295,16 @@ printf '%s\n' "$recovery_selection_output" | jq -e '
   and .data.issues == [3]
 ' >/dev/null
 
+serialization_guard_output="$(python3 scripts/check-cloud-queue-contract.py \
+  --issues-file .agents/fixtures/backlog/cloud-review-serialization.json \
+  --operation select-execution)"
+printf '%s\n' "$serialization_guard_output" | jq -e '
+  .type == "cloud_queue_contract"
+  and .data.status == "no-work"
+  and .data.reason == "active-work"
+  and .data.active == [1]
+' >/dev/null
+
 set +e
 future_started_claim_output="$(python3 scripts/check-cloud-queue-contract.py \
   --issues-file .agents/fixtures/backlog/cloud-claim-future-start.json \
@@ -545,6 +555,10 @@ probe_hook_tool 'non-prefixed GitHub read' 0 'github_get_issue' '{}'
 probe_hook_tool 'pull-request resource read' 0 'github_get_pull_request' '{}'
 probe_hook_tool 'issue comments read' 0 'github_get_issue_comments' '{}'
 probe_hook_tool 'list issue comments read' 0 'github_list_issue_comments' '{}'
+probe_hook_tool 'mixed get-or-create issue mutation' 2 'get_or_create_issue' '{}'
+probe_hook_tool 'mixed find-or-update issue mutation' 2 'find_or_update_issue' '{}'
+probe_hook_tool 'mixed list-or-delete project mutation' 2 'list_or_delete_project_item' '{}'
+probe_hook_tool 'pure get project item read' 0 'get_project_item' '{}'
 probe_hook_tool 'non-prefixed GitHub mutation' 2 'github_update_issue' '{"issue_number":202,"body":"changed"}'
 probe_hook_tool 'camelCase GitHub read' 0 'githubGetIssue' '{}'
 probe_hook_tool 'camelCase GitHub mutation' 2 'githubUpdateIssue' '{"issue_number":202,"body":"changed"}'

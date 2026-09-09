@@ -623,6 +623,18 @@ def select_execution(
         states.append((issue, state))
     if invalid:
         return {"status": "blocked", "reason": "multiple-lifecycle-labels", "invalid": invalid, "issues": []}
+    review_pending = [
+        int(issue.get("number", 0))
+        for issue, state in states
+        if state == "review-pending"
+    ]
+    if review_pending:
+        return {
+            "status": "no-work",
+            "reason": "active-work",
+            "active": review_pending,
+            "issues": [],
+        }
     invalid_execution = []
     for issue, state in states:
         if state in {"ready", "claimed"}:
@@ -634,18 +646,6 @@ def select_execution(
             "status": "blocked",
             "reason": "execution-contract-invalid",
             "invalid": invalid_execution,
-            "issues": [],
-        }
-    review_pending = [
-        int(issue.get("number", 0))
-        for issue, state in states
-        if state == "review-pending"
-    ]
-    if review_pending:
-        return {
-            "status": "no-work",
-            "reason": "active-work",
-            "active": review_pending,
             "issues": [],
         }
     recovery = []
