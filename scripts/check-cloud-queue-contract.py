@@ -530,6 +530,8 @@ def claim(
         expires_at = parse_timestamp(persisted["expires_at"], "claim_record.expires_at")
         if expires_at <= now:
             return {"status": "blocked", "reason": "lease-expired", "issue": issue_number}
+        if current == "ready" and has_open_closing_pr(issue):
+            return {"status": "blocked", "reason": "open-closing-pr", "issue": issue_number}
         ordinary = sorted(label for label in issue_labels(issue) if label not in lifecycle.values())
         recovery = {
             "state": current,

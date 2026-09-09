@@ -68,8 +68,15 @@ without applying it.
    authorization gates mutation. Do not invent the final #208 schema.
 8. Commit and push accepted fixes to the same PR branch. The main session owns
    one resolution comment and the lifecycle transition after verification.
-9. Keep `agent:review-pending` when actionable P0/P1 findings remain. When no actionable finding remains, remove `agent:review-pending` and `agent:claimed`, add `agent:awaiting-merge`, and preserve all non-lifecycle labels.
-10. Never merge, resolve review threads, or post `@codex review`.
+9. On a reconciliation retry, inspect existing resolution comments before
+   posting. Use the same PR number, current head SHA, review ID, and canonical
+   resolution body as the matching context. If an identical comment is already
+   published for that context, reuse it, skip posting, and continue to the
+   lifecycle transition. A different head, review, or body does not match.
+   Keep this check scoped to the selected PR and review; do not add a global
+   ledger or idempotency framework.
+10. Keep `agent:review-pending` when actionable P0/P1 findings remain. When no actionable finding remains, remove `agent:review-pending` and `agent:claimed`, add `agent:awaiting-merge`, and preserve all non-lifecycle labels.
+11. Never merge, resolve review threads, or post `@codex review`.
 
 ## When To Read References
 
