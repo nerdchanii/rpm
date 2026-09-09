@@ -207,6 +207,15 @@ are an implementation target rather than a claim about the current root-only
 code path. The implementation that activates this contract must land with the
 planned fixtures in this section.
 
+The declaration-shape, pattern, unsupported-key, and duplicate-key rules in
+this subsection apply when workspace discovery is active. A root-only command
+such as `rpm run` still parses ordinary JSON and applies the manifest contract
+for the ordinary fields it consumes, including `scripts`; it does not validate
+the `workspaces` declaration or invoke workspace discovery. During workspace
+discovery, the parser must inspect object keys before generic JSON
+materialization so duplicate-key validation remains effective even when that
+representation would discard duplicates.
+
 The root manifest may declare workspace members through the `workspaces` field.
 RPM supports exactly these declaration shapes:
 
@@ -217,10 +226,11 @@ RPM supports exactly these declaration shapes:
 
 An empty array in either supported shape is an invalid declaration. It does not
 mean root-only; only an absent `workspaces` field has that meaning.
-Manifest parsing must reject more than one top-level `workspaces` key and more
-than one `packages` key inside the `workspaces` object before a generic JSON
-representation can discard the duplicate. A parser's first-key or last-key
-selection behavior must not determine the discovered member set.
+During workspace discovery, manifest parsing must reject more than one
+top-level `workspaces` key and more than one `packages` key inside the
+`workspaces` object before a generic JSON representation can discard the
+duplicate. A parser's first-key or last-key selection behavior must not
+determine the discovered member set.
 
 Workspace patterns use a portable RPM dialect. `/` is the only path separator
 and every segment must be non-empty. `*` matches zero or more non-`/`
