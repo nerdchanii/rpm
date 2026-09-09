@@ -296,6 +296,36 @@ printf '%s\n' "$recovery_selection_output" | jq -e '
 ' >/dev/null
 
 set +e
+future_started_claim_output="$(python3 scripts/check-cloud-queue-contract.py \
+  --issues-file .agents/fixtures/backlog/cloud-claim-future-start.json \
+  --operation claim --issue 3 --run-id run-future --event-id delivery-future \
+  --executor cloud --plan-revision plan-3 \
+  --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --lease-owner cloud:executor)"
+future_started_claim_code=$?
+set -e
+[ "$future_started_claim_code" -eq 1 ]
+printf '%s\n' "$future_started_claim_output" | jq -e '
+  .type == "cloud_queue_contract"
+  and .data.status == "blocked"
+  and .data.reason == "claim-record-started-in-future"
+' >/dev/null
+
+set +e
+future_started_selection_output="$(python3 scripts/check-cloud-queue-contract.py \
+  --issues-file .agents/fixtures/backlog/cloud-claim-future-start.json \
+  --operation select-execution)"
+future_started_selection_code=$?
+set -e
+[ "$future_started_selection_code" -eq 1 ]
+printf '%s\n' "$future_started_selection_output" | jq -e '
+  .type == "cloud_queue_contract"
+  and .data.status == "blocked"
+  and .data.reason == "claim-recovery-invalid"
+  and .data.invalid[0].reason == "claim-record-started-in-future"
+' >/dev/null
+
+set +e
 expired_selection_output="$(python3 scripts/check-cloud-queue-contract.py \
   --issues-file .agents/fixtures/backlog/cloud-claim-expired.json \
   --operation select-execution)"

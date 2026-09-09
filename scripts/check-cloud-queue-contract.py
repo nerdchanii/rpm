@@ -252,6 +252,7 @@ def validate_claim_record(
     contract: dict[str, object],
     repository: str,
     issue_number: int | None = None,
+    observed_at: datetime | None = None,
 ) -> str | None:
     persistence = persistence_contract(contract)
     if not isinstance(record, dict):
@@ -296,6 +297,8 @@ def validate_claim_record(
         expires = parse_timestamp(record["expires_at"], "claim_record.expires_at")
     except ValueError:
         return "malformed-claim-record:timestamps"
+    if observed_at is not None and started > observed_at:
+        return "claim-record-started-in-future"
     if expires <= started:
         return "invalid-claim-record-ttl"
     lease = record.get("lease")
@@ -331,13 +334,18 @@ def validate_claim_record(
     return None
 
 
-def persisted_runs(fixture: dict[str, object], contract: dict[str, object], repository: str) -> tuple[list[dict[str, object]], str | None]:
+def persisted_runs(
+    fixture: dict[str, object],
+    contract: dict[str, object],
+    repository: str,
+    observed_at: datetime | None = None,
+) -> tuple[list[dict[str, object]], str | None]:
     runs = fixture.get("runs", [])
     if not isinstance(runs, list):
         return [], "malformed-run-ledger"
     valid: list[dict[str, object]] = []
     for run in runs:
-        error = validate_claim_record(run, contract, repository)
+        error = validate_claim_record(run, contract, repository, observed_at=observed_at)
         if error:
             return [], error
         assert isinstance(run, dict)
@@ -364,8 +372,8 @@ def recovery_record(
     if not isinstance(repository, str) or not repository.strip() or not isinstance(issue_number, int):
         return None, "malformed-recovery-input"
     try:
-        runs, ledger_error = persisted_runs(fixture, contract, repository)
         now = parse_timestamp(fixture.get("now"), "fixture now")
+        runs, ledger_error = persisted_runs(fixture, contract, repository, now)
     except ValueError as error:
         return None, f"invalid-run-ledger:{error}"
     if ledger_error:
@@ -450,7 +458,8 @@ def claim(
             return {"status": "blocked", "reason": f"invalid-claim-identifier:{field}", "issue": issue_number}
     key = idempotency_key(repository, issue_number, plan_revision, scope_hash, event_id)
     try:
-        runs, ledger_error = persisted_runs(fixture, contract, repository)
+        now = parse_timestamp(fixture.get("now"), "fixture now")
+        runs, ledger_error = persisted_runs(fixture, contract, repository, now)
     except ValueError as error:
         return {"status": "blocked", "reason": "invalid-run-ledger", "issue": issue_number, "detail": str(error)}
     if ledger_error:
@@ -458,7 +467,6 @@ def claim(
     matching_runs = [run for run in runs if run.get("idempotency_key") == key]
     if len(matching_runs) > 1:
         return {"status": "blocked", "reason": "idempotency-conflict", "issue": issue_number}
-    now = parse_timestamp(fixture.get("now"), "fixture now")
     active_runs = []
     for run in runs:
         if run.get("issue") != issue_number:
@@ -478,7 +486,9 @@ def claim(
                 "winner_event_id": winner.get("event_id"),
                 "winner_idempotency_key": winner.get("idempotency_key"),
             }
-        record_error = validate_claim_record(persisted, contract, repository, issue_number)
+        record_error = validate_claim_record(
+            persisted, contract, repository, issue_number, observed_at=now
+        )
         if record_error:
             return {"status": "blocked", "reason": record_error, "issue": issue_number}
         assert isinstance(persisted, dict)

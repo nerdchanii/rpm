@@ -42,8 +42,9 @@ plan revision, scope hash, idempotency key, lease owner/run, started_at,
 expires_at, and the policy TTL. A persisted record with `before == "ready"`
 requires `transition_required == true`; a persisted record with
 `before == "claimed"` requires `transition_required == false` and recovery
-evidence with a valid unexpired lease. Block malformed, conflicting, expired, missing-marker, and
-missing-record results without mutation.
+evidence with a valid unexpired lease whose `started_at` is at or before the
+trusted observation `now`. Block malformed, conflicting, future-started,
+expired, missing-marker, and missing-record results without mutation.
 
 After the persisted controller result, perform only this compare-and-set style
 mutation:
