@@ -17,12 +17,15 @@
    body file for preview and may use `--create` only when
    `may_create_followup_issues=true`.
 9. On a reconciliation retry, inspect existing resolution comments before
-   posting. Use the same PR number, current head SHA, review ID, and canonical
-   resolution body as the matching context. If an identical comment is already
+   posting. Use the canonical marker/body and four-field context defined in
+   `references/templates.md`: the same PR number, current head SHA, review ID,
+   and complete canonical resolution body. If an identical comment is already
    published for that context, reuse it, skip posting, and continue to the
    lifecycle transition. A different head, review, or body does not match.
    Keep this check scoped to the selected PR and review; do not add a global
-   ledger or idempotency framework.
+   ledger or idempotency framework. This is a main-session manual contract;
+   the repository has no automatic resolution-comment posting or retry
+   executor.
 10. Commit and push accepted fixes to the same PR branch, then run internal adversarial review. Do not assume Automatic review reruns.
 11. Keep `agent:review-pending` while actionable P0/P1 findings remain. Otherwise replace it with `agent:awaiting-merge` and remove stale `agent:claimed`, preserving ordinary labels.
 12. Never merge, request `@codex review`, or make a new Automatic review a completion dependency.

@@ -567,6 +567,8 @@ def claim(
         return {"status": "blocked", "reason": "missing-persisted-claim-record", "issue": issue_number}
     if current != "ready":
         return {"status": "no-work", "reason": "issue-not-ready", "issue": issue_number}
+    if has_open_closing_pr(issue):
+        return {"status": "blocked", "reason": "open-closing-pr", "issue": issue_number}
     lease_rules = contract.get("lease")
     if not isinstance(lease_rules, dict):
         raise ValueError("execution contract lease rules are invalid")
