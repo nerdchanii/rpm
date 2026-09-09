@@ -1,0 +1,286 @@
+{
+  "now": "2026-08-25T12:30:00Z",
+  "repository": "nerdchanii/rpm",
+  "operation": {
+    "name": "adopt-existing-pr",
+    "version": 1,
+    "policy_version": 4,
+    "run_id": "adopt-run-001",
+    "owner": "rpm_existing_pr_adopter",
+    "batch_limit": 1
+  },
+  "authorization": {
+    "repository": "nerdchanii/rpm",
+    "issue": 145,
+    "pr": 210,
+    "base": {
+      "repository": "nerdchanii/rpm",
+      "ref": "main",
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "head": {
+      "repository": "nerdchanii/rpm",
+      "ref": "feat/issue-145-workspaces",
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "closing_issues": [
+      {
+        "repository": "nerdchanii/rpm",
+        "number": 145
+      }
+    ],
+    "policy_version": 4,
+    "operation_version": 1,
+    "evidence_digest": "sha256:944080986b14cd8f572bdaff105820641e1bc0a3a17cdfff25631e0716db1ab1",
+    "approval_id": "user-authorization-thread-01a038a7-90bb-7923-b97e-ec7bbd6e67b2",
+    "plan_revision": "issue-228-adoption-v1",
+    "scope_hash": "sha256:ad186d411c94cb740ca40d52ba57965399c9bc9bf8e8c713896ba102b15932bc",
+    "executor": "local",
+    "observation_time": "2026-08-25T12:30:00Z"
+  },
+  "evidence": {
+    "repository": {
+      "name_with_owner": "nerdchanii/rpm",
+      "read_complete": true
+    },
+    "issue": {
+      "repository": "nerdchanii/rpm",
+      "number": 145,
+      "state": "OPEN",
+      "labels": [
+        "documentation"
+      ],
+      "lifecycle_state": "untracked",
+      "closing_prs_complete": true,
+      "closing_prs": [
+        210
+      ]
+    },
+    "pr": {
+      "repository": "nerdchanii/rpm",
+      "number": 210,
+      "state": "OPEN",
+      "is_draft": false,
+      "base": {
+        "repository": "nerdchanii/rpm",
+        "ref": "main",
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "head": {
+        "repository": "nerdchanii/rpm",
+        "ref": "feat/issue-145-workspaces",
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "closing_issues_complete": true,
+      "closing_issues": [
+        {
+          "repository": "nerdchanii/rpm",
+          "number": 145
+        }
+      ]
+    },
+    "execution": {
+      "repository": "nerdchanii/rpm",
+      "issue": 145,
+      "pr": 210,
+      "base_repository": "nerdchanii/rpm",
+      "base_ref": "main",
+      "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "head_repository": "nerdchanii/rpm",
+      "head_ref": "feat/issue-145-workspaces",
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "evidence_digest": "sha256:944080986b14cd8f572bdaff105820641e1bc0a3a17cdfff25631e0716db1ab1",
+      "source": "github-approved-workflow-comment-v1",
+      "source_actor": "nerdchanii",
+      "approval_id": "user-authorization-thread-01a038a7-90bb-7923-b97e-ec7bbd6e67b2",
+      "plan_revision": "issue-228-adoption-v1",
+      "scope_hash": "sha256:ad186d411c94cb740ca40d52ba57965399c9bc9bf8e8c713896ba102b15932bc",
+      "executor": "local",
+      "policy_version": 4,
+      "operation_version": 1
+    },
+    "checks": {
+      "source": "github-check-runs-v1",
+      "repository": "nerdchanii/rpm",
+      "pr": 210,
+      "read_complete": true,
+      "pagination_complete": true,
+      "has_next_page": false,
+      "count": 2,
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "records": [
+        {
+          "name": "metadata",
+          "status": "completed",
+          "conclusion": "success",
+          "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "source": "github-actions",
+          "workflow_run_id": 41001
+        },
+        {
+          "name": "verify",
+          "status": "completed",
+          "conclusion": "success",
+          "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "source": "github-actions",
+          "workflow_run_id": 41002
+        }
+      ]
+    },
+    "review": {
+      "repository": "nerdchanii/rpm",
+      "pr": 210,
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "head_updated_at": "2026-08-25T12:00:00Z",
+      "automatic_reviews": {
+        "source": "github-pull-request-reviews-v1",
+        "repository": "nerdchanii/rpm",
+        "pr": 210,
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "read_complete": true,
+        "pagination_complete": true,
+        "has_next_page": false,
+        "count": 1,
+        "records": [
+          {
+            "actor": "chatgpt-codex-connector",
+            "reviewed_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "submitted_at": "2026-08-25T12:10:00Z",
+            "state": "COMMENTED",
+            "finding_count": 0
+          }
+        ]
+      },
+      "reactions": {
+        "source": "github-pull-request-reactions-v1",
+        "repository": "nerdchanii/rpm",
+        "pr": 210,
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "read_complete": true,
+        "pagination_complete": true,
+        "has_next_page": false,
+        "count": 0,
+        "records": []
+      }
+    },
+    "findings": {
+      "source": "current-head-review-findings-v1",
+      "repository": "nerdchanii/rpm",
+      "pr": 210,
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "read_complete": true,
+      "pagination_complete": true,
+      "has_next_page": false,
+      "count": 0,
+      "items": []
+    },
+    "writers": {
+      "source": "repository-global-writer-inventory-v1",
+      "repository": "nerdchanii/rpm",
+      "pr": 210,
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "observed_at": "2026-08-25T12:30:00Z",
+      "read_complete": true,
+      "pagination_complete": true,
+      "has_next_page": false,
+      "cas_token": "writer-inventory-version-17",
+      "count": 0,
+      "records": []
+    },
+    "dependent_prs": {
+      "source": "repository-open-pr-base-inventory-v1",
+      "repository": "nerdchanii/rpm",
+      "pr": 210,
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "read_complete": true,
+      "pagination_complete": true,
+      "has_next_page": false,
+      "count": 0,
+      "records": []
+    }
+  },
+  "ledger": {
+    "read_complete": true,
+    "pagination_complete": true,
+    "has_next_page": false,
+    "comments": []
+  },
+  "live": {
+    "issue_labels": [
+      "documentation"
+    ],
+    "lifecycle_state": "untracked",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "project_inventory": {
+    "required_for_execution": false,
+    "read_status": "ok",
+    "membership": "present"
+  },
+  "execution_inventory": {
+    "repository": "nerdchanii/rpm",
+    "source": "repository-open-issue-lifecycle-inventory-v1",
+    "read_complete": true,
+    "pagination_complete": true,
+    "has_next_page": false,
+    "count": 1,
+    "records": [
+      {
+        "repository": "nerdchanii/rpm",
+        "number": 145
+      }
+    ]
+  },
+  "closing_pr_inventory": {
+    "repository": "nerdchanii/rpm",
+    "source": "repository-open-closing-pr-inventory-v1",
+    "read_complete": true,
+    "pagination_complete": true,
+    "has_next_page": false,
+    "count": 1,
+    "records": [
+      {
+        "repository": "nerdchanii/rpm",
+        "issue": 145,
+        "pr": 210,
+        "state": "OPEN",
+        "base_ref": "main",
+        "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "head_ref": "feat/issue-145-workspaces",
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
+  },
+  "issues": [
+    {
+      "number": 145,
+      "url": "https://github.com/nerdchanii/rpm/issues/145",
+      "state": "OPEN",
+      "labels": [
+        "documentation"
+      ],
+      "closing_pr_inventory": {
+        "repository": "nerdchanii/rpm",
+        "source": "github-closing-issue-references-v1",
+        "read_complete": true,
+        "pagination_complete": true,
+        "has_next_page": false,
+        "count": 1,
+        "records": [
+          {
+            "repository": "nerdchanii/rpm",
+            "number": 210
+          }
+        ]
+      },
+      "closing_prs": [
+        {
+          "number": 210,
+          "state": "OPEN",
+          "repository": "nerdchanii/rpm"
+        }
+      ]
+    }
+  ]
+}

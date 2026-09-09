@@ -174,10 +174,23 @@ for path in CONTRIBUTING.md .github/pull_request_template.md; do
     "closing issue guidance is presented as a blocking checklist item"
 done
 
-# Every merge fixture must model both required checks. This catches stale
-# metadata entries in ready, pending, and failed gate scenarios.
+# Every merge fixture must model a complete GitHub check-run inventory with
+# exactly both required checks. This catches stale metadata entries in ready,
+# pending, and failed gate scenarios while keeping the assertion aligned with
+# the current-head evidence envelope consumed by the merge gate.
 for fixture in .agents/fixtures/backlog/merge-*.json; do
-  if ! jq -e 'all(.issues[]?.closing_prs[]?; (.checks | keys) == ["metadata", "verify"])' \
+  if ! jq -e '
+    ([.issues[]?.closing_prs[]?] | length) > 0
+    and all(
+      .issues[]?.closing_prs[]?;
+      .checks.source == "github-check-runs-v1"
+      and .checks.read_complete == true
+      and .checks.pagination_complete == true
+      and .checks.has_next_page == false
+      and .checks.count == 2
+      and ([.checks.records[]?.name] | sort) == ["metadata", "verify"]
+    )
+  ' \
     "${fixture}" >/dev/null; then
     fail "merge fixture does not contain exactly metadata and verify: ${fixture}"
   fi

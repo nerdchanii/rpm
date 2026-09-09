@@ -16,7 +16,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^(Agent|spawn_agent|apply_patch|Edit|Write|Bash|shell|exec|exec_command|functions\\.exec|functions\\.exec_command|mcp__.*)$",
+        "matcher": "^(Agent|spawn_agent|apply_patch|Edit|Write|Bash|shell|exec|exec_command|terminal|python|python3|run|executor|functions\\.exec|functions\\.exec_command|mcp__.*|.*(?:shell|exec|command|terminal|python|run|execute).*)$",
         "hooks": [
           {
             "type": "command",

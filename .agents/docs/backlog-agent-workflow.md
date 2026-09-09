@@ -177,14 +177,15 @@ terminal result.
 
 ## Claim-and-Execute Contract
 
-`$take-ticket scheduled` uses the connected GitHub plugin to inventory open
-issues with lifecycle labels. Project membership is not an execution
-condition. It returns `no-work` while any open issue is claimed or
-review-pending. Otherwise it rejects conflicting lifecycle labels, rejects a
-ready issue without valid execution metadata, sorts ready issues by issue
-number, selects at most one, refetches it, checks for an existing closing open
-PR, and runs the claim contract before replacing ready with claimed. The claim
-must record its lease and idempotency key while preserving ordinary labels.
+`$take-ticket scheduled` uses the connected GitHub plugin to inventory every
+open issue and its closing-PR relationships before filtering lifecycle labels.
+Project membership is not an execution condition. It returns `no-work` while
+any open issue is claimed or review-pending. Otherwise it rejects conflicting
+lifecycle labels, rejects a ready issue without valid execution metadata, sorts
+ready issues by issue number, selects at most one, refetches it, checks for an
+existing closing open PR, and runs the claim contract before replacing ready
+with claimed. The claim must record its lease and idempotency key while
+preserving ordinary labels.
 
 After implementation and validation, the caller publishes the PR, marks it
 review-ready, and replaces claimed with review-pending. Repository-configured
@@ -194,6 +195,12 @@ repository-external review-creation mechanism.
 `$take-ticket explicit <issue>` executes a user-selected issue without running
 the scheduled candidate claim flow.
 
+Before ordinary execution selection, the queue checker classifies every
+completed open PR whose closing issue has no lifecycle label. When the
+dedicated contract is present it returns `adoption-required`; missing wiring
+returns `wiring-blocked`. Either result is a stable blocker and cannot be
+reported as healthy `no-work`.
+
 Ticket execution does not create or request an Automatic review or post `@codex review`;
 its arrival is asynchronous evidence, not a synchronous
 completion dependency or blocking condition. Repository code-review settings
@@ -201,6 +208,64 @@ run independently after a pull request is published. Review reconciliation
 returns `no-work` without mutation when feedback is absent and rechecks on a
 later scheduled run. Explicit review-only workflows retain their documented
 non-blocking COMMENT review-posting scope.
+
+## Existing-PR Adoption Contract
+
+`adopt-existing-pr` is the only operation that may move an untracked closing
+issue to review-pending. The generic lifecycle transition table keeps only
+untracked-to-research. The adopter processes one exact issue/PR pair and binds
+the repository, complete closing-issue set, base and head refs/SHAs, policy and
+operation versions, approval metadata, canonical evidence digest, complete
+current-head checks, current-head review or approved post-head plus-one,
+finding dispositions, repository-global writer inventory, and dependent-PR
+inventory.
+
+Adoption starts with a read-only authorization checkpoint. After collecting the
+live prospective packet, the adopter runs
+`scripts/prepare-existing-pr-adoption-authorization.py`. The helper reuses the
+canonical adoption digest and prints exactly one JSONL event with
+`status: authorization-required`, the exact target tuple, and one
+`rpm-agent-execution` marker. The checkpoint states
+`requires_external_approval: true`, `mutation_count: 0`, and that the exact
+marker must be published as an issue comment. The adopter and workflow manager
+cannot approve themselves or publish this marker.
+
+The user or an already trusted top-level caller reviews the checkpoint and
+publishes the unchanged marker as an issue comment. The manager returns the
+checkpoint and waits for that external approval; manager and adopter remain
+read-only. On resume, the adopter re-reads the issue comments and requires
+exactly one comment from a policy-authorized actor, then compares every
+repository, issue, PR, base/head ref and SHA, and canonical evidence digest
+with fresh live evidence. Missing, ambiguous, forged, legacy, or drifted
+comments return `blocked` with no mutation. The marker itself contains the
+exact repository, issue, pull request, base repository, base ref/SHA, head
+repository, head ref/SHA, and canonical evidence digest. The digest field is
+masked only while hashing its containing evidence. A marker for another target,
+changed evidence, or an earlier PR identity cannot be rebound or reused.
+
+Before the first ledger write, the adopter publishes a short-lived
+`rpm-agent-writer` lease comment and stops. The next run re-fetches the complete
+repository-global writer inventory. When concurrent adoption leases exist,
+the trusted lease with the smallest server-assigned comment ID wins; other
+runs stop. Adoption lease records are runtime locks and are excluded from the
+immutable user-authorization digest while remaining live-validation and CAS
+inputs.
+
+The issue-comment ledger progresses through `prepared`, `label-mutation`,
+`committed`, and `reconciled`. Every retry re-fetches the exact evidence and
+accepts one matching run. Equivalent duplicate phase comments reconcile to the
+earliest comment; conflicting duplicates stop. Ambiguous, partial, stale, or
+conflicting records stop without mutation. The label authorization is
+add-only and preserves ordinary labels. Project membership synchronization is
+an inventory operation; Project read failure cannot change or block the
+lifecycle verdict.
+
+Stale-head recovery never deletes `agent:review-pending`. GitHub does not
+provide an atomic owner identity for a shared issue label, so an old run cannot
+prove the current label is still its own. Ref-only drift with an unchanged head
+SHA and every changed-head stale label both stop fail-closed. An independently
+authorized principal must reconcile the label before a fresh run can treat the
+old exact prepared and label-mutation records as manual-reconciliation history.
 
 ## Review-Reconciliation Contract
 
@@ -224,13 +289,34 @@ through the GitHub plugin and lets GitHub close the linked issue; lifecycle
 labels on closed issues are inert. Pending checks or unknown mergeability
 return `no-work`. Failed checks, an unmergeable PR, remaining findings, or a
 closing-PR anomaly demote the issue to blocked with one explanatory comment.
+Complete head-repository/ref-bound dependent-PR inventory is required before
+the gate decision. A child PR based on the selected head returns
+`retarget-required` before merge or branch deletion.
+Scheduled branch deletion is disabled for every selected PR. The gate blocks
+when `merge_gate.delete_branch` is not false because the final mutation cannot
+prove cross-repository branch ownership and dependent-PR safety. It also
+requires complete GitHub repository metadata with
+`delete_branch_on_merge: false` on both gate reads; the merge request cannot
+override repository-side automatic deletion. Missing connector support is a
+run-level `repository-setting-unavailable` stop without mutation. The explicit
+`safe-direct-merge` path remains outside this lifecycle queue.
 Issue #195 owns the planned deterministic blocking CI aggregate contract. Until
 that implementation exists, current `merge_gate.required_checks` consumes the
-policy's `metadata` and `verify` conclusions as individual evidence. The scheduled
-`merge-gatekeeper` is the actual merge owner, with issue #202 preserving and
+policy's `metadata` and `verify` statuses and conclusions as individual
+evidence. The scheduled `merge-gatekeeper` is the actual merge owner, with
+issue #202 preserving and
 organizing that lifecycle ownership. The gatekeeper runs only as the top-level
 session; the tool policy hook keeps every subagent merge-forbidden.
-The workflow automation flag `automation.merge_pull_requests` stays `false`: subagent workflows never merge.
+The merge automation setting stays disabled. Subagent workflows never merge.
+Immediately before the mutation, the second gate verdict supplies the exact
+GitHub plugin input, including `expected_head_sha`. The merge call must use that
+value. The top-level tool-policy hook records the dedicated normalized evidence
+path and SHA-256 together with the policy/checker/hook SHA-256 values,
+recomputes the unchanged gate, exact-compares all four merge request fields,
+and consumes the transcript-bound grant once. The top-level session also pins
+those trusted contract digests from its first tool call. Missing, changed,
+ambiguous, replayed, or mismatched grants are blocked. A connector without the
+expected-head field returns blocked without a merge or branch deletion.
 
 ## Suggested Automation Split
 

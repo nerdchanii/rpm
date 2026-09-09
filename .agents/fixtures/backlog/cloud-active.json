@@ -1,16 +1,40 @@
 {
+  "repository": "nerdchanii/rpm",
+  "execution_inventory": {
+    "repository": "nerdchanii/rpm",
+    "source": "repository-open-issue-lifecycle-inventory-v1",
+    "read_complete": true,
+    "pagination_complete": true,
+    "has_next_page": false,
+    "count": 2,
+    "records": [
+      {"repository": "nerdchanii/rpm", "number": 4},
+      {"repository": "nerdchanii/rpm", "number": 6}
+    ]
+  },
+  "closing_pr_inventory": {
+    "repository": "nerdchanii/rpm",
+    "source": "repository-open-closing-pr-inventory-v1",
+    "read_complete": true,
+    "pagination_complete": true,
+    "has_next_page": false,
+    "count": 0,
+    "records": []
+  },
   "issues": [
     {
       "number": 4,
       "state": "OPEN",
       "labels": ["agent:claimed", "kind:bug"],
-      "closing_prs": []
+      "closing_prs": [],
+      "closing_pr_inventory": {"repository": "nerdchanii/rpm", "source": "github-closing-issue-references-v1", "read_complete": true, "pagination_complete": true, "has_next_page": false, "count": 0, "records": []}
     },
     {
       "number": 6,
       "state": "OPEN",
       "labels": ["agent:ready"],
       "closing_prs": [],
+      "closing_pr_inventory": {"repository": "nerdchanii/rpm", "source": "github-closing-issue-references-v1", "read_complete": true, "pagination_complete": true, "has_next_page": false, "count": 0, "records": []},
       "execution": {
         "approval_id": "approval-6",
         "plan_revision": "plan-6",

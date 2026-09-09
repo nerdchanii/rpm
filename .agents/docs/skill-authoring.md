@@ -19,6 +19,7 @@ invocation.
 
 | Skill | `allow_implicit_invocation` | Decision |
 | --- | --- | --- |
+| `adopt-existing-pr` | `false` | Explicit-only authorized existing-PR adoption entry point. |
 | `fixture-governance` | `true` | Implicit-eligible deterministic fixture guidance. |
 | `merge-gatekeeper` | `false` | Explicit-only scheduled merge owner. |
 | `open-pr-review-batch` | `false` | Explicit-only review posting across every open PR. |
@@ -30,13 +31,13 @@ invocation.
 | `spec-governance` | `true` | Implicit-eligible contract and SPEC consistency guidance. |
 | `take-ticket` | `false` | Explicit-only issue claim and execution entry point. |
 
-The seven `false` entries can claim or trigger repository-wide review, issue,
+The eight `false` entries can claim or trigger repository-wide review, issue,
 label, or merge lifecycle effects and require an explicit user or scheduled
 caller. The three `true` entries provide implicit-eligible local analysis or
 guidance and keep implicit discovery available. Tool and sandbox permissions
-continue to govern command execution. `take-ticket`, `prepare-backlog`, and
-`merge-gatekeeper` also retain their legacy `SKILL.md` entry guard where the
-entry point itself must be hidden from model invocation.
+continue to govern command execution. `take-ticket`, `prepare-backlog`,
+`merge-gatekeeper`, and `adopt-existing-pr` also retain their legacy `SKILL.md`
+entry guard where the entry point itself must be hidden from model invocation.
 
 The following overlaps are deliberate dispositions for this inventory:
 

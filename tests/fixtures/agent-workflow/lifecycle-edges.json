@@ -1,0 +1,57 @@
+{
+  "generic_edges": [
+    "untracked->research",
+    "research->research",
+    "research->ready",
+    "research->blocked",
+    "ready->claimed",
+    "ready->blocked",
+    "claimed->ready",
+    "claimed->review-pending",
+    "claimed->blocked",
+    "review-pending->review-pending",
+    "review-pending->awaiting-merge",
+    "review-pending->blocked",
+    "awaiting-merge->blocked",
+    "blocked->research",
+    "blocked->ready"
+  ],
+  "edge_cases": [
+    {"id": "untracked->research", "source": "untracked", "target": "research", "verdict": "allowed"},
+    {"id": "research->research", "source": "research", "target": "research", "verdict": "allowed"},
+    {"id": "research->ready", "source": "research", "target": "ready", "verdict": "allowed"},
+    {"id": "research->blocked", "source": "research", "target": "blocked", "verdict": "allowed"},
+    {"id": "ready->claimed", "source": "ready", "target": "claimed", "verdict": "allowed"},
+    {"id": "ready->blocked", "source": "ready", "target": "blocked", "verdict": "allowed"},
+    {"id": "claimed->ready", "source": "claimed", "target": "ready", "verdict": "allowed"},
+    {"id": "claimed->review-pending", "source": "claimed", "target": "review-pending", "verdict": "allowed"},
+    {"id": "claimed->blocked", "source": "claimed", "target": "blocked", "verdict": "allowed"},
+    {"id": "review-pending->review-pending", "source": "review-pending", "target": "review-pending", "verdict": "allowed"},
+    {"id": "review-pending->awaiting-merge", "source": "review-pending", "target": "awaiting-merge", "verdict": "allowed"},
+    {"id": "review-pending->blocked", "source": "review-pending", "target": "blocked", "verdict": "allowed"},
+    {"id": "awaiting-merge->blocked", "source": "awaiting-merge", "target": "blocked", "verdict": "allowed"},
+    {"id": "blocked->research", "source": "blocked", "target": "research", "verdict": "allowed"},
+    {"id": "blocked->ready", "source": "blocked", "target": "ready", "verdict": "allowed"}
+  ],
+  "dedicated_operations": [
+    {
+      "name": "adopt-existing-pr",
+      "from": "untracked",
+      "to": "review-pending",
+      "verdict": "allowed-dedicated",
+      "fixture": "tests/fixtures/agent-workflow/existing-pr-adoption.json"
+    }
+  ],
+  "initial_states": [
+    "untracked",
+    "research",
+    "ready"
+  ],
+  "safe_stop_states": [
+    "awaiting-merge",
+    "blocked"
+  ],
+  "external_terminal_states": [
+    "closed"
+  ]
+}
