@@ -1,7 +1,31 @@
 {
   "repository": "nerdchanii/rpm",
   "now": "2026-08-21T12:00:00Z",
-  "runs": [],
+  "runs": [
+    {
+      "repository": "nerdchanii/rpm",
+      "issue": 3,
+      "run_id": "run-3",
+      "event_id": "delivery-3",
+      "executor": "cloud",
+      "plan_revision": "plan-3",
+      "scope_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "idempotency_key": "sha256:0ebb451daf89062a9f7314eec90cb39f62d5aae73bcdf47f7dd89e2e70f74cb1",
+      "lease": {
+        "run_id": "run-3",
+        "owner": "cloud:executor",
+        "started_at": "2026-08-21T12:00:00Z",
+        "expires_at": "2026-08-21T13:00:00Z"
+      },
+      "started_at": "2026-08-21T12:00:00Z",
+      "expires_at": "2026-08-21T13:00:00Z"
+    }
+  ],
+  "comments": [
+    {
+      "body": "<!-- rpm-agent-claim: {\"event_id\":\"delivery-3\",\"executor\":\"cloud\",\"expires_at\":\"2026-08-21T13:00:00Z\",\"idempotency_key\":\"sha256:0ebb451daf89062a9f7314eec90cb39f62d5aae73bcdf47f7dd89e2e70f74cb1\",\"issue\":3,\"lease\":{\"expires_at\":\"2026-08-21T13:00:00Z\",\"owner\":\"cloud:executor\",\"run_id\":\"run-3\",\"started_at\":\"2026-08-21T12:00:00Z\"},\"plan_revision\":\"plan-3\",\"repository\":\"nerdchanii/rpm\",\"run_id\":\"run-3\",\"scope_hash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"started_at\":\"2026-08-21T12:00:00Z\"} -->"
+    }
+  ],
   "issues": [
     {
       "number": 3,
