@@ -28,6 +28,47 @@ commits, pushes, PR state, and the final report. The workflow manager is the
 single entry router. One per-issue manager owns the process for one issue. Leaf
 agents receive only their inputs, scope, and output contract.
 
+## Role Taxonomy and Adjacent Boundaries
+
+The repository validator owns the machine-readable taxonomy for all 20 custom
+agent TOMLs. Each role has one category, one distinct responsibility, and one
+coordination boundary. The validator checks this static inventory; the
+coordinator enforces runtime sequencing and writer handoffs.
+
+| Role | Category | Coordination | Distinct responsibility |
+|---|---|---|---|
+| `rpm_workflow_manager` | backlog | coordinator | routes one requested workflow mode to one manager |
+| `rpm_backlog_manager` | backlog | coordinator | coordinates one bounded backlog mode and its handoffs |
+| `rpm_issue_manager` | reconciliation | coordinator | coordinates one issue state machine and writer handoffs |
+| `rpm_backlog_scout` | discovery/research | independent-read | inventories one candidate source and duplicate evidence |
+| `rpm_issue_fetcher` | discovery/research | independent-read | fetches one canonical issue packet and linked context |
+| `rpm_issue_researcher` | discovery/research | independent-read | builds one evidence-backed implementation research packet |
+| `rpm_spec_reviewer` | review | independent-read | classifies the owning SPEC impact for one issue |
+| `rpm_issue_readiness_reviewer` | review | sequential-read | judges whether one researched issue is actionable |
+| `rpm_adversarial_reviewer` | review | sequential-read | tries to falsify one validated change against its evidence |
+| `rpm_issue_spec_reconciler` | reconciliation | sequential-read | compares one issue intent with its active SPEC decision |
+| `pr-review-resolver` | reconciliation | single-writer | classifies review feedback and applies accepted fixes |
+| `rpm_spec_updater` | implementation | single-writer | writes one already-approved contract update |
+| `rpm_implementer` | implementation | single-writer | writes one approved production behavior change |
+| `rpm_test_author` | testing | single-writer | writes focused regression tests and deterministic fixtures |
+| `rpm_test_runner` | testing | sequential-read | runs supplied targeted tests and reports exact evidence |
+| `rpm_verifier` | testing | sequential-read | runs the full repository validation gate |
+| `rpm_idea_issue_creator` | mutation | single-writer | creates one authorized idea issue and registration |
+| `rpm_issue_refiner` | mutation | single-writer | updates one managed research section and lifecycle state |
+| `rpm_ready_ticket_claimer` | mutation | single-writer | claims one ready issue through the allowed state transition |
+| `rpm_followup_issue_creator` | mutation | single-writer | creates one explicitly authorized deferred follow-up issue |
+
+### Retained-distinct adjacent roles
+
+| Pair | Disposition |
+|---|---|
+| scout ↔ researcher | scout inventories candidates; researcher investigates one selected issue |
+| SPEC reviewer ↔ SPEC reconciler | SPEC reviewer classifies the owning contract; SPEC reconciler compares issue intent with that classification |
+| targeted runner ↔ verifier | targeted runner executes supplied commands; verifier runs the full repository gate |
+| workflow manager ↔ issue manager | workflow manager routes a top-level mode; issue manager owns one issue state machine |
+| adversarial reviewer ↔ PR resolver | adversarial reviewer finds correctness gaps; PR resolver classifies actionable feedback and applies accepted fixes |
+| SPEC updater ↔ implementer | SPEC updater writes approved contract text; implementer writes production behavior |
+
 ## DAG and Worktree Harness
 
 The main session owns the global DAG and final integration. It assigns each
@@ -82,6 +123,8 @@ flowchart TD
 - Read-only exploration and independent review may run in parallel.
 - SPEC writing, test writing, production implementation, and review-fix writing
   run sequentially.
+- Each task has at most one active write owner. Writer handoffs are sequential,
+  and the next writer starts only after the previous writer returns its result.
 - Two agents must not edit overlapping files concurrently.
 - Concurrent issues require separate worktrees.
 - One issue, one active claim lease, and one worker worktree are the default
