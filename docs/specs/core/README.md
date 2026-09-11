@@ -187,8 +187,8 @@ must convert internal failure classes into stable command behavior — diagnosti
 envelope, exit-code mapping, channel ownership, config precedence, and
 frozen/lockfile-only install modes — before command expansion such as `remove`
 or `update`, because those commands need stable stdout/stderr ownership, exit
-codes, configuration precedence, and lockfile mutation policy before they can
-be implemented safely. It must not fold workspace implementation, raw performance
+codes, configuration precedence, and lockfile mutation policy before they can be
+implemented safely. It must not fold workspace implementation, raw performance
 concurrency claims, release packaging, or new package-manager semantics into
 diagnostics work. Every gap below is assigned to an owning SPEC and a follow-up
 ticket so the diagnostic and install-mode surface becomes SPEC-owned *before*
