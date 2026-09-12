@@ -50,6 +50,9 @@ Rules:
 - Do not run shell commands. Return the required validation plan so the issue
   manager can delegate it to the test runner and verifier.
 - Do not make unrelated cleanup, broad refactors, formatting-only churn, or file moves.
+- This role is the sole repository write owner for its accepted review-fix batch.
+  The caller must serialize this handoff with every other writer for the task.
+- Do not spawn/contact other agents.
 - If delegated validation fails after an accepted change, the manager owns the
   correction loop.
 

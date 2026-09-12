@@ -12,6 +12,21 @@ provider-neutral; provider-specific details remain in adapters, environments,
 and role instructions. This document records the existing execution model and
 does not add an executor-routing architecture.
 
+Backlog roles use the same repository-wide taxonomy as the per-issue workflow:
+scout and researcher roles perform discovery, managers route bounded work,
+readiness roles judge evidence, and creator/refiner/claimer roles own the
+authorized GitHub mutations. These responsibilities are distinct from the
+per-issue implementation, testing, review, and reconciliation roles listed in
+`.agents/docs/issue-agent-workflow.md`.
+
+Independent read-only evidence collection may run in parallel when inputs are
+independent. Readiness review starts only after its research result and runs
+sequentially. Each backlog task has at most one active write owner for GitHub
+state. Mutation handoffs are sequential; a second creator, refiner, or claimer
+waits for the first writer's verified result. The validator checks this static
+single-writer contract together with each role's sandbox and write scope; the
+coordinator enforces runtime ordering.
+
 ## Durable Handoff and Discovered Work
 
 A GitHub issue is the durable handoff for a fresh worker. Its current body must
