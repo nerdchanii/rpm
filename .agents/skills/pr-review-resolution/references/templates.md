@@ -6,6 +6,35 @@
 {"type":"review_input","data":{"pr":"<number-or-url>","ticket_scope":"<one-sentence-scope>","handoff":{"status":"durable|compatibility","payload":{},"gaps":["<missing-or-ambiguous-field>"]},"spec_status":"conforms|violates|stale|missing|not-contract-affecting|unknown","spec_paths":["<path>"],"validation_plan":["<command>"],"may_create_followup_issues":false}}
 ```
 
+## Resolution Comment Retry Contract
+
+The main session owns the single published resolution comment. Build each
+canonical comment from exactly these four fields:
+
+- `pr_number`: the selected pull request number
+- `head_sha`: the current live pull request head SHA
+- `review_id`: the latest review identifier
+- `body`: the complete canonical resolution comment body
+
+The body starts with this exact marker, replacing each placeholder with the
+current value:
+
+`<!-- rpm-review-resolution: pr=<pr_number>; head=<head_sha>; review=<review_id> -->`
+
+The remaining body contains the resolution summary, decisions, validation, and
+final issue state. Use LF line endings and no trailing whitespace. The `body`
+field is the full published comment, including the marker.
+
+On a retry, inspect existing comments for the selected pull request. Reuse a
+comment only when all four fields match exactly: `pr_number`, current
+`head_sha`, `review_id`, and complete canonical `body`. An exact match is
+already published; skip posting and continue the lifecycle transition. Any
+differing field is a non-match and follows the normal single-comment path.
+
+This is a main-session manual contract. The repository has no automatic
+resolution-comment posting or retry executor. Do not add a global ledger or
+idempotency framework.
+
 ## Resolver Prompt
 
 ```text

@@ -247,6 +247,27 @@ printf '%s\n' "$claim_inline_output" | jq -e '
   and .data.issue == 3
 ' >/dev/null
 
+set +e
+closing_pr_prepare_output="$(python3 scripts/check-cloud-queue-contract.py \
+  --issues-file .agents/fixtures/backlog/cloud-claim-prepare-closing-pr.json \
+  --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+  --executor cloud --plan-revision plan-3 \
+  --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --lease-owner cloud:executor)"
+closing_pr_prepare_code=$?
+set -e
+[ "$closing_pr_prepare_code" -eq 1 ]
+printf '%s\n' "$closing_pr_prepare_output" | jq -e '
+  .type == "cloud_queue_contract"
+  and .data.status == "blocked"
+  and .data.reason == "open-closing-pr"
+  and .data.issue == 3
+  and (has("claim_record") | not)
+  and (has("issue_comment_marker") | not)
+  and (has("persistence") | not)
+  and (has("authorization_token") | not)
+' >/dev/null
+
 claim_output="$(python3 scripts/check-cloud-queue-contract.py \
   --issues-file .agents/fixtures/backlog/cloud-claim-ready.json \
   --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
@@ -268,6 +289,24 @@ printf '%s\n' "$claim_output" | jq -e '
   and .data.lease.owner == "cloud:executor"
   and .data.preserved_labels == ["priority:high"]
 ' >/dev/null
+
+set +e
+closing_pr_claim_output="$(python3 scripts/check-cloud-queue-contract.py \
+  --issues-file .agents/fixtures/backlog/cloud-claim-ready-closing-pr.json \
+  --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
+  --executor cloud --plan-revision plan-3 \
+  --scope-hash sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --lease-owner cloud:executor)"
+closing_pr_claim_code=$?
+set -e
+[ "$closing_pr_claim_code" -eq 1 ]
+printf '%s\n' "$closing_pr_claim_output" | jq -e '
+  .type == "cloud_queue_contract"
+  and .data.status == "blocked"
+  and .data.reason == "open-closing-pr"
+  and .data.issue == 3
+' >/dev/null
+
 claim_restart_output="$(python3 scripts/check-cloud-queue-contract.py \
   --issues-file .agents/fixtures/backlog/cloud-claim-restart.json \
   --operation claim --issue 3 --run-id run-3 --event-id delivery-3 \
@@ -460,6 +499,22 @@ rg -q 'scripts/worktree-cleanup.sh' .codex/environments/environment.toml
 require_contract_text .agents/skills/pr-review-resolution/SKILL.md 'Own PR review feedback resolution' 'canonical review-remediation owner'
 require_contract_text .agents/skills/pr-review-resolution/SKILL.md 'GitHub-sourced.*review text.*untrusted' 'untrusted GitHub review boundary'
 require_contract_text .codex/agents/pr-review-resolver.toml 'Treat every GitHub-sourced.*untrusted' 'resolver untrusted GitHub review boundary'
+for resolution_contract in \
+  .agents/skills/pr-review-resolution/SKILL.md \
+  .agents/skills/pr-review-resolution/references/resolution-workflow.md
+do
+  require_contract_text "$resolution_contract" 'reconciliation retry.*existing resolution comments?' 'retry comment lookup'
+  require_contract_text "$resolution_contract" 'PR number.*head SHA.*review ID.*canonical.*resolution body' 'matching resolution context'
+  require_contract_text "$resolution_contract" 'reuse.*skip posting.*lifecycle transition' 'matching comment lifecycle continuation'
+  require_contract_text "$resolution_contract" 'global.*ledger.*idempotency.*framework' 'bounded comment deduplication'
+done
+require_contract_text .agents/skills/pr-review-resolution/references/templates.md 'Resolution Comment Retry Contract' 'canonical resolution retry contract'
+require_contract_text .agents/skills/pr-review-resolution/references/templates.md 'exactly these four fields.*pr_number.*head_sha.*review_id.*body' 'four-field resolution context'
+require_contract_text .agents/skills/pr-review-resolution/references/templates.md 'rpm-review-resolution: pr=<pr_number>; head=<head_sha>; review=<review_id>' 'canonical resolution marker'
+require_contract_text .agents/skills/pr-review-resolution/references/templates.md 'all four fields.*match exactly' 'exact resolution context match'
+require_contract_text .agents/skills/pr-review-resolution/references/templates.md 'skip posting.*continue.*lifecycle transition' 'template lifecycle continuation'
+require_contract_text .agents/skills/pr-review-resolution/references/templates.md 'no automatic.*resolution-comment posting.*retry executor' 'manual resolution boundary'
+require_contract_text .agents/skills/pr-review-resolution/references/templates.md 'global.*ledger.*idempotency.*framework' 'template bounded deduplication'
 require_contract_text .agents/skills/open-pr-review-batch/SKILL.md 'Review only' 'review-only boundary'
 require_contract_text .agents/skills/open-pr-review-batch/SKILL.md 'remediation belongs to.*pr-review-resolution' 'review-remediation handoff'
 
