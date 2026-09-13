@@ -16,9 +16,23 @@
    performs no file or shell operation. The main session may create a temporary
    body file for preview and may use `--create` only when
    `may_create_followup_issues=true`.
-9. Commit and push accepted fixes to the same PR branch, then run internal adversarial review. Do not assume Automatic review reruns.
-10. Keep `agent:review-pending` while actionable P0/P1 findings remain. Otherwise replace it with `agent:awaiting-merge` and remove stale `agent:claimed`, preserving ordinary labels.
-11. Never merge, request `@codex review`, or make a new Automatic review a completion dependency.
+9. Commit and push accepted fixes to the same PR branch, then verify through
+   the GitHub capability that the public PR head SHA matches the pushed commit.
+   Do not construct, match, or publish a resolution comment before the push
+   succeeds and that public-head check passes. Run internal adversarial review
+   after the push and head verification. Do not assume Automatic review reruns.
+10. On a reconciliation retry after the push and public-head verification,
+   inspect existing resolution comments before posting. Use the canonical
+   marker/body and four-field context defined in `references/templates.md`: the
+   same PR number, current head SHA, review ID, and complete canonical
+   resolution body. If an identical comment is already published for that
+   context, reuse it, skip posting, and continue to the lifecycle transition.
+   A different head, review, or body does not match. Keep this check scoped to
+   the selected PR and review; do not add a global ledger or idempotency
+   framework. This is a main-session manual contract; the repository has no
+   automatic resolution-comment posting or retry executor.
+11. Keep `agent:review-pending` while actionable P0/P1 findings remain. Otherwise replace it with `agent:awaiting-merge` and remove stale `agent:claimed`, preserving ordinary labels.
+12. Never merge, request `@codex review`, or make a new Automatic review a completion dependency.
 
 ## Decision Taxonomy
 
