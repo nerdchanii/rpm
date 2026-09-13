@@ -1,0 +1,85 @@
+name: Codex PR event intake
+
+# Read-only event intake. Cloud submission and GitHub writes stay with their
+# existing owners until the documented account/host capability gaps are closed.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  workflow_run:
+    workflows: [Rust, PR Metadata]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to inspect without mutation
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  checks: read
+
+concurrency:
+  group: codex-pr-event-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.workflow_run.id || inputs.pr }}
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: >-
+      (github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request') &&
+      (github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Never check out a PR head, execute its files, restore its cache, or
+      # download a Cloud/PR artifact in the event handler.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .agents/workflows
+
+      # A review event can evaluate this workflow from a PR merge ref before
+      # the default branch has this new handler. Do not execute the PR copy.
+      - name: Check whether the handler is deployed
+        id: deployed
+        shell: bash
+        run: |
+          if [ -f scripts/inspect-codex-pr-event.py ]; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo 'PR event intake is not deployed on the default branch yet.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Refetch PR and evaluate the existing route
+        if: steps.deployed.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PR: ${{ inputs.pr }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--event-file "$GITHUB_EVENT_PATH" --event-name "$EVENT_NAME")
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            args+=(--pr "$INPUT_PR")
+          fi
+          intake_status=0
+          python3 scripts/inspect-codex-pr-event.py "${args[@]}" > "$RUNNER_TEMP/pr-route.json" || intake_status=$?
+          {
+            echo '## Current PR route (read-only)'
+            echo 'The named owner must refetch evidence before any action. This report does not grant write or merge permission.'
+            echo '```json'
+            cat "$RUNNER_TEMP/pr-route.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$intake_status"
