@@ -92,8 +92,8 @@ Read [references/templates.md](references/templates.md) when you need the resolv
 - Host-provided GitHub capability for review, thread, issue, label, and PR operations
 - `bash scripts/collect-pr-review-context.sh <pr> --format jsonl` as a local/manual fallback
 - `bash scripts/collect-pr-review-context.sh <pr> --format json` as a local/manual fallback
-- Main session only: `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> [--label <label>] --format jsonl`
-- Main session or explicitly delegated issue creator only: `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> [--label <label>] --create --format jsonl`
+- Main session only: `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> --label agent:research --format jsonl`
+- Main session or explicitly delegated issue creator only: `bash scripts/create-review-followup-issue.sh --title "<title>" --body-file <body-file> --label agent:research --create --format jsonl`
 
 The resolver returns structured body content and never creates this file.
 When the main session needs a preview, use
