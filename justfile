@@ -13,7 +13,7 @@ build:
     @echo "::rpm::end build"
 
 # Run the strict local validation gate.
-validate: format-check audit-fixtures fixture-smoke agent-assets agent-artifact check lint test docs
+validate: format-check audit-fixtures fixture-smoke agent-assets agent-artifact agent-events check lint test docs
 
 alias verify := validate
 
@@ -100,6 +100,11 @@ agent-artifact:
     @echo "::rpm::begin agent-artifact"
     @./scripts/test-agent-loop-artifact.sh
     @echo "::rpm::end agent-artifact"
+
+# Test the submit-only transport and read-only PR event intake (offline).
+agent-events:
+    @python3 scripts/test-codex-cloud-submit.py
+    @python3 scripts/test-codex-pr-event.py
 
 # Run benchmarks when benchmark targets exist. Extra cargo bench args are forwarded.
 bench *args:

@@ -1,5 +1,9 @@
 # Codex artifact worker
 
+For the subscription Cloud submission / PR event work and its current support
+limits, see [Cloud event handoff](event-handoff.md). This older manual API
+artifact worker is not called by that path.
+
 This adapter is a small, read-only GitHub Actions worker for RPM. Start it
 manually from the Actions page. Enter a positive number in exactly one of the
 two inputs and leave the other at its `none` default:

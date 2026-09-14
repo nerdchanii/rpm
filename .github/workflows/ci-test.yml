@@ -47,6 +47,11 @@ jobs:
       - name: Validate Codex artifact worker
         run: ./scripts/test-agent-loop-artifact.sh
 
+      - name: Validate Codex event handoff
+        run: |
+          python3 scripts/test-codex-cloud-submit.py
+          python3 scripts/test-codex-pr-event.py
+
   post-merge-validation:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: macos-latest
@@ -82,6 +87,11 @@ jobs:
 
       - name: Validate Codex artifact worker
         run: ./scripts/test-agent-loop-artifact.sh
+
+      - name: Validate Codex event handoff
+        run: |
+          python3 scripts/test-codex-cloud-submit.py
+          python3 scripts/test-codex-pr-event.py
 
       - name: Check docs build warning-free
         env:
