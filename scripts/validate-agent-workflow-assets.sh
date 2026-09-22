@@ -1890,6 +1890,8 @@ with_fake_collect_gh() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+printf '%s\n' "$*" >>"${RPM_COLLECT_FIXTURE}/gh-calls"
+
 if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
   printf 'owner/repo\n'
   exit 0
@@ -2326,7 +2328,7 @@ check_collect_includes_sibling_pull_requests() {
 
   local output
   output="$(
-    with_fake_collect_gh \
+    GH_REPO=base/repository with_fake_collect_gh \
       "${fixture_dir}" \
       bash scripts/collect-pr-review-context.sh 1 --format json
   )"
@@ -2339,6 +2341,20 @@ check_collect_includes_sibling_pull_requests() {
     and .siblingPullRequests[0].files == ["src/lib.rs", "tests/lib.rs"]
     and .siblingPullRequests[0].body == "sibling dependency context"
   ' >/dev/null
+  if rg -Fq -- 'repo view' "${fixture_dir}/gh-calls"; then
+    printf 'FAIL: collector ignored the explicit base repository\n' >&2
+    return 1
+  fi
+  rg -Fq -- '-f owner=base -f name=repository' "${fixture_dir}/gh-calls" || {
+    printf 'FAIL: GraphQL query did not use the explicit base repository\n' >&2
+    cat "${fixture_dir}/gh-calls" >&2
+    return 1
+  }
+  rg -Fq -- 'pr list --repo base/repository' "${fixture_dir}/gh-calls" || {
+    printf 'FAIL: sibling query did not use the explicit base repository\n' >&2
+    cat "${fixture_dir}/gh-calls" >&2
+    return 1
+  }
 }
 
 check_collect_rejects_failed_sibling_query() {

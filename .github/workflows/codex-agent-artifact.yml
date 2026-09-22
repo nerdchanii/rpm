@@ -330,7 +330,20 @@ jobs:
             block "issue-comments-payload-invalid"
           fi
           if [ "$(jq -r 'length' "$comments_file")" -eq 100 ]; then
-            block "issue-comments-truncated"
+            comments_next_file="$RUNNER_TEMP/target-issue-comments-next.json"
+            if ! gh api --method GET "repos/$REPOSITORY/issues/$TARGET_NUMBER/comments?per_page=100&page=2" >"$comments_next_file"; then
+              block "issue-comments-pagination-read-failed"
+            fi
+            comments_next_bytes="$(wc -c <"$comments_next_file" | tr -d '[:space:]')"
+            if ! printf '%s' "$comments_next_bytes" | grep -Eq '^[0-9]+$' || [ "$comments_next_bytes" -gt 524288 ]; then
+              block "issue-comments-pagination-exceeds-512-KiB"
+            fi
+            if ! jq -e 'type == "array" and all(.[]; type == "object")' "$comments_next_file" >/dev/null; then
+              block "issue-comments-pagination-payload-invalid"
+            fi
+            if [ "$(jq -r 'length' "$comments_next_file")" -gt 0 ]; then
+              block "issue-comments-truncated"
+            fi
           fi
           context="$RUNNER_TEMP/issue-context.json"
           if ! jq -n --slurpfile issue "$issue_file" --slurpfile comments "$comments_file" '
@@ -394,7 +407,8 @@ jobs:
             exit 0
           }
           context="$RUNNER_TEMP/review-context.json"
-          if ! COLLECT_REVIEW_MAX_PAGES=20 \
+          if ! GH_REPO="$GH_REPO" \
+            COLLECT_REVIEW_MAX_PAGES=20 \
             COLLECT_REVIEW_MAX_NODES=5000 \
             COLLECT_REVIEW_MAX_PAGE_BYTES=1048576 \
             COLLECT_REVIEW_MAX_TOTAL_BYTES=4194304 \

@@ -174,6 +174,19 @@ end
   end
 end
 
+issue_context = steps.find { |candidate| candidate.is_a?(Hash) && candidate["id"] == "issue_context" }
+issue_run = issue_context.fetch("run").to_s
+unless issue_run.include?("comments?per_page=100&page=2") &&
+       issue_run.include?("issue-comments-pagination-read-failed")
+  raise "issue context must check for a second comments page before declaring truncation"
+end
+
+review_context = steps.find { |candidate| candidate.is_a?(Hash) && candidate["id"] == "review_context" }
+review_env = review_context["env"]
+unless review_env.is_a?(Hash) && review_env["GH_REPO"].to_s.include?("github.repository")
+  raise "review collector must receive the base repository identity"
+end
+
 base_fetch = steps.find do |step|
   step.is_a?(Hash) && step["name"] == "Fetch exact review base commit"
 end

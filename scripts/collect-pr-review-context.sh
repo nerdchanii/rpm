@@ -97,12 +97,20 @@ collector_error() {
   exit 1
 }
 
-repo="$(gh repo view --json owner,name --jq '.owner.login + "/" + .name')"
+if [ -n "${GH_REPO:-}" ]; then
+  repo="${GH_REPO}"
+else
+  repo="$(gh repo view --json owner,name --jq '.owner.login + "/" + .name')"
+fi
+if ! printf '%s' "${repo}" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+  printf 'review_context.error=invalid-repository\n' >&2
+  exit 2
+fi
 owner="${repo%%/*}"
 name="${repo#*/}"
 
 if [ -z "${pr_ref}" ]; then
-  pr_number="$(gh pr view --json number --jq '.number')"
+  pr_number="$(gh pr view --repo "${repo}" --json number --jq '.number')"
 elif printf '%s' "${pr_ref}" | grep -Eq '^[0-9]+$'; then
   pr_number="${pr_ref}"
 else
@@ -468,7 +476,7 @@ jq -n \
 # Lets a resolver/reviewer see what other still-open PRs introduce or cite,
 # e.g. a counter that "does not exist yet" because it lands in another PR.
 sibling_raw="${tmp_dir}/sibling-prs.raw.json"
-if gh pr list --state open --limit 101 --json number,title,headRefName,baseRefName,files,body >"${sibling_raw}" 2>/dev/null; then
+if gh pr list --repo "${repo}" --state open --limit 101 --json number,title,headRefName,baseRefName,files,body >"${sibling_raw}" 2>/dev/null; then
   sibling_bytes="$(wc -c <"${sibling_raw}" | tr -d '[:space:]')"
   if ! printf '%s\n' "${sibling_bytes}" | grep -Eq '^[0-9]+$' || [ "${sibling_bytes}" -gt "${max_page_bytes}" ]; then
     collector_error "sibling-size-exceeded"
