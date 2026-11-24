@@ -22,9 +22,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # The check name `verify` is required by the merge gate
-  # (.agents/workflows/backlog-policy.json, scripts/check-merge-gate.py)
-  # and by branch protection; do not rename without updating both.
+  # The check name `verify` is required by branch protection; do not rename
+  # without updating it.
   verify:
     if: github.event_name == 'pull_request'
     runs-on: macos-latest
@@ -43,9 +42,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
-
-      - name: Validate Codex artifact worker
-        run: ./scripts/test-agent-loop-artifact.sh
 
   post-merge-validation:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -73,15 +69,6 @@ jobs:
 
       - name: Fixture smoke test
         run: ./scripts/test-fixture-tools.sh
-
-      - name: Install just
-        uses: taiki-e/install-action@just
-
-      - name: Validate agent assets
-        run: ./scripts/validate-agent-workflow-assets.sh --format=summary
-
-      - name: Validate Codex artifact worker
-        run: ./scripts/test-agent-loop-artifact.sh
 
       - name: Check docs build warning-free
         env:

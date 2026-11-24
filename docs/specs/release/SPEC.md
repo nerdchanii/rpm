@@ -122,7 +122,7 @@ on a supported platform. The release is valid only when every step passes.
 test -z "$(git status --porcelain)"
 
 # 2. Full repository gate. Runs format-check, audit-fixtures, fixture-smoke,
-#    agent-assets, check, lint, test, and docs.
+#    check, lint, test, and docs.
 just validate
 
 # 3. Coverage floor enforced by CI (90% lines).
@@ -242,7 +242,7 @@ required `verify` job runs `cargo fmt --check`, `cargo check`, strict
 `cargo clippy --all-targets --all-features -- -D warnings ...`, and
 `cargo test`. On pushes to `main`, the `post-merge-validation` job repeats those
 steps and adds a `cargo llvm-cov` run with a 90% line-coverage floor plus the
-fixture, agent-asset, and documentation checks from the local validation gate.
+fixture and documentation checks from the local validation gate.
 Together these establish that RPM builds and tests cleanly on macOS. They do
 not cover the rest of this contract.
 
