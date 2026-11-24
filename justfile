@@ -13,7 +13,7 @@ build:
     @echo "::rpm::end build"
 
 # Run the strict local validation gate.
-validate: format-check audit-fixtures fixture-smoke agent-assets agent-artifact check lint test docs
+validate: format-check audit-fixtures fixture-smoke check lint test docs
 
 alias verify := validate
 
@@ -88,18 +88,6 @@ fixture-smoke:
     @echo "::rpm::begin fixture-smoke"
     @./scripts/test-fixture-tools.sh
     @echo "::rpm::end fixture-smoke"
-
-# Validate project-scoped skills, agents, hooks, and deterministic workflow helpers.
-agent-assets:
-    @echo "::rpm::begin agent-assets"
-    @./scripts/validate-agent-workflow-assets.sh --format=summary
-    @echo "::rpm::end agent-assets"
-
-# Verify the read-only Codex artifact lane and its fail-closed packaging boundary.
-agent-artifact:
-    @echo "::rpm::begin agent-artifact"
-    @./scripts/test-agent-loop-artifact.sh
-    @echo "::rpm::end agent-artifact"
 
 # Run benchmarks when benchmark targets exist. Extra cargo bench args are forwarded.
 bench *args:

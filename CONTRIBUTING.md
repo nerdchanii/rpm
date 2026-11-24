@@ -14,64 +14,6 @@ Use the closest issue template and include:
 
 Issue text explains intent, but it does not override an owning SPEC.
 
-A GitHub issue is the durable handoff for a fresh worker. Keep the current body
-self-contained with the goal, scope, non-goals, acceptance criteria,
-dependencies, validation plan, and necessary context. Issue #207 remains the
-open implementation that will persist and validate the executable-issue
-contract and its schema/mutations; current manual guidance does not claim
-automatic template enforcement.
-
-When work is discovered during execution or review, record one disposition:
-an in-scope fix, a narrowly justified blocker or hotfix, or a durable linked
-follow-up issue. Actionable findings cannot remain hidden output or expand an
-unrelated PR. Follow-up creation requires policy authorization,
-`may_create_followup_issues=true`, a duplicate check, and a bounded writer;
-without approval, link an existing issue or post the draft disposition and its
-evidence to the source issue or PR as a durable comment. A session-local draft
-is only preparation, not a terminal disposition. If the workflow cannot persist
-either record, it must stop as blocked and report the missing permission. Issue
-#208 owns the discovered-work disposition implementation.
-
-Structured model proposals and bounded deterministic writes have separate
-responsibilities. A proposal supplies classification or planning evidence; an
-authorized workflow applies only the bounded mutation allowed by its contract.
-
-### Agent-backed backlog
-
-Unrefined product ideas use the Idea issue template and enter GitHub Project #7
-through the local backlog-preparation workflow. Cloud scheduled execution uses
-open issue lifecycle labels as its queue. The state labels and allowed
-transitions are defined in
-`.agents/workflows/backlog-policy.json`.
-
-- `agent:research`: evidence, contract impact, scope, or done criteria still need work
-- `agent:ready`: the readiness gate passed and scheduled execution may select the issue
-- `agent:claimed`: one scheduled execution owns the issue
-- `agent:review-pending`: the implementation PR is review-ready and awaits review reconciliation
-- `agent:awaiting-merge`: review reconciliation is complete and the issue is eligible for the scheduled merge gatekeeper
-- `agent:blocked`: a user, product, permission, or dependency decision is required
-
-Scheduled research and ticket execution process at most the configured batch
-size. An issue reaches `agent:ready` only after its owning SPEC impact, scope,
-dependencies, observable done criteria, and validation plan are explicit.
-Codex is the current primary and default repository operating path. Codex Cloud
-scheduled execution and repository-configured Codex Automatic review are current
-mechanisms. Shared lifecycle, state, validation, and mutation contracts are
-provider-neutral, with provider-specific details kept in adapters, environments,
-and role instructions.
-
-Issue #199 owns repository-external Codex Automatic review creation. Lifecycle
-ticket execution does not create or request an Automatic review or post `@codex review`;
-its arrival is asynchronous evidence, not a synchronous
-completion dependency or blocking condition. Review reconciliation returns
-`no-work` without mutation when feedback is absent and rechecks on a later
-scheduled run. Explicit review-only workflows retain their documented
-non-blocking COMMENT review-posting scope. Issue #195 owns the planned
-deterministic blocking CI aggregate contract; current `merge_gate.required_checks`
-consumes policy `metadata` and `verify` conclusions as individual evidence. The
-scheduled `merge-gatekeeper` is the actual merge owner, with issue #202
-preserving and organizing that lifecycle ownership.
-
 ## Milestones
 
 Use GitHub milestones for milestone-level tracking, not as the detailed source
@@ -105,15 +47,11 @@ PR metadata supports triage and planning. Add a descriptive label such as
 `bug`, `documentation`, `enhancement`, `refactor`, `planning`,
 `milestone-contract`, or `process:metadata-cleanup` when one clearly applies.
 Add `Closes #123` only when the PR should close that exact issue. Descriptive
-labels and issue-link hygiene do not determine merge eligibility, and issue
-lifecycle labels stay separate from PR classification.
+labels and issue-link hygiene do not determine merge eligibility.
 
-The `metadata` job skips draft PRs and publishes advisory notices from the
-pull-request event payload. Missing descriptive labels or closing references
-do not fail the job. The merge gate still requires the job to complete so
-ready PRs have a current metadata report; `verify` owns code and validation
-correctness. Branch protection should require the status checks named in
-`.agents/workflows/backlog-policy.json`.
+The `metadata` job publishes advisory notices only; missing labels or closing
+references do not fail it. The `verify` job owns code and validation
+correctness.
 
 Before marking a PR ready:
 
@@ -161,8 +99,7 @@ Default hooks:
 The pre-push checks use Cargo's quiet mode to hide intermediate build progress.
 Compiler diagnostics, test failures, summaries, and exit statuses remain visible.
 The `just build`, `just check`, `just lint`, `just test`, `just docs`, and
-`just validate` recipes follow the same output policy. Agent-asset validation
-prints one success summary and expands individual output only when a check fails.
+`just validate` recipes follow the same output policy.
 
 If you need to bypass the local guardrail for a one-off case, use normal Git hook
 escape hatches such as `--no-verify`. Do not treat that as a replacement for the
